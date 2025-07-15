@@ -220,6 +220,62 @@ void signal_handler(int)
 
 int main (int argc, char **argv)
 {
+  if (argc == 2 && (strequ(argv[1], "--help") || strequ(argv[1], "-h"))) {
+    printf (         "SREP 3.93a beta: huge-dictionary LZ77 preprocessor   (c) Bulat.Ziganshin@gmail.com\n"
+                     "October 11, 2014    homepage: http://freearc.org/research/SREP39.aspx\n"
+                     "\n"
+                     "Usage: SREP [options] infile [outfile]\n"
+                     "   infile/outfile can be specified as \"-\" for stdin/stdout\n"
+                     "   \"SREP [options] somefile\" compresses data from somefile to somefile.srep\n"
+                     "   \"SREP [options] somefile.srep\" decompresses data back to somefile\n"
+                     "   \"SREP [options]\" compresses and \"SREP -d [options]\" decompresses data from stdin to stdout\n"
+                     "\n"
+                     "Options are:\n"
+                     "   -m0: only in-memory compression (REP algorithm)\n"
+                     "   -m1: fixed-window content-defined chunking with matches checked by VMAC\n"
+                     "   -m2: order-1 content-defined chunking with matches checked by VMAC\n"
+                     "   -m3: check matches by VMAC digest (compression memory = 7-8%% of filesize)\n"
+                     "   -m4: check matches by rereading old data (compression memory = 3-4%% of filesize)\n"
+                     "   -m5/-mx: rereading with byte-accurate matches (compression memory = 7-9%% of filesize)\n"
+                     "   -l: minimum LZ match length, default 512\n"
+                     "   -c: size of hash chunk, by default as small as required to find all these LZ matches\n"
+                     "   -aX[/Y]: alloc X bytes of those Y bits will be set per L input bytes for compression accelerator\n"
+                     "            Y=0/1/2/4/8/16/32/64, -a0 is slowest but requires least memory\n"
+                     "   -ia-: disable I/O acceleration to reduce memory usage (-m5* only)\n"
+                     "   -tN: use N compression threads (only for -m1/-m2)\n"
+                     "   -dBYTES: dictionary size for in-memory compression (REP algorithm), default 512mb\n"
+                     "   -dhBYTES/-dcN/-dlN: size of hash / size of hash chunk / minimum match length for in-memory compression\n"
+                     "\n"
+                     "   -m1..-m5: index-LZ - list of matches saved at the end of compressed file\n"
+                     "   -m1f..-m5f: future-LZ - decompression dictionary will hold only future matches\n"
+                     "   -m1o..-m5o: I/O LZ - output file used as decompression dictionary\n"
+                     "   -memBYTES: amount of RAM used by future-LZ/index-LZ decompression (extra goes into VM file)\n"
+                     "      -mem75%% AKA -mem75p means \"use no more than 75%% of RAM\" - that's by default\n"
+                     "      -mem600mb means itself\n"
+                     "      -mem75%%-600mb means \"use no more than 75%% of RAM minus 600 mb\"\n"
+                     "   -mBYTES: don't store matches larger than BYTES on future-LZ/index-LZ decompression\n"
+                     "\n"
+                     "   -d: decompression (for -m0o..m5o requires only 24 mb of memory besides of OS I/O buffers)\n"
+                     "   -i: print info about compressed file: srep -i datafile.srep\n"
+                     "   -delete: delete source file after successful (de)compression\n"
+                     "   -sBYTES: explicitly specify filesize (for compression from stdin), default 25gb\n"
+                     "   -bBYTES: change compression block size, default 8mb\n"
+                     "   -index=FILENAME: read/write index of compressed data into separate file\n"
+                     "   -temp=[FILENAME]: keep uncompressed data in the file in stdin-to-stdout mode, default srep-data.tmp\n"
+                     "   -vmfile=FILENAME: temporary file used by Virtual Memory manager, default srep-virtual-memory.tmp\n"
+                     "   -vmblock=BYTES: size of one block in VM temporary file, default 8mb\n"
+                     "\n"
+                     "   -hash=vmac: store hash checksums in every block\n"
+                     "   -hash-: don't store/check block checksums\n"
+                     "   -mmap: use memory-mapped files for match checking\n"
+                     "   -slp[+/-/]: force/disable/try(default) large pages support (2mb/4mb)\n"
+                     "   -pc[max_offset]: display performance counters [for matches closer than max_offset]\n"
+                     "   -s: save printed stats from overwriting; -s+/-s-/-sX.Y: update stats every X.Y seconds\n"
+                     "   -v[0..2]: verbosity level\n"
+                     "   -rem...: command-line remark\n");
+    exit (NO_ERRORS);
+  }
+
   COMMAND_MODE cmdmode = COMPRESSION;
   SREP_METHOD method = SREP_METHOD3;
   const int DEFAULT_ACCEL = 4;
@@ -390,7 +446,7 @@ int main (int argc, char **argv)
   }
   if (vm_mem > size_t(-1))    vm_mem = size_t(-1);     // For 32-bit systems (say, 50% of 16gb RAM may be a bit too much). Better, use GetTotalMemoryToAlloc()
 
-  if (filenames[1]==NULL) {
+  if (argc == 2 && (strequ(argv[1], "--help") || strequ(argv[1], "-h"))) {
     printf (         "%s: %s\n"
                      "%s    homepage: %s\n"
                      "\n"

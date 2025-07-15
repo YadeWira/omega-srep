@@ -683,24 +683,49 @@ void EndCompressionThreadPriority (int old_priority)
 
 #include <unistd.h>
 #include <sys/resource.h>
-#include <sys/sysctl.h>
+#include <stdio.h>
+#include <string.h>
+
+
+// Function to read a specific field from /proc/meminfo
+long long get_mem_info(const char* field) {
+    FILE* fp = fopen("/proc/meminfo", "r");
+    if (fp == NULL) {
+        return -1;
+    }
+
+    char line[256];
+    long long value = -1;
+    while (fgets(line, sizeof(line), fp)) {
+        if (strncmp(line, field, strlen(field)) == 0) {
+            sscanf(line + strlen(field), "%lld", &value);
+            break;
+        }
+    }
+
+    fclose(fp);
+    return value;
+}
 
 uint64 GetPhysicalMemory (void)
 {
-  return uint64(sysconf(_SC_PHYS_PAGES)) * sysconf(_SC_PAGE_SIZE);
+    long long mem_total_kb = get_mem_info("MemTotal:");
+    if (mem_total_kb != -1) {
+        return (uint64)mem_total_kb * 1024;
+    }
+    return uint64(sysconf(_SC_PHYS_PAGES)) * sysconf(_SC_PAGE_SIZE);
 }
 
 uint64 GetAvailablePhysicalMemory (void)
 {
+    long long mem_available_kb = get_mem_info("MemAvailable:");
+    if (mem_available_kb != -1) {
+        return (uint64)mem_available_kb * 1024;
+    }
 #if defined(_SC_AVPHYS_PAGES)
   return uint64(sysconf(_SC_AVPHYS_PAGES)) * sysconf(_SC_PAGE_SIZE);
-#elif defined(__NetBSD__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__DragonFly__) || defined(__minix)
-  unsigned long page_count = 0;
-  size_t page_count_size = sizeof(page_count);
-  sysctlbyname("hw.availpages", &page_count, &page_count, NULL, 0);
-  return page_count * sysconf(_SC_PAGE_SIZE);
 #else
-#  error "There's no support for memory stats on your system."
+  return GetPhysicalMemory(); // Fallback to total memory if available is not found
 #endif
 }
 
