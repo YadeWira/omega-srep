@@ -44,6 +44,24 @@ platforms.
   `--chunk-min=N`, `--chunk-max=N`, `--chunk-buf=N` (defaults match
   FA: avg 4 KiB, min 1 KiB, max 16 KiB, buf 8 MiB).
 
+  **`--dup-paranoid`:** the streaming encoder normally trusts the
+  64-bit chunk hash to identify duplicates (collision rate of order
+  1e-7 per million chunks; the design doc accepts this). For
+  archival workloads where any silent corruption is unacceptable,
+  `--dup-paranoid` opens the body file r+w and byte-compares each
+  candidate dedup hit against the previously-written unique chunk
+  via `fseek` + `fread`. Cost: one disk seek per dedup hit. RAM
+  overhead is negligible (~12 bytes per unique chunk).
+
+  **Decoder robustness:** the decompressor auto-detects the ODUP
+  trailer and additionally validates that the meta blob starts with
+  the `DUPR` magic — the combined probability of a non-dup archive
+  being misidentified is ~1/2^64. The `tests/dup_corruption_fuzz.sh`
+  suite exercises 27 deliberate-corruption variants (magic flips,
+  truncations, out-of-range size fields, mid-meta byte-flips); every
+  variant is required to error cleanly with no crash and no silent
+  wrong output before each release.
+
 The compression algorithm itself is otherwise unchanged. Algorithm-level
 improvements beyond `-dup` are tracked separately.
 
