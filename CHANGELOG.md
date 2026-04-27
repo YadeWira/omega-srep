@@ -64,11 +64,38 @@ Versions follow `1.<minor>.<patch>` for stable releases and
   /usr/bin, 5 configs all round-trip), stress fuzz at 64 MiB and
   128 MiB seeds, 16-way concurrent compress.
 
+### Windows build (verified 2026-04-27)
+
+End-to-end build + smoke-test on Windows 11 Pro x64 with MinGW-w64
+(scoop's gcc 15.2.0). Previously unverified.
+
+- New `Compression/LZMA2/C/ThreadsWin32.{h,c}` ports the missing
+  Win32 threading primitives that upstream SREP referenced but never
+  shipped. Modeled on the modern (26.x) LZMA SDK Threads.h Win32
+  path; ABI-compatible with the 2008-era ThreadsUnix API the C++
+  wrapper layer expects.
+- Makefile detects MinGW/MSYS via `uname -s` and switches to
+  `-DFREEARC_WIN -DUNICODE -D_UNICODE` plus Windows linker libs
+  (`-lole32 -luuid -lshell32 -ladvapi32`).
+- `dup_wrapper` switched to `osrep_make_unique_tempfile_path` so
+  `-dup` finds %TEMP% on Windows instead of failing on `/tmp`.
+- Native MSVC build remains untested (still needs the LZMA SDK
+  `Handle.h` shim).
+
+Smoke results on Windows: round-trip suite 18/18, random fuzz 30/30
+(5 seeds × 6 methods), manual `-dup -m4` round-trip of 1 MiB
+redundant text → 809 byte archive (round-trip clean). The
+`dup_native_roundtrip.sh` script's inline Python uses POSIX-style
+`/tmp/tmp.X` paths from `mktemp -d` that don't translate cleanly
+through Git-Bash; the script needs path-translation polish to run
+in CI. The binary itself was validated by manual round-trip.
+
 ### Known limitations (gating items for v1.0 stable)
 
-- Only tested on Linux x64 with g++ 14. Windows 10/11 x64 build is
-  declared as a target but has not been compiled or run end-to-end
-  in this branch.
+- Test harness scripts (`dup_native_roundtrip.sh`,
+  `dup_corruption_fuzz.sh`, `dup_concurrency.sh`,
+  `dup_realworld.sh`) need path-translation tweaks for Git-Bash on
+  Windows. Binary works; tests don't all run yet.
 - `-dup` peak RAM is bounded by the chunk table size (~23 KiB per
   MiB of input at default chunk parameters); for petabyte-scale
   inputs the chunk table itself becomes the limit.
