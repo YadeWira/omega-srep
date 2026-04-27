@@ -42,6 +42,12 @@ static const size_t   HEADER_SIZE = 24;
 static const size_t DEFAULT_AVG = 4096;
 static const size_t DEFAULT_MIN = 1024;
 static const size_t DEFAULT_MAX = 16384;
+// 0 means "single buffer" (no buffer-bounded CDC). Anything > 0 makes
+// CDC reset its rolling-hash state at every buffer boundary, which is
+// what FA's -dup actually does and what makes long-range duplicate
+// blocks dedupe cleanly: identical buffers produce identical chunk
+// sequences regardless of where they sit in the input stream.
+static const size_t DEFAULT_BUF_SIZE = 0;
 
 // FNV-style multiplier; matches PRIME in tests/dup_prototype.py.
 static const uint64_t CDC_PRIME = 0x100000001B3ULL;
@@ -61,19 +67,18 @@ enum {
 
 struct ChunkRange { size_t start; size_t end; };  // [start, end)
 
-// Matches tests/dup_prototype.py:cdc_split. Boundary at every position
-// where the rolling hash hits the threshold, with min/max bounds. Min
-// is a "skip below" gate, max forces a cut at exactly span==max_chunk.
-static inline void cdc_split(const uint8_t* data, size_t size,
-                             size_t avg, size_t min_chunk, size_t max_chunk,
-                             std::vector<ChunkRange>& out)
+// CDC inside [buf_lo, buf_hi). Local helper used by cdc_split.
+static inline void cdc_split_buffer(const uint8_t* data,
+                                    size_t buf_lo, size_t buf_hi,
+                                    size_t avg, size_t min_chunk, size_t max_chunk,
+                                    std::vector<ChunkRange>& out)
 {
-    if (size == 0) return;
+    if (buf_lo >= buf_hi) return;
     const size_t mask = avg - 1;
     const bool use_mask = (avg > 0) && ((avg & mask) == 0);
-    size_t start = 0;
+    size_t start = buf_lo;
     uint64_t h = 0;
-    for (size_t i = 0; i < size; ++i) {
+    for (size_t i = buf_lo; i < buf_hi; ++i) {
         h = h * CDC_PRIME + data[i];
         size_t span = i - start;
         if (span < min_chunk) continue;
@@ -93,9 +98,33 @@ static inline void cdc_split(const uint8_t* data, size_t size,
             h = 0;
         }
     }
-    if (start < size) {
-        ChunkRange c = { start, size };
+    // End-of-buffer trailing partial chunk; never spans buf_hi.
+    if (start < buf_hi) {
+        ChunkRange c = { start, buf_hi };
         out.push_back(c);
+    }
+}
+
+// Boundary at every position where the rolling hash hits the
+// threshold, with min/max bounds. When buf_size > 0 the rolling hash
+// is reset at every buffer boundary so identical buffers produce
+// identical chunk sequences (this is what makes long-range duplicates
+// dedupe cleanly). buf_size = 0 means "single buffer" (legacy
+// behavior, matches the original Python prototype default).
+static inline void cdc_split(const uint8_t* data, size_t size,
+                             size_t avg, size_t min_chunk, size_t max_chunk,
+                             std::vector<ChunkRange>& out,
+                             size_t buf_size = DEFAULT_BUF_SIZE)
+{
+    if (size == 0) return;
+    if (buf_size == 0) {
+        cdc_split_buffer(data, 0, size, avg, min_chunk, max_chunk, out);
+        return;
+    }
+    for (size_t lo = 0; lo < size; lo += buf_size) {
+        size_t hi = lo + buf_size;
+        if (hi > size) hi = size;
+        cdc_split_buffer(data, lo, hi, avg, min_chunk, max_chunk, out);
     }
 }
 
@@ -152,14 +181,15 @@ static int encode(const uint8_t* data, size_t size,
                   uint8_t** out_buf, size_t* out_size,
                   size_t avg = DEFAULT_AVG,
                   size_t min_chunk = DEFAULT_MIN,
-                  size_t max_chunk = DEFAULT_MAX)
+                  size_t max_chunk = DEFAULT_MAX,
+                  size_t buf_size = DEFAULT_BUF_SIZE)
 {
     *out_buf = NULL;
     *out_size = 0;
     if (avg == 0 || min_chunk == 0 || max_chunk < min_chunk) return DEDUP_ERR_INVAL;
 
     std::vector<ChunkRange> chunks;
-    cdc_split(data, size, avg, min_chunk, max_chunk, chunks);
+    cdc_split(data, size, avg, min_chunk, max_chunk, chunks, buf_size);
 
     struct Rec { uint8_t tag; uint64_t payload; };  // length (unique) | unique_idx (ref)
     std::vector<Rec> records;
@@ -337,13 +367,14 @@ static int encode_split(const uint8_t* data, size_t size,
                         uint8_t** body_buf, size_t* body_size,
                         size_t avg = DEFAULT_AVG,
                         size_t min_chunk = DEFAULT_MIN,
-                        size_t max_chunk = DEFAULT_MAX)
+                        size_t max_chunk = DEFAULT_MAX,
+                        size_t buf_size = DEFAULT_BUF_SIZE)
 {
     *meta_buf = NULL; *meta_size = 0;
     *body_buf = NULL; *body_size = 0;
 
     uint8_t* full = NULL; size_t full_size = 0;
-    int rc = encode(data, size, &full, &full_size, avg, min_chunk, max_chunk);
+    int rc = encode(data, size, &full, &full_size, avg, min_chunk, max_chunk, buf_size);
     if (rc != DEDUP_OK) return rc;
 
     if (full_size < HEADER_SIZE) { free(full); return DEDUP_ERR_TRUNCATED; }

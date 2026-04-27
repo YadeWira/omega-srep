@@ -52,22 +52,16 @@ from typing import Iterator
 PRIME = 0x100000001B3  # FNV-style multiplier for a cheap rolling hash
 
 
-def cdc_split(data: bytes, avg: int = 4096, min_chunk: int = 1024,
-              max_chunk: int = 16384) -> Iterator[bytes]:
-    """Yield chunks of `data` using a rolling-hash CDC algorithm.
-
-    avg, min_chunk, max_chunk are byte counts. The rolling hash
-    threshold is 1 / avg, so on uniformly random data the average
-    chunk length is ~avg bytes.
-    """
-    if not data:
+def _cdc_split_buffer(data: bytes, lo: int, hi: int, avg: int,
+                      min_chunk: int, max_chunk: int) -> Iterator[bytes]:
+    """CDC inside data[lo:hi]; rolling hash starts fresh at lo."""
+    if lo >= hi:
         return
     mask = avg - 1
-    use_mask = (avg & mask) == 0  # avg is a power of two
-    n = len(data)
-    start = 0
+    use_mask = (avg & mask) == 0
+    start = lo
     h = 0
-    for i in range(n):
+    for i in range(lo, hi):
         h = (h * PRIME + data[i]) & 0xFFFFFFFFFFFFFFFF
         if i - start < min_chunk:
             continue
@@ -86,8 +80,31 @@ def cdc_split(data: bytes, avg: int = 4096, min_chunk: int = 1024,
                 yield data[start:i + 1]
                 start = i + 1
                 h = 0
-    if start < n:
-        yield data[start:]
+    if start < hi:
+        yield data[start:hi]
+
+
+def cdc_split(data: bytes, avg: int = 4096, min_chunk: int = 1024,
+              max_chunk: int = 16384, buf_size: int = 0) -> Iterator[bytes]:
+    """Yield chunks of `data` using a rolling-hash CDC algorithm.
+
+    avg, min_chunk, max_chunk are byte counts. When buf_size > 0 the
+    rolling hash is reset at every buffer boundary so identical
+    buffers produce identical chunk sequences (this is what makes
+    long-range duplicates dedupe cleanly). buf_size = 0 means single
+    buffer (legacy behaviour).
+    """
+    if not data:
+        return
+    n = len(data)
+    if buf_size <= 0:
+        yield from _cdc_split_buffer(data, 0, n, avg, min_chunk, max_chunk)
+        return
+    lo = 0
+    while lo < n:
+        hi = min(lo + buf_size, n)
+        yield from _cdc_split_buffer(data, lo, hi, avg, min_chunk, max_chunk)
+        lo = hi
 
 
 # ---------------------------------------------------------------------------
@@ -146,10 +163,10 @@ TAG_REF = 1
 
 
 def encode(data: bytes, *, avg: int = 4096, min_chunk: int = 1024,
-           max_chunk: int = 16384) -> bytes:
+           max_chunk: int = 16384, buf_size: int = 0) -> bytes:
     """Run the -dup pre-pass over `data` and return the .dupref bytes."""
     chunks = list(cdc_split(data, avg=avg, min_chunk=min_chunk,
-                            max_chunk=max_chunk))
+                            max_chunk=max_chunk, buf_size=buf_size))
     if not chunks:
         return struct.pack("<4sIQQ", MAGIC, VERSION, 0, 0)
 
@@ -285,6 +302,8 @@ def _cli() -> int:
     enc.add_argument("--avg", type=int, default=4096)
     enc.add_argument("--min", dest="min_chunk", type=int, default=1024)
     enc.add_argument("--max", dest="max_chunk", type=int, default=16384)
+    enc.add_argument("--buf", dest="buf_size", type=int, default=0,
+                     help="bytes per CDC buffer; 0 = single buffer (legacy)")
     dec = sub.add_parser("decode")
     dec.add_argument("input")
     dec.add_argument("output")
@@ -297,7 +316,7 @@ def _cli() -> int:
         with open(args.input, "rb") as f:
             data = f.read()
         encoded = encode(data, avg=args.avg, min_chunk=args.min_chunk,
-                         max_chunk=args.max_chunk)
+                         max_chunk=args.max_chunk, buf_size=args.buf_size)
         with open(args.output, "wb") as f:
             f.write(encoded)
         ratio = len(encoded) / max(len(data), 1)
