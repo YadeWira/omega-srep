@@ -24,3 +24,6 @@ jobs:
 
     - name: Random fuzz round-trip
       run: bash tests/fuzz.sh 10
+
+    - name: Dedup cross-test (C++ vs Python prototype)
+      run: bash tests/dedup_xtest.sh

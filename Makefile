@@ -24,14 +24,18 @@ HDEPS= Compression/MultiThreading.h Compression/LZMA2/C/ThreadsUnix.h Compressio
 CDEPS= Compression/LZMA2/C/ThreadsUnix.c Compression/LZMA2/C/Threads.c Compression/_Encryption/ciphers/aes/aes.c Compression/_Encryption/ciphers/aes/aes_tab.c Compression/_Encryption/hashes/siphash/siphash.c Compression/_Encryption/hashes/sha1.c Compression/_Encryption/hashes/vmac/vmac.c Compression/_Encryption/hashes/sha2/sha512.c Compression/_Encryption/hashes/md5.c Compression/_Encryption/crypt/crypt_argchk.c Compression/_Encryption/prngs/fortuna.c Compression/_Encryption/misc/zeromem.c 
 DEPS= $(CXXDEPS) $(HDEPS) $(CDEPS) 
 
-bin/osrep: Makefile $(DEPS) 
+bin/osrep: Makefile $(DEPS)
 	mkdir -p -v bin
 	$(CXX) $(CPPFLAGS) $(CFLAGS) $(CXXSOURCES) $(LDFLAGS) -o bin/osrep
 
-clean:
-	rm -f -v bin/osrep
+bin/dedup_test: Makefile tests/dedup_test.cpp Compression/SREP/dedup.cpp
+	mkdir -p -v bin
+	$(CXX) -O2 -Wall -Wextra -Wno-unused-parameter tests/dedup_test.cpp -lstdc++ $(STATIC) -o bin/dedup_test
 
-all: bin/osrep
+clean:
+	rm -f -v bin/osrep bin/dedup_test
+
+all: bin/osrep bin/dedup_test
 
 install: all
 	mkdir -p -v "$(PREFIX)"/bin/
