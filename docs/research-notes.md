@@ -196,6 +196,38 @@ Two possibilities worth measuring before any code change:
 
 F3.3b and F3.3c are kept open but de-prioritised given this data.
 
+### F3.3a re-run at 1 GiB scale (2026-04-27)
+
+To test the "main thread saturates at scale" hypothesis from the
+recommendation block above, `tests/profile.sh` was re-run on a 1 GiB
+compressible-text corpus (`yes "..." | head -c 1G`) on the same
+4-core / 7 GiB host:
+
+| method | real_s | cpu_s | parallel_pct |
+|--------|--------|-------|--------------|
+| -m0    | 4.404  | 4.449 | 101% |
+| -m1    | 1.964  | 2.599 | 132% |
+| -m2    | 1.838  | 3.150 | 171% |
+| -m3    | 2.329  | 3.161 | 136% |
+| -m4    | 2.253  | 2.558 | 114% |
+| -m5    | 2.557  | 3.741 | 146% |
+
+**Every method's parallelism `%` went UP at 1 GiB vs 64 MiB**,
+including -m0 (74% → 101%) which is single-threaded by design.
+The existing BG_COMPRESSION_THREAD overlap *improves* with input
+size on this host — the I/O + hash-prep stage has more useful work
+to hide.
+
+This empirically rules out the "main thread saturates at scale"
+hypothesis. Combined with the 64 MiB data, **F3.3b and F3.3c are
+closed as won't-fix on 4-core / ≤2 GiB workloads**. The remaining
+theoretical justification is 8+ core hardware where Amdahl's law on
+the inner-loop's serial fraction would matter; if such hardware
+becomes available the tasks can be re-opened and the analysis
+re-run on it. Until then, adding parallel paths to the inner loop
+of `compress.cpp` would add risk and maintenance cost without a
+measurable win.
+
 ## References
 
 - [Intensity/srep](https://github.com/Intensity/srep) — upstream
