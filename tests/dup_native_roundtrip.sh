@@ -129,6 +129,48 @@ else
     failed=$((failed + 1))
 fi
 
+# 4b. --dup-paranoid round-trip (byte-compare on every hash hit).
+xp_in="$TMP/xp_in.bin"
+gen_input "$xp_in"
+xp_archive="$TMP/xp.osr"
+xp_restored="$TMP/xp.bin"
+if ./bin/osrep -dup --dup-paranoid -m4 "$xp_in" "$xp_archive" >/dev/null 2>&1 && \
+   ./bin/osrep -d "$xp_archive" "$xp_restored" >/dev/null 2>&1 && \
+   cmp -s "$xp_in" "$xp_restored"; then
+    arch=$(stat -c%s "$xp_archive")
+    echo "OK    --dup-paranoid round-trip          archive=$arch"
+    passed=$((passed + 1))
+else
+    echo "FAIL  --dup-paranoid round-trip"
+    failed=$((failed + 1))
+fi
+
+# 4c. Paranoid and default should produce equivalent decoded output.
+# Archive bytes differ run-to-run because SREP uses a per-run hash
+# seed (non-deterministic body.osr); the chunk-table portion of the
+# trailer is deterministic, but the SREP-compressed body is not. We
+# compare round-trip output instead of raw archive bytes.
+xq_in="$TMP/xq_in.bin"
+gen_input "$xq_in"
+xq_normal="$TMP/xq_normal.osr"
+xq_paranoid="$TMP/xq_paranoid.osr"
+xq_normal_dec="$TMP/xq_normal.bin"
+xq_paranoid_dec="$TMP/xq_paranoid.bin"
+./bin/osrep -dup -m4                "$xq_in" "$xq_normal"   >/dev/null 2>&1
+./bin/osrep -dup --dup-paranoid -m4 "$xq_in" "$xq_paranoid" >/dev/null 2>&1
+./bin/osrep -d "$xq_normal"   "$xq_normal_dec"   >/dev/null 2>&1
+./bin/osrep -d "$xq_paranoid" "$xq_paranoid_dec" >/dev/null 2>&1
+# Both must decode to the original input.
+if cmp -s "$xq_in" "$xq_normal_dec" && cmp -s "$xq_in" "$xq_paranoid_dec"; then
+    nrm_sz=$(stat -c%s "$xq_normal")
+    par_sz=$(stat -c%s "$xq_paranoid")
+    echo "OK    paranoid and default both round-trip (archives ${nrm_sz} vs ${par_sz} B)"
+    passed=$((passed + 1))
+else
+    echo "FAIL  paranoid/default round-trip mismatch"
+    failed=$((failed + 1))
+fi
+
 # 5. Edge cases — adversarial input shapes that have a way of finding
 # off-by-ones in CDC / chunk-table / trailer code.
 edge_case() {

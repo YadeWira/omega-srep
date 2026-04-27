@@ -531,18 +531,21 @@ static int encode_split(const uint8_t* data, size_t size,
 // independent of input size. This is the API dup_wrapper.cpp uses to
 // avoid the encode_split full-buffer load.
 //
-// To stay byte-identical to encode_split with the same parameters,
-// we use the same buffer-bounded CDC (buf_size; default = single
-// buffer) and the same dedup decision rule (byte-compare on hash
-// collision). Since unique chunks are written to body in order of
-// first appearance and refs reference unique-chunk indices, the
-// output bytes are identical regardless of streaming vs in-memory.
+// `paranoid`: when true, perform a byte-compare against the
+// already-written body before accepting a hash hit as a duplicate
+// (re-reads the candidate chunk from the body file via fseek). This
+// protects against the 64-bit hash collision case (collision rate
+// of order 1e-7 per million chunks) at the cost of one disk seek +
+// read per dedup hit. When false (default), the encoder trusts the
+// 64-bit hash — matching the original F5.3c behavior and the
+// design-doc "acceptable in practice" stance.
 static int encode_streaming(const char* in_path, const char* body_path,
                             uint8_t** meta_buf, size_t* meta_size,
                             size_t avg = DEFAULT_AVG,
                             size_t min_chunk = DEFAULT_MIN,
                             size_t max_chunk = DEFAULT_MAX,
-                            size_t buf_size = DEFAULT_BUF_SIZE)
+                            size_t buf_size = DEFAULT_BUF_SIZE,
+                            bool paranoid = false)
 {
     *meta_buf = NULL;
     *meta_size = 0;
@@ -550,7 +553,9 @@ static int encode_streaming(const char* in_path, const char* body_path,
 
     FILE* fi = fopen(in_path, "rb");
     if (!fi) return DEDUP_ERR_INVAL;
-    FILE* fb = fopen(body_path, "wb");
+    // Paranoid mode reads back from the body file to byte-compare,
+    // so it needs r+w access. Non-paranoid is write-only.
+    FILE* fb = fopen(body_path, paranoid ? "wb+" : "wb");
     if (!fb) { fclose(fi); return DEDUP_ERR_INVAL; }
 
     // Effective working buffer size. Even if the user asks for "no
@@ -570,6 +575,12 @@ static int encode_streaming(const char* in_path, const char* body_path,
     std::vector<Rec> records;
     std::unordered_map<uint64_t, uint64_t> seen;
     uint64_t unique_count = 0;
+    // Paranoid mode tracks where each unique chunk lives in the body
+    // file so we can fseek back to byte-compare on a hash hit.
+    std::vector<uint64_t> unique_off;       // byte offset in body
+    std::vector<uint32_t> unique_len;       // length in body
+    std::vector<uint8_t>  cmp_buf;          // scratch for byte-compare reads
+    uint64_t body_pos = 0;
 
     while (true) {
         size_t got = fread(work.data(), 1, effective_buf, fi);
@@ -584,7 +595,38 @@ static int encode_streaming(const char* in_path, const char* body_path,
             const uint8_t* cp = work.data() + c.start;
             uint64_t h = chunk_hash(cp, clen);
             std::unordered_map<uint64_t, uint64_t>::iterator it = seen.find(h);
-            if (it != seen.end()) {
+            bool is_dup = (it != seen.end());
+
+            if (is_dup && paranoid) {
+                // Verify by byte-comparing the candidate against the
+                // unique chunk that was written earlier. Mismatch
+                // means a 64-bit hash collision: fall through to
+                // unique path and overwrite seen[h], matching
+                // encode_split's collision semantics.
+                uint64_t uidx = it->second;
+                uint64_t off = unique_off[(size_t)uidx];
+                uint32_t ulen = unique_len[(size_t)uidx];
+                if (ulen != clen) {
+                    is_dup = false;
+                } else {
+                    if (cmp_buf.size() < clen) cmp_buf.resize(clen);
+                    if (fflush(fb) != 0) { fclose(fi); fclose(fb); return DEDUP_ERR_INVAL; }
+                    if (fseeko(fb, (off_t)off, SEEK_SET) != 0 ||
+                        fread(cmp_buf.data(), 1, clen, fb) != clen) {
+                        fclose(fi); fclose(fb);
+                        return DEDUP_ERR_INVAL;
+                    }
+                    if (fseeko(fb, (off_t)body_pos, SEEK_SET) != 0) {
+                        fclose(fi); fclose(fb);
+                        return DEDUP_ERR_INVAL;
+                    }
+                    if (memcmp(cmp_buf.data(), cp, clen) != 0) {
+                        is_dup = false;
+                    }
+                }
+            }
+
+            if (is_dup) {
                 Rec r = { TAG_REF, it->second };
                 records.push_back(r);
                 continue;
@@ -592,10 +634,15 @@ static int encode_streaming(const char* in_path, const char* body_path,
             seen[h] = unique_count;
             Rec r = { TAG_UNIQUE, (uint64_t)clen };
             records.push_back(r);
+            if (paranoid) {
+                unique_off.push_back(body_pos);
+                unique_len.push_back((uint32_t)clen);
+            }
             if (fwrite(cp, 1, clen, fb) != clen) {
                 fclose(fi); fclose(fb);
                 return DEDUP_ERR_INVAL;
             }
+            body_pos += clen;
             unique_count++;
         }
 

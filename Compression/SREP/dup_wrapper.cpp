@@ -50,6 +50,7 @@ static const char ODUP_MAGIC[5] = "ODUP";
 struct ParseResult {
     bool dup_mode;
     bool decompress;
+    bool dup_paranoid;       // --dup-paranoid: byte-compare on every hash hit
     int  method;            // -1 if not specified
     size_t chunk_avg;
     size_t chunk_min;
@@ -65,13 +66,14 @@ static bool starts_with(const char* s, const char* p) {
 
 static ParseResult parse_args(int argc, char** argv) {
     ParseResult r;
-    r.dup_mode    = false;
-    r.decompress  = false;
-    r.method      = -1;
-    r.chunk_avg   = osrep_dedup::DEFAULT_AVG;
-    r.chunk_min   = osrep_dedup::DEFAULT_MIN;
-    r.chunk_max   = osrep_dedup::DEFAULT_MAX;
-    r.chunk_buf   = 8 * 1024 * 1024;  // 8 MiB default for native -dup
+    r.dup_mode      = false;
+    r.decompress    = false;
+    r.dup_paranoid  = false;
+    r.method        = -1;
+    r.chunk_avg     = osrep_dedup::DEFAULT_AVG;
+    r.chunk_min     = osrep_dedup::DEFAULT_MIN;
+    r.chunk_max     = osrep_dedup::DEFAULT_MAX;
+    r.chunk_buf     = 8 * 1024 * 1024;  // 8 MiB default for native -dup
     r.filtered.push_back(argv[0]);
 
     bool past_dashdash = false;
@@ -88,6 +90,7 @@ static ParseResult parse_args(int argc, char** argv) {
             continue;
         }
         if (strcmp(a, "-dup") == 0)         { r.dup_mode = true; continue; }
+        if (strcmp(a, "--dup-paranoid") == 0) { r.dup_paranoid = true; continue; }
         if (starts_with(a, "--chunk-avg=")) { r.chunk_avg = (size_t)strtoull(a + 12, NULL, 10); continue; }
         if (starts_with(a, "--chunk-min=")) { r.chunk_min = (size_t)strtoull(a + 12, NULL, 10); continue; }
         if (starts_with(a, "--chunk-max=")) { r.chunk_max = (size_t)strtoull(a + 12, NULL, 10); continue; }
@@ -172,7 +175,8 @@ static int run_compress(const ParseResult& p, char* finame, char* foname) {
     int erc = osrep_dedup::encode_streaming(
         finame, body_path.c_str(),
         &meta, &meta_size,
-        p.chunk_avg, p.chunk_min, p.chunk_max, p.chunk_buf);
+        p.chunk_avg, p.chunk_min, p.chunk_max, p.chunk_buf,
+        p.dup_paranoid);
     if (erc != osrep_dedup::DEDUP_OK) {
         unlink(body_path.c_str());
         fprintf(stderr, "\n  ERROR! dedup encode_streaming rc=%d\n", erc);
@@ -261,6 +265,21 @@ static int run_decompress_or_passthrough(const ParseResult& p,
         (meta_size > 0 && fread(meta.data(), 1, meta_size, fi) != meta_size)) {
         fclose(fi);
         fprintf(stderr, "\n  ERROR! Can't read ODUP meta from %s\n", finame);
+        return ERR_DEDUP;
+    }
+
+    // Structural guard: the meta blob must start with the .dupref
+    // magic (DUPR = 0x52505544 LE). If it doesn't, the trailing
+    // "ODUP" was almost certainly a coincidence in a non-dup
+    // archive (probability of both magics aligning by chance is
+    // about 1/2^64). Refuse rather than feed nonsense to srep_main.
+    if (meta_size < 4 || meta[0] != 0x44 || meta[1] != 0x55 ||
+        meta[2] != 0x50 || meta[3] != 0x52) {
+        fclose(fi);
+        fprintf(stderr, "\n  ERROR! ODUP trailer present in %s but meta "
+                        "header is not DUPR -- archive may be corrupted "
+                        "or this is not actually a -dup archive.\n",
+                finame);
         return ERR_DEDUP;
     }
 
