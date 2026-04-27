@@ -7,6 +7,58 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com).
 Versions follow `1.<minor>.<patch>` for stable releases and
 `1.0a-beta.N` for pre-1.0 betas.
 
+## [1.0a-beta.4] — 2026-04-27 (pre-release)
+
+Tooling + portability snapshot. No behavior change for users running
+the shipped binaries — `osrep -m4` and `osrep -dup -m4` produce
+byte-equal output to 1.0a-beta.3 (verified via the new F6.10
+multi-corpus bench, which round-trips byte-for-byte against upstream
+SREP 3.92). The bump exists so the release tarball + binaries stay
+in sync with the source tree, which has materially grown since
+beta.3 with the F6.7 fuzz expansion, F6.8 MSVC build path, and
+F6.10 comparative bench.
+
+### Added
+
+- **F6.10 multi-corpus comparative bench**
+  (`tests/multi_corpus_bench.sh`, `docs/multi-corpus-bench.md`).
+  Runs Omega vs upstream SREP 3.92 vs FA 0.11 across three corpora
+  (synth-128M, enwik8, 1.79 GiB tarball). 15/15 cells round-trip
+  OK. Confirms `osrep -m4` produces byte-equal archives to
+  `srep64 -m4` on every corpus (fork parity), `-dup` cuts decompress
+  RSS by 66% on long-range-dup corpora at +0.28% archive bloat,
+  and Omega's `-dup` ratio matches FA 0.11's reference impl within
+  0.5%-of-input.
+- **F6.8 native MSVC build path** (`CMakeLists.txt`,
+  `docs/msvc-build.md`). Existing Makefile remains the primary
+  path; CMake is the alternative for VS 2022 / Build Tools users
+  to drive `cl.exe`. Configures + builds clean with GCC 13 and
+  clang 19 on Linux as a smoke test; `cl.exe` verification is by
+  hand and not in CI.
+- **F6.7 fuzz coverage expansion**
+  (`tests/fuzz_decode_streaming.cc`, `tests/fuzz_encode_split.cc`).
+  Two new libFuzzer harnesses cover the file-based seek-back
+  decoder and the in-memory two-output encoder. 5-min soaks on
+  each: zero crashes / leaks / hangs.
+
+### Changed
+
+- **Source-level MSVC compatibility audit.** Single source change
+  this required: `Compression/LZMA2/MultiThreading/Synchronization.h`
+  widened the `#include "Handle.h"` gate from
+  `#if _WIN32 && !__MINGW32__` to also exclude `_MSC_VER`. The shim
+  isn't actually used by the threading paths SREP exercises;
+  before the widen, native MSVC builds would have failed on the
+  missing header. MinGW + Linux behavior unchanged.
+
+### Process notes
+
+- All changes since beta.3 are tooling / portability / coverage —
+  no code-path or on-disk-format changes. Archives produced by
+  beta.3 are identical to archives produced by beta.4 on the same
+  input + same params (verified by the F6.10 bench cells running
+  cmp on round-trip output).
+
 ## [1.0a-beta.3] — 2026-04-27 (pre-release)
 
 ### Fixed (correctness, surfaced during 1.0a-beta.2 soak)
