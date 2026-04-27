@@ -18,3 +18,6 @@ jobs:
 
     - name: Test osrep
       run: bin/osrep
+
+    - name: Round-trip suite
+      run: bash tests/roundtrip.sh
