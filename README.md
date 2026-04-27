@@ -17,6 +17,11 @@ platforms.
   margin will be spent on real improvements.
 - **Binary name:** `osrep` (replaces `srep`).
 - **Version line:** Omega SREP starts a new lineage at `1.0a beta`.
+- **Dictionary cap relaxed.** As a side effect of dropping the 32-bit
+  build, the in-memory REP dictionary (`-dBYTES`) is no longer pinned
+  near 2 GB. `-d3gb`, `-d4gb`, and beyond have been smoke-tested for
+  round-trip correctness on x86_64 — the only remaining cap is the
+  available RAM on the host.
 
 The compression algorithm itself is unchanged for now — this release is the
 identity rebase. Algorithm-level improvements are tracked separately.
