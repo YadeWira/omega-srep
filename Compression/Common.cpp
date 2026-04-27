@@ -482,6 +482,36 @@ CFILENAME GetTempDir (void)
 }
 
 
+// Omega SREP: build a unique tempfile path under $TMPDIR / %TEMP%.
+#ifdef FREEARC_UNIX
+#include <unistd.h>
+#endif
+char* osrep_make_unique_tempfile_path (const char* basename_prefix)
+{
+#ifdef FREEARC_WIN
+  char tempdir[MAX_PATH+1];
+  if (!GetTempPathA((DWORD)sizeof(tempdir), tempdir)) return NULL;
+  char* path = (char*) malloc(strlen(tempdir) + strlen(basename_prefix) + 16);
+  if (!path) return NULL;
+  if (!GetTempFileNameA(tempdir, basename_prefix, 0, path)) { free(path); return NULL; }
+  return path;
+#else
+  const char* d = getenv("TMPDIR");
+  if (!d || !*d) d = getenv("TMP");
+  if (!d || !*d) d = getenv("TEMP");
+  if (!d || !*d) d = "/tmp";
+  size_t n = strlen(d) + strlen(basename_prefix) + 16;
+  char* path = (char*) malloc(n);
+  if (!path) return NULL;
+  snprintf(path, n, "%s/%s-XXXXXX", d, basename_prefix);
+  int fd = mkstemp(path);
+  if (fd < 0) { free(path); return NULL; }
+  close(fd);
+  return path;
+#endif
+}
+
+
 #ifdef FREEARC_WIN
 #include <sys/utime.h>
 

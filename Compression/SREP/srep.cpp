@@ -231,7 +231,7 @@ int main (int argc, char **argv)
   double GlobalTime0 = GetGlobalTime();
   unsigned L=0, min_match=0, dict_chunk=0, dict_min_match=0, maximum_save=unsigned(-1), accel=9000, ACCELERATOR=9000, vm_block=8*mb, bufsize=8*mb, NumThreads=0;
   bool INDEX_LZ=true, FUTURE_LZ=false, IO_LZ=false, use_mmap=false, delete_input_files=false, print_pc=false;
-  char *index_file="",  *tempfile=NULL,  *DEFAULT_TEMPFILE="osrep-data.tmp",  *vmfile_name="osrep-virtual-memory.tmp",  *option_s="+";
+  char *index_file="",  *tempfile=NULL,  *DEFAULT_TEMPFILE="osrep-data",  *vmfile_name=NULL,  *DEFAULT_VMFILE="osrep-virtual-memory",  *option_s="+";
   int errcode=0, warnings=0, verbosity=2, io_accelerator=1;      LPType LargePageMode=TRY;    char temp1[100];
   struct hash_descriptor *selected_hash = hash_by_name(DEFAULT_HASH, errcode);
   int64 vm_mem = parse_mem_option ("75%", &errcode, 'm');         if (vm_mem > 1536*mb)    _32_only(vm_mem = 1536*mb);
@@ -433,8 +433,8 @@ int main (int argc, char **argv)
                      "   -sBYTES: explicitly specify filesize (for compression from stdin), default %dgb\n"
                      "   -bBYTES: change compression block size, default %dmb\n"
                      "   -index=FILENAME: read/write index of compressed data into separate file\n"
-                     "   -temp=[FILENAME]: keep uncompressed data in the file in stdin-to-stdout mode, default %s\n"
-                     "   -vmfile=FILENAME: temporary file used by Virtual Memory manager, default %s\n"
+                     "   -temp=[FILENAME]: keep uncompressed data in the file in stdin-to-stdout mode, default <unique file in $TMPDIR/%%TEMP%%>\n"
+                     "   -vmfile=FILENAME: temporary file used by Virtual Memory manager, default <unique file in $TMPDIR/%%TEMP%%>\n"
                      "   -vmblock=BYTES: size of one block in VM temporary file, default %dmb\n"
                      "\n"
                      "   -hash=%s: store hash checksums in every block\n"
@@ -446,7 +446,7 @@ int main (int argc, char **argv)
                      "   -v[0..2]: verbosity level\n"
                      "   -rem...: command-line remark\n",
                      program_version, program_description, program_date, program_homepage,
-                     int(dictsize/mb), min_match, int(filesize/gb), int(bufsize/mb), DEFAULT_TEMPFILE,  vmfile_name, int(vm_block/mb), HASH_LIST);
+                     int(dictsize/mb), min_match, int(filesize/gb), int(bufsize/mb), int(vm_block/mb), HASH_LIST);
     exit (NO_ERRORS);
   }
   if (cmdmode==INFORMATION && filenames[2]) {
@@ -479,10 +479,12 @@ int main (int argc, char **argv)
   bool single_pass_compression  =  COMPARE_DIGESTS && !FUTURE_LZ;    // -m0..-m3/-m0o..-m3o are the only compression modes having no need to reread input data
   if (cmdmode==COMPRESSION && !single_pass_compression && strequ(finame,"-"))
   {
-    if (!tempfile)
-      tempfile = DEFAULT_TEMPFILE;
-    else if (*tempfile==0)
+    if (!tempfile) {
+      tempfile = osrep_make_unique_tempfile_path(DEFAULT_TEMPFILE);
+      if (!tempfile)  error (ERROR_IO, "Can't allocate a unique tempfile under $TMPDIR/%%TEMP%%");
+    } else if (*tempfile==0) {
       error (ERROR_IO, "Reading data to compress from stdin without tempfile isn't supported for this method");
+    }
   }
   if (!strequ(finame,"-") && strequ(finame,foutname))
     error (ERROR_IO, "Input and output files should have different names");
@@ -879,6 +881,10 @@ print_stats:
 
     int io_mem = vm_block+bufsize+compbufsize+8*mb;
     MEMORY_MANAGER mm (vm_mem>=io_mem+vm_block*4? vm_mem-io_mem : vm_block*4);
+    if (!vmfile_name) {
+      vmfile_name = osrep_make_unique_tempfile_path(DEFAULT_VMFILE);
+      if (!vmfile_name)  error (ERROR_IO, "Can't allocate a unique vmfile under $TMPDIR/%%TEMP%%");
+    }
     VIRTUAL_MEMORY_MANAGER vm(vmfile_name, vm_block);
     LZ_MATCH_HEAP lz_matches;
     FUTURE_LZ_MATCH barrier;  barrier.dest = Offset(-1);  lz_matches.insert(barrier);
@@ -1007,10 +1013,12 @@ print_stats:
     // If we will need to reread data from the stdout, it will be wise to duplicate them to tempfile
     if ((IO_LZ || maximum_save!=unsigned(-1))  &&  strequ(foutname,"-"))
     {
-      if (!tempfile)
-        tempfile = DEFAULT_TEMPFILE;
-      else if (*tempfile==0)
+      if (!tempfile) {
+        tempfile = osrep_make_unique_tempfile_path(DEFAULT_TEMPFILE);
+        if (!tempfile)  error (ERROR_IO, "Can't allocate a unique tempfile under $TMPDIR/%%TEMP%%");
+      } else if (*tempfile==0) {
         error (ERROR_IO, "Writing decompressed data to stdout without tempfile isn't supported for this file and settings");
+      }
     }
 
     ftemp  =  (tempfile && *tempfile)? fopen (tempfile, "w+b") : fout;

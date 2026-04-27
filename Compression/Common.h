@@ -322,6 +322,11 @@ int  BeginCompressionThreadPriority (void);                // ¬ременно установит
 void EndCompressionThreadPriority (int old_priority);      // ¬осстановить приоритет треда таким, как мы его запомнили
 void SetTempDir (CFILENAME dir);                           // Set temporary files directory
 CFILENAME GetTempDir (void);                               // Return last value set or GetTempPath (%TEMP)
+// Build a unique temporary file path under the OS temp dir, with the given basename prefix.
+// Linux: uses mkstemp(3) - atomically reserves a unique name (mode 0600). Caller may fopen(path, "w+b") to use it.
+// Windows: uses GetTempFileName which creates a unique 4-hex-digit suffix.
+// Returns a malloc'd path string (caller frees), or NULL on failure.
+char* osrep_make_unique_tempfile_path (const char* basename_prefix);
 
 
 // ****************************************************************************
