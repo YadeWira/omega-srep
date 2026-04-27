@@ -107,6 +107,32 @@ that `-dup` mode appends, and the `.dupref` meta blob structure
 used by the dedup post-pass. Aimed at future implementers and
 third-party tools so the format is no longer derive-from-source.
 
+### CI on GitHub Actions verified (2026-04-27, partial)
+
+The `.github/workflows/ci.yml` workflow runs **green on
+ubuntu-latest** in 22-24 seconds, exercising the full 7-suite test
+set (roundtrip / fuzz / dedup_xtest / dup_roundtrip /
+dup_native_roundtrip / dup_corruption_fuzz / dup_concurrency).
+First successful run: `25003756810` (commit `4ccc0ae`); second
+verified run: `25003925350` (commit `6ec63e8`, on `actions/
+checkout@v4`).
+
+`workflow_dispatch` was added to the trigger list so anyone can
+re-run via `gh workflow run "CI" --ref main`. **Push triggers do
+not auto-fire** because `YadeWira/omega-srep` is technically a
+fork of `Intensity/srep` and GitHub disables push-event workflow
+runs on forks by default. To enable automatic CI on every push,
+the maintainer can either:
+
+  1. Detach the fork (Repo Settings → General → bottom → "Leave
+     fork network"). Recommended — upstream froze in 2014 and
+     Omega is an independent lineage.
+  2. Manually invoke `gh workflow run "CI" --ref main` per release.
+
+Workflow file is otherwise upstream-policy-clean: uses
+`actions/checkout@v4`, no third-party actions, no secrets, runs
+fully on stock ubuntu-latest tooling.
+
 ### Reproducible archives via `--seed=N` (added 2026-04-27)
 
 New CLI flag `--seed=N` (uint64, accepts decimal or `0x` hex)
