@@ -27,6 +27,8 @@ set -eu
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
+source "$(dirname "$0")/_winpath.sh"
+
 BENCH_DIR="${OSREP_BENCH_DIR:-$HOME/.osrep-bench}"
 BLOCK_MB="${OSREP_BENCH_BLOCK_MB:-32}"
 REPEATS="${OSREP_BENCH_REPEATS:-4}"
@@ -109,10 +111,10 @@ cmp -s "$INPUT" "$B_DEC" || { echo "B round-trip mismatch"; exit 1; }
 # the archive, so we re-derive it via dedup_test on the side — a
 # small overhead that doesn't affect the measured RSS columns above.
 META_SIZE=$(python3 -c "
-import struct
-data = open('$B_OSR','rb').read()
+import sys, struct
+data = open(sys.argv[1],'rb').read()
 print(struct.unpack('<Q', data[-12:-4])[0])
-")
+" "$(winpath "$B_OSR")")
 B_BODY_OSR_SIZE=$(( B_ARCH_SIZE - 12 - META_SIZE ))
 ./bin/dedup_test split-encode "$INPUT" "$WORK/B.meta_struct" "$WORK/B.body_struct" --buf "$BUF_BYTES" >/dev/null
 BODY_SIZE=$(stat -c%s "$WORK/B.body_struct")

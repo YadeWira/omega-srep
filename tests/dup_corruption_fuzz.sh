@@ -19,6 +19,8 @@ set -eu
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
+source "$(dirname "$0")/_winpath.sh"
+
 [[ -x bin/osrep ]] || make bin/osrep
 
 TMP="$(mktemp -d)"
@@ -41,10 +43,11 @@ mutate_byte() {
     local newval="$2"
     cp "$TMP/good.osr" "$TMP/corrupt.osr"
     python3 -c "
-with open('$TMP/corrupt.osr', 'r+b') as f:
-    f.seek($off)
-    f.write(bytes([$newval]))
-"
+import sys
+with open(sys.argv[1], 'r+b') as f:
+    f.seek(int(sys.argv[2]))
+    f.write(bytes([int(sys.argv[3], 0)]))
+" "$(winpath "$TMP/corrupt.osr")" "$off" "$newval"
 }
 
 mutate_u64() {
@@ -52,11 +55,11 @@ mutate_u64() {
     local val="$2"
     cp "$TMP/good.osr" "$TMP/corrupt.osr"
     python3 -c "
-import struct
-with open('$TMP/corrupt.osr', 'r+b') as f:
-    f.seek($off)
-    f.write(struct.pack('<Q', $val))
-"
+import sys, struct
+with open(sys.argv[1], 'r+b') as f:
+    f.seek(int(sys.argv[2]))
+    f.write(struct.pack('<Q', int(sys.argv[3], 0)))
+" "$(winpath "$TMP/corrupt.osr")" "$off" "$val"
 }
 
 # Run osrep -d on $TMP/corrupt.osr; classify outcome.
@@ -120,10 +123,10 @@ done
 
 # 3. Corrupt DUPR magic at start of meta blob.
 META_SIZE=$(python3 -c "
-import struct
-data = open('$TMP/good.osr','rb').read()
+import sys, struct
+data = open(sys.argv[1],'rb').read()
 print(struct.unpack('<Q', data[-12:-4])[0])
-")
+" "$(winpath "$TMP/good.osr")")
 META_OFFSET=$((GOOD_SIZE - 12 - META_SIZE))
 for newval in 0x00 0x44 0xFF 0xCC 0x52; do
     mutate_byte "$META_OFFSET" "$newval"

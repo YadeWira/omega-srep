@@ -19,6 +19,10 @@ set -eu
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
+# Path-portability shim: on Git-Bash/MSYS, translate POSIX paths to
+# Windows mixed-form so inline Python can open them.
+source "$(dirname "$0")/_winpath.sh"
+
 [[ -x bin/osrep      ]] || make bin/osrep
 [[ -x bin/dedup_test ]] || make bin/dedup_test
 
@@ -90,9 +94,10 @@ cat "$TMP/xa.body.osr" "$TMP/xa.meta" > "$TMP/xa.archive"
 meta_size=$(stat -c%s "$TMP/xa.meta")
 python3 -c "
 import sys, struct
-sys.stdout.buffer.write(struct.pack('<Q', $meta_size))
+ms = int(sys.argv[1])
+sys.stdout.buffer.write(struct.pack('<Q', ms))
 sys.stdout.buffer.write(b'ODUP')
-" >> "$TMP/xa.archive"
+" "$meta_size" >> "$TMP/xa.archive"
 
 if ./bin/osrep -d "$TMP/xa.archive" "$TMP/xa.restored" >/dev/null 2>&1 && \
    cmp -s "$xa_in" "$TMP/xa.restored"; then
@@ -113,9 +118,9 @@ total=$(stat -c%s "$TMP/xb.archive")
 trailer_magic=$(tail -c 4 "$TMP/xb.archive")
 xb_meta_size=$(python3 -c "
 import sys, struct
-data = open('$TMP/xb.archive','rb').read()
+data = open(sys.argv[1],'rb').read()
 print(struct.unpack('<Q', data[-12:-4])[0])
-")
+" "$(winpath "$TMP/xb.archive")")
 xb_body_size=$(( total - 12 - xb_meta_size ))
 dd if="$TMP/xb.archive" of="$TMP/xb.body.osr" bs=1 count="$xb_body_size" status=none
 dd if="$TMP/xb.archive" of="$TMP/xb.meta"     bs=1 skip="$xb_body_size" count="$xb_meta_size" status=none

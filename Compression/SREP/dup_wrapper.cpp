@@ -348,7 +348,76 @@ static int run_decompress_or_passthrough(const ParseResult& p,
 
 }  // namespace osrep_dup
 
+// Print a one-line version banner. Used by --version / -V.
+static void print_version() {
+    extern char *program_version, *program_date;
+    printf("%s (%s)\n", program_version, program_date);
+}
+
+// Print a brief usage synopsis. Used by --help / -h / -?.
+static void print_help() {
+    extern char *program_version, *program_date, *program_description,
+                *program_homepage;
+    printf(
+        "%s (%s)\n"
+        "%s\n"
+        "%s\n"
+        "\n"
+        "Usage:\n"
+        "  osrep [options] -mN  input  output       compress\n"
+        "  osrep [options] -d   archive output      decompress\n"
+        "  osrep -i archive                         show archive info\n"
+        "\n"
+        "Compression methods:\n"
+        "  -m0       REP only (in-memory; works with -dBYTES)\n"
+        "  -m1, -m2  Content-defined chunking (CDC)\n"
+        "  -m3       Digest-comparison match search (default)\n"
+        "  -m4       Full match search (best ratio for general data)\n"
+        "  -m5       Exhaustive match search (slowest, best ratio)\n"
+        "\n"
+        "Common options:\n"
+        "  -lN, -cN          minimum-match / chunk-size tuning\n"
+        "  -bN               buffer size (default 8mb)\n"
+        "  -tN               worker thread count for -m1/-m2\n"
+        "  -dBYTES           dictionary size for -m0\n"
+        "  -hash=NAME        select hash (vmac, sha1, ...)\n"
+        "  -mmap, -nommap    enable/disable POSIX mmap reads\n"
+        "  -temp=PATH        tempfile path override\n"
+        "\n"
+        "Dedup pre-pass (Omega F5):\n"
+        "  -dup              enable FA-style dedup pre-pass\n"
+        "  --dup-paranoid    byte-compare on every dedup hit (slower, no\n"
+        "                    silent corruption on 64-bit hash collision)\n"
+        "  --chunk-avg=N     CDC average chunk size (default 4096)\n"
+        "  --chunk-min=N     CDC minimum chunk size (default 1024)\n"
+        "  --chunk-max=N     CDC maximum chunk size (default 16384)\n"
+        "  --chunk-buf=N     buffer-bounded CDC, bytes (default 8388608)\n"
+        "\n"
+        "Help:\n"
+        "  --help, -h, -?    this synopsis\n"
+        "  --version, -V     version line\n"
+        "\n"
+        "Project page: %s\n",
+        program_version, program_date, program_description, program_homepage,
+        program_homepage);
+}
+
 int main(int argc, char** argv) {
+    // Short-circuit --version / --help BEFORE the srep_main parser
+    // sees them (it would reject anything starting with '--').
+    for (int i = 1; i < argc; ++i) {
+        const char* a = argv[i];
+        if (strcmp(a, "--version") == 0 || strcmp(a, "-V") == 0) {
+            print_version();
+            return 0;
+        }
+        if (strcmp(a, "--help") == 0 || strcmp(a, "-h") == 0 ||
+            strcmp(a, "-?") == 0) {
+            print_help();
+            return 0;
+        }
+    }
+
     osrep_dup::ParseResult p = osrep_dup::parse_args(argc, argv);
 
     // Decompress always sniffs for ODUP — auto-detect even without
