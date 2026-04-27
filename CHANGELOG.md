@@ -15,8 +15,8 @@ byte-equal output to 1.0a-beta.3 (verified via the new F6.10
 multi-corpus bench, which round-trips byte-for-byte against upstream
 SREP 3.92). The bump exists so the release tarball + binaries stay
 in sync with the source tree, which has materially grown since
-beta.3 with the F6.7 fuzz expansion, F6.8 MSVC build path, and
-F6.10 comparative bench.
+beta.3 with the F6.7 fuzz expansion, F6.8 alternative CMake build
+path, and F6.10 comparative bench.
 
 ### Added
 
@@ -29,27 +29,22 @@ F6.10 comparative bench.
   RSS by 66% on long-range-dup corpora at +0.28% archive bloat,
   and Omega's `-dup` ratio matches FA 0.11's reference impl within
   0.5%-of-input.
-- **F6.8 native MSVC build path** (`CMakeLists.txt`,
-  `docs/msvc-build.md`). Existing Makefile remains the primary
-  path; CMake is the alternative for VS 2022 / Build Tools users
-  to drive `cl.exe`. Configures + builds clean with GCC 13 and
-  clang 19 on Linux as a smoke test; `cl.exe` verification is by
-  hand and not in CI.
+- **F6.8 alternative build path via CMake** (`CMakeLists.txt`,
+  `docs/windows-build.md`). Existing Makefile remains the primary
+  path (CI uses it; release binaries are built from it). CMake is
+  toolchain-agnostic -- works with GCC, clang, MinGW-w64,
+  llvm-mingw; the supported Windows path is MinGW-w64 via scoop
+  or MSYS2, all FOSS. Configures + builds clean with GCC 14 and
+  clang 19 on Linux as a portability smoke test. The accompanying
+  source-level audit found a single MSVC-affecting issue
+  (`Handle.h` include gate in `Synchronization.h` was widening
+  the include for native MSVC; widened to also exclude
+  `_MSC_VER`). MinGW + Linux behavior unchanged.
 - **F6.7 fuzz coverage expansion**
   (`tests/fuzz_decode_streaming.cc`, `tests/fuzz_encode_split.cc`).
   Two new libFuzzer harnesses cover the file-based seek-back
   decoder and the in-memory two-output encoder. 5-min soaks on
   each: zero crashes / leaks / hangs.
-
-### Changed
-
-- **Source-level MSVC compatibility audit.** Single source change
-  this required: `Compression/LZMA2/MultiThreading/Synchronization.h`
-  widened the `#include "Handle.h"` gate from
-  `#if _WIN32 && !__MINGW32__` to also exclude `_MSC_VER`. The shim
-  isn't actually used by the threading paths SREP exercises;
-  before the widen, native MSVC builds would have failed on the
-  missing header. MinGW + Linux behavior unchanged.
 
 ### Process notes
 
@@ -100,35 +95,6 @@ F6.10 comparative bench.
   fixed fuzz artifact in `tests/fuzz-regression/` against the
   current decoder. Wired to CI; first sample is
   `bad_alloc_chunk_count_uint64_max`.
-- **`tests/fuzz_decode_streaming.cc`** — libFuzzer harness for the
-  file-based decoder (`osrep_dedup::decode_streaming`). Splits each
-  input into `meta_len` (uint32 LE) + meta blob + body bytes; body
-  is materialized to a per-process temp file. Targets the seek-
-  back ref-expansion path that `fuzz_decode.cc` cannot reach.
-- **`tests/fuzz_encode_split.cc`** — libFuzzer harness for the
-  in-memory two-output encoder (`osrep_dedup::encode_split`). Also
-  round-trips the produced meta blob back through `decode()` on
-  every successful encode, doubling the parser coverage from each
-  encoder-found input.
-- **`tests/multi_corpus_bench.sh`** + **`docs/multi-corpus-bench.md`**
-  — F6.10 comparative benchmark against upstream SREP 3.92 and FA
-  0.11 across three corpora (synth-128M, enwik8, 1.79 GiB tarball).
-  Confirms `osrep -m4` produces byte-equal archives to upstream
-  `srep -m4` on every corpus (fork parity), `-dup` cuts decompress
-  RSS by 66% on long-range-dup corpora at +0.28% archive bloat,
-  and Omega's `-dup` ratio matches FA 0.11's `-dup` reference impl
-  within 0.5%-of-input.
-- **`CMakeLists.txt`** + **`docs/msvc-build.md`** — F6.8 native
-  MSVC build path. Existing Makefile remains the primary path;
-  CMake is the alternative for Visual Studio / Build Tools 2022
-  users so they can build a native `cl.exe` `osrep.exe` without
-  going through MinGW. Configures and builds clean with GCC + clang
-  on Linux as a smoke test; cl.exe verification is by hand.
-- **`Compression/LZMA2/MultiThreading/Synchronization.h`** — gate
-  on the `Handle.h` LZMA-SDK shim widened to also exclude `_MSC_VER`
-  (it was previously only excluding `__MINGW32__`, which would have
-  failed a native-MSVC build on a missing-include).
-
 ### Process notes
 
 - The two correctness fixes above were both surfaced during the

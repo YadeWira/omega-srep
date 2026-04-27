@@ -1,23 +1,26 @@
-# Omega SREP - CMake build (F6.8).
+# Omega SREP - CMake build (alternative to the Makefile).
 #
 # Primary build path remains the Makefile (used by CI on Linux and by
-# MinGW-w64 on Windows). This CMakeLists is the supported way to
-# build with native MSVC (cl.exe) and exists so users on Visual
-# Studio / Visual Studio Build Tools have a one-liner that works:
+# MinGW-w64 on Windows; release binaries are built from it). This
+# CMakeLists exists for users who prefer cmake -- Ninja, IDE
+# integration, easier per-platform tweaks. It is intentionally
+# toolchain-agnostic: GCC, clang, MinGW-w64, llvm-mingw all work.
+# MSVC compiles too (the source is MSVC-clean as of beta.4) but is
+# not tested by the maintainer and not in CI.
 #
-#     cmake -B build
-#     cmake --build build --config Release
+#     cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+#     cmake --build build
 #
 # This file mirrors the Makefile rule (compile Common.cpp + srep.cpp;
 # everything else is reached via #include from those two TUs) rather
 # than re-modelling the source graph in CMake.
 #
-# Tested on:
-#   - GCC 13 (Linux x86_64) -- equivalent to the Makefile build
+# Verified on:
+#   - GCC 14 (Linux x86_64) -- equivalent to the Makefile build
 #   - clang 19 (Linux x86_64) -- equivalent to the Makefile build
-#   - cl.exe (MSVC 19.4x, VS 2022) -- see docs/msvc-build.md
 #
-# See docs/msvc-build.md for full Windows-specific instructions.
+# See docs/windows-build.md for the supported Windows path
+# (MinGW-w64 via scoop or MSYS2) and notes on alternative toolchains.
 
 cmake_minimum_required(VERSION 3.20)
 project(omega-srep CXX C)
