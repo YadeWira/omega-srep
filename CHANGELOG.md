@@ -90,6 +90,23 @@ redundant text → 809 byte archive (round-trip clean). The
 through Git-Bash; the script needs path-translation polish to run
 in CI. The binary itself was validated by manual round-trip.
 
+### Multi-GB soak fuzz (verified 2026-04-27)
+
+`OSREP_FUZZ_MAX_SIZE=$((1024*1024*1024)) OSREP_FUZZ_DUP=1 bash
+tests/fuzz.sh 5 9000` — 5 random seeds × 7 configs (`-m0`/`-m1`/
+`-m2`/`-m3`/`-m4`/`-m5` plus `-dup -m4`) at input sizes up to 1
+GiB. **35/35 round-trips pass.** Confirms the F5.3c streaming
+encoder/decoder scales correctly across a 4× range beyond the
+documented 256 MiB bench.
+
+### Format spec (added 2026-04-27)
+
+`docs/format-spec.md` documents the on-disk `.osr` archive layout
+(header / hash seed / blocks / footer), the ODUP trailer scheme
+that `-dup` mode appends, and the `.dupref` meta blob structure
+used by the dedup post-pass. Aimed at future implementers and
+third-party tools so the format is no longer derive-from-source.
+
 ### Sanitizer hygiene (verified 2026-04-27)
 
 Built with `-fsanitize=address` and ran the full 7-suite test set;
