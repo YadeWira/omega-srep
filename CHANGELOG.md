@@ -7,6 +7,60 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com).
 Versions follow `1.<minor>.<patch>` for stable releases and
 `1.0a-beta.N` for pre-1.0 betas.
 
+## [1.0a-beta.3] — 2026-04-27 (pre-release)
+
+### Fixed (correctness, surfaced during 1.0a-beta.2 soak)
+
+- **>2 GiB seek silently truncated decompression on Windows MinGW.**
+  `decode_streaming` used `fseeko((off_t)offset, ...)` for ref
+  expansion; `off_t` stayed 32-bit on MinGW despite
+  `-D_FILE_OFFSET_BITS=64`, so offsets > 2 GiB silently overflowed
+  and the output was written to the wrong position. On a 3.7 GiB
+  doubled-tar input the decompressed file came out 46 MB short
+  (exactly the dedup-removed amount) and `cmp` failed. Fix: new
+  portable `osrep_fseek64` helper that maps to `_fseeki64` on
+  Windows and `fseeko` + int64_t on POSIX. Same fix applied to
+  `encode_streaming` paranoid mode and the `dup_wrapper` archive
+  trailer-sniff sites. Verified end-to-end on Linux with the
+  original failing input (`cat data.tar data.tar`): output now
+  byte-identical to source. (`ad75b34`)
+
+- **`std::bad_alloc` abort on corrupted `.dupref` chunk_count.**
+  `decode()` and `decode_streaming()` called
+  `records.reserve((size_t)chunk_count)` with no bound check;
+  libFuzzer found a crashing input in 4 executions
+  (chunk_count = `0xFFFFFFFFFFFFFFFE` triggers
+  `std::bad_alloc`, which unwinds across the `extern "C"`
+  fuzzer-driver boundary and aborts). Fix: validate
+  `chunk_count <= (blob_size - HEADER_SIZE) / 2` and
+  `unique_count <= chunk_count` before any allocation. 81.9M-run
+  re-fuzz at 272k execs/sec found no further crashes. Captured
+  reproducer kept in `tests/fuzz-regression/` and replayed in CI
+  via `tests/fuzz_regression.sh`. (`f11d6a3`)
+
+### Added
+
+- **`tests/fuzz_decode.cc`** — coverage-guided libFuzzer harness
+  for `osrep_dedup::decode`. Builds with
+  `clang++ -fsanitize=fuzzer,address,undefined`. Complements the
+  hand-crafted `tests/dup_corruption_fuzz.sh`.
+- **`tests/fuzz_regression.sh`** — replays every captured-and-
+  fixed fuzz artifact in `tests/fuzz-regression/` against the
+  current decoder. Wired to CI; first sample is
+  `bad_alloc_chunk_count_uint64_max`.
+
+### Process notes
+
+- The two correctness fixes above were both surfaced during the
+  intentional soak window of 1.0a-beta.2 — exactly the scenario
+  that justifies a soak before promoting to v1.0. Tagging
+  1.0a-beta.3 to (a) ship a binary that has the fixes, (b) reset
+  the soak clock with the corrected build, (c) stop confusing
+  users who downloaded the original 1.0a-beta.2 release assets.
+- Main / asset binaries on the GitHub release have been carrying
+  the fixes since `ad75b34` and `f11d6a3` were pushed; this tag
+  makes that explicit.
+
 ## [1.0a-beta.2] — 2026-04-27 (pre-release)
 
 ### Added
