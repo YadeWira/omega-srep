@@ -1130,21 +1130,67 @@ struct MMAP_FILE
 #else  //!FREEARC_WIN
 
 
+#include <sys/mman.h>
+
+// Omega SREP: real POSIX mmap(2) implementation for Linux.
+// Mirrors the Windows MMAP_FILE API so call sites are platform-agnostic.
 struct MMAP_FILE
 {
-  FILE  *file;
+  bool      initialized;
+  FILE*     file;
+  char*     iomode;
+  FILESIZE  filesize;
+  char*     mmapPtr;
+  size_t    mmapLen;
 
-  MMAP_FILE (bool, FILE *_file, char*, FILESIZE) : file(_file) {}
+  MMAP_FILE (bool use_mmap, FILE *_file, char* _iomode, FILESIZE _filesize)
+    : initialized(!use_mmap), file(_file), iomode(_iomode),
+      filesize(_filesize), mmapPtr(NULL), mmapLen(0) {}
 
-  bool mmapped()  {return false;}   // File ISN'T memory-mapped
+  // Lazy: only initialize on first use.
+  void initialize()
+  {
+    if (initialized) return;
+    initialized = true;
+    if (filesize <= 0) return;             // mmap of zero length is undefined
+    int fd = fileno(file);
+    if (fd < 0) return;
+    int prot = strequ(iomode,"r") ? PROT_READ
+              : strequ(iomode,"w") ? PROT_WRITE
+              : (PROT_READ | PROT_WRITE);
+    mmapLen = (size_t) filesize;
+    void* p = mmap(NULL, mmapLen, prot, MAP_SHARED, fd, 0);
+    if (p == MAP_FAILED) { mmapPtr = NULL; mmapLen = 0; return; }
+    mmapPtr = (char*) p;
+    // Hint: SREP scans linearly when re-checking matches.
+    madvise(mmapPtr, mmapLen, MADV_SEQUENTIAL);
+  }
 
-  // Read len bytes at offset pos; return number of bytes read
-  // Data are read either into internal buffer or into provided buf[];  this address placed into *ptr
+  bool mmapped()
+  {
+    initialize();
+    return mmapPtr != NULL;
+  }
+
+  // Read len bytes at offset pos; return number of bytes read.
+  // If mmapped, returns a direct pointer into the mapping (no copy).
   int read (char **ptr, void *buf, FILESIZE pos, int len, FILE *f = NULL)
   {
-    *ptr = (char*) buf;
-    file_seek(f?f:file,pos);
-    return file_read(f?f:file,buf,len);
+    if (mmapped()) {
+      *ptr = mmapPtr + pos;
+      if (pos > filesize) return 0;
+      FILESIZE remaining = filesize - pos;
+      return (int) (remaining < (FILESIZE) len ? remaining : (FILESIZE) len);
+    } else {
+      *ptr = (char*) buf;
+      file_seek(f?f:file, pos);
+      return file_read(f?f:file, buf, len);
+    }
+  }
+
+  ~MMAP_FILE()
+  {
+    if (mmapPtr) munmap(mmapPtr, mmapLen);
   }
 };
 
