@@ -71,6 +71,70 @@ plausible explanation for the old `encode.su` thread *"SREP creepy
 decompression problem! Can it be an irreversible, lossy bug?"* — though
 that thread describes a decompression-side issue, not compress-side.
 
+## Threading `-m3 / -m4 / -m5` (task F3.3 deferred for design)
+
+The upstream `-tN` flag applies only to `-m1 / -m2` because content-defined
+chunking is embarrassingly parallel — different chunks can be hashed
+independently. `-m3 / -m4 / -m5` are not so kind.
+
+### What's already parallel
+
+`Compression/SREP/io.cpp` defines `BG_COMPRESSION_THREAD`. There's already
+a **two-stage pipeline** (one bg thread + one main thread):
+
+  - BG thread: reads next block, computes the per-block hash, runs
+    `h.prepare_buffer` and `inmem.prepare_buffer` for the next block's
+    hash-table state.
+  - Main thread: runs the actual compression (`compress.cpp` inner
+    loop) on the current block.
+
+Synchronization: `Event ReadDone, WriteReady, BgThreadFinished`.
+
+So the trivially-overlappable I/O + hash-prep work is already off the
+critical path of the main compression thread.
+
+### What's hard to parallelize
+
+The inner loop in `Compression/SREP/compress.cpp` (`compress<ACCELERATOR>`,
+around line 97) carries genuine serial dependencies between iterations:
+
+  - `last_match_end` advances as each match is recorded; later iterations
+    must not start matches before it.
+  - `h.find_match()` returns hits against a hash table that
+    `h.add_hash()` mutates as we walk forward — mutation order
+    determines which match is found first when multiple candidates
+    exist.
+  - The output match list must be written in input order to satisfy the
+    decoder's Future-LZ / Index-LZ format.
+
+A naive "split block into N sub-blocks, run N threads in parallel, merge
+the match lists" loses cross-sub-block matches and degrades compression
+ratio. Splitting safely requires explicit conflict detection at the
+sub-block boundaries — that's the design work.
+
+### Plausible smaller wins worth measuring before refactoring
+
+  - **`-m3` only:** `-m3` checks matches by VMAC digest comparison only,
+    not by re-reading old data. Its hash-check path may be more
+    parallel-friendly than `-m4 / -m5` (which re-read from disk and
+    serialise on file I/O). Worth profiling.
+  - **`-m4 / -m5` re-read parallelism:** disk re-read (under POSIX mmap
+    after F3.1) is read-only and thread-safe. Multiple threads could
+    verify *candidate* matches in parallel, before the serial
+    "select-and-record" step. This is a smaller refactor than full
+    inner-loop parallelism.
+
+### Recommended decomposition (separate tasks)
+
+  - F3.3a: Profile-driven measurement: add timing to the BG-vs-main
+    pipeline to confirm where the wall-clock time is actually spent on
+    each `-mN`. This is the prerequisite — speculation about which
+    threading change matters is cheap; data isn't.
+  - F3.3b: `-m3` threading on the digest-comparison path (lower risk).
+  - F3.3c: `-m4 / -m5` parallel candidate verification (higher risk).
+
+For now, F3.3 stays open. We will not ship half-implemented threading.
+
 ## References
 
 - [Intensity/srep](https://github.com/Intensity/srep) — upstream
