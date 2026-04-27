@@ -15,6 +15,7 @@ set -eu
 
 BIN="${OSREP_BIN:-bin/osrep}"
 INPUT="${1:-tests/corpus/text.bin}"
+PER_METHOD_TIMEOUT="${OSREP_PROFILE_TIMEOUT:-60}"  # seconds; override via env
 
 if [[ ! -x "$BIN" ]]; then
   echo "ERROR: $BIN not found. Run 'make' first." >&2; exit 1
@@ -34,7 +35,13 @@ printf '%-6s %10s %10s %10s %10s %12s\n' \
 
 for m in -m0 -m1 -m2 -m3 -m4 -m5; do
   out="$WORK/$m.osr"
-  banner=$("$BIN" "$m" "$INPUT" "$out" 2>&1 | tr -d '\r' | grep -oE 'Cpu (inf|[0-9.]+) mb/s \([0-9.]+ sec\), real (inf|[0-9.]+) mb/s \([0-9.]+ sec\) = [0-9]+%' | tail -1)
+  raw=$(timeout --foreground "$PER_METHOD_TIMEOUT" "$BIN" "$m" "$INPUT" "$out" 2>&1)
+  rc=$?
+  if (( rc == 124 )); then
+    printf '%-6s %s\n' "$m" "<TIMEOUT after ${PER_METHOD_TIMEOUT}s>"
+    continue
+  fi
+  banner=$(echo "$raw" | tr -d '\r' | grep -oE 'Cpu (inf|[0-9.]+) mb/s \([0-9.]+ sec\), real (inf|[0-9.]+) mb/s \([0-9.]+ sec\) = [0-9]+%' | tail -1)
   if [[ -z "$banner" ]]; then
     printf '%-6s %s\n' "$m" '<no timing in banner>'
     continue
