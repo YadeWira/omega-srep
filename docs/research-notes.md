@@ -135,6 +135,67 @@ sub-block boundaries — that's the design work.
 
 For now, F3.3 stays open. We will not ship half-implemented threading.
 
+### F3.3a: actual measurement (2026-04-26)
+
+`tests/profile.sh` parses the `Cpu X mb/s, real Y mb/s = N%` banner
+that osrep prints at the end of every run. `parallel_pct = real / cpu`,
+so values >100% mean multiple threads are doing real work in parallel
+(CPU-time exceeds wall-clock).
+
+64 MiB pseudo-random input (worst case for compression):
+
+| method | real_s | cpu_s | parallel_pct |
+|--------|--------|-------|--------------|
+| -m0    | 0.507  | 0.320 |  63%  |
+| -m1    | 0.164  | 0.149 |  91%  |
+| -m2    | 0.138  | 0.179 | 130%  |
+| -m3    | 0.312  | 0.344 | 110%  |
+| -m4    | 0.307  | 0.299 |  97%  |
+| -m5    | 0.360  | 0.413 | 115%  |
+
+64 MiB repetitive text (best case for REP):
+
+| method | real_s | cpu_s | parallel_pct |
+|--------|--------|-------|--------------|
+| -m0    | 0.409  | 0.301 |  74%  |
+| -m1    | 0.148  | 0.163 | 110%  |
+| -m2    | 0.130  | 0.198 | 152%  |
+| -m3    | 0.144  | 0.177 | 123%  |
+| -m4    | 0.148  | 0.154 | 104%  |
+| -m5    | 0.166  | 0.220 | 132%  |
+
+**What the data tells us:**
+
+  - `-m1` / `-m2` (CDC) are already well-threaded via the existing
+    `-tN` machinery — peaking at 152% parallelism, which is roughly 1.5
+    cores active on average.
+  - `-m3` / `-m4` / `-m5` are running at **97% – 132%** parallelism on
+    these workloads, **purely through the existing BG_COMPRESSION_THREAD
+    pipeline**. The two-stage I/O-vs-compute pipeline is already hiding
+    most of the I/O + hash-prep cost.
+  - `-m4` on incompressible data is the only entry below 100% (97%) —
+    that's the single place where some headroom remains, and even there
+    it's marginal.
+  - `-m0` (REP) is the most single-thread-bound (63 – 74%) but it's the
+    algorithm itself that's sequential, not a missing pipeline stage.
+
+**Implication for F3.3b / F3.3c:**
+
+The expected benefit of full inner-loop parallelism for `-m3 / -m4 /
+-m5` is **smaller than initially assumed** — the BG-thread pipeline is
+already doing most of the easy parallelism. Before investing in the
+risky inner-loop split (which could break correctness and complicate
+maintenance), the ROI question is honestly: *is there a real workload
+where this matters?*
+
+Two possibilities worth measuring before any code change:
+  - Larger inputs (multi-GB) where bufsize-bounded BG-thread overlap
+    saturates and the main thread becomes the bottleneck.
+  - More cores (8+) where Amdahl's law makes the remaining ~30% of
+    serial work expensive.
+
+F3.3b and F3.3c are kept open but de-prioritised given this data.
+
 ## References
 
 - [Intensity/srep](https://github.com/Intensity/srep) — upstream
