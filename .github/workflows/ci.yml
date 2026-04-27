@@ -36,3 +36,6 @@ jobs:
 
     - name: -dup archive corruption fuzz (stable)
       run: bash tests/dup_corruption_fuzz.sh
+
+    - name: -dup concurrency stress (stable)
+      run: bash tests/dup_concurrency.sh
