@@ -21,3 +21,6 @@ jobs:
 
     - name: Round-trip suite
       run: bash tests/roundtrip.sh
+
+    - name: Random fuzz round-trip
+      run: bash tests/fuzz.sh 10
