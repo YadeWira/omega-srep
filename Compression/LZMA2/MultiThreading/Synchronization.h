@@ -10,10 +10,11 @@ extern "C"
 #include "../C/Threads.h"
 }
 
-// MinGW build: Handle.h was a Win32-only LZMA SDK header that was
-// never shipped with this fork. With ThreadsUnix.h driving the
-// pthread path on MinGW (see C/Threads.h), the Handle.h indirection
-// is unused and can be skipped. Native MSVC still needs it.
+// Handle.h was a Win32-only LZMA SDK header that was never shipped
+// with this fork. The class definitions below don't actually use
+// anything from it on the threading paths SREP exercises, so we
+// skip it on MinGW. Native MSVC builds (untested in this fork) may
+// need a port; this is a known gap.
 #if defined(_WIN32) && !defined(__MINGW32__)
 #include "Handle.h"
 #endif
