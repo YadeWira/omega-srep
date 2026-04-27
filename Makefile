@@ -1,22 +1,33 @@
-#!/usr/bin/env -vS make -f 
+#!/usr/bin/env -vS make -f
 
 PREFIX?=/usr/local
 
-STATIC= -static 
-LDFLAGS+= -lpthread -lstdc++ $(STATIC)
+STATIC= -static
 
-CXX_CANDIDATE!=which c++ || which g++ || which clang++
-CXX?= $(CXX_CANDIDATE) 
+# Platform detection. uname -s is reported by MSYS/MinGW/Cygwin too,
+# so we can pick FREEARC_UNIX vs FREEARC_WIN at build time.
+UNAME_S:=$(shell uname -s 2>/dev/null || echo Unknown)
+ifneq (,$(filter MINGW% MSYS% CYGWIN% Windows%,$(UNAME_S)))
+  OS_DEFINE= -DFREEARC_WIN
+  LDFLAGS+= -lstdc++ $(STATIC)
+  CXX?= g++
+else
+  OS_DEFINE= -DFREEARC_UNIX
+  LDFLAGS+= -lpthread -lstdc++ $(STATIC)
+  # `which c++` fails on MinGW; fall back to g++ if missing.
+  CXX_CANDIDATE!=which c++ 2>/dev/null || which g++ 2>/dev/null || which clang++ 2>/dev/null || echo g++
+  CXX?= $(CXX_CANDIDATE)
+endif
 
-OPTIMISATION+= -O3 -mtune=generic -funroll-all-loops -msse2 
-DEBUGGING= -ggdb3 -fverbose-asm 
-VERBOSITY= -v 
-WARNINGS= -Wno-write-strings -Wno-unused-result 
-CFLAGS+= $(OPTIMISATION) $(DEBUGGING) $(WARNINGS) $(VERBOSITY) 
+OPTIMISATION+= -O3 -mtune=generic -funroll-all-loops -msse2
+DEBUGGING= -ggdb3 -fverbose-asm
+VERBOSITY= -v
+WARNINGS= -Wno-write-strings -Wno-unused-result
+CFLAGS+= $(OPTIMISATION) $(DEBUGGING) $(WARNINGS) $(VERBOSITY)
 
-INCLUDES+= -ICompression -ICompression/_Encryption -ICompression/_Encryption/headers -ICompression/_Encryption/hashes 
-DEFINES+= -DFREEARC_UNIX -DFREEARC_INTEL_BYTE_ORDER -D_FILE_OFFSET_BITS=64 
-CPPFLAGS+= $(DEFINES) $(INCLUDES) 
+INCLUDES+= -ICompression -ICompression/_Encryption -ICompression/_Encryption/headers -ICompression/_Encryption/hashes
+DEFINES+= $(OS_DEFINE) -DFREEARC_INTEL_BYTE_ORDER -D_FILE_OFFSET_BITS=64
+CPPFLAGS+= $(DEFINES) $(INCLUDES)
 
 CXXSOURCES= Compression/Common.cpp Compression/SREP/srep.cpp 
 CXXDEPS= Compression/SREP/compress.cpp Compression/SREP/compress_inmem.cpp Compression/SREP/hash_table.cpp Compression/SREP/decompress.cpp Compression/SREP/compress_cdc.cpp Compression/SREP/io.cpp Compression/SREP/hashes.cpp Compression/SREP/dedup.cpp Compression/SREP/dup_wrapper.cpp Compression/MultiThreading.cpp $(CXXSOURCES)
