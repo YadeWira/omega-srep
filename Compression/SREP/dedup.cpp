@@ -325,6 +325,78 @@ static int decode(const uint8_t* blob, size_t blob_size,
 
 static inline void free_buf(uint8_t* buf) { free(buf); }
 
+// Split form. encode_split writes the (header + chunk table) into
+// `*meta_buf` and the concatenated unique-chunk body into `*body_buf`.
+// The body is the only piece worth feeding to SREP (its long-range
+// duplicates are gone); the meta blob is small and is stored as an
+// out-of-band trailer in the final archive. decode_split inverts it:
+// given the meta blob and the body bytes (post-SREP-decompression),
+// it reconstructs the original input.
+static int encode_split(const uint8_t* data, size_t size,
+                        uint8_t** meta_buf, size_t* meta_size,
+                        uint8_t** body_buf, size_t* body_size,
+                        size_t avg = DEFAULT_AVG,
+                        size_t min_chunk = DEFAULT_MIN,
+                        size_t max_chunk = DEFAULT_MAX)
+{
+    *meta_buf = NULL; *meta_size = 0;
+    *body_buf = NULL; *body_size = 0;
+
+    uint8_t* full = NULL; size_t full_size = 0;
+    int rc = encode(data, size, &full, &full_size, avg, min_chunk, max_chunk);
+    if (rc != DEDUP_OK) return rc;
+
+    if (full_size < HEADER_SIZE) { free(full); return DEDUP_ERR_TRUNCATED; }
+    uint64_t chunk_count = get_u64_le(full + 8);
+    size_t pos = HEADER_SIZE;
+    for (uint64_t i = 0; i < chunk_count; ++i) {
+        if (pos >= full_size) { free(full); return DEDUP_ERR_TRUNCATED; }
+        uint8_t tag = full[pos++];
+        if (tag == TAG_UNIQUE) {
+            if (pos + 4 > full_size) { free(full); return DEDUP_ERR_TRUNCATED; }
+            pos += 4;
+        } else if (tag == TAG_REF) {
+            uint64_t v; size_t consumed;
+            int vrc = varint_decode(full + pos, full_size - pos, &v, &consumed);
+            if (vrc != DEDUP_OK) { free(full); return vrc; }
+            pos += consumed;
+        } else {
+            free(full); return DEDUP_ERR_BAD_TAG;
+        }
+    }
+
+    size_t mlen = pos;
+    size_t blen = full_size - pos;
+
+    uint8_t* mbuf = (uint8_t*)malloc(mlen > 0 ? mlen : 1);
+    uint8_t* bbuf = (uint8_t*)malloc(blen > 0 ? blen : 1);
+    if (!mbuf || !bbuf) {
+        free(mbuf); free(bbuf); free(full);
+        return DEDUP_ERR_NOMEM;
+    }
+    memcpy(mbuf, full, mlen);
+    if (blen) memcpy(bbuf, full + mlen, blen);
+
+    *meta_buf = mbuf; *meta_size = mlen;
+    *body_buf = bbuf; *body_size = blen;
+    free(full);
+    return DEDUP_OK;
+}
+
+static int decode_split(const uint8_t* meta, size_t meta_size,
+                        const uint8_t* body, size_t body_size,
+                        uint8_t** out_buf, size_t* out_size)
+{
+    size_t total = meta_size + body_size;
+    uint8_t* full = (uint8_t*)malloc(total > 0 ? total : 1);
+    if (!full) return DEDUP_ERR_NOMEM;
+    if (meta_size) memcpy(full, meta, meta_size);
+    if (body_size) memcpy(full + meta_size, body, body_size);
+    int rc = decode(full, total, out_buf, out_size);
+    free(full);
+    return rc;
+}
+
 }  // namespace osrep_dedup
 
 #endif  // OSREP_DEDUP_CPP

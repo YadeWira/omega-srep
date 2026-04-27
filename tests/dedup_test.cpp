@@ -178,14 +178,72 @@ static int cmd_decode(int argc, char** argv) {
     return wr;
 }
 
-int main(int argc, char** argv) {
-    if (argc < 2) {
-        fprintf(stderr, "usage: %s {selftest|encode|decode} ...\n", argv[0]);
+// split-encode <in> <meta> <body> [--avg N --min N --max N]
+//   Writes the .dupref header+table to <meta> and the concatenated
+//   unique-chunk body to <body>. The body is what feeds SREP in the
+//   -dup pipeline; the meta becomes the archive's ODUP trailer.
+static int cmd_split_encode(int argc, char** argv) {
+    if (argc < 5) {
+        fprintf(stderr, "usage: dedup_test split-encode <in> <meta> <body> "
+                        "[--avg N --min N --max N]\n");
         return 2;
     }
-    if (strcmp(argv[1], "selftest") == 0) return cmd_selftest();
-    if (strcmp(argv[1], "encode")   == 0) return cmd_encode(argc, argv);
-    if (strcmp(argv[1], "decode")   == 0) return cmd_decode(argc, argv);
+    const char* in_path   = argv[2];
+    const char* meta_path = argv[3];
+    const char* body_path = argv[4];
+    size_t avg = DEFAULT_AVG, mn = DEFAULT_MIN, mx = DEFAULT_MAX;
+    for (int i = 5; i < argc; ++i) {
+        if (i + 1 >= argc) { fprintf(stderr, "missing value for %s\n", argv[i]); return 2; }
+        if      (strcmp(argv[i], "--avg") == 0) { avg = (size_t)strtoull(argv[++i], NULL, 10); }
+        else if (strcmp(argv[i], "--min") == 0) { mn  = (size_t)strtoull(argv[++i], NULL, 10); }
+        else if (strcmp(argv[i], "--max") == 0) { mx  = (size_t)strtoull(argv[++i], NULL, 10); }
+        else { fprintf(stderr, "unknown flag: %s\n", argv[i]); return 2; }
+    }
+    std::vector<uint8_t> data;
+    if (read_file(in_path, data) != 0) return 1;
+    uint8_t* meta = NULL; size_t meta_size = 0;
+    uint8_t* body = NULL; size_t body_size = 0;
+    int rc = encode_split(data.data(), data.size(),
+                          &meta, &meta_size, &body, &body_size, avg, mn, mx);
+    if (rc != DEDUP_OK) { fprintf(stderr, "encode_split rc=%d\n", rc); return 1; }
+    int wm = write_file(meta_path, meta, meta_size);
+    int wb = write_file(body_path, body, body_size);
+    printf("input=%zu meta=%zu body=%zu\n", data.size(), meta_size, body_size);
+    free_buf(meta); free_buf(body);
+    return (wm | wb);
+}
+
+// split-decode <meta> <body> <out>
+//   Inverse of split-encode: meta + post-SREP-decompressed body ->
+//   reconstructed original.
+static int cmd_split_decode(int argc, char** argv) {
+    if (argc < 5) {
+        fprintf(stderr, "usage: dedup_test split-decode <meta> <body> <out>\n");
+        return 2;
+    }
+    std::vector<uint8_t> meta, body;
+    if (read_file(argv[2], meta) != 0) return 1;
+    if (read_file(argv[3], body) != 0) return 1;
+    uint8_t* out = NULL; size_t out_size = 0;
+    int rc = decode_split(meta.data(), meta.size(),
+                          body.data(), body.size(), &out, &out_size);
+    if (rc != DEDUP_OK) { fprintf(stderr, "decode_split rc=%d\n", rc); return 1; }
+    int wr = write_file(argv[4], out, out_size);
+    printf("meta=%zu body=%zu output=%zu\n", meta.size(), body.size(), out_size);
+    free_buf(out);
+    return wr;
+}
+
+int main(int argc, char** argv) {
+    if (argc < 2) {
+        fprintf(stderr, "usage: %s {selftest|encode|decode|split-encode|split-decode} ...\n", argv[0]);
+        return 2;
+    }
+    if (strcmp(argv[1], "selftest")     == 0) return cmd_selftest();
+    if (strcmp(argv[1], "encode")       == 0) return cmd_encode(argc, argv);
+    if (strcmp(argv[1], "decode")       == 0) return cmd_decode(argc, argv);
+    if (strcmp(argv[1], "split-encode") == 0) return cmd_split_encode(argc, argv);
+    if (strcmp(argv[1], "split-decode") == 0) return cmd_split_decode(argc, argv);
     fprintf(stderr, "unknown command: %s\n", argv[1]);
     return 2;
 }

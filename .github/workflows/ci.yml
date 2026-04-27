@@ -27,3 +27,6 @@ jobs:
 
     - name: Dedup cross-test (C++ vs Python prototype)
       run: bash tests/dedup_xtest.sh
+
+    - name: -dup pipeline round-trip
+      run: bash tests/dup_roundtrip.sh
