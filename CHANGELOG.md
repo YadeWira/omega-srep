@@ -107,6 +107,26 @@ that `-dup` mode appends, and the `.dupref` meta blob structure
 used by the dedup post-pass. Aimed at future implementers and
 third-party tools so the format is no longer derive-from-source.
 
+### Reproducible archives via `--seed=N` (added 2026-04-27)
+
+New CLI flag `--seed=N` (uint64, accepts decimal or `0x` hex)
+substitutes the cryptographic_prng-generated per-archive hash seed
+with deterministic xorshift64 bytes derived from the user-supplied
+value. Same seed + same input now produces **byte-identical
+archive bytes** across runs.
+
+Use cases this unblocks:
+
+- Content-addressed storage that hashes archive bytes
+- Reproducible-build pipelines (Debian, Nix, etc.)
+- Pipeline caching keyed on archive checksum
+- Diff-friendly archives (`bsdiff`, `xdelta3`)
+
+Default behavior unchanged when `--seed=N` is not given (random
+per-run, matches upstream SREP). Test added to
+`tests/dup_native_roundtrip.sh`: same seed -> identical, different
+seed -> different, no seed -> different, round-trip preserved.
+
 ### Upstream-parity comparison (independent test, 2026-04-27)
 
 User-supplied benchmark on real 1.79 GiB tar with `-m5f -a0`

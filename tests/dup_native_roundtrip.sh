@@ -134,6 +134,30 @@ else
     failed=$((failed + 1))
 fi
 
+# 4a-bis. --seed=N reproducibility. Same seed + same input must produce
+# byte-identical archive bytes; no seed must produce differing bytes;
+# different seeds must differ. Verifies F6.3.
+xs_in="$TMP/seed_in.bin"
+gen_input "$xs_in"
+./bin/osrep --seed=12345 -m4 "$xs_in" "$TMP/seed_a.osr" >/dev/null 2>&1
+./bin/osrep --seed=12345 -m4 "$xs_in" "$TMP/seed_b.osr" >/dev/null 2>&1
+./bin/osrep --seed=99999 -m4 "$xs_in" "$TMP/seed_c.osr" >/dev/null 2>&1
+./bin/osrep             -m4 "$xs_in" "$TMP/seed_d.osr" >/dev/null 2>&1
+./bin/osrep             -m4 "$xs_in" "$TMP/seed_e.osr" >/dev/null 2>&1
+seed_ok=1
+cmp -s "$TMP/seed_a.osr" "$TMP/seed_b.osr" || seed_ok=0   # same seed must match
+! cmp -s "$TMP/seed_a.osr" "$TMP/seed_c.osr" || seed_ok=0 # different seeds must differ
+! cmp -s "$TMP/seed_d.osr" "$TMP/seed_e.osr" || seed_ok=0 # no seed must differ
+./bin/osrep -d "$TMP/seed_a.osr" "$TMP/seed_dec.bin" >/dev/null 2>&1
+cmp -s "$xs_in" "$TMP/seed_dec.bin" || seed_ok=0          # round-trip
+if (( seed_ok )); then
+    echo "OK    --seed=N: same seed -> byte-identical, no seed -> differs"
+    passed=$((passed + 1))
+else
+    echo "FAIL  --seed=N reproducibility violated"
+    failed=$((failed + 1))
+fi
+
 # 4b. --dup-paranoid round-trip (byte-compare on every hash hit).
 xp_in="$TMP/xp_in.bin"
 gen_input "$xp_in"

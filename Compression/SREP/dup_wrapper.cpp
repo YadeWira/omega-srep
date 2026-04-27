@@ -91,6 +91,11 @@ static ParseResult parse_args(int argc, char** argv) {
         }
         if (strcmp(a, "-dup") == 0)         { r.dup_mode = true; continue; }
         if (strcmp(a, "--dup-paranoid") == 0) { r.dup_paranoid = true; continue; }
+        if (starts_with(a, "--seed=")) {
+            ::osrep_user_seed_specified = 1;
+            ::osrep_user_seed_value     = strtoull(a + 7, NULL, 0);
+            continue;
+        }
         if (starts_with(a, "--chunk-avg=")) { r.chunk_avg = (size_t)strtoull(a + 12, NULL, 10); continue; }
         if (starts_with(a, "--chunk-min=")) { r.chunk_min = (size_t)strtoull(a + 12, NULL, 10); continue; }
         if (starts_with(a, "--chunk-max=")) { r.chunk_max = (size_t)strtoull(a + 12, NULL, 10); continue; }
@@ -383,6 +388,10 @@ static void print_help() {
         "  -hash=NAME        select hash (vmac, sha1, ...)\n"
         "  -mmap, -nommap    enable/disable POSIX mmap reads\n"
         "  -temp=PATH        tempfile path override\n"
+        "  --seed=N          deterministic hash seed (uint64; default is\n"
+        "                    random per-run). Same seed + same input ->\n"
+        "                    byte-identical archive. Useful for content-\n"
+        "                    addressed storage and reproducible builds.\n"
         "\n"
         "Dedup pre-pass (Omega F5):\n"
         "  -dup              enable FA-style dedup pre-pass\n"

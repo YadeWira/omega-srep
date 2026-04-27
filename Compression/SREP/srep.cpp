@@ -223,6 +223,29 @@ void signal_handler(int)
 // F5.3b: -dup mode pre-/post-processor (defines int main; calls srep_main below).
 #include "dedup.cpp"
 
+// F6.3: --seed=N support. When the wrapper parses --seed=N it sets
+// these globals so srep_main can substitute deterministic xorshift64
+// bytes for cryptographic_prng. Default state (seed_specified=0) is
+// the legacy random-per-run behavior.
+int                osrep_user_seed_specified = 0;
+unsigned long long osrep_user_seed_value     = 0;
+
+// Fill `out[0..out_size)` with deterministic bytes derived from
+// `seed64`. xorshift64 has good distribution and is reproducible
+// across builds. Special case seed=0 produces an all-zero output —
+// fine, just degenerate but legal.
+static void osrep_fill_seed_from(void *out, size_t out_size, unsigned long long seed64)
+{
+    unsigned char *p = (unsigned char *)out;
+    unsigned long long s = seed64;
+    for (size_t i = 0; i < out_size; ++i) {
+        s ^= s << 13;
+        s ^= s >> 7;
+        s ^= s << 17;
+        p[i] = (unsigned char)(s & 0xFF);
+    }
+}
+
 int srep_main (int argc, char **argv)
 {
   COMMAND_MODE cmdmode = COMPRESSION;
@@ -537,7 +560,10 @@ int srep_main (int argc, char **argv)
     void *seed = malloc(selected_hash->hash_seed_size);
     if (selected_hash->new_hash)
     {
-      cryptographic_prng (seed, selected_hash->hash_seed_size);
+      if (osrep_user_seed_specified)
+        osrep_fill_seed_from (seed, selected_hash->hash_seed_size, osrep_user_seed_value);
+      else
+        cryptographic_prng (seed, selected_hash->hash_seed_size);
       hash_obj = selected_hash->new_hash (seed, selected_hash->hash_seed_size);
     }
 
