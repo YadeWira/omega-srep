@@ -12,6 +12,15 @@ set -eu
 BIN="${OSREP_BIN:-bin/osrep}"
 N="${1:-10}"
 SEED_BASE="${2:-1}"
+# Tunables for stable-release soak runs:
+#   OSREP_FUZZ_MIN_SIZE    bytes; default 1 KiB
+#   OSREP_FUZZ_MAX_SIZE    bytes; default 4 MiB. Bump for stress runs
+#                          (e.g. 67108864 = 64 MiB).
+#   OSREP_FUZZ_DUP         "1" to additionally fuzz `osrep -dup` round-trip
+#                          (uses -m4 internally; -m0 is incompatible).
+MIN_SIZE="${OSREP_FUZZ_MIN_SIZE:-1024}"
+MAX_SIZE="${OSREP_FUZZ_MAX_SIZE:-$((4 * 1024 * 1024))}"
+FUZZ_DUP="${OSREP_FUZZ_DUP:-0}"
 WORK="$(mktemp -d -t osrep-fuzz-XXXX)"
 METHODS=("-m0" "-m1" "-m2" "-m3" "-m4" "-m5")
 
@@ -55,7 +64,7 @@ record_failure() {
 for i in $(seq 0 $((N - 1))); do
   seed=$((SEED_BASE + i))
   # Vary size: 1 KiB to 4 MiB.
-  size=$(python3 -c "import random; random.seed($seed); print(random.randint(1024, 4*1024*1024))")
+  size=$(python3 -c "import random; random.seed($seed); print(random.randint($MIN_SIZE, $MAX_SIZE))")
   # Vary content profile: 0=pseudo-random, 1=low-entropy text, 2=block-structured.
   profile=$((seed % 3))
 
@@ -110,13 +119,33 @@ sys.stdout.buffer.write(bytes(out))" > "$WORK/in_$seed.bin"
     fi
     rm -f "$out" "$back"
   done
+
+  # Optional: also exercise native -dup round-trip on this same seed.
+  if [[ "$FUZZ_DUP" == "1" ]]; then
+    out="$WORK/$seed.dup.osr"
+    back="$WORK/$seed.dup.out"
+    if ! bash -c '"$@" >/dev/null 2>&1' _ "$BIN" -dup -m4 "$WORK/in_$seed.bin" "$out" 2>/dev/null; then
+      record_failure compress "$seed" "$size" "-dup-m4"
+    elif ! bash -c '"$@" >/dev/null 2>&1' _ "$BIN" -d "$out" "$back" 2>/dev/null; then
+      record_failure decompress "$seed" "$size" "-dup-m4"
+    elif ! cmp -s "$WORK/in_$seed.bin" "$back"; then
+      record_failure mismatch "$seed" "$size" "-dup-m4"
+    fi
+    rm -f "$out" "$back"
+  fi
+
   rm -f "$WORK/in_$seed.bin"
 done
 
-total=$((N * 6))
+per_seed=$(( 6 + (FUZZ_DUP == 1 ? 1 : 0) ))
+total=$((N * per_seed))
 passed=$((total - failed - known_failed))
 echo
-echo "fuzz passed=$passed failed=$failed known_bugs=$known_failed (over $N seeds x 6 methods)"
+if [[ "$FUZZ_DUP" == "1" ]]; then
+  echo "fuzz passed=$passed failed=$failed known_bugs=$known_failed (over $N seeds x $per_seed configs incl. -dup -m4)"
+else
+  echo "fuzz passed=$passed failed=$failed known_bugs=$known_failed (over $N seeds x 6 methods)"
+fi
 
 if (( known_failed > 0 )); then
   echo "known upstream bugs (tracked in F4.4 — not fatal unless OSREP_FUZZ_STRICT=1):"

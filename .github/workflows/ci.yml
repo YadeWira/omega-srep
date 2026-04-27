@@ -22,8 +22,8 @@ jobs:
     - name: Round-trip suite
       run: bash tests/roundtrip.sh
 
-    - name: Random fuzz round-trip
-      run: bash tests/fuzz.sh 10
+    - name: Random fuzz round-trip (incl. -dup)
+      run: OSREP_FUZZ_DUP=1 bash tests/fuzz.sh 10
 
     - name: Dedup cross-test (C++ vs Python prototype)
       run: bash tests/dedup_xtest.sh
@@ -33,3 +33,6 @@ jobs:
 
     - name: Native -dup round-trip + interop (F5.3b)
       run: bash tests/dup_native_roundtrip.sh
+
+    - name: -dup archive corruption fuzz (stable)
+      run: bash tests/dup_corruption_fuzz.sh
