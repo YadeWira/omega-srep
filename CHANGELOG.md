@@ -107,6 +107,24 @@ that `-dup` mode appends, and the `.dupref` meta blob structure
 used by the dedup post-pass. Aimed at future implementers and
 third-party tools so the format is no longer derive-from-source.
 
+### Upstream-parity comparison (independent test, 2026-04-27)
+
+User-supplied benchmark on real 1.79 GiB tar with `-m5f -a0`
+comparing SREP 3.92 beta vs Omega 1.0a-beta.2 on Windows:
+
+  - compsize: byte-identical (`1,052,227,610` both)
+  - compress wall-clock: 12.587s vs 11.736s (-6.8%)
+  - compress peak RSS: 168 MB vs 136 MB (-19.0%)
+  - decompress wall-clock: 1.082s vs 1.124s (+3.9%, within noise)
+  - downstream zpaqfranz `-m3`: 773,584,661 vs 773,584,622 bytes
+    (delta 39 bytes / 0.000005% — pure arithmetic-coder noise)
+
+Confirms F5 work and identity rebase did not introduce algorithmic
+regressions: the body of LZ matches Omega emits is identical to
+upstream's. Differences are confined to magic bytes (4) and the
+~3.6 KiB of per-run random hash material. Documented at
+`docs/upstream-comparison.md`.
+
 ### Sanitizer hygiene (verified 2026-04-27)
 
 Built with `-fsanitize=address` and ran the full 7-suite test set;

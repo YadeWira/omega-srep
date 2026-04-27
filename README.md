@@ -65,6 +65,14 @@ platforms.
 The compression algorithm itself is otherwise unchanged. Algorithm-level
 improvements beyond `-dup` are tracked separately.
 
+**Empirical parity vs upstream:** an independent run on a real
+1.79 GiB tar with `-m5f -a0` produces a **byte-identical compsize**
+between SREP 3.92 and Omega 1.0a-beta.2 (1,052,227,610 bytes both).
+Performance is essentially equivalent (-7% wall, -19% RAM on
+compress; ~4% within noise on decompress). Downstream zpaq pipelines
+produce archives within 0.000005% of each other at `-m3`. See
+`docs/upstream-comparison.md` for the full data and reasoning.
+
 ## Build
 
 ```bash
