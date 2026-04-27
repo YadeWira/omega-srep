@@ -22,9 +22,27 @@ platforms.
   near 2 GB. `-d3gb`, `-d4gb`, and beyond have been smoke-tested for
   round-trip correctness on x86_64 — the only remaining cap is the
   available RAM on the host.
+- **`-dup` mode (FA-style dedup pre-pass).** Omega SREP adds a
+  content-defined-chunking + dedup stage in front of the existing
+  SREP encoder, after FA 0.11's design. Pass `-dup` on the command
+  line to enable it; decompression auto-detects the ODUP trailer:
 
-The compression algorithm itself is unchanged for now — this release is the
-identity rebase. Algorithm-level improvements are tracked separately.
+  ```bash
+  osrep -dup -m4 backup.tar backup.osr
+  osrep -d backup.osr backup.tar
+  ```
+
+  Long-range duplicates are stripped to a small chunk-table footer
+  before SREP sees the data, so SREP's working set drops to the size
+  of the unique-chunk stream. On a 128 MiB corpus of repeated 32 MiB
+  blocks, peak decompress RSS drops 67% (53 MiB → 17 MiB) for 0.3%
+  archive bloat. See `docs/dup-bench.md`. `-dup` is incompatible with
+  `-m0`; pair it with `-m3`/`-m4`/`-m5` for best results. Tunables:
+  `--chunk-avg=N`, `--chunk-min=N`, `--chunk-max=N`, `--chunk-buf=N`
+  (defaults match FA: avg 4 KiB, min 1 KiB, max 16 KiB, buf 8 MiB).
+
+The compression algorithm itself is otherwise unchanged. Algorithm-level
+improvements beyond `-dup` are tracked separately.
 
 ## Build
 
