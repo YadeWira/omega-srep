@@ -159,37 +159,25 @@ static int run_compress(const ParseResult& p, char* finame, char* foname) {
                 p.method);
     }
 
-    std::vector<uint8_t> input;
-    int rc = read_entire_file(finame, input);
-    if (rc != OK) {
-        fprintf(stderr, "\n  ERROR! Can't read input %s\n", finame);
-        return rc;
-    }
-
-    uint8_t* meta = NULL; size_t meta_size = 0;
-    uint8_t* body = NULL; size_t body_size = 0;
-    int erc = osrep_dedup::encode_split(
-        input.data(), input.size(),
-        &meta, &meta_size, &body, &body_size,
-        p.chunk_avg, p.chunk_min, p.chunk_max, p.chunk_buf);
-    if (erc != osrep_dedup::DEDUP_OK) {
-        fprintf(stderr, "\n  ERROR! dedup encode_split rc=%d\n", erc);
-        return ERR_DEDUP;
-    }
-
+    // F5.3c: streaming encode reads `finame` in chunks, writes the
+    // body file as it goes, and only retains the meta blob in memory.
+    // Peak RAM ~= 2 * chunk_buf + chunk_table; independent of input
+    // size.
     std::string body_path;
     if (make_tempfile("body", body_path) != OK) {
         fprintf(stderr, "\n  ERROR! mkstemp failed for body tempfile\n");
-        osrep_dedup::free_buf(meta); osrep_dedup::free_buf(body);
         return ERR_IO;
     }
-    if (write_entire_file(body_path.c_str(), body, body_size) != OK) {
-        fprintf(stderr, "\n  ERROR! Can't write body tempfile %s\n", body_path.c_str());
+    uint8_t* meta = NULL; size_t meta_size = 0;
+    int erc = osrep_dedup::encode_streaming(
+        finame, body_path.c_str(),
+        &meta, &meta_size,
+        p.chunk_avg, p.chunk_min, p.chunk_max, p.chunk_buf);
+    if (erc != osrep_dedup::DEDUP_OK) {
         unlink(body_path.c_str());
-        osrep_dedup::free_buf(meta); osrep_dedup::free_buf(body);
-        return ERR_IO;
+        fprintf(stderr, "\n  ERROR! dedup encode_streaming rc=%d\n", erc);
+        return ERR_DEDUP;
     }
-    osrep_dedup::free_buf(body);
 
     // Substitute the input filename in the filtered argv with the body
     // tempfile so srep_main compresses the unique-chunk stream rather
@@ -326,28 +314,15 @@ static int run_decompress_or_passthrough(const ParseResult& p,
         return srep_rc;
     }
 
-    std::vector<uint8_t> body;
-    int brc = read_entire_file(body_dec_path.c_str(), body);
+    // F5.3c: streaming decode reads body sequentially and uses fseek
+    // on the output file to materialize ref expansions; no per-input
+    // allocation.
+    int drc = osrep_dedup::decode_streaming(
+        meta.data(), meta.size(), body_dec_path.c_str(), foname);
     unlink(body_dec_path.c_str());
-    if (brc != OK) {
-        fprintf(stderr, "\n  ERROR! Can't read decoded body %s\n", body_dec_path.c_str());
-        return ERR_IO;
-    }
-
-    uint8_t* out_buf = NULL; size_t out_size = 0;
-    int drc = osrep_dedup::decode_split(
-        meta.data(), meta.size(), body.data(), body.size(),
-        &out_buf, &out_size);
     if (drc != osrep_dedup::DEDUP_OK) {
-        fprintf(stderr, "\n  ERROR! dedup decode_split rc=%d\n", drc);
+        fprintf(stderr, "\n  ERROR! dedup decode_streaming rc=%d\n", drc);
         return ERR_DEDUP;
-    }
-
-    int wrc = write_entire_file(foname, out_buf, out_size);
-    osrep_dedup::free_buf(out_buf);
-    if (wrc != OK) {
-        fprintf(stderr, "\n  ERROR! Can't write final output %s\n", foname);
-        return ERR_IO;
     }
     return OK;
 }

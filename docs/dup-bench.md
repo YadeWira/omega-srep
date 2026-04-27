@@ -62,47 +62,59 @@ input; A's decompress RSS plateaus at the SREP buffer ceiling
 with input; B is constant. Larger or more redundant corpora widen
 the gap.
 
-## Native end-to-end RSS (F5.3b)
+## Native end-to-end RSS — F5.3c streaming (current)
 
 The F5.3a "B" rows above measure SREP's working set in isolation —
 they show what happens when SREP only ever sees the unique-chunk
 body. The native `-dup` flag delivered by F5.3b runs the same
-pipeline inside one `osrep` process, so its RSS includes the dedup
-buffer:
+pipeline inside one `osrep` process; F5.3c then made the dedup
+pre-pass and post-pass stream so the dedup buffer no longer
+dominates end-to-end RSS:
 
-| metric                    | A (`-m4`) | B (`osrep -dup -m4`, end-to-end) |
-|---------------------------|----------:|---------------------------------:|
-| compress peak RSS (KiB)   | 21772     | 198196                           |
-| decompress peak RSS (KiB) | 53516     | 214924                           |
-| archive size (bytes)      | 33498032  | 33591092 (byte-identical to F5.3a) |
-| compress wall-clock (s)   | 0.45      | 0.98                             |
-| decompress wall-clock (s) | 0.38      | 0.42                             |
+| metric                    | A (`-m4`) | B (`osrep -dup -m4`, F5.3c) | delta |
+|---------------------------|----------:|----------------------------:|------:|
+| compress peak RSS (KiB)   | 21820     | 19200                       | **-12.0%** |
+| decompress peak RSS (KiB) | 53636     | 18436                       | **-65.6%** |
+| archive size (bytes)      | 33498032  | 33591092                    | 100.3% of A (byte-identical to F5.3a) |
+| compress wall-clock (s)   | 0.45      | 0.81                        |        |
+| decompress wall-clock (s) | 0.37      | 0.32                        |        |
 
-So today the native `-dup` path costs ≈ `2 × input_size + small` RAM
-because `dup_wrapper.cpp` calls `dedup::encode_split` on a
-fully-loaded input buffer and writes the body to a tempfile in one
-shot. Round-trip and archive bytes are correct; only RSS is the
-limiter. This is the gap **F5.3c** addresses: rewrite the dedup
-pre/post-pass to stream buffer-by-buffer (we already have a
-`buf_size` knob for CDC), at which point native `-dup` should match
-the F5.3a SREP-only column above.
+So end-to-end native `-dup` now beats the baseline on RAM in both
+directions. The dedup pre-pass walks the input in `--chunk-buf`-
+sized buffers, writing unique chunks to the body tempfile as they
+are decided and keeping only the chunk table in memory; the inverse
+post-pass streams the body back through the output file with seek-
+based ref expansion. Peak RAM is independent of input size.
+
+## F5.3b vs F5.3c (the streaming refactor)
+
+For the historical record, the original F5.3b (full-buffer)
+implementation peaked at:
+
+| metric                    | F5.3b (full-buffer) | F5.3c (streaming) |
+|---------------------------|--------------------:|------------------:|
+| compress peak RSS (KiB)   | 198196              | 19200             |
+| decompress peak RSS (KiB) | 214924              | 18436             |
+
+Streaming dropped peak RSS by ~10× without changing the on-disk
+archive — F5.3a and F5.3b archives are byte-identical to F5.3c
+output, and all three paths interoperate. Trade-off is a small
+streaming-mode change: the encoder trusts the 64-bit chunk hash
+rather than byte-comparing on collision, which the design doc
+already accepts as "1e-7 per million chunks, acceptable in practice"
+(`dedup-mode-design.md`).
 
 ## Success criterion
 
 Design target (per `docs/dup-mode-design.md`): B's peak decompress
 RSS < A's by ≥50% with archive bloat ≤10%.
 
-- SREP-on-body decompress peak RSS reduction: **-67.3%** (target ≥50%) ✓
+- SREP-on-body decompress peak RSS reduction (F5.3a): **-67.3%** ✓
+- end-to-end native decompress peak RSS reduction (F5.3c): **-65.6%** ✓
 - archive size: **100.3-100.5% of A** (target ≤110%) ✓
-- end-to-end native peak RSS (today, with full-buffer dedup): worse
-  than A on this corpus; F5.3c's streaming refactor is required to
-  realize the SREP-on-body savings in production.
 
-The F5 thesis is validated for SREP's working set. The F5.3a
-pipeline already realizes the savings end-to-end (its dedup steps
-are separate processes that the bench script intentionally excludes
-from `getrusage`); F5.3b's native integration unifies the UX but
-defers the streaming refactor.
+The F5 thesis is validated end-to-end on the production native
+`-dup` path.
 
 ## Reproduction
 
