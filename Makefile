@@ -11,9 +11,10 @@ ifneq (,$(filter MINGW% MSYS% CYGWIN% Windows%,$(UNAME_S)))
   # FREEARC_WIN goes through Common.h's TCHAR-based filename API; that
   # path assumes UNICODE so tchar.h resolves TCHAR to wchar_t and the
   # *W function variants line up with the codebase's _wopen/MoveFileW
-  # call sites.
+  # call sites. Common.cpp also calls COM APIs (CoInitialize* /
+  # CoCreateInstance) for shell integration so we link ole32 + uuid.
   OS_DEFINE= -DFREEARC_WIN -DUNICODE -D_UNICODE
-  LDFLAGS+= -lstdc++ $(STATIC)
+  LDFLAGS+= -lstdc++ -lole32 -luuid -lshell32 -ladvapi32 $(STATIC)
   CXX?= g++
 else
   OS_DEFINE= -DFREEARC_UNIX
