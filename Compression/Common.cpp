@@ -468,10 +468,14 @@ CFILENAME GetTempDir (void)
     GetTempPathW(MY_FILENAME_MAX, TempDir);
     realloc (TempDir, (_tcslen(TempDir)+1) * sizeof(*TempDir));
 #else
-    TempDir = tempnam(NULL,NULL);
-    CFILENAME basename = drop_dirname(TempDir);
-    if (basename > TempDir)
-      basename[-1] = '\0';
+    // Omega SREP: replaces deprecated tempnam(NULL,NULL).
+    // Walk the standard temp-dir env vars; fall back to /tmp.
+    const char* d = getenv("TMPDIR");
+    if (!d || !*d) d = getenv("TMP");
+    if (!d || !*d) d = getenv("TEMP");
+    if (!d || !*d) d = "/tmp";
+    TempDir = (CFILENAME) malloc_msg ((strlen(d)+1) * sizeof(*d));
+    strcpy(TempDir, d);
 #endif
   }
   return TempDir;
