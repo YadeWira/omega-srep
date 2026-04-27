@@ -139,14 +139,14 @@ static int append_bytes(const char* path, const uint8_t* buf, size_t n) {
 }
 
 static int make_tempfile(const char* tag, std::string& path_out) {
-    char tmpl[256];
-    const char* dir = getenv("TMPDIR");
-    if (!dir || !*dir) dir = "/tmp";
-    snprintf(tmpl, sizeof(tmpl), "%s/osrep-dup-%s-XXXXXX", dir, tag);
-    int fd = mkstemp(tmpl);
-    if (fd < 0) return ERR_IO;
-    close(fd);
-    path_out = tmpl;
+    // Delegate to Common.cpp's helper so Windows uses GetTempFileName
+    // (honoring %TEMP%/%TMP%) and POSIX uses mkstemp under TMPDIR.
+    char prefix[64];
+    snprintf(prefix, sizeof(prefix), "osrep-dup-%s", tag);
+    char* p = osrep_make_unique_tempfile_path(prefix);
+    if (!p) return ERR_IO;
+    path_out = p;
+    free(p);
     return OK;
 }
 
