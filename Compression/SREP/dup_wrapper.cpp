@@ -28,6 +28,24 @@
 #include <string>
 #include <vector>
 
+// Portable 64-bit file seek/tell. Plain fseek/ftell take long, which
+// is 32-bit on Windows even on x86_64 — they overflow on archives or
+// inputs > 2 GiB. Match dedup.cpp's osrep_fseek64 helper.
+static inline int dup_fseek64(FILE* f, int64_t off, int whence) {
+#ifdef _WIN32
+    return _fseeki64(f, (long long)off, whence);
+#else
+    return fseeko(f, (off_t)off, whence);
+#endif
+}
+static inline int64_t dup_ftell64(FILE* f) {
+#ifdef _WIN32
+    return (int64_t)_ftelli64(f);
+#else
+    return (int64_t)ftello(f);
+#endif
+}
+
 // srep_main's parser walks `while (argv[1])` and expects POSIX argv
 // (NULL-terminated past argc). std::vector<char*>::data() does not
 // guarantee a NULL terminator, so this helper always appends one
@@ -117,8 +135,8 @@ static ParseResult parse_args(int argc, char** argv) {
 static int read_entire_file(const char* path, std::vector<uint8_t>& out) {
     FILE* f = fopen(path, "rb");
     if (!f) return ERR_IO;
-    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return ERR_IO; }
-    long sz = ftell(f);
+    if (dup_fseek64(f, 0, SEEK_END) != 0) { fclose(f); return ERR_IO; }
+    int64_t sz = dup_ftell64(f);
     if (sz < 0) { fclose(f); return ERR_IO; }
     rewind(f);
     out.resize((size_t)sz);
@@ -228,16 +246,16 @@ static int run_decompress_or_passthrough(const ParseResult& p,
     // yet, may be `-`, etc.; let srep_main report the real error).
     FILE* fi = fopen(finame, "rb");
     if (!fi) return srep_main((int)p.filtered.size(), (char**)p.filtered.data());
-    if (fseek(fi, 0, SEEK_END) != 0) {
+    if (dup_fseek64(fi, 0, SEEK_END) != 0) {
         fclose(fi);
         return ::call_srep_main(const_cast<std::vector<char*>&>(p.filtered));
     }
-    long file_sz_l = ftell(fi);
+    int64_t file_sz_l = dup_ftell64(fi);
     if (file_sz_l < 12) {
         fclose(fi);
         return ::call_srep_main(const_cast<std::vector<char*>&>(p.filtered));
     }
-    if (fseek(fi, file_sz_l - 4, SEEK_SET) != 0) {
+    if (dup_fseek64(fi, file_sz_l - 4, SEEK_SET) != 0) {
         fclose(fi);
         return ::call_srep_main(const_cast<std::vector<char*>&>(p.filtered));
     }
@@ -249,7 +267,7 @@ static int run_decompress_or_passthrough(const ParseResult& p,
 
     size_t file_sz = (size_t)file_sz_l;
     uint8_t ms_bytes[8];
-    if (fseek(fi, file_sz - 12, SEEK_SET) != 0 ||
+    if (dup_fseek64(fi, (int64_t)(file_sz - 12), SEEK_SET) != 0 ||
         fread(ms_bytes, 1, 8, fi) != 8) {
         fclose(fi);
         fprintf(stderr, "\n  ERROR! Bad ODUP trailer in %s\n", finame);
@@ -266,7 +284,7 @@ static int run_decompress_or_passthrough(const ParseResult& p,
     size_t body_osr_size = file_sz - 12 - meta_size;
 
     std::vector<uint8_t> meta(meta_size);
-    if (fseek(fi, body_osr_size, SEEK_SET) != 0 ||
+    if (dup_fseek64(fi, (int64_t)body_osr_size, SEEK_SET) != 0 ||
         (meta_size > 0 && fread(meta.data(), 1, meta_size, fi) != meta_size)) {
         fclose(fi);
         fprintf(stderr, "\n  ERROR! Can't read ODUP meta from %s\n", finame);

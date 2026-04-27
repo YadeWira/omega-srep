@@ -28,8 +28,22 @@
 #include <stddef.h>
 #include <string.h>
 #include <stdlib.h>
+#include <stdio.h>
 #include <vector>
 #include <unordered_map>
+
+// Portable 64-bit file seek. fseeko's portability is uneven on
+// Windows MinGW (off_t may stay 32-bit despite -D_FILE_OFFSET_BITS=64),
+// which silently truncates offsets > 2 GiB and breaks decode_streaming
+// on multi-GB archives. _fseeki64 is supplied by the msvcrt runtime
+// MinGW-w64 links against. POSIX uses fseeko + off_t.
+static inline int osrep_fseek64(FILE* f, int64_t off, int whence) {
+#ifdef _WIN32
+    return _fseeki64(f, (long long)off, whence);
+#else
+    return fseeko(f, (off_t)off, whence);
+#endif
+}
 
 namespace osrep_dedup {
 
@@ -437,13 +451,13 @@ static int decode_streaming(const uint8_t* meta, size_t meta_size,
             uint64_t write_at = out_pos;
             while (remaining > 0) {
                 size_t take = remaining < ioBuf.size() ? remaining : ioBuf.size();
-                if (fseeko(fo, (off_t)read_at, SEEK_SET) != 0) {
+                if (osrep_fseek64(fo, (int64_t)read_at, SEEK_SET) != 0) {
                     fclose(fb); fclose(fo); return DEDUP_ERR_INVAL;
                 }
                 if (fread(ioBuf.data(), 1, take, fo) != take) {
                     fclose(fb); fclose(fo); return DEDUP_ERR_TRUNCATED;
                 }
-                if (fseeko(fo, (off_t)write_at, SEEK_SET) != 0) {
+                if (osrep_fseek64(fo, (int64_t)write_at, SEEK_SET) != 0) {
                     fclose(fb); fclose(fo); return DEDUP_ERR_INVAL;
                 }
                 if (fwrite(ioBuf.data(), 1, take, fo) != take) {
@@ -611,12 +625,12 @@ static int encode_streaming(const char* in_path, const char* body_path,
                 } else {
                     if (cmp_buf.size() < clen) cmp_buf.resize(clen);
                     if (fflush(fb) != 0) { fclose(fi); fclose(fb); return DEDUP_ERR_INVAL; }
-                    if (fseeko(fb, (off_t)off, SEEK_SET) != 0 ||
+                    if (osrep_fseek64(fb, (int64_t)off, SEEK_SET) != 0 ||
                         fread(cmp_buf.data(), 1, clen, fb) != clen) {
                         fclose(fi); fclose(fb);
                         return DEDUP_ERR_INVAL;
                     }
-                    if (fseeko(fb, (off_t)body_pos, SEEK_SET) != 0) {
+                    if (osrep_fseek64(fb, (int64_t)body_pos, SEEK_SET) != 0) {
                         fclose(fi); fclose(fb);
                         return DEDUP_ERR_INVAL;
                     }
