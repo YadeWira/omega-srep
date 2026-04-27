@@ -40,3 +40,6 @@ jobs:
 
     - name: -dup concurrency stress (stable)
       run: bash tests/dup_concurrency.sh
+
+    - name: Fuzz-found regression replay
+      run: bash tests/fuzz_regression.sh
