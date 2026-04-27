@@ -8,7 +8,11 @@ STATIC= -static
 # so we can pick FREEARC_UNIX vs FREEARC_WIN at build time.
 UNAME_S:=$(shell uname -s 2>/dev/null || echo Unknown)
 ifneq (,$(filter MINGW% MSYS% CYGWIN% Windows%,$(UNAME_S)))
-  OS_DEFINE= -DFREEARC_WIN
+  # FREEARC_WIN goes through Common.h's TCHAR-based filename API; that
+  # path assumes UNICODE so tchar.h resolves TCHAR to wchar_t and the
+  # *W function variants line up with the codebase's _wopen/MoveFileW
+  # call sites.
+  OS_DEFINE= -DFREEARC_WIN -DUNICODE -D_UNICODE
   LDFLAGS+= -lstdc++ $(STATIC)
   CXX?= g++
 else
