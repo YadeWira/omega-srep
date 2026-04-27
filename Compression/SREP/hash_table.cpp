@@ -55,12 +55,17 @@ struct SliceHash
     return (hash*123456791u) >> (sizeof(uint32)*CHAR_BIT-BITS);
   }
 
-  // Fill h[] with hashes of slices of each chunk in the buf
+  // Fill h[] with hashes of slices of each chunk in the buf.
+  // Omega SREP: outer loop bound is `p + L <= buf+size`, not `p < buf+size`.
+  // Otherwise, when filesize % L != 0, the last partial chunk causes a
+  // 1-element write past h[filesize/L] (heap-buffer-overflow). The trailing
+  // partial chunk does not need a hash entry: any potential match in it
+  // cannot extend to MIN_MATCH bytes (there are not enough bytes left).
   void prepare_buffer (Offset offset, char *buf, int size)
   {
     if (h==NULL) return;
     Chunk curchunk = offset/L;
-    for (char *p = buf;  p < buf+size;  )
+    for (char *p = buf;  p + L <= buf+size;  )
     {
       entry checksum = 0;
       for (int i=0;  i<slices_in_block;  i++, p+=slice_size)

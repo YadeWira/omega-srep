@@ -16,9 +16,10 @@ WORK="$(mktemp -d -t osrep-fuzz-XXXX)"
 METHODS=("-m0" "-m1" "-m2" "-m3" "-m4" "-m5")
 
 # Methods with known preexisting upstream bugs (predate the Omega fork).
-# Failures here are reported but don't fail the harness — tracked in tasks for future fixes.
-# Set OSREP_FUZZ_STRICT=1 to make them fatal (use after fixing).
-KNOWN_BUG_METHODS=("-m5")
+# Failures here are reported but don't fail the harness.
+# Set OSREP_FUZZ_STRICT=1 to make them fatal anyway.
+# Currently empty: -m5 SIGSEGV was fixed in Compression/SREP/hash_table.cpp:62.
+KNOWN_BUG_METHODS=()
 
 if [[ ! -x "$BIN" ]]; then
   echo "ERROR: $BIN not found or not executable. Run 'make' first." >&2
