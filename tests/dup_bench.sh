@@ -95,35 +95,27 @@ A_OSR_SIZE=$(stat -c%s "$A_OSR")
 read RSS_A_D TIME_A_D <<< "$(measure A_decompress ./bin/osrep -d "$A_OSR" "$A_DEC")"
 cmp -s "$INPUT" "$A_DEC" || { echo "A round-trip mismatch"; exit 1; }
 
-# ----- Config B: -dup pipeline (F5.3a) -----
-B_META="$WORK/B.meta"
-B_BODY="$WORK/B.body"
-B_BODY_OSR="$WORK/B.body.osr"
-B_ARCHIVE="$WORK/B.osrd"
-B_BODY_DEC="$WORK/B.body.dec"
+# ----- Config B: native -dup flag (F5.3c streaming, end-to-end) -----
+B_OSR="$WORK/B.osr"
 B_DEC="$WORK/B.bin"
 
-./bin/dedup_test split-encode "$INPUT" "$B_META" "$B_BODY" --buf "$BUF_BYTES" >/dev/null
-META_SIZE=$(stat -c%s "$B_META")
-BODY_SIZE=$(stat -c%s "$B_BODY")
-
-read RSS_B_C TIME_B_C <<< "$(measure B_compress ./bin/osrep "$METHOD" "$B_BODY" "$B_BODY_OSR")"
-
-cat "$B_BODY_OSR" "$B_META" > "$B_ARCHIVE"
-python3 -c "
-import sys, struct
-sys.stdout.buffer.write(struct.pack('<Q', $META_SIZE))
-sys.stdout.buffer.write(b'ODUP')
-" >> "$B_ARCHIVE"
-B_ARCH_SIZE=$(stat -c%s "$B_ARCHIVE")
-B_BODY_OSR_SIZE=$(stat -c%s "$B_BODY_OSR")
-
-dd if="$B_ARCHIVE" of="$WORK/B_body_osr_dec" bs=1M count="$B_BODY_OSR_SIZE" iflag=count_bytes status=none
-dd if="$B_ARCHIVE" of="$WORK/B_meta_dec"     bs=1  skip="$B_BODY_OSR_SIZE" count="$META_SIZE" status=none
-
-read RSS_B_D TIME_B_D <<< "$(measure B_decompress ./bin/osrep -d "$WORK/B_body_osr_dec" "$B_BODY_DEC")"
-./bin/dedup_test split-decode "$WORK/B_meta_dec" "$B_BODY_DEC" "$B_DEC" >/dev/null
+read RSS_B_C TIME_B_C <<< "$(measure B_compress ./bin/osrep -dup "$METHOD" "--chunk-buf=$BUF_BYTES" "$INPUT" "$B_OSR")"
+B_ARCH_SIZE=$(stat -c%s "$B_OSR")
+read RSS_B_D TIME_B_D <<< "$(measure B_decompress ./bin/osrep -d "$B_OSR" "$B_DEC")"
 cmp -s "$INPUT" "$B_DEC" || { echo "B round-trip mismatch"; exit 1; }
+
+# Pull meta_size and body.osr size off the trailer for the structure
+# block. body (pre-SREP unique-chunk size) isn't directly stored in
+# the archive, so we re-derive it via dedup_test on the side — a
+# small overhead that doesn't affect the measured RSS columns above.
+META_SIZE=$(python3 -c "
+import struct
+data = open('$B_OSR','rb').read()
+print(struct.unpack('<Q', data[-12:-4])[0])
+")
+B_BODY_OSR_SIZE=$(( B_ARCH_SIZE - 12 - META_SIZE ))
+./bin/dedup_test split-encode "$INPUT" "$WORK/B.meta_struct" "$WORK/B.body_struct" --buf "$BUF_BYTES" >/dev/null
+BODY_SIZE=$(stat -c%s "$WORK/B.body_struct")
 
 RATIO_ARCH=$(python3 -c "print(f'{$B_ARCH_SIZE/$A_OSR_SIZE*100:.1f}')")
 DELTA_RSS_C=$(python3 -c "print(f'{(1 - $RSS_B_C/$RSS_A_C)*100:.1f}')")
@@ -145,11 +137,10 @@ mkdir -p "$(dirname "$OUT_DOC")"
     echo
     echo "RSS measurements use \`tests/measure.py\` (a Python wrapper"
     echo "around \`getrusage(RUSAGE_CHILDREN)\`, since GNU \`time\` isn't"
-    echo "installed on this host) and cover only the \`osrep\` invocation."
-    echo "The F5.3a wrapper's split-encode and split-decode steps are"
-    echo "excluded — they read the full input into a contiguous buffer"
-    echo "and would dominate the comparison; F5.3b's native integration"
-    echo "will stream and remove that overhead."
+    echo "installed on this host). Config B uses the native \`-dup\` flag"
+    echo "(F5.3c streaming end-to-end), so the numbers below include the"
+    echo "dedup pre-pass and post-pass — peak RAM is independent of"
+    echo "input size."
     echo
     echo "## Results"
     echo
