@@ -3,3 +3,5 @@ tests/corpus/
 *.tmp
 osrep-data.tmp
 osrep-virtual-memory.tmp
+data.tar
+doubled.*
