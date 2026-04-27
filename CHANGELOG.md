@@ -90,6 +90,18 @@ redundant text → 809 byte archive (round-trip clean). The
 through Git-Bash; the script needs path-translation polish to run
 in CI. The binary itself was validated by manual round-trip.
 
+### Sanitizer hygiene (verified 2026-04-27)
+
+Built with `-fsanitize=address` and ran the full 7-suite test set;
+all 120 tests pass with no memory-safety issues. One UBSAN finding
+fixed (misaligned uint64_t store in `VHash::compute`, commit
+`a17cc3c`). Vendored crypto (VMAC, SipHash) trips UBSAN's strict
+unaligned-access checks for intentional x86_64 perf reads — these
+are documented as NOT bugs on the current target. Upstream SREP's
+exit-time leaks in `srep_main` are unchanged. See
+`docs/sanitizer-runs.md` for the full record and reproduction
+commands.
+
 ### Known limitations (gating items for v1.0 stable)
 
 - Test harness scripts (`dup_native_roundtrip.sh`,
