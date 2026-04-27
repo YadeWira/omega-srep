@@ -12,10 +12,13 @@ extern "C"
 
 // Handle.h was a Win32-only LZMA SDK header that was never shipped
 // with this fork. The class definitions below don't actually use
-// anything from it on the threading paths SREP exercises, so we
-// skip it on MinGW. Native MSVC builds (untested in this fork) may
-// need a port; this is a known gap.
-#if defined(_WIN32) && !defined(__MINGW32__)
+// anything from it on the threading paths SREP exercises, so the
+// include is fully gated out -- both MinGW (__MINGW32__) and native
+// MSVC (_MSC_VER) builds skip it. The HANDLE typedef and the Win32
+// CreateEvent / CreateMutex / CreateSemaphore prototypes that the
+// inline operators below reach for come from <windows.h>, which
+// MultiThreading.h pulls in on _WIN32 (verified F6.8 audit).
+#if defined(_WIN32) && !defined(__MINGW32__) && !defined(_MSC_VER)
 #include "Handle.h"
 #endif
 

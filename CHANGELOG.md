@@ -58,6 +58,24 @@ Versions follow `1.<minor>.<patch>` for stable releases and
   round-trips the produced meta blob back through `decode()` on
   every successful encode, doubling the parser coverage from each
   encoder-found input.
+- **`tests/multi_corpus_bench.sh`** + **`docs/multi-corpus-bench.md`**
+  — F6.10 comparative benchmark against upstream SREP 3.92 and FA
+  0.11 across three corpora (synth-128M, enwik8, 1.79 GiB tarball).
+  Confirms `osrep -m4` produces byte-equal archives to upstream
+  `srep -m4` on every corpus (fork parity), `-dup` cuts decompress
+  RSS by 66% on long-range-dup corpora at +0.28% archive bloat,
+  and Omega's `-dup` ratio matches FA 0.11's `-dup` reference impl
+  within 0.5%-of-input.
+- **`CMakeLists.txt`** + **`docs/msvc-build.md`** — F6.8 native
+  MSVC build path. Existing Makefile remains the primary path;
+  CMake is the alternative for Visual Studio / Build Tools 2022
+  users so they can build a native `cl.exe` `osrep.exe` without
+  going through MinGW. Configures and builds clean with GCC + clang
+  on Linux as a smoke test; cl.exe verification is by hand.
+- **`Compression/LZMA2/MultiThreading/Synchronization.h`** — gate
+  on the `Handle.h` LZMA-SDK shim widened to also exclude `_MSC_VER`
+  (it was previously only excluding `__MINGW32__`, which would have
+  failed a native-MSVC build on a missing-include).
 
 ### Process notes
 
