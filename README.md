@@ -34,12 +34,15 @@ platforms.
 
   Long-range duplicates are stripped to a small chunk-table footer
   before SREP sees the data, so SREP's working set drops to the size
-  of the unique-chunk stream. On a 128 MiB corpus of repeated 32 MiB
-  blocks, peak decompress RSS drops 67% (53 MiB → 17 MiB) for 0.3%
-  archive bloat. See `docs/dup-bench.md`. `-dup` is incompatible with
-  `-m0`; pair it with `-m3`/`-m4`/`-m5` for best results. Tunables:
-  `--chunk-avg=N`, `--chunk-min=N`, `--chunk-max=N`, `--chunk-buf=N`
-  (defaults match FA: avg 4 KiB, min 1 KiB, max 16 KiB, buf 8 MiB).
+  of the unique-chunk stream. The dedup pre-pass and post-pass both
+  stream (per-buffer CDC, seek-based ref expansion on decode), so
+  peak RAM is independent of input size. On a 128 MiB corpus of
+  repeated 32 MiB blocks, end-to-end peak decompress RSS drops
+  ≈66% (54 MiB → 18 MiB) for 0.3% archive bloat. See
+  `docs/dup-bench.md`. `-dup` is incompatible with `-m0`; pair it
+  with `-m3`/`-m4`/`-m5` for best results. Tunables: `--chunk-avg=N`,
+  `--chunk-min=N`, `--chunk-max=N`, `--chunk-buf=N` (defaults match
+  FA: avg 4 KiB, min 1 KiB, max 16 KiB, buf 8 MiB).
 
 The compression algorithm itself is otherwise unchanged. Algorithm-level
 improvements beyond `-dup` are tracked separately.
