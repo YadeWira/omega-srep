@@ -1,5 +1,9 @@
 bin/
 tests/corpus/
+tests/fuzz-corpus/
+tests/fuzz-corpus-decode-streaming/
+tests/fuzz-corpus-encode-split/
+tests/fuzz-artifacts/
 *.tmp
 osrep-data.tmp
 osrep-virtual-memory.tmp

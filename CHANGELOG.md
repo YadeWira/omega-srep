@@ -48,6 +48,16 @@ Versions follow `1.<minor>.<patch>` for stable releases and
   fixed fuzz artifact in `tests/fuzz-regression/` against the
   current decoder. Wired to CI; first sample is
   `bad_alloc_chunk_count_uint64_max`.
+- **`tests/fuzz_decode_streaming.cc`** — libFuzzer harness for the
+  file-based decoder (`osrep_dedup::decode_streaming`). Splits each
+  input into `meta_len` (uint32 LE) + meta blob + body bytes; body
+  is materialized to a per-process temp file. Targets the seek-
+  back ref-expansion path that `fuzz_decode.cc` cannot reach.
+- **`tests/fuzz_encode_split.cc`** — libFuzzer harness for the
+  in-memory two-output encoder (`osrep_dedup::encode_split`). Also
+  round-trips the produced meta blob back through `decode()` on
+  every successful encode, doubling the parser coverage from each
+  encoder-found input.
 
 ### Process notes
 
