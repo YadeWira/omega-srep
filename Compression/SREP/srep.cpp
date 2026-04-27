@@ -1,9 +1,11 @@
-// Copyright (C) 2009-2014 Bulat Ziganshin. All rights reserved.
-// Mail Bulat.Ziganshin@gmail.com if you have any questions or want to buy a commercial license for the source code.
+// Omega SREP - fork of SREP (SuperREP) by Bulat Ziganshin.
+// Original: Copyright (C) 2009-2014 Bulat Ziganshin. All rights reserved.
+// Original mail: Bulat.Ziganshin@gmail.com
+// Omega SREP introduces a new file format (.osr) and is not backward-compatible with .srep.
 
-char *program_version     = "SREP 3.93a beta", *program_date = "October 11, 2014";
-char *program_description = "huge-dictionary LZ77 preprocessor   (c) Bulat.Ziganshin@gmail.com";
-char *program_homepage    = "http://freearc.org/research/SREP39.aspx";
+char *program_version     = "Omega SREP 1.0a beta", *program_date = "April 26, 2026";
+char *program_description = "huge-dictionary LZ77 preprocessor (Omega lineage, fork of SREP by Bulat Ziganshin)";
+char *program_homepage    = "https://github.com/Intensity/srep";
 
 #include <algorithm>
 #include <set>
@@ -20,7 +22,9 @@ char *program_homepage    = "http://freearc.org/research/SREP39.aspx";
 #include "MultiThreading.cpp"
 
 // Constants defining compressed file format
-const uint SREP_SIGNATURE = 0x50455253;
+// Magic bytes "OSRP" in little-endian (Omega SREP). Differs from upstream "SREP" (0x50455253)
+// to enforce the "no backward compatibility with .srep" decision for the Omega lineage.
+const uint SREP_SIGNATURE = 0x5052534F;
 const uint SREP_FORMAT_VERSION1 = 1;
 const uint SREP_FORMAT_VERSION2 = 2;
 const uint SREP_FORMAT_VERSION3 = 3;
@@ -31,7 +35,7 @@ enum SREP_METHOD {SREP_METHOD0=0, SREP_METHOD1, SREP_METHOD2, SREP_METHOD3, SREP
 typedef uint32 STAT;
 const int STAT_BITS=sizeof(STAT)*CHAR_BIT, ARCHIVE_HEADER_SIZE=4, BLOCK_HEADER_SIZE=3, MAX_HEADER_SIZE=4, MAX_HASH_SIZE=256;
 enum COMMAND_MODE {COMPRESSION, DECOMPRESSION, INFORMATION};
-const char* SREP_EXT = ".srep";
+const char* SREP_EXT = ".osr";
 
 // Compression algorithms constants and defaults
 const int MINIMAL_MIN_MATCH = 16;       // minimum match length that sometimes allows to reduce file using the match
@@ -55,15 +59,13 @@ static struct {Offset max_offset, find_match, find_match_memaccess, check_hashar
 void error (int ExitCode, char *ErrmsgFormat...);   // Exit on error
 
 
-#if defined(_M_X64) || defined(_M_AMD64) || defined(__x86_64__)
+// Omega SREP targets x86_64 only (Windows 10/11 x64 and Linux x64).
+#if !defined(_M_X64) && !defined(_M_AMD64) && !defined(__x86_64__)
+#error "Omega SREP requires a 64-bit x86 target (Windows 10/11 x64 or Linux x64)."
+#endif
 #define _32_or_64(_32,_64) (_64)
 #define _32_only(_32)      (void(0))
-typedef size_t NUMBER;               // best choice for loop index variables on most 64-bit compilers
-#else
-#define _32_or_64(_32,_64) (_32)
-#define _32_only(_32)      (_32)
-typedef int NUMBER;                  // best choice for loop index variables on most 32-bit compilers
-#endif
+typedef size_t NUMBER;               // loop index type on x86_64
 
 #include "hashes.cpp"
 #include "hash_table.cpp"
@@ -229,7 +231,7 @@ int main (int argc, char **argv)
   double GlobalTime0 = GetGlobalTime();
   unsigned L=0, min_match=0, dict_chunk=0, dict_min_match=0, maximum_save=unsigned(-1), accel=9000, ACCELERATOR=9000, vm_block=8*mb, bufsize=8*mb, NumThreads=0;
   bool INDEX_LZ=true, FUTURE_LZ=false, IO_LZ=false, use_mmap=false, delete_input_files=false, print_pc=false;
-  char *index_file="",  *tempfile=NULL,  *DEFAULT_TEMPFILE="srep-data.tmp",  *vmfile_name="srep-virtual-memory.tmp",  *option_s="+";
+  char *index_file="",  *tempfile=NULL,  *DEFAULT_TEMPFILE="osrep-data.tmp",  *vmfile_name="osrep-virtual-memory.tmp",  *option_s="+";
   int errcode=0, warnings=0, verbosity=2, io_accelerator=1;      LPType LargePageMode=TRY;    char temp1[100];
   struct hash_descriptor *selected_hash = hash_by_name(DEFAULT_HASH, errcode);
   int64 vm_mem = parse_mem_option ("75%", &errcode, 'm');         if (vm_mem > 1536*mb)    _32_only(vm_mem = 1536*mb);
@@ -885,7 +887,7 @@ print_stats:
     int len = file_read (fin, header, sizeof(STAT)*ARCHIVE_HEADER_SIZE);
     if (len != sizeof(STAT)*ARCHIVE_HEADER_SIZE
      || header[0] != BULAT_ZIGANSHIN_SIGNATURE
-     || header[1] != SREP_SIGNATURE)            error (ERROR_COMPRESSION, "Not an SREP compressed file: %s", finame);
+     || header[1] != SREP_SIGNATURE)            error (ERROR_COMPRESSION, "Not an Omega SREP compressed file (.osr): %s", finame);
     int format_version  =  header[2] & 255;
     if (format_version < SREP_FORMAT_VERSION1
      || format_version > SREP_FORMAT_VERSION4)  error (ERROR_COMPRESSION, "Incompatible compressed data format: v%d (%s supports only v%d..v%d) in file %s", format_version, program_version, SREP_FORMAT_VERSION1, SREP_FORMAT_VERSION4, finame);
@@ -941,7 +943,7 @@ print_stats:
       compsize += footer_size+stat_size;
 
       if (header[5] != ~BULAT_ZIGANSHIN_SIGNATURE
-       || header[4] != ~SREP_SIGNATURE)            error (ERROR_COMPRESSION, "Not found SREP compressed file footer in file %s", finame);
+       || header[4] != ~SREP_SIGNATURE)            error (ERROR_COMPRESSION, "Not found Omega SREP compressed file footer in file %s", finame);
       if (footer_version != SREP_FOOTER_VERSION1)  error (ERROR_COMPRESSION, "Incompatible compressed file footer format: v%d (%s supports only v%d) in file %s", footer_version, program_version, SREP_FOOTER_VERSION1, finame);
       if (compsize > filesize)                     error (ERROR_COMPRESSION, "Broken SREP compressed file footer: %0.lf bytes footer + %0.lf bytes index in file %s", double(footer_size), double(stat_size), finame);
 

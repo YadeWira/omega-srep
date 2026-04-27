@@ -39,19 +39,19 @@ extern "C" {
 ** Базовые определения FREEARC ************************************************
 ******************************************************************************/
 #if !defined(FREEARC_WIN) && !defined(FREEARC_UNIX)
-#error "You must define OS!"
+#error "You must define OS! Omega SREP supports FREEARC_WIN (Windows 10/11 x64) or FREEARC_UNIX (Linux x64)."
 #endif
 
-#if defined(FREEARC_INTEL_BYTE_ORDER)
-#if defined(BYPASS_CHECK_BIG_ENDIAN)
-#error "You're compiling for Motorola byte order, but FREEARC_INTEL_BYTE_ORDER was defined."
+// Omega SREP targets x86_64 only - both Windows 10/11 x64 and Linux x64 are little-endian Intel.
+// The historical big-endian branch is gone. The Makefile must still pass -DFREEARC_INTEL_BYTE_ORDER.
+#if !defined(_M_X64) && !defined(_M_AMD64) && !defined(__x86_64__)
+#error "Omega SREP requires a 64-bit x86 target (Windows 10/11 x64 or Linux x64)."
 #endif
-#elif defined(FREEARC_MOTOROLA_BYTE_ORDER)
-#if _M_IX86 || __i386 || __x86_64
-#error "You're compiling for Intel byte order, but FREEARC_MOTOROLA_BYTE_ORDER was defined."
+#if !defined(FREEARC_INTEL_BYTE_ORDER)
+#error "Omega SREP requires FREEARC_INTEL_BYTE_ORDER to be defined (x86_64 is little-endian)."
 #endif
-#else
-#error "You must define byte order!"
+#if defined(FREEARC_MOTOROLA_BYTE_ORDER)
+#error "FREEARC_MOTOROLA_BYTE_ORDER is unsupported on Omega SREP (x86_64 only)."
 #endif
 
 #ifdef FREEARC_WIN

@@ -24,15 +24,15 @@ HDEPS= Compression/MultiThreading.h Compression/LZMA2/C/ThreadsUnix.h Compressio
 CDEPS= Compression/LZMA2/C/ThreadsUnix.c Compression/LZMA2/C/Threads.c Compression/_Encryption/ciphers/aes/aes.c Compression/_Encryption/ciphers/aes/aes_tab.c Compression/_Encryption/hashes/siphash/siphash.c Compression/_Encryption/hashes/sha1.c Compression/_Encryption/hashes/vmac/vmac.c Compression/_Encryption/hashes/sha2/sha512.c Compression/_Encryption/hashes/md5.c Compression/_Encryption/crypt/crypt_argchk.c Compression/_Encryption/prngs/fortuna.c Compression/_Encryption/misc/zeromem.c 
 DEPS= $(CXXDEPS) $(HDEPS) $(CDEPS) 
 
-bin/srep: Makefile $(DEPS) 
+bin/osrep: Makefile $(DEPS) 
 	mkdir -p -v bin
-	$(CXX) $(CPPFLAGS) $(CFLAGS) $(CXXSOURCES) $(LDFLAGS) -o bin/srep
+	$(CXX) $(CPPFLAGS) $(CFLAGS) $(CXXSOURCES) $(LDFLAGS) -o bin/osrep
 
 clean:
-	rm -f -v bin/srep
+	rm -f -v bin/osrep
 
-all: bin/srep
+all: bin/osrep
 
 install: all
 	mkdir -p -v "$(PREFIX)"/bin/
-	install -p -m 0755 -v bin/srep "$(PREFIX)"/bin/
+	install -p -m 0755 -v bin/osrep "$(PREFIX)"/bin/

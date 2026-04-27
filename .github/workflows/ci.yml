@@ -13,8 +13,8 @@ jobs:
     steps:
     - uses: actions/checkout@v2
 
-    - name: Build srep
+    - name: Build osrep
       run: ./Makefile
 
-    - name: Test srep
-      run: bin/srep
+    - name: Test osrep
+      run: bin/osrep
