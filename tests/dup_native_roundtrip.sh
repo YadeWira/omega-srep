@@ -129,6 +129,84 @@ else
     failed=$((failed + 1))
 fi
 
+# 5. Edge cases — adversarial input shapes that have a way of finding
+# off-by-ones in CDC / chunk-table / trailer code.
+edge_case() {
+    local label="$1"
+    local input_path="$2"
+    local archive="$TMP/edge_${label}.osr"
+    local restored="$TMP/edge_${label}.bin"
+    if ! ./bin/osrep -dup -m4 "$input_path" "$archive" >/dev/null 2>&1; then
+        echo "FAIL  edge:$label  compress failed"
+        return 1
+    fi
+    if ! ./bin/osrep -d "$archive" "$restored" >/dev/null 2>&1; then
+        echo "FAIL  edge:$label  decompress failed"
+        return 1
+    fi
+    if ! cmp -s "$input_path" "$restored"; then
+        echo "FAIL  edge:$label  bytes differ"
+        return 1
+    fi
+    in_sz=$(stat -c%s "$input_path")
+    arch_sz=$(stat -c%s "$archive")
+    printf "OK    edge:%-22s  in=%d  archive=%d\n" "$label" "$in_sz" "$arch_sz"
+    return 0
+}
+
+# 5a. 1-byte input (smaller than min_chunk).
+printf 'X' > "$TMP/edge_1byte.bin"
+if edge_case "1byte" "$TMP/edge_1byte.bin"; then passed=$((passed + 1)); else failed=$((failed + 1)); fi
+
+# 5b. Input smaller than min_chunk (512 bytes < default min 1024).
+python3 -c "import sys; sys.stdout.buffer.write(b'A' * 512)" > "$TMP/edge_small.bin"
+if edge_case "smaller-than-min-chunk" "$TMP/edge_small.bin"; then passed=$((passed + 1)); else failed=$((failed + 1)); fi
+
+# 5c. Single chunk-buf-sized block, no internal redundancy.
+python3 -c "
+import sys, struct
+s = 0xC0FFEE12345678
+for _ in range(8 * 1024 * 1024 // 8):
+    s ^= (s << 13) & 0xFFFFFFFFFFFFFFFF
+    s ^= s >> 7
+    s ^= (s << 17) & 0xFFFFFFFFFFFFFFFF
+    sys.stdout.buffer.write(struct.pack('<Q', s))
+" > "$TMP/edge_norep.bin"
+if edge_case "no-redundancy-8mb" "$TMP/edge_norep.bin"; then passed=$((passed + 1)); else failed=$((failed + 1)); fi
+
+# 5d. Exactly two buffers worth of identical content (16 MiB / 8 MiB buf).
+python3 -c "
+import sys
+block = (b'edge-bench-block-' * 524288)[:8 * 1024 * 1024]
+sys.stdout.buffer.write(block)
+sys.stdout.buffer.write(block)
+" > "$TMP/edge_2bufs.bin"
+if edge_case "two-identical-buffers" "$TMP/edge_2bufs.bin"; then passed=$((passed + 1)); else failed=$((failed + 1)); fi
+
+# 5e. Input that crosses a buffer boundary mid-chunk (8 MiB + 1 byte).
+python3 -c "
+import sys
+sys.stdout.buffer.write((b'omega-' * 1500000)[:8 * 1024 * 1024 + 1])
+" > "$TMP/edge_crossbuf.bin"
+if edge_case "crosses-buffer-boundary" "$TMP/edge_crossbuf.bin"; then passed=$((passed + 1)); else failed=$((failed + 1)); fi
+
+# 5f. Empty file. srep_main itself rejects empty input (upstream
+# behavior, not -dup-specific), so the expectation is that
+# osrep -dup fails the same way osrep -m4 would. Assert
+# consistency, not unconditional success.
+: > "$TMP/edge_empty.bin"
+plain_rc=0
+./bin/osrep -m4 "$TMP/edge_empty.bin" "$TMP/edge_empty_plain.osr" >/dev/null 2>&1 || plain_rc=$?
+dup_rc=0
+./bin/osrep -dup -m4 "$TMP/edge_empty.bin" "$TMP/edge_empty_dup.osr" >/dev/null 2>&1 || dup_rc=$?
+if [[ "$plain_rc" -eq "$dup_rc" ]]; then
+    echo "OK    edge:empty-input          plain rc=$plain_rc, -dup rc=$dup_rc (consistent)"
+    passed=$((passed + 1))
+else
+    echo "FAIL  edge:empty-input          plain rc=$plain_rc, -dup rc=$dup_rc"
+    failed=$((failed + 1))
+fi
+
 echo
 echo "passed=$passed failed=$failed"
 exit $(( failed == 0 ? 0 : 1 ))
