@@ -293,6 +293,15 @@ static int decode(const uint8_t* blob, size_t blob_size,
     uint64_t chunk_count  = get_u64_le(blob + 8);
     uint64_t unique_count = get_u64_le(blob + 16);
 
+    // Sanity bounds before any allocation: each chunk-table record is
+    // at least 2 bytes (tag + minimum 1-byte varint), so chunk_count
+    // cannot exceed (blob_size - HEADER_SIZE) / 2. Without this check
+    // a corrupted header with chunk_count = UINT64_MAX (libFuzzer
+    // finds it in 4 execs) triggers std::bad_alloc on reserve().
+    // unique_count <= chunk_count is required by the format.
+    if (chunk_count > (blob_size - HEADER_SIZE) / 2) return DEDUP_ERR_TRUNCATED;
+    if (unique_count > chunk_count) return DEDUP_ERR_BAD_REF;
+
     struct Rec { uint8_t tag; uint64_t payload; };
     std::vector<Rec> records;
     records.reserve((size_t)chunk_count);
@@ -385,6 +394,12 @@ static int decode_streaming(const uint8_t* meta, size_t meta_size,
     if (get_u32_le(meta + 4) != VERSION) return DEDUP_ERR_BAD_VER;
     uint64_t chunk_count  = get_u64_le(meta + 8);
     uint64_t unique_count = get_u64_le(meta + 16);
+
+    // Bounds before allocation: see decode() for rationale. Each
+    // record is >= 2 bytes; without this libFuzzer trips bad_alloc
+    // on UINT64_MAX-style chunk_count corruption.
+    if (chunk_count > (meta_size - HEADER_SIZE) / 2) return DEDUP_ERR_TRUNCATED;
+    if (unique_count > chunk_count) return DEDUP_ERR_BAD_REF;
 
     struct Rec { uint8_t tag; uint64_t payload; };
     std::vector<Rec> records;
