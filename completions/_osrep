@@ -1,0 +1,42 @@
+#compdef osrep
+# Zsh completion for osrep (Omega SREP).
+#
+# Install: drop in any directory listed in $fpath, e.g.
+#   /usr/share/zsh/site-functions/_osrep
+#   ~/.zsh/completions/_osrep   (after `fpath+=~/.zsh/completions; autoload -U compinit; compinit`)
+
+_osrep() {
+    local -a opts
+    opts=(
+        '-m0[in-memory REP-only compression]'
+        '-m1[content-defined chunking, fixed window]'
+        '-m2[content-defined chunking, order-1]'
+        '-m3[match search via VMAC digest (default)]'
+        '-m4[match search via re-reading input]'
+        '-m5[exhaustive byte-accurate match search]'
+        '-mx[alias for -m5]'
+        '-d[decompression mode]'
+        '-i[print archive info]'
+        '-delete[delete source after success]'
+        '-mmap[force memory-mapped I/O]'
+        '-nommap[disable mmap]'
+        '-hash-[disable per-block checksum]'
+        '-dup[enable FA-style dedup pre-pass (Omega F5)]'
+        '--dup-paranoid[byte-compare on every dedup hit]'
+        '--chunk-avg=[CDC average chunk size in bytes]:bytes:(1024 2048 4096 8192 16384)'
+        '--chunk-min=[CDC minimum chunk size in bytes]:bytes:(512 1024 2048 4096)'
+        '--chunk-max=[CDC maximum chunk size in bytes]:bytes:(8192 16384 32768 65536)'
+        '--chunk-buf=[CDC buffer size in bytes]:bytes:(1048576 8388608 67108864)'
+        '--seed=[deterministic hash seed (uint64)]:seed:(0 1 42 0xCAFEBABE)'
+        '-hash=[per-block hash function]:hash:(vmac siphash md5 sha1 sha512)'
+        '--version[print version line and exit]'
+        '-V[alias for --version]'
+        '--help[print help synopsis and exit]'
+        '-h[alias for --help]'
+        '-?[alias for --help]'
+        '*:file:_files'
+    )
+    _arguments -s -S $opts
+}
+
+_osrep "$@"

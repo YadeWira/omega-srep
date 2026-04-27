@@ -56,3 +56,9 @@ all: bin/osrep bin/dedup_test
 install: all
 	mkdir -p -v "$(PREFIX)"/bin/
 	install -p -m 0755 -v bin/osrep "$(PREFIX)"/bin/
+	mkdir -p -v "$(PREFIX)"/share/man/man1/
+	install -p -m 0644 -v man/osrep.1 "$(PREFIX)"/share/man/man1/
+	mkdir -p -v "$(PREFIX)"/share/bash-completion/completions/
+	install -p -m 0644 -v completions/osrep.bash "$(PREFIX)"/share/bash-completion/completions/osrep
+	mkdir -p -v "$(PREFIX)"/share/zsh/site-functions/
+	install -p -m 0644 -v completions/_osrep "$(PREFIX)"/share/zsh/site-functions/_osrep

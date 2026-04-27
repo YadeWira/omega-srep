@@ -1,0 +1,339 @@
+.\" Manpage for osrep — Omega SREP
+.\" View locally with:  man -l man/osrep.1
+.TH OSREP 1 "April 2026" "Omega SREP 1.0a-beta.2" "User Commands"
+
+.SH NAME
+osrep \- huge-dictionary LZ77 preprocessor (Omega lineage)
+
+.SH SYNOPSIS
+.B osrep
+[\fIOPTIONS\fR] \fB-m\fIN\fR \fIINFILE\fR \fIOUTFILE\fR
+.br
+.B osrep
+[\fIOPTIONS\fR] \fB-d\fR \fIARCHIVE\fR \fIOUTFILE\fR
+.br
+.B osrep
+\fB-i\fR \fIARCHIVE\fR
+
+.SH DESCRIPTION
+.B osrep
+is a content-defined-chunking and large-dictionary LZ77 preprocessor.
+It scans an input stream for long-range duplicate byte sequences and emits a
+small stream of unmatched bytes plus a list of (offset, length) match
+records. The output is intended as input to a secondary entropy coder
+(LZMA, ZPAQ, brotli, etc.) in a FreeArc-style pipeline; on its own it
+typically compresses 30%–60% depending on input redundancy.
+
+Omega SREP is a fork of upstream SREP 3.93a beta (Bulat Ziganshin, October
+2014), extending it with a native FA-style dedup pre-pass
+.RB ( -dup ),
+deterministic seeding for reproducible archives
+.RB ( --seed )
+and a Windows 10/11 build path. The compression algorithm itself is
+preserved: same input + same parameters produces a byte-identical match
+stream to upstream.
+
+The on-disk format extension is \fB.osr\fR (replaces upstream \fB.srep\fR);
+old \fB.srep\fR files are not readable by
+.B osrep
+and vice versa (no backward compatibility by design).
+
+.SH OPTIONS
+
+.SS Compression methods
+
+.TP
+.B -m0
+In-memory compression (REP algorithm). Works with
+.B -d\fIBYTES\fR
+to set the dictionary size.
+.TP
+.B -m1
+Fixed-window content-defined chunking; matches verified by VMAC.
+.TP
+.B -m2
+Order-1 content-defined chunking; matches verified by VMAC.
+.TP
+.B -m3
+Match search via VMAC digest comparison. Default if no
+.B -m
+given. Compression memory ≈ 7-8% of input size.
+.TP
+.B -m4
+Match search via re-reading the input file. Lowest compression memory
+(≈ 3-4% of input).
+.TP
+\fB-m5\fR, \fB-mx\fR
+Exhaustive byte-accurate match search. Best compression ratio, slowest.
+Compression memory ≈ 7-9% of input.
+.TP
+\fB-m\fIN\fR\fBf\fR
+Future-LZ output: decompression dictionary holds only future matches.
+.TP
+\fB-m\fIN\fR\fBo\fR
+I/O LZ output: output file is used as the decompression dictionary
+(decompression memory ≈ 24 MB).
+
+.SS Common options
+
+.TP
+\fB-l\fIN\fR
+Minimum LZ match length in bytes.
+.TP
+\fB-c\fIN\fR
+Hash chunk size in bytes.
+.TP
+\fB-a\fIX\fR[\fB/\fIY\fR]
+Compression accelerator: allocate
+.I X
+bytes per
+.I L
+input bytes,
+.I Y
+of which are set. Use
+.B -a0
+for slowest / least memory.
+.TP
+\fB-t\fIN\fR
+Worker thread count for
+.B -m1
+/
+.BR -m2 .
+.TP
+\fB-d\fIBYTES\fR
+Dictionary size for
+.BR -m0 .
+Default 512 MB. Suffixes: k, m, g, t.
+.TP
+\fB-b\fIBYTES\fR
+Compression block size. Default 8 MB.
+.TP
+\fB-mem\fIBYTES\fR
+RAM cap for Future-LZ / Index-LZ decompression. Examples:
+.BR -mem75% ,
+.BR -mem600mb .
+Excess goes to a virtual-memory file.
+.TP
+\fB-hash=\fIHASH\fR
+Per-block hash. One of
+.IR vmac ,
+.IR siphash ,
+.IR md5 ,
+.IR sha1 ,
+.IR sha512 .
+Default
+.IR vmac .
+.TP
+.B -hash-
+Disable per-block checksums.
+.TP
+.BR -mmap ,
+.BR -nommap
+Force / disable memory-mapped I/O for match checking.
+.TP
+\fB-temp=\fIPATH\fR
+Tempfile path override. Default uses
+.B $TMPDIR
+on POSIX,
+.B %TEMP%
+on Windows.
+.TP
+\fB-vmfile=\fIPATH\fR
+Virtual-memory tempfile path.
+.TP
+\fB-vmblock=\fIBYTES\fR
+Block size of the VM tempfile. Default 8 MB.
+.TP
+\fB-index=\fIFILE\fR
+Read/write the match index in a separate file.
+.TP
+\fB-s\fIBYTES\fR
+Explicitly specify input size (for stdin input). Default 25 GB.
+.TP
+.B -delete
+Delete source file after successful (de)compression.
+.TP
+\fB-v[0..2]\fR
+Verbosity level. Default 2.
+.TP
+\fB-rem\fIANYTHING\fR
+Command-line remark; ignored. Useful in scripts.
+
+.SS Modes
+
+.TP
+.B -d
+Decompression. With
+.BR -m0o ..\c
+.BR -m5o ,
+needs only ~24 MB beyond OS I/O buffers.
+.TP
+.B -i
+Print archive metadata; do not decompress.
+
+.SS Omega-only additions (F5 / F6)
+
+.TP
+.B -dup
+Enable FA-style content-defined-chunking dedup pre-pass before SREP.
+Long-range duplicates are stripped to a small chunk-table footer
+.RB ( ODUP ); SREP only ever processes the unique-chunk body. Streaming
+end-to-end so peak RAM is independent of input size. Auto-detected on
+decompression. Incompatible with
+.BR -m0 ;
+recommend
+.B -m3
+/
+.B -m4
+/
+.BR -m5 .
+.TP
+.B --dup-paranoid
+Byte-compare each dedup hit against the previously-written unique chunk.
+Eliminates the 64-bit hash collision window (≈ 1e-7 per million chunks)
+at the cost of one disk seek per hit. RAM overhead negligible.
+.TP
+\fB--chunk-avg=\fIN\fR
+CDC average chunk size in bytes. Default 4096.
+.TP
+\fB--chunk-min=\fIN\fR
+CDC minimum chunk size. Default 1024.
+.TP
+\fB--chunk-max=\fIN\fR
+CDC maximum chunk size. Default 16384.
+.TP
+\fB--chunk-buf=\fIN\fR
+Buffer-bounded CDC: rolling hash resets every
+.I N
+bytes. Default 8 MB. Required for cross-block dedup of large identical
+regions.
+.TP
+\fB--seed=\fIN\fR
+Deterministic hash seed (uint64; decimal or
+.B 0x
+hex). Same seed + same input produces a byte-identical archive across
+runs. Default behavior is random per-run (matches upstream SREP
+exactly). Useful for content-addressed storage and reproducible builds.
+
+.SS Help / version
+
+.TP
+.BR --help ", " -h ", " -?
+Print synopsis and exit.
+.TP
+.BR --version ", " -V
+Print version line and exit.
+
+.SH EXIT STATUS
+.TP
+.B 0
+Success.
+.TP
+.B 1
+Generic warning (e.g., partial decompression).
+.TP
+.B 2
+Command-line / option parsing error.
+.TP
+.B 3
+I/O error.
+.TP
+.B 4
+Compression / decompression / archive-format error.
+.TP
+.B 5
+Out of memory.
+
+.SH ENVIRONMENT
+.TP
+.B TMPDIR
+Tempfile directory on POSIX (also honored:
+.BR TMP ,
+.BR TEMP ).
+.TP
+.B TEMP
+Tempfile directory on Windows.
+
+.SH FILES
+.TP
+.B *.osr
+Omega SREP archive. On-disk format documented in
+.IR docs/format-spec.md .
+.TP
+.B *.srep
+Upstream SREP archive (NOT readable by
+.BR osrep ;
+use upstream
+.B srep
+binary instead).
+
+.SH EXAMPLES
+.PP
+Compress a tarball:
+.PP
+.RS 4
+.B osrep -m4 backup.tar backup.osr
+.RE
+.PP
+Decompress (auto-detects ODUP trailer if present):
+.PP
+.RS 4
+.B osrep -d backup.osr backup.tar
+.RE
+.PP
+Compress with the Omega F5 dedup pre-pass for long-range duplicate
+workloads (backups, installer images):
+.PP
+.RS 4
+.B osrep -dup -m4 backup.tar backup.osr
+.RE
+.PP
+Reproducible archive (same seed → byte-identical output across runs):
+.PP
+.RS 4
+.B osrep --seed=42 -m4 input.bin output.osr
+.RE
+.PP
+FreeArc-style pipeline with ZPAQ as secondary entropy coder:
+.PP
+.RS 4
+.B osrep -m5f -a0 data.tar - | zpaq a final.zpaq -
+.RE
+
+.SH LIMITATIONS
+.IP \(bu 2
+Per-run hash seed makes archive bytes non-reproducible by default. Use
+.B --seed=\fIN\fR
+for byte-stable output.
+.IP \(bu 2
+Targets x86_64 only (Linux + Windows 10/11). 32-bit, big-endian, and
+strict-alignment ports are explicitly out of scope.
+.IP \(bu 2
+.B -dup
+peak RAM scales with the chunk table (~23 KiB per MiB of input at
+default chunk parameters); for petabyte-scale inputs the chunk table
+itself becomes a soft limit.
+
+.SH SEE ALSO
+.PP
+Original SREP: \fIhttps://web.archive.org/web/20161223135216/http://freearc.org/research/SREP.aspx\fR
+.PP
+FA 0.11 (successor / inspiration for
+.BR -dup ):
+\fIhttps://github.com/Bulat-Ziganshin/FA\fR
+.PP
+On-disk format: \fIdocs/format-spec.md\fR in the source tree
+.PP
+Bench numbers: \fIdocs/dup-bench.md\fR,
+\fIdocs/upstream-comparison.md\fR
+
+.SH AUTHORS
+.PP
+Original SREP / SuperREP: Bulat Ziganshin <Bulat.Ziganshin@gmail.com>
+.PP
+Omega SREP fork (this binary): \fIhttps://github.com/YadeWira/omega-srep\fR
+
+.SH COPYRIGHT
+Copyright (C) 2009-2014 Bulat Ziganshin (original SREP).
+Omega SREP additions are released under the same terms; see project
+repository for license text.
