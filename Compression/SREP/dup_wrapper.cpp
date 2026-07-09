@@ -74,6 +74,7 @@ struct ParseResult {
     size_t chunk_min;
     size_t chunk_max;
     size_t chunk_buf;
+    int  chunk_hash;         // osrep_dedup::CDC_HASH_FNV (default) or CDC_HASH_GEAR
     std::vector<char*> filtered;        // argv minus our flags
     std::vector<int>   positional_idx;  // indices in filtered[] of non-flag args
 };
@@ -92,6 +93,7 @@ static ParseResult parse_args(int argc, char** argv) {
     r.chunk_min     = osrep_dedup::DEFAULT_MIN;
     r.chunk_max     = osrep_dedup::DEFAULT_MAX;
     r.chunk_buf     = 8 * 1024 * 1024;  // 8 MiB default for native -dup
+    r.chunk_hash    = osrep_dedup::DEFAULT_CHUNK_HASH;  // FNV; --chunk-hash=gear opts in
     r.filtered.push_back(argv[0]);
 
     bool past_dashdash = false;
@@ -118,6 +120,13 @@ static ParseResult parse_args(int argc, char** argv) {
         if (starts_with(a, "--chunk-min=")) { r.chunk_min = (size_t)strtoull(a + 12, NULL, 10); continue; }
         if (starts_with(a, "--chunk-max=")) { r.chunk_max = (size_t)strtoull(a + 12, NULL, 10); continue; }
         if (starts_with(a, "--chunk-buf=")) { r.chunk_buf = (size_t)strtoull(a + 12, NULL, 10); continue; }
+        if (starts_with(a, "--chunk-hash=")) {
+            const char* v = a + 13;
+            if      (strcmp(v, "fnv")  == 0) r.chunk_hash = osrep_dedup::CDC_HASH_FNV;
+            else if (strcmp(v, "gear") == 0) r.chunk_hash = osrep_dedup::CDC_HASH_GEAR;
+            else                              r.chunk_hash = -1;  // invalid; rejected in run_compress
+            continue;
+        }
         if (strcmp(a, "-d") == 0) { r.decompress = true; r.filtered.push_back(a); continue; }
         if (starts_with(a, "-m") && (a[2] >= '0' && a[2] <= '9')) {
             r.method = a[2] - '0';
@@ -184,6 +193,10 @@ static int run_compress(const ParseResult& p, char* finame, char* foname) {
         fprintf(stderr, "  WARNING: -dup with -m%d does CDC twice; -m3/-m4/-m5 recommended\n",
                 p.method);
     }
+    if (p.chunk_hash != osrep_dedup::CDC_HASH_FNV && p.chunk_hash != osrep_dedup::CDC_HASH_GEAR) {
+        fprintf(stderr, "\n  ERROR! --chunk-hash must be 'fnv' or 'gear'\n");
+        return ERR_CMDLINE;
+    }
 
     // F5.3c: streaming encode reads `finame` in chunks, writes the
     // body file as it goes, and only retains the meta blob in memory.
@@ -199,7 +212,7 @@ static int run_compress(const ParseResult& p, char* finame, char* foname) {
         finame, body_path.c_str(),
         &meta, &meta_size,
         p.chunk_avg, p.chunk_min, p.chunk_max, p.chunk_buf,
-        p.dup_paranoid);
+        p.dup_paranoid, p.chunk_hash);
     if (erc != osrep_dedup::DEDUP_OK) {
         unlink(body_path.c_str());
         fprintf(stderr, "\n  ERROR! dedup encode_streaming rc=%d\n", erc);
@@ -419,6 +432,12 @@ static void print_help() {
         "  --chunk-min=N     CDC minimum chunk size (default 1024)\n"
         "  --chunk-max=N     CDC maximum chunk size (default 16384)\n"
         "  --chunk-buf=N     buffer-bounded CDC, bytes (default 8388608)\n"
+        "  --chunk-hash=NAME CDC boundary hash: fnv (default) or gear.\n"
+        "                    gear = Gear-hash CDC with an implicit ~64-byte\n"
+        "                    content window (FastCDC-style normalized\n"
+        "                    chunking); finds non-buffer-aligned duplicates\n"
+        "                    that fnv's unwindowed rolling hash misses.\n"
+        "                    Opt-in; does not change the .dupref format.\n"
         "\n"
         "Help:\n"
         "  --help, -h, -?    this synopsis\n"

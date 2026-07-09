@@ -560,6 +560,163 @@ for `-dup`, not just a performance tweak — but only after:
 
 Filed as **F5.6** (open — prototype only, no C++ work started).
 
+## Gear-hash CDC ported to C++, shipped opt-in as `--chunk-hash=gear` (closes F5.6)
+
+The three prerequisites above are done; this is the real C++ port.
+
+### Mask tuning and the degenerate-input safeguard
+
+A standalone C++ harness (faster than the Python prototype at these
+sizes) swept normalized-chunking mask widths against full-file
+corpora (all of `tests/corpus/*.bin`, full 100 MB `enwik8`, full
+128 MB `dup_bench_in_32x4.bin`):
+
+| delta_s,delta_l | text.bin avg | mixed.bin avg | random.bin avg | enwik8 avg | resync (5B insert, enwik8) |
+|---|---|---|---|---|---|
+| 0,0 (flat mask) | 12264 | 8669 | 5323 | 6611 | — |
+| 2,2 (FastCDC-typical) | 12264 | 8285 | 4900 | 5577 | — |
+| 4,4 | 12264 | 7737 | 4333 | 4513 | 2360 |
+| **5,5 (chosen)** | **4136** | **4278** | **4220** | **4274** | **2280** |
+| 6,6 | 4136 | 4250 | 4136 | 4188 | 7413 (one 55KB outlier) |
+
+Below delta=5, text.bin/mixed.bin get essentially no natural cuts under
+the tuned mask at all (avg stuck near 8-12KB, resolved entirely by the
+escape safety net) — delta=5 is the minimum width where the tuned mask
+itself starts finding genuine content-defined cuts, not just distribution
+tightness. **Chosen: delta_s = delta_l = 5.**
+
+Two false starts changed the final safeguard design and are worth
+recording: (1) a period-256 salt lookup table fixed `text.bin` but not
+an all-zero input — Gear-hash's `h=(h<<1)+K` recurrence provably
+converges to an exact fixed point on constant bytes, and a short-period
+salt just replays the same outcomes against that fixed point forever.
+Switched to a full 64-bit avalanche mix (splitmix64-style) with no
+short period. (2) Applying that mix unconditionally on every byte fixed
+every degenerate corpus but made ordinary content's edit-locality
+resync ~380x worse (2.5KB → ~864KB average on enwik8) — reproducing the
+exact "never resyncs" FNV failure this port exists to fix, because the
+cut decision now depended on `span` (chunk-relative, position-like),
+not the ~64-byte content window. Fixed by **gating** the safeguard
+behind `span >= 0.75*max_chunk` so it only activates on chunks that
+have gone abnormally long without a natural cut, restoring ~2.3KB
+average resync while still fixing every degenerate corpus tested (a
+200-random-GEAR-table sweep found the naive bug on 191-200/200 tables
+— not a fluke of one table — and 0/200 with the safeguard).
+
+### What shipped
+
+`Compression/SREP/dedup.cpp` gained `CDC_HASH_FNV` (default, byte-for-byte
+unchanged) / `CDC_HASH_GEAR` (opt-in), a fixed compile-time 256-entry
+`GEAR_TABLE`, and `cdc_split_buffer_gear` implementing the tuned dual-mask
+Gear-hash chunker with the gated safeguard above. Threaded through
+`cdc_split`/`cdc_split_buffer`/`encode`/`encode_split`/`encode_streaming`
+(both call sites — the direct `cdc_split_buffer` call in the streaming
+path, and the `cdc_split` call in `encode`). Exposed as `--chunk-hash=fnv|gear`
+in `Compression/SREP/dup_wrapper.cpp`, documented in its `--help` and
+`srep.cpp`'s synopsis. `decode()`/`decode_streaming()`/`decode_split()`
+are untouched — confirmed by direct inspection, no `hash_algo`/`CDC_HASH`
+token appears anywhere near them. This is purely an encoder-side chunking
+choice: it changes where boundaries fall, never the `.dupref` wire
+format, so old and new archives keep interoperating with no version bump.
+
+### Independent verification
+
+Re-verified with the same discipline F3.3e's review used, since the same
+trap applies here: `osrep`'s output is intentionally non-deterministic
+without `--seed`, so before/after comparisons controlled for it explicitly.
+
+**Default path unchanged.** `osrep -dup -m3/-m4/-m5 --seed=N` (no
+`--chunk-hash` flag) produces byte-for-byte identical archives before/after
+this change, confirmed on corpora the implementer didn't touch (a 113 MB
+tar of system `.so` libraries, real text/log/dictionary corpora, plus the
+synthetic fixtures) — round-trip verified separately.
+
+**Headline finding replicated with real numbers, not just asserted.** A
+20,475,140-byte input with one 8 MiB duplicate block at two non-buffer-
+-aligned offsets (777 and 11,530,977 — not congruent mod the 8 MiB
+`--chunk-buf` default): `--chunk-hash=fnv` (default) dedup-body ratio =
+1.0000 (found nothing); `--chunk-hash=gear` = 0.6064 (recovered 96.1% of
+the duplicate). Matches the original Python prototype's finding, now with
+a real C++ measurement.
+
+**Important caveat found during validation: final archive size hides this
+entirely.** Running `osrep -dup -mN --chunk-hash=fnv` vs `=gear` end-to-end
+on the same input produced nearly identical final archive sizes at every
+method, because SREP's own long-range match finder independently
+rediscovers the duplicate once it's sitting in the dedup body, regardless
+of which hash found it first. The actual value of this feature isn't
+"smaller archives" — it's `-dup` actually delivering its bounded-RAM
+purpose (FA 0.11's `-dup` finding, referenced above) for non-buffer-aligned
+duplicates: content the FNV chunker misses flows through to SREP's own
+unbounded-dictionary Future-LZ pass, which is exactly the RAM cost `-dup`
+exists to avoid. A test that only compares final archive size would not
+catch this feature silently regressing — `tests/dup_gear_hash_test.sh`
+(new, 11 cases) measures the dedup-body ratio directly for this reason.
+
+Full existing suite re-run clean throughout (`roundtrip.sh` 30/30,
+`fuzz.sh` 105/105, `dedup_xtest.sh` PASS, `dup_roundtrip.sh` 5/5,
+`dup_native_roundtrip.sh` 17/17, `dup_corruption_fuzz.sh` 27/27,
+`dup_concurrency.sh` 8/8, `fuzz_regression.sh` 1/1,
+`dup_gear_hash_test.sh` 11/11).
+
+### Two real limitations found by adversarial review — one fixed, one deferred
+
+**Fixed before commit: `--chunk-avg` below 64 silently collapsed to
+near-fixed-size chunking.** `mask_l` is built from
+`lb = floor(log2(avg)) - GEAR_DELTA_L`; for `avg < 64`, `lb <= 0`, and an
+unclamped 0-bit mask makes the `span >= avg` cut test unconditionally
+true. Confirmed on genuinely high-entropy `tests/corpus/random.bin` at
+`--chunk-avg=32`: gear's stdev collapsed to 2.2 around mean 32.7 (vs
+fnv's stdev 31.4 around mean 40.2) — not content-defined at all.
+Fixed by clamping `lb >= 1`: re-measured at the same `--chunk-avg=32`,
+mean chunk size is now 33.7, matching fnv's 39.2 — genuinely
+content-defined again. Default `--chunk-avg` (4096) was never affected.
+
+**Deferred as a follow-up, not fixed here: the escape safeguard
+reintroduces history-dependence for periodic/low-local-entropy content.**
+The escape path's cut test mixes in `gear_mix_span(span)`, where `span`
+is bytes-since-*this*-chunk's-own-start — a chunk-history-dependent
+quantity, not an absolute-content-position one. For content whose
+*natural* cuts never fire (verified this is a realistic content class,
+not a contrived one: an all-zero run, a period-2 pattern, a period-64
+pseudo-random block, and even a real English sentence repeated ~65,000
+times — period 45 bytes, nowhere near "constant") escape fires on 100%
+of cuts. Measuring actual chunk-boundary offsets relative to each copy's
+own start, for two placements of the same duplicated content: when
+natural cuts do the work (the implementer's own 8 MiB random-duplicate
+case), 92.7% of relative boundary positions matched between the two
+copies — alignment-independence genuinely holds. But for a 3,000,000-byte
+repeated-sentence duplicate (period 45B) placed behind two
+different-length paddings so the two copies enter the periodic content
+at different chunk-history phase, escape fires on 100% of cuts and
+**zero** of 243/244 boundary points matched between the copies — silently
+reintroducing the exact history/offset-dependent miss that motivated
+this port, for that specific content class (padding blocks, templated
+records, sparse binary structures — realistic, not just adversarial).
+Round-trip correctness is unaffected in every case tried (verified
+byte-identical); this is a dedup-effectiveness gap in the CDC pre-pass
+itself, invisible in final archive size for the same reason noted above,
+so nobody had seen it. Proper fix needs the safeguard's extra entropy
+source to depend on something other than chunk-relative position without
+reintroducing absolute-offset-dependence — a real redesign, not a quick
+patch. **Filed as F5.6a** (open).
+
+### Verdict
+
+**Shipped as opt-in** (`--chunk-hash=gear`, default `fnv` unaffected).
+Thread-/data-safety and format-compatibility hold: default path is
+byte-for-byte unchanged, no `.dupref` version bump, the GEAR table is a
+build-to-build-reproducible compile-time constant (md5-verified identical
+across a from-scratch clean rebuild). The headline claim — Gear-hash finds
+non-buffer-aligned duplicates of realistic/random content that FNV misses
+— is independently reconfirmed with real numbers. Two real limitations
+were found by adversarial review rather than shipped silently: the
+`--chunk-avg<64` collapse is fixed in this same commit; the periodic-content
+escape-safeguard gap is documented and filed as F5.6a rather than blocking
+this commit, since it doesn't affect round-trip correctness or the default
+path, and the feature's core case (realistic, non-periodic duplicate content)
+works as intended.
+
 ## References
 
 - [Intensity/srep](https://github.com/Intensity/srep) — upstream

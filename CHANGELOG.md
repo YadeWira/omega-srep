@@ -11,6 +11,27 @@ Versions follow `1.<minor>.<patch>` for stable releases and
 
 ### Added
 
+- **`--chunk-hash=gear` opt-in CDC hash for `-dup` (F5.6).** The
+  default FNV chunker (`h=h*PRIME+byte`, reset only at cuts) has no
+  fixed window, so it silently misses duplicate content that isn't
+  aligned to the `--chunk-buf` reset grid. Gear-hash CDC
+  (`h=(h<<1)+GEAR[byte]`) has an implicit ~64-byte content window that
+  finds these duplicates regardless of offset — confirmed on a real
+  misaligned 8MiB duplicate: `fnv` dedup-body ratio 1.0000 (found
+  nothing) vs `gear` 0.6064 (recovered 96.1%). Opt-in only — default
+  behavior (`--chunk-hash=fnv`, i.e. no flag) is byte-for-byte
+  unchanged, no `.dupref` format change. Note: final `osrep -dup`
+  archive size looks nearly identical either way, because SREP's own
+  match finder independently recovers what the CDC pre-pass misses —
+  the real benefit is `-dup` actually delivering its bounded-RAM
+  purpose for misaligned duplicates, not smaller archives; measure
+  dedup-body ratio directly (see `tests/dup_gear_hash_test.sh`), not
+  final archive size, to see the effect. Two real limitations found by
+  review: a `--chunk-avg<64` collapse-to-fixed-size bug (fixed in this
+  same change) and a periodic-content edge case where the degenerate-input
+  safeguard reintroduces alignment-dependence (documented, not fixed —
+  filed as F5.6a). See `docs/research-notes.md` F5.6 sections.
+
 - **Stripe-parallel `prepare_buffer` for `-m3`/`-m5` (F3.3e).** A
   profiling spike (gated `-pc` instrumentation, matching the existing
   diagnostic-counter pattern) measured `HashTable::prepare_buffer`'s

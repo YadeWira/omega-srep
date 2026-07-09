@@ -135,28 +135,43 @@ static int cmd_selftest() {
     return 0;
 }
 
+// Parses --hash fnv|gear into *out; leaves *out untouched (caller's
+// default) if the flag isn't present. Returns false on an unknown
+// value so callers can report a usage error.
+static bool parse_hash_flag(const char* v, int* out) {
+    if      (strcmp(v, "fnv")  == 0) { *out = CDC_HASH_FNV;  return true; }
+    else if (strcmp(v, "gear") == 0) { *out = CDC_HASH_GEAR; return true; }
+    return false;
+}
+
 static int cmd_encode(int argc, char** argv) {
     if (argc < 4) {
         fprintf(stderr, "usage: dedup_test encode <in> <out> "
-                        "[--avg N --min N --max N --buf N]\n");
+                        "[--avg N --min N --max N --buf N --hash fnv|gear]\n");
         return 2;
     }
     const char* in_path  = argv[2];
     const char* out_path = argv[3];
     size_t avg = DEFAULT_AVG, mn = DEFAULT_MIN, mx = DEFAULT_MAX;
     size_t buf = DEFAULT_BUF_SIZE;
+    int hash_algo = DEFAULT_CHUNK_HASH;
     for (int i = 4; i < argc; ++i) {
         if (i + 1 >= argc) { fprintf(stderr, "missing value for %s\n", argv[i]); return 2; }
         if      (strcmp(argv[i], "--avg") == 0) { avg = (size_t)strtoull(argv[++i], NULL, 10); }
         else if (strcmp(argv[i], "--min") == 0) { mn  = (size_t)strtoull(argv[++i], NULL, 10); }
         else if (strcmp(argv[i], "--max") == 0) { mx  = (size_t)strtoull(argv[++i], NULL, 10); }
         else if (strcmp(argv[i], "--buf") == 0) { buf = (size_t)strtoull(argv[++i], NULL, 10); }
+        else if (strcmp(argv[i], "--hash") == 0) {
+            if (!parse_hash_flag(argv[++i], &hash_algo)) {
+                fprintf(stderr, "bad --hash value: %s (want fnv|gear)\n", argv[i]); return 2;
+            }
+        }
         else { fprintf(stderr, "unknown flag: %s\n", argv[i]); return 2; }
     }
     std::vector<uint8_t> data;
     if (read_file(in_path, data) != 0) return 1;
     uint8_t* enc = NULL; size_t enc_size = 0;
-    int rc = encode(data.data(), data.size(), &enc, &enc_size, avg, mn, mx, buf);
+    int rc = encode(data.data(), data.size(), &enc, &enc_size, avg, mn, mx, buf, hash_algo);
     if (rc != DEDUP_OK) { fprintf(stderr, "encode failed rc=%d\n", rc); return 1; }
     int wr = write_file(out_path, enc, enc_size);
     double ratio = data.size() ? (double)enc_size / (double)data.size() : 0.0;
@@ -188,7 +203,7 @@ static int cmd_decode(int argc, char** argv) {
 static int cmd_split_encode(int argc, char** argv) {
     if (argc < 5) {
         fprintf(stderr, "usage: dedup_test split-encode <in> <meta> <body> "
-                        "[--avg N --min N --max N --buf N]\n");
+                        "[--avg N --min N --max N --buf N --hash fnv|gear]\n");
         return 2;
     }
     const char* in_path   = argv[2];
@@ -196,12 +211,18 @@ static int cmd_split_encode(int argc, char** argv) {
     const char* body_path = argv[4];
     size_t avg = DEFAULT_AVG, mn = DEFAULT_MIN, mx = DEFAULT_MAX;
     size_t buf = DEFAULT_BUF_SIZE;
+    int hash_algo = DEFAULT_CHUNK_HASH;
     for (int i = 5; i < argc; ++i) {
         if (i + 1 >= argc) { fprintf(stderr, "missing value for %s\n", argv[i]); return 2; }
         if      (strcmp(argv[i], "--avg") == 0) { avg = (size_t)strtoull(argv[++i], NULL, 10); }
         else if (strcmp(argv[i], "--min") == 0) { mn  = (size_t)strtoull(argv[++i], NULL, 10); }
         else if (strcmp(argv[i], "--max") == 0) { mx  = (size_t)strtoull(argv[++i], NULL, 10); }
         else if (strcmp(argv[i], "--buf") == 0) { buf = (size_t)strtoull(argv[++i], NULL, 10); }
+        else if (strcmp(argv[i], "--hash") == 0) {
+            if (!parse_hash_flag(argv[++i], &hash_algo)) {
+                fprintf(stderr, "bad --hash value: %s (want fnv|gear)\n", argv[i]); return 2;
+            }
+        }
         else { fprintf(stderr, "unknown flag: %s\n", argv[i]); return 2; }
     }
     std::vector<uint8_t> data;
@@ -209,7 +230,7 @@ static int cmd_split_encode(int argc, char** argv) {
     uint8_t* meta = NULL; size_t meta_size = 0;
     uint8_t* body = NULL; size_t body_size = 0;
     int rc = encode_split(data.data(), data.size(),
-                          &meta, &meta_size, &body, &body_size, avg, mn, mx, buf);
+                          &meta, &meta_size, &body, &body_size, avg, mn, mx, buf, hash_algo);
     if (rc != DEDUP_OK) { fprintf(stderr, "encode_split rc=%d\n", rc); return 1; }
     int wm = write_file(meta_path, meta, meta_size);
     int wb = write_file(body_path, body, body_size);
