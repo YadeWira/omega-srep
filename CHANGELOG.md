@@ -9,16 +9,22 @@ Versions follow `1.<minor>.<patch>` for stable releases and
 
 ## [Unreleased]
 
-### Fixed
+### Removed
 
-- **Repository detached from its GitHub fork parent (`Intensity/srep`).**
-  Push/pull_request-triggered CI never fired, despite Actions being
-  enabled at the repo level (`enabled: true`, `allowed_actions: "all"`,
-  no branch protection) — confirmed across multiple pushes over
-  several months, with only manual `workflow_dispatch` runs working.
-  Root cause was the fork relationship itself. Requested a detach via
-  GitHub Support; repo is now standalone (`fork: false`). Verified
-  fixed by pushing this change and confirming CI ran automatically.
+- **GitHub Actions CI workflow (`.github/workflows/ci.yml`).** Push/PR
+  -triggered CI never fired on this repo. Two fix attempts: (1)
+  confirmed Actions were already enabled at the repo level
+  (`enabled: true`, `allowed_actions: "all"`); (2) detached the repo
+  from its former fork parent (`Intensity/srep`) via GitHub Support,
+  confirmed via API (`fork: false`) — pushing after the detach still
+  produced **zero check-suites**, ruling out both repo-level config
+  and fork status as the cause. Root cause is suspected account-level
+  (billing/Actions spending limit, or a GitHub App install
+  restriction) and needs dashboard access this token doesn't have.
+  Decided to stop relying on cloud CI as a safety net and lean on the
+  local test suite (`tests/*.sh`) instead — all still pass, run before
+  every push. Revisit if external contributors start submitting PRs
+  and the account-level blocker gets resolved separately.
 
 ## [1.0a-beta.4] — 2026-04-27 (pre-release)
 
