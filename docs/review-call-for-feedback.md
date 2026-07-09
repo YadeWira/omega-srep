@@ -12,7 +12,7 @@ This is the primary venue. Audience knows SREP, FA, ZPAQ, and the
 FreeArc ecosystem deeply. Tone: peer-to-peer, technical, no
 hand-holding.
 
-> **Subject:** Omega SREP 1.0a-beta.2 — fork of 3.93a with FA-style `-dup` mode + Windows build, pre-release review wanted
+> **Subject:** Omega SREP 1.0a-beta.4 — fork of 3.93a with FA-style `-dup` mode + Windows build, pre-release review wanted
 >
 > Hi all,
 >
@@ -28,10 +28,24 @@ hand-holding.
 >   * **Reproducible archives via `--seed=N`** for content-addressed
 >     storage / reproducible builds.
 >   * **Windows 10/11 build** end-to-end (ThreadsWin32.{h,c} written;
->     upstream referenced but never shipped them).
->   * **AddressSanitizer-clean** under the full 160-test suite.
->     One genuine bug surfaced and fixed (misaligned uint64_t store
->     in VHash::compute).
+>     upstream referenced but never shipped them), plus an
+>     alternative CMake path that also compiles clean under native
+>     MSVC (cl.exe) — not yet hand-verified by me, so this is one of
+>     the things I'd most like eyes on.
+>   * **AddressSanitizer-clean** under the full test suite. One
+>     genuine bug surfaced and fixed (misaligned uint64_t store in
+>     VHash::compute).
+>   * **Two correctness bugs found during the beta.2 soak window**
+>     and fixed in beta.3: a silent >2 GiB output truncation on
+>     Windows MinGW (32-bit `off_t` despite `_FILE_OFFSET_BITS=64`),
+>     and a `std::bad_alloc` abort on a corrupted `chunk_count` field
+>     (found by libFuzzer in 4 execs). Both now have permanent
+>     regression coverage via `tests/fuzz_regression.sh`.
+>   * **Multi-corpus bench vs upstream SREP 3.92 and FA 0.11**
+>     ([`docs/multi-corpus-bench.md`][bench]): `osrep -m4` is
+>     byte-identical to `srep64 -m4` on every corpus tested (fork
+>     parity confirmed), and `osrep -dup`'s dedup ratio lands within
+>     0.5% of FA 0.11's own `-dup` on the same dup-friendly corpus.
 >
 > What I'm specifically asking review for, in order of impact:
 >
@@ -48,9 +62,14 @@ hand-holding.
 >      ABI-compatible with the 2008-era ThreadsUnix.h shipped in
 >      this fork, so the C++ wrapper layer (Thread.h /
 >      Synchronization.h) needed no changes.
->   3. Empirical upstream parity:
->      [`docs/upstream-comparison.md`][cmp] — same input, byte-
->      identical compsize between SREP 3.92 and Omega 1.0a-beta.2;
+>   3. The native-MSVC CMake path — compiles clean per source audit,
+>      but I only have GCC/clang on Linux to test with. If anyone
+>      has a Windows box with Visual Studio 2022, a smoke-test build
+>      would close the last untested platform gap before v1.0.
+>   4. Empirical upstream parity:
+>      [`docs/upstream-comparison.md`][cmp] and
+>      [`docs/multi-corpus-bench.md`][bench] — byte-identical
+>      compsize between SREP 3.92 and Omega on every corpus tested;
 >      downstream zpaqfranz outputs differ by 39 bytes / 0.000005 %
 >      at `-m3`.
 >
@@ -59,8 +78,8 @@ hand-holding.
 >   * Style nits in the inherited `srep.cpp` / Common.h / hashes.cpp.
 >     Those are upstream code. I touched only what F5/F6 required
 >     plus the one ASAN fix.
->   * macOS/BSD/MSVC ports. Out of scope; declared x86_64 Linux +
->     Windows-MinGW only.
+>   * macOS/BSD ports. Out of scope; declared x86_64 Linux +
+>     Windows only.
 >
 > Pre-release binaries (Linux x86_64 + Windows x86_64): [release page][rel].
 > Repo: [github.com/YadeWira/omega-srep][repo].
@@ -70,10 +89,9 @@ hand-holding.
 >   * Adversarial inputs that break `-dup` round-trip
 >     (`tests/dup_corruption_fuzz.sh` already covers 27 trailer-
 >     mutation variants — looking for shapes the test misses).
->   * Soak runs with workloads bigger than my 1 GiB stress.
->   * Anyone with FA 0.11 still on disk: a bench comparing
->     `osrep -dup -m4` vs `fa -dup` on the same corpus would settle
->     whether the streaming dedup is competitive.
+>   * Soak runs with workloads bigger than my ~2 GiB stress.
+>   * A hand-verified native MSVC build (see point 3 above) —
+>     I can't test cl.exe myself.
 >
 > Thanks. Aiming to soak 2-4 weeks of feedback before promoting to
 > stable v1.0.
@@ -83,7 +101,8 @@ hand-holding.
 > [fmt]:   https://github.com/YadeWira/omega-srep/blob/main/docs/format-spec.md
 > [threads]: https://github.com/YadeWira/omega-srep/blob/main/Compression/LZMA2/C/ThreadsWin32.c
 > [cmp]:   https://github.com/YadeWira/omega-srep/blob/main/docs/upstream-comparison.md
-> [rel]:   https://github.com/YadeWira/omega-srep/releases/tag/v1.0a-beta.2
+> [bench]: https://github.com/YadeWira/omega-srep/blob/main/docs/multi-corpus-bench.md
+> [rel]:   https://github.com/YadeWira/omega-srep/releases/tag/v1.0a-beta.4
 > [repo]:  https://github.com/YadeWira/omega-srep
 
 ---
@@ -121,15 +140,26 @@ C++ angle. Tone: code-review request.
 >
 > Verification I've already done:
 >
->   * 160 tests across 7 suites (round-trip, random fuzz incl.
+>   * 160+ tests across 10 suites (round-trip, random fuzz incl.
 >     `-dup`, format-corruption fuzz, concurrency stress, byte-
 >     identity cross-test C++ vs Python prototype, real-world tar
->     of /usr/bin).
->   * AddressSanitizer-clean across all 120 ASAN-built tests.
->   * Independent user benchmark: byte-identical compsize on 1.79
->     GiB tar between upstream SREP 3.92 and Omega — confirms the
->     algorithmic core is preserved.
->   * Builds clean on Linux gcc 14 and Windows MinGW gcc 15.
+>     of /usr/bin, multi-corpus bench vs upstream SREP 3.92 and FA
+>     0.11).
+>   * AddressSanitizer/UBSan-clean across the full sanitized suite.
+>   * Three libFuzzer harnesses (decode, decode_streaming,
+>     encode_split) — two bugs already found and fixed this way: a
+>     silent >2 GiB output truncation on Windows (32-bit `off_t`
+>     surviving `_FILE_OFFSET_BITS=64`), and a `std::bad_alloc`
+>     abort on a corrupted length field. Both are pinned as
+>     permanent regression tests now.
+>   * Independent benchmark: byte-identical compsize on a 1.79 GiB
+>     tar between upstream SREP 3.92 and Omega — confirms the
+>     algorithmic core is preserved. Separately, Omega's `-dup`
+>     dedup ratio lands within 0.5% of FA 0.11's own `-dup` mode on
+>     the same corpus.
+>   * Builds clean on Linux gcc 14 / clang 19, and Windows MinGW.
+>     A CMake path also compiles clean under native MSVC per source
+>     audit, but I haven't hand-verified cl.exe myself yet.
 >
 > What I'd value most:
 >
@@ -145,9 +175,12 @@ C++ angle. Tone: code-review request.
 >   4. Style / idiom — most of the codebase is C-with-classes
 >      2008-era; my new files use `std::vector`, `std::string`,
 >      `std::unordered_map`. Consistency tradeoffs?
+>   5. If anyone has Visual Studio 2022 handy: a smoke-test build
+>      via the CMake path would close the one platform I can't test.
 >
 > Repo: github.com/YadeWira/omega-srep
-> Pre-release binaries (Linux + Windows x86_64): [release tag]
+> Pre-release binaries (Linux + Windows x86_64): [release tag,
+> v1.0a-beta.4]
 >
 > NOT asking for review of the upstream SREP code I inherited.
 > Aiming to soak 2-4 weeks before tagging v1.0.
@@ -158,7 +191,7 @@ C++ angle. Tone: code-review request.
 
 Audience: compression algorithm enthusiasts. Lead with numbers.
 
-> **Title:** Omega SREP 1.0a-beta.2 — pre-release of the abandoned SREP 3.93a fork, with FA-style `-dup` mode
+> **Title:** Omega SREP 1.0a-beta.4 — pre-release of the abandoned SREP 3.93a fork, with FA-style `-dup` mode
 >
 > Body:
 >
@@ -172,21 +205,32 @@ Audience: compression algorithm enthusiasts. Lead with numbers.
 >   * Windows 10/11 build verified (was declared but never built
 >     end-to-end on real Windows).
 >   * Reproducible archives via `--seed=N`.
+>   * Two correctness bugs (found via libFuzzer + a soak window)
+>     fixed since the first pre-release: a silent >2 GiB output
+>     truncation on Windows, and a `std::bad_alloc` abort on a
+>     corrupted archive field.
 >
 > Independent user check: 1.79 GiB real tar, `-m5f -a0`. Upstream
-> SREP 3.92 vs Omega 1.0a-beta.2 produced **byte-identical compsize**
+> SREP 3.92 vs Omega produced **byte-identical compsize**
 > (1,052,227,610 bytes both). Downstream zpaqfranz `-m3` outputs
 > differ by 39 bytes (0.000005 %) — pure arithmetic-coder noise
 > from the per-run random hash seed.
 >
+> I've since run a 3-corpus comparative bench against both upstream
+> SREP 3.92 *and* FA 0.11 directly (`docs/multi-corpus-bench.md`):
+> fork parity holds on every corpus, and Omega's `-dup` dedup ratio
+> lands within 0.5 % of FA 0.11's own `-dup` mode on the same
+> dup-heavy corpus — so the two independent CDC+dedup
+> implementations agree.
+>
 > Repo + bench numbers + format spec:
 > github.com/YadeWira/omega-srep
 >
-> Pre-release: [release tag]
+> Pre-release: [release tag, v1.0a-beta.4]
 >
 > Soaking 2-4 weeks of feedback before tagging v1.0. If anyone has
-> FA 0.11 / SREP 3.92 / ZPAQ pipelines on real workloads and wants
-> to compare, the more datapoints the better.
+> SREP 3.92 / FA 0.11 / ZPAQ pipelines on real workloads and wants
+> to compare further, the more datapoints the better.
 
 ---
 
