@@ -9,6 +9,36 @@ Versions follow `1.<minor>.<patch>` for stable releases and
 
 ## [Unreleased]
 
+### Added
+
+- **`tests/local_hardening.sh` (F6.11).** Wires together everything
+  cloud CI used to cover, plus the manual sanitizer/libFuzzer/Windows
+  gates that were previously only documented and run by hand: (1)
+  baseline build + full test suite, (2) ASAN+UBSAN rebuild + full test
+  suite, (3) all 3 libFuzzer harnesses soaked from their existing
+  corpora (`HARDEN_FUZZ_SECONDS`, default 40s each), (4) CMake +
+  mingw-w64 cross-build with a Wine smoke test (`--help` + a minimal
+  round-trip). Fails fast with a labeled stage/command/exit-code on
+  the first failure; optional-tool stages (mingw-w64/cmake, Wine) skip
+  loudly rather than silently passing. ~3.5 min end-to-end on this
+  host. Building it surfaced two real, previously-unknown bugs, both
+  specific to Linux-hosted mingw-w64 cross-compilation (invisible on
+  native Windows/NTFS, so never caught before):
+    - `Compression/Common.cpp:1052` includes `<ShObjIdl.h>`
+      (mixed-case); mingw-w64's headers only ship lowercase
+      `shobjidl.h`, so this only fails on a case-sensitive filesystem.
+      Worked around in the script with a 1-line shim header, not fixed
+      at the source.
+    - `CMakeLists.txt`'s static-link gate is
+      `CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND NOT WIN32`, which
+      excludes the one case that most wants `-static` (GNU/mingw
+      targeting Windows) — the cross-compiled `osrep.exe` ends up
+      dynamically linked against `libstdc++`/`libgcc_s`, unlike the
+      Makefile-built release binaries. Worked around in the script by
+      copying the two runtime DLLs alongside the exe for the Wine
+      smoke test; the gate itself is still `AND NOT WIN32` and should
+      be fixed to `AND NOT MSVC`.
+
 ### Removed
 
 - **GitHub Actions CI workflow (`.github/workflows/ci.yml`).** Push/PR
