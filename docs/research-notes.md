@@ -228,6 +228,107 @@ re-run on it. Until then, adding parallel paths to the inner loop
 of `compress.cpp` would add risk and maintenance cost without a
 measurable win.
 
+## CDC rolling hash: FNV lacks a fixed window, so `-dup` needs buffer-aligned duplicates (task F5.6)
+
+### What we tested
+
+The `-dup` CDC boundary hash (`Compression/SREP/dedup.cpp`, mirrored in
+`tests/dup_prototype.py`'s `cdc_split`) is `h = h*PRIME + byte`, reset to
+`0` only when a cut fires. A pure-Python prototype
+(`gear_cdc_split`, not committed — see below) swapped in a Gear-hash
+(`h = (h << 1) + GEAR[byte]`, FastCDC-style) with the same min/max
+bounds, to see whether the choice of rolling hash actually matters for
+Omega, or whether it's a theoretical nit.
+
+Compared on real corpora already used by `tests/multi_corpus_bench.sh`
+(`enwik8`, the `dup_bench_in_32x4.bin` synthetic duplicate corpus) plus
+`tests/corpus/*.bin`:
+
+  1. Chunk-size distribution (stdev, % clamped at `max_chunk`).
+  2. Dedup ratio on a corpus built from two identical 32 MiB blocks.
+  3. Edit locality: insert a few random bytes near the start of a
+     buffer, measure how far downstream chunk boundaries stay
+     disrupted before re-syncing with the un-edited version.
+  4. Throughput (pure Python — not representative of C++/SIMD, included
+     only to confirm no accidental regression in the toy chunker).
+
+### What we found
+
+**The current hash has no fixed window.** `h = h*PRIME + byte` accumulates
+the *entire* prefix since the last cut — it never "forgets" earlier
+bytes in the current chunk. Gear-hash's `h = (h << 1) + GEAR[byte]`
+naturally forgets bytes older than ~64 shifts (they fall off the top of
+the 64-bit register), giving it an implicit fixed window without any
+explicit removal step.
+
+This is not just a theoretical purity concern — it breaks dedup on
+non-buffer-aligned duplicates:
+
+| test | fnv (current) | gear-hash |
+|---|---|---|
+| dedup ratio, 2× identical 32 MiB blocks, **no buffer reset** (`buf_size=0`) | 100% unique (**found nothing**) | 50.1% unique (correct) |
+| edit-locality: resync distance after a 1-byte insert | +6,291,456 B (never resynced within an 8 MiB buffer) | +2,487 B |
+
+Production `-dup` survives this today only because `--chunk-buf`
+(default 8 MiB) resets the hash to `0` at a fixed grid, and the
+existing benchmark corpus (`dup_bench_in_32x4.bin`) was built with
+32 MiB blocks — an exact multiple of 8 MiB, so the reset grid happens
+to realign with the duplicate boundaries. A real-world duplicate that
+does **not** start at an 8 MiB-aligned offset (e.g. an identical file
+embedded at an arbitrary offset inside a tar archive) would not be
+found at all, because the FNV hash's cut-point sequence after the
+buffer reset depends on the *distance since the reset*, not just on
+local content — so two occurrences of the same bytes starting at
+different offsets-mod-8MiB diverge immediately.
+
+Gear-hash removes this dependency entirely: the `buf_size=0` (no reset)
+run above already outperforms FNV's buffer-aligned best case, because
+its window is short enough (~64 bytes) to resync locally regardless of
+absolute position.
+
+### Secondary finding: FastCDC's "normalized chunking" needs care
+
+A true FastCDC implementation also uses a stricter mask below the
+target average size and a laxer mask above it (not a single mask), to
+concentrate cut points around the average rather than let them drift.
+Implementing that dual-mask scheme measurably tightened the size
+distribution on `enwik8` (max-clamp rate 12.9% → 0.4%, stdev 5089 →
+2117) and `dup_bench_in_32x4` (max-clamp 3.6% → 0.1%).
+
+But it is **not universally better without tuning**: on
+`tests/corpus/mixed.bin` the normalized variant produced a *larger*
+average chunk (9362 B vs FNV's 4127 B target-4096) and higher max-clamp
+(38.9%) than FNV, and on the deliberately low-entropy
+`tests/corpus/text.bin` (28 distinct byte values) the naive Gear-hash
+degenerated completely — every single chunk hit the max-size clamp,
+zero natural cut points found at all, because the shift-based hash's
+low bits enter a short LCG-style cycle on highly periodic input and
+never land on the boundary condition. This is a real robustness gap
+that any Gear-hash port would need to guard against (e.g. mixing in
+position-dependent entropy, or accepting that already-repetitive
+low-entropy input doesn't need fine-grained CDC anyway since it
+compresses well downstream regardless).
+
+### Recommendation
+
+Worth porting to C++ (a real F5.x-follow-on task), because the
+alignment-independence is a genuine correctness/coverage improvement
+for `-dup`, not just a performance tweak — but only after:
+
+  1. Tuning the normalized-chunking mask widths against the *full*
+     multi-corpus-bench suite (`data.tar`, full `enwik8`, not the
+     8 MB / 16 MB slices used in this prototype).
+  2. Adding a degenerate-input safeguard so low-entropy stretches don't
+     silently fall back to always-max-size chunks (harmless for
+     correctness, since min/max bounds still hold, but it means CDC is
+     doing no useful work in that region).
+  3. Re-validating round-trip correctness end-to-end — this research
+     only touched chunk *boundaries*, not the on-disk `.dupref`/`ODUP`
+     format, so no format change is implied by adopting a different
+     internal hash.
+
+Filed as **F5.6** (open — prototype only, no C++ work started).
+
 ## References
 
 - [Intensity/srep](https://github.com/Intensity/srep) — upstream
