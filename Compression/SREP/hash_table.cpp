@@ -55,6 +55,22 @@ struct SliceHash
     return (hash*123456791u) >> (sizeof(uint32)*CHAR_BIT-BITS);
   }
 
+  // Chunk-range version of prepare_buffer() below (task F3.3d, BG-thread stripe-parallel
+  // prepare_buffer). `p` must point to the first byte of chunk `chunk_start` in the current
+  // input buffer. Every chunk index in [chunk_start,chunk_end) is written exactly once, so
+  // calling this concurrently from multiple threads with disjoint ranges over the same buffer
+  // is safe and produces h[] contents byte-for-byte identical to the single-threaded loop.
+  void prepare_buffer_range (char *p, Chunk chunk_start, Chunk chunk_end)
+  {
+    for (Chunk curchunk = chunk_start;  curchunk < chunk_end;  curchunk++)
+    {
+      entry checksum = 0;
+      for (int i=0;  i<slices_in_block;  i++, p+=slice_size)
+        checksum  +=  hash(p,slice_size) << (i*BITS);
+      h[curchunk] = checksum;
+    }
+  }
+
   // Fill h[] with hashes of slices of each chunk in the buf.
   // Omega SREP: outer loop bound is `p + L <= buf+size`, not `p < buf+size`.
   // Otherwise, when filesize % L != 0, the last partial chunk causes a
@@ -64,14 +80,9 @@ struct SliceHash
   void prepare_buffer (Offset offset, char *buf, int size)
   {
     if (h==NULL) return;
-    Chunk curchunk = offset/L;
-    for (char *p = buf;  p + L <= buf+size;  )
-    {
-      entry checksum = 0;
-      for (int i=0;  i<slices_in_block;  i++, p+=slice_size)
-        checksum  +=  hash(p,slice_size) << (i*BITS);
-      h[curchunk++] = checksum;
-    }
+    Chunk curchunk = Chunk(offset/L);
+    Chunk nchunks  = Chunk(size/L);    // number of full L-byte chunks; equivalent to the `p+L<=buf+size` loop bound above
+    prepare_buffer_range (buf, curchunk, curchunk+nchunks);
   }
 
   // Return TRUE if match MAY BE large enough, FALSE - if that's absolutely impossible
@@ -167,15 +178,38 @@ struct HashTable
                         + bitarrsize
                         + slicehash.memreq;}
 
+  // Chunk-range version of the PRECOMPUTE_DIGESTS loop below (task F3.3d, BG-thread stripe-parallel
+  // prepare_buffer). `p` must point to the first byte of chunk `chunk_start`. `digest` is a caller-owned
+  // VDigest -- pass a private per-thread copy when calling this from more than one thread concurrently
+  // (see MainDigest/PrepDigest comment above: VDigest/VHash carry internal state mutated by hashing, so
+  // *sharing* one instance across threads is a data race, even though every instance derived from the
+  // same initialized key produces identical digests for identical input, regardless of which instance
+  // computes it). Every chunk index in [chunk_start,chunk_end) is written exactly once.
+  void prepare_digests_range (char *p, Chunk chunk_start, Chunk chunk_end, VDigest &digest)
+  {
+    for (Chunk curchunk = chunk_start;  curchunk < chunk_end;  curchunk++, p += L)
+      digest.compute (p, L, &digestarr[curchunk]);
+  }
+
+  // Chunk-range version of prepare_buffer() below (task F3.3d): runs both of prepare_buffer's
+  // independent, disjoint-index loops (digest precompute + SliceHash) restricted to chunk range
+  // [chunk_start,chunk_end). `p` must point to the first byte of chunk `chunk_start`. Safe to call
+  // concurrently from multiple threads given disjoint, non-overlapping ranges and distinct `digest`
+  // instances -- output is byte-for-byte identical to the single-threaded prepare_buffer() below.
+  void prepare_buffer_stripe (char *p, Chunk chunk_start, Chunk chunk_end, VDigest &digest)
+  {
+    if (PRECOMPUTE_DIGESTS)                                                // Save chunk digests for secondary, reliable match checking
+      prepare_digests_range (p, chunk_start, chunk_end, digest);
+    if (slicehash.h != NULL)
+      slicehash.prepare_buffer_range (p, chunk_start, chunk_end);
+  }
+
   // Performed once for each block read
   void prepare_buffer (Offset offset, char *buf, int size)
   {
-    if (PRECOMPUTE_DIGESTS) {                                              // Save chunk digests for secondary, reliable match checking
-      Chunk curchunk = offset/L;
-      for (char *p = buf;  (buf+size)-p >= L;  p += L)
-        PrepDigest.compute (p, L, &digestarr[curchunk++]);
-    }
-    slicehash.prepare_buffer (offset, buf, size);
+    Chunk curchunk = Chunk(offset/L);
+    Chunk nchunks  = Chunk(size/L);    // number of full L-byte chunks; equivalent to both loops' original bounds
+    prepare_buffer_stripe (buf, curchunk, curchunk+nchunks, PrepDigest);
   }
 
 

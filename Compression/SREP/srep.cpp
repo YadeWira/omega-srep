@@ -589,7 +589,7 @@ int srep_main (int argc, char **argv)
       CDC_Global g(CONTENT_DEFINED_CHUNKING, NumThreads);
       HashTable  h(ROUND_MATCHES, COMPARE_DIGESTS, PRECOMPUTE_DIGESTS, INMEM_COMPRESSION, CONTENT_DEFINED_CHUNKING, L, min_match, io_accelerator, BITARR_ACCELERATOR, mmap_infile, filesize, LargePageMode);
       DictionaryCompressor inmem(dictsize, dict_hashsize, dict_min_match, dict_chunk, BASE_LEN, LargePageMode);
-      BG_COMPRESSION_THREAD bg_thread(ROUND_MATCHES, COMPARE_DIGESTS, BASE_LEN, dict_min_match, FUTURE_LZ, selected_hash->hash_func, hash_obj, filesize, dictsize, bufsize, header_size, h, inmem, mmap_infile, fin, fout, fstat, LargePageMode);
+      BG_COMPRESSION_THREAD bg_thread(ROUND_MATCHES, COMPARE_DIGESTS, BASE_LEN, dict_min_match, FUTURE_LZ, selected_hash->hash_func, hash_obj, filesize, dictsize, bufsize, header_size, h, inmem, mmap_infile, fin, fout, fstat, LargePageMode, NumThreads);
       double memreq = double(h.memreq()+inmem.memreq()+bg_thread.memreq()) / mb;
       if (g.errcode || h.errcode() || inmem.errcode || bg_thread.errcode)   error (ERROR_MEMORY, "Can't allocate memory: %.0lf mb required (-l64k -a- -ia- options may help)", memreq);
       bg_thread.start();

@@ -364,6 +364,101 @@ Filed as **F3.3d** (open — this session's contribution is the quantified
 segment-boundary loss curve above; no C++ implementation has started
 for any of the three candidates).
 
+## Stripe-parallel `prepare_buffer`, implemented (task F3.3e, closes the F3.3d spike)
+
+F3.3d's recommendation #3 was a profiling spike before committing to the
+implementation: measure `prepare_buffer`'s actual share of BG-thread
+wall-clock. That spike ran first.
+
+### Profiling spike result
+
+Real `-pc`-gated timing (reusing the existing gated-diagnostic-counter
+pattern already used by `pc.max_offset`, not a new mechanism), on
+64 MiB and 1 GiB corpora, `-m3` (digest precompute) and `-m5`
+(SliceHash):
+
+| mode | corpus | % of BG-thread active time | % of wall-clock |
+|---|---|---|---|
+| -m3 | 64MiB incompressible | 25–27% | 12–15% |
+| -m3 | 64MiB repetitive text | 44–47% | 30–36% |
+| -m5 | 64MiB incompressible | 36–41% | 24–30% |
+| -m5 | 64MiB repetitive text | 59–64% | 50–55% |
+| -m3 | 1GiB compressible text | 50–55% | 46% |
+| -m5 | 1GiB compressible text | 62–69% | 60–65% |
+
+Not a marginal fraction — up to 69% of the BG thread's own active time,
+worst on `-m5`/compressible-text and *increasing* at 1 GiB scale (this
+host, 56 cores, has more headroom than the original 4-core F3.3a box).
+Well above the bar for spending 1-2 engineer-days on the implementation,
+so the workflow proceeded to build it rather than closing won't-fix.
+
+### Implementation
+
+Striped `HashTable::prepare_buffer`'s two independent, disjoint-index
+loops (digest precompute for `-m3`, SliceHash for `-m5`) across worker
+threads inside `BG_COMPRESSION_THREAD`, reusing the exact
+`MultipleProcessingThreads<Job>` template already proven for `-m1/-m2`
+in `compress_cdc.cpp`, and the exact `MainDigest`/`PrepDigest`
+per-thread-VDigest-copy pattern already at `hash_table.cpp:124/138`
+(extended from 2 copies to N). Zero lines changed in `compress.cpp` or
+`add_hash0`/`find_match0`. Falls back to the original inline call
+whenever there's nothing to parallelize.
+
+**Overhead regression found and fixed before commit.** The first pass
+created and started the thread pool whenever `NumThreads>1` — true by
+default on any multi-core host — regardless of whether the current mode
+actually uses `prepare_buffer` for anything. Since `BG_COMPRESSION_THREAD`
+is constructed on every invocation (all methods, including `-m0/-m1/-m2/-m4`
+which never touch these loops), this meant every single run paid a fixed
+thread-pool create/destroy cost for a pool it would never use. Fixed by
+gating pool creation on `h.PRECOMPUTE_DIGESTS || h.slicehash.h != NULL` in
+addition to `NumThreads>1` — confirmed by direct measurement (50 back-to-back
+`-m4` invocations on a 64KiB file: 0.102s baseline vs 0.103s after the whole
+F3.3e change, i.e. no measurable regression) that this closed the gap.
+
+### Independent verification
+
+Re-verified directly, not just from the implementing/reviewing agents'
+own reports, because of a methodology trap worth naming: **without
+`--seed=N`, `osrep`'s output is intentionally non-deterministic between
+runs** (the `--seed` feature exists precisely to make archives
+reproducible), so naive before/after `cmp` on default invocations
+shows spurious byte differences that have nothing to do with the code
+change. With `--seed` fixed, output from the striped build and from
+unmodified HEAD is **byte-for-byte identical** across `-m3`/`-m5` ×
+`-t1`/`-t4`/`-t8`, on both a 5 MiB random buffer and a doubled-corpus
+compressible buffer — confirming the striping changes timing only, not
+any compression decision. Full existing suite re-run clean on the final
+tree: `roundtrip.sh` 30/30, `fuzz.sh` 105/105, `dedup_xtest.sh` PASS,
+`dup_native_roundtrip.sh` 17/17, `dup_concurrency.sh` 8/8,
+`fuzz_regression.sh` 1/1.
+
+**Real speedup, but modest and noisy at very high thread counts.** On a
+512 MiB compressible-text buffer on this 56-core host, comparing 3-rep
+medians: `-m3` `-t1` ≈0.56s vs `-t8` ≈0.47s (~16% faster); `-m5` `-t1`
+≈0.69s vs `-t8` ≈0.60s (~13% faster). At the *default* thread count
+(`NumThreads` = all 56 cores on this host), results were noisier and a
+single early sample even showed a net slowdown vs `-t1` — plausible
+given a 512 MiB file only has 64 buffers total and the one-time,
+56-real-OS-thread pool startup cost doesn't obviously pay for itself at
+that scale. Not tuned further this session (would need a size-aware or
+independently-capped worker count, separate from `-tN`, to reliably beat
+`-t1` at very high core counts) — worth a follow-up measurement pass on
+larger inputs and/or a lower worker-count cap before trusting the
+default on many-core hardware.
+
+### Verdict
+
+**Shipped.** Thread-safety independently re-derived (FIFO
+`Get()`-then-`Event::Wait()` barrier, credit/window slot-reuse ordering,
+POD `VDigest` copy semantics) — no defect found. Correctness independently
+confirmed bit-for-bit with `--seed` fixed. The overhead regression found
+during review was fixed before commit, not left as a follow-up. The
+speedup is real at moderate thread counts and roughly a wash at this
+host's full 56-core default — good enough to ship given zero downside
+risk (falls back to the unmodified path whenever there's nothing to
+gain), with thread-count tuning flagged as a real, separate follow-up.
+
 ## CDC rolling hash: FNV lacks a fixed window, so `-dup` needs buffer-aligned duplicates (task F5.6)
 
 ### What we tested

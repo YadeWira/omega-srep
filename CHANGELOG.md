@@ -11,6 +11,22 @@ Versions follow `1.<minor>.<patch>` for stable releases and
 
 ### Added
 
+- **Stripe-parallel `prepare_buffer` for `-m3`/`-m5` (F3.3e).** A
+  profiling spike (gated `-pc` instrumentation, matching the existing
+  diagnostic-counter pattern) measured `HashTable::prepare_buffer`'s
+  digest-precompute (`-m3`) and SliceHash (`-m5`) loops at 25–69% of
+  BG-thread active time — well above a "worth it" bar — so they're now
+  striped across worker threads (`Compression/SREP/hash_table.cpp`,
+  `io.cpp`), reusing the same `MultipleProcessingThreads<Job>` template
+  already used by `-m1`/`-m2`. Zero changes to the match-search core.
+  Verified byte-for-byte identical output vs unmodified code with
+  `--seed` fixed (naive comparison without `--seed` is misleading —
+  output is intentionally non-deterministic run-to-run otherwise), full
+  test suite clean. ~13–18% faster on a 512MiB compressible-text buffer
+  at moderate thread counts; noisier and roughly a wash at this host's
+  full 56-core default — thread-count tuning independent of `-tN` is a
+  follow-up, not done here. See `docs/research-notes.md` F3.3e.
+
 - **`tests/local_hardening.sh` (F6.11).** Wires together everything
   cloud CI used to cover, plus the manual sanitizer/libFuzzer/Windows
   gates that were previously only documented and run by hand: (1)
