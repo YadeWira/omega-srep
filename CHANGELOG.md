@@ -7,6 +7,19 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com).
 Versions follow `1.<minor>.<patch>` for stable releases and
 `1.0a-beta.N` for pre-1.0 betas.
 
+## [Unreleased]
+
+### Fixed
+
+- **Repository detached from its GitHub fork parent (`Intensity/srep`).**
+  Push/pull_request-triggered CI never fired, despite Actions being
+  enabled at the repo level (`enabled: true`, `allowed_actions: "all"`,
+  no branch protection) — confirmed across multiple pushes over
+  several months, with only manual `workflow_dispatch` runs working.
+  Root cause was the fork relationship itself. Requested a detach via
+  GitHub Support; repo is now standalone (`fork: false`). Verified
+  fixed by pushing this change and confirming CI ran automatically.
+
 ## [1.0a-beta.4] — 2026-04-27 (pre-release)
 
 Tooling + portability snapshot. No behavior change for users running
