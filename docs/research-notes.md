@@ -228,6 +228,142 @@ re-run on it. Until then, adding parallel paths to the inner loop
 of `compress.cpp` would add risk and maintenance cost without a
 measurable win.
 
+## Segment-level parallelism for `-m3 / -m4 / -m5` (task F3.3d, reopens roadmap P2.8)
+
+F3.3b/c above were closed won't-fix for *inner-loop* parallelism against
+the single shared hash table — splitting the existing serial scan while
+keeping one order-dependent table. This is a structurally different
+angle: parallelism at the *segment* level (independent per-segment
+state, zstd `--long`/xz `--threads`/lrzip-style), which sidesteps the
+hash-table mutation-order dependency instead of trying to synchronize
+it.
+
+### What we tested
+
+A standalone Python coverage-measurement harness
+(`tests/segment_match_loss.py`, structurally modeled on the real
+`hash_table.cpp`/`compress.cpp` grid-indexed greedy matcher — chunk-grid
+size = `MIN_MATCH` = 512B, one-slot-per-bucket table unconditionally
+overwritten on insert, first-hit-wins matching, no lazy lookahead)
+computed, for four corpora already used by
+`tests/multi_corpus_bench.sh`, how much exact-duplicate coverage a
+whole-buffer match pass finds vs. splitting the same buffer into
+fixed-size segments with 0/1MB/4MB of priming overlap copied from the
+previous segment's tail:
+
+| corpus | baseline coverage | loss, 4/16MB segment, no overlap | recovered by +1MB | recovered by +4MB |
+|---|---|---|---|---|
+| mixed.bin (6.25MB) | 67.45% | 0.00% | — | — |
+| text.bin (4.00MB) | 99.16% | 0.00% | — | — |
+| enwik8 (64MB slice) | 0.00%* | 0.00% | — | — |
+| dup_bench_in_32x4.bin (64MB slice) | 50.08% | **99.68%** | 0.0% | 0.0% |
+
+\* enwik8's baseline coverage is 844 bytes out of 64MB — there is
+essentially no exact-duplicate redundancy to lose at `MIN_MATCH=512` on
+this corpus, so its 0.00% loss figures mean "nothing to lose," not
+"segmentation is harmless."
+
+A separate synthetic sanity check (12MB buffer, 600KB duplicate placed
+0.78MB into segment 1) confirmed the overlap *mechanism* itself works
+correctly: 100% loss with no overlap, 0% loss with a 1MB handoff. This
+rules out "the harness is broken" as the explanation for dup_bench's
+result — the real duplicate distance in dup_bench (~32MB) is simply far
+larger than any handoff window tested (max 4MB), so 0% of that specific
+loss is recoverable at the tested sizes.
+
+### What this tells us
+
+Segment-boundary ratio loss, which F3.3 flagged qualitatively but never
+quantified ("a naive split... loses cross-sub-block matches and
+degrades compression ratio"), is now measured and corpus-dependent
+rather than uniform: **zero loss on general-purpose corpora, catastrophic
+(99.68%) loss on the exact workload class SREP differentiates itself
+on** — long-range periodic duplicates, the same class the F6.10 bench
+uses to claim `-dup` cuts decompress RSS by 66% on long-range-dup
+corpora. Any segment-based parallel design trades away some fraction of
+that unbounded-whole-file advantage; how much, for real (not synthetic)
+corpora, is now measured for the tested sizes — only the mechanism
+(works when handoff ≥ true duplicate distance) and the failure mode
+(recovers 0% when it doesn't) are confirmed, not the exact recovery
+curve at larger handoff sizes.
+
+### Three candidate designs considered, none ready to ship
+
+  - **Fully-independent zero-handoff segments** (xz `-T0` clone):
+    rejected as a default. Its numbers are literally the "no overlap"
+    rows above — 99.68% loss on dup_bench, i.e. it guts the F6.10
+    headline result. It also implies a new on-disk container format
+    (independently-decodable segments) with real migration cost, not
+    just a ratio tradeoff. Only defensible as a loudly-gated, explicit
+    opt-in "fast lane" for content already known to have no long-range
+    structure — never as the shipped `-dup` default.
+
+  - **Segmented Pipeline Compression** (per-segment hash tables +
+    64MB handoff, sized to just clear the 32MB gap measured above): the
+    design that motivated the measurement above, but as first scoped it
+    has a fatal contradiction — it gates "worker N+1 starts once worker
+    N's segment is done," which means at most one segment is ever
+    compressing at a time. As scoped, it would cost ~1-2 engineer-weeks
+    (chunk-number rebasing across `chunkarr_value`/`get_chunk`/
+    `digestarr`, per-segment table lifecycle, ordered `statbuf` merge —
+    the rebasing risk is "silent wrong-offset matches, not just ratio
+    loss") for **zero wall-clock parallelism**. Its 256MB/64MB sizing is
+    also an extrapolation from the 4MB-handoff experiment, never itself
+    measured. It additionally never addresses that `-m5` needs
+    `L`-aligned segment boundaries in a size range that overlaps the
+    known F4.4 SIGSEGV trigger window (449KiB–4MiB) — nobody has checked
+    whether segmenting changes that bug's trigger rate.
+
+  - **BG-thread stripe-parallel `prepare_buffer`**: the one candidate
+    that changes zero lines in `compress.cpp`/`hash_table.cpp`'s serial
+    match logic. `SliceHash::hash()` (hash_table.cpp:50-56) is a pure
+    per-chunk function of pointer+size, and the existing `MainDigest`/
+    `PrepDigest` per-thread-copy pattern (hash_table.cpp:124/138,
+    comment: *"we need two equal digests since they are used in 2
+    threads..."*) is already the exact template needed to stripe
+    `prepare_buffer`'s two independent, disjoint-index loops
+    (hash_table.cpp:64-75, 171-179) across N workers inside the existing
+    `BG_COMPRESSION_THREAD`, joined before `io.cpp`'s `ReadDone.Signal()`.
+    Zero ratio risk, zero format risk, zero F4.4 interaction — but **no
+    measured payoff**: this only helps `-m3`/`-m5` (the loops it strips
+    are no-ops for `-m4`), and F3.3a already showed the BG/main pipeline
+    hides 97-171% of the relevant cost, so the win could easily be
+    marginal.
+
+### Recommendation
+
+Do not pick a "winner" yet — none of the three clears the bar of
+"measured design ready for engineering investment," consistent with
+F3.3's own "we will not ship half-implemented threading."
+
+  1. **Reject fully-independent segments as any default** — the 99.68%
+     loss number is disqualifying for `-dup`'s core selling point. May
+     only ship as an explicit opt-in with a hard product sign-off that
+     it can silently regress long-range dedup.
+  2. **Do not build Segmented Pipeline Compression's MVP as scoped.**
+     Rework it so segment N+1's priming can start without waiting for
+     segment N's `compress()` to finish (priming-table fill is a pure
+     function of already-available mmap'd bytes, not of N's
+     match-search progress — it doesn't need the "progress cursor" the
+     original design assumed). Size and risk-assess *that* version.
+     Separately, rerun `tests/segment_match_loss.py` at the actual
+     proposed 256MB/64MB sizes against `dup_bench` (not extrapolated
+     from 4MB) before trusting the defaults, and resolve the F4.4/`-m5`
+     boundary-rounding interaction first (recommend excluding `-m5`
+     from segment-parallel work entirely until F4.4 is fixed).
+  3. **Stripe-parallel `prepare_buffer` can proceed to a profiling
+     spike now** (extend `tests/profile.sh`, same discipline as F3.3a)
+     to measure `prepare_buffer`'s actual share of BG-thread wall-clock
+     on real corpora at both 64MB and 1GiB scale, before committing the
+     1-2 engineer-days of implementation. If the spike shows it's a
+     small fraction of BG-thread time, close it won't-fix alongside
+     F3.3b/c for the same reason; if there's real idle-core time, it's a
+     safe, self-contained win worth taking.
+
+Filed as **F3.3d** (open — this session's contribution is the quantified
+segment-boundary loss curve above; no C++ implementation has started
+for any of the three candidates).
+
 ## CDC rolling hash: FNV lacks a fixed window, so `-dup` needs buffer-aligned duplicates (task F5.6)
 
 ### What we tested
