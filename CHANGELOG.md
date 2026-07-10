@@ -7,7 +7,11 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com).
 Versions follow `1.<minor>.<patch>` for stable releases and
 `1.0a-beta.N` for pre-1.0 betas.
 
-## [Unreleased]
+## [1.0a-beta.6] — 2026-07-10 (pre-release)
+
+Small hardening follow-up to beta.5, same day. No behavior change on
+the default path — this is a portability-robustness fix, verified
+byte-for-byte identical on x86_64.
 
 ### Fixed
 
