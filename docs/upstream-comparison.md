@@ -145,8 +145,10 @@ hash seed.
   upstream SREP has no equivalent feature. FA 0.11's `-dup` is the
   closest peer; that comparison is the natural next step.
 - **Pre-1.0 stability over time** — this is a single-run snapshot.
-  The 2-4 week soak window (F6.2 task) is meant to catch
-  regressions that show up only on adversarial / unusual inputs.
+  The F6.2 calendar soak window was dropped as a v1.0 stable gate
+  (see CHANGELOG `[Unreleased]`) in favor of `tests/local_hardening.sh`
+  (F6.11), which runs ASAN+UBSAN, libFuzzer, and a Windows cross-build
+  check on demand instead of waiting on elapsed time.
 
 ## Conclusion
 

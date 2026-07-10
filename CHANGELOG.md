@@ -9,6 +9,20 @@ Versions follow `1.<minor>.<patch>` for stable releases and
 
 ## [Unreleased]
 
+### Changed
+
+- **Dropped the F6.2 soak window as a v1.0 stable gate.** F6.2 was a
+  passive 2-4 week calendar wait (see `docs/upstream-comparison.md`)
+  before declaring v1.0 stable, meant to let real/adversarial usage
+  surface regressions the test suite didn't catch. Decided this isn't
+  worth gating a release on: `tests/local_hardening.sh` (F6.11) now
+  runs the full build+test suite, an ASAN+UBSAN rebuild, a 3-harness
+  libFuzzer soak, and a Windows cross-build/Wine smoke test on every
+  push-equivalent check — the automated coverage the soak window was
+  meant to approximate over time now runs on demand instead. v1.0
+  stable readiness is gated on `tests/local_hardening.sh` passing
+  clean, not on elapsed calendar time.
+
 ### Added
 
 - **`--chunk-hash=gear` opt-in CDC hash for `-dup` (F5.6).** The
