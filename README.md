@@ -12,16 +12,21 @@ platforms.
 - **No backward compatibility** with `.srep` files. The on-disk magic bytes
   changed from `"SREP"` to `"OSRP"` — old archives must be decompressed with
   the upstream tool first.
-- **Supported platforms:** Windows 10/11 x64 and Linux x64 only. The
-  historical 32-bit, big-endian, FreeBSD, and macOS branches are gone — that
-  margin will be spent on real improvements.
+- **Supported platforms:** Windows 10/11 x64 and Linux x64 (primary,
+  tested target). 32-bit x86 (i686) is also supported as an **opt-in**
+  build — see `docs/32bit-support.md` for the cross-compile command,
+  what's confirmed working, and one known issue (`-hash=sha1`) to
+  avoid there. The historical big-endian, FreeBSD, and macOS branches
+  are gone.
 - **Binary name:** `osrep` (replaces `srep`).
-- **Version line:** Omega SREP starts a new lineage at `1.0a beta`.
-- **Dictionary cap relaxed.** As a side effect of dropping the 32-bit
-  build, the in-memory REP dictionary (`-dBYTES`) is no longer pinned
-  near 2 GB. `-d3gb`, `-d4gb`, and beyond have been smoke-tested for
-  round-trip correctness on x86_64 — the only remaining cap is the
-  available RAM on the host.
+- **Version line:** Omega SREP starts a new lineage at `1.0a beta`,
+  currently `1.0a-beta.5`.
+- **Dictionary cap relaxed (x86_64).** The in-memory REP dictionary
+  (`-dBYTES`) is no longer pinned near 2 GB on the primary 64-bit
+  build. `-d3gb`, `-d4gb`, and beyond have been smoke-tested for
+  round-trip correctness — the only remaining cap is the available RAM
+  on the host. (The opt-in 32-bit build keeps a real, address-space-driven
+  cap — see `docs/32bit-support.md`.)
 - **`-dup` mode (FA-style dedup pre-pass).** Omega SREP adds a
   content-defined-chunking + dedup stage in front of the existing
   SREP encoder, after FA 0.11's design. Pass `-dup` on the command
@@ -42,7 +47,13 @@ platforms.
   `docs/dup-bench.md`. `-dup` is incompatible with `-m0`; pair it
   with `-m3`/`-m4`/`-m5` for best results. Tunables: `--chunk-avg=N`,
   `--chunk-min=N`, `--chunk-max=N`, `--chunk-buf=N` (defaults match
-  FA: avg 4 KiB, min 1 KiB, max 16 KiB, buf 8 MiB).
+  FA: avg 4 KiB, min 1 KiB, max 16 KiB, buf 8 MiB), and
+  `--chunk-hash=fnv|gear` — the default `fnv` chunk-boundary hash has
+  no fixed window, so it can miss duplicate content that isn't aligned
+  to the `--chunk-buf` grid; the opt-in `gear` hash (FastCDC-style,
+  with an implicit content window) finds those too, at no cost to the
+  default path or the on-disk format. See `docs/research-notes.md`
+  (F5.6 sections) for the measurements behind this.
 
   **`--dup-paranoid`:** the streaming encoder normally trusts the
   64-bit chunk hash to identify duplicates (collision rate of order
@@ -81,8 +92,10 @@ produce archives within 0.000005% of each other at `-m3`. See
 ```
 
 A `PREFIX` may be provided to the `make` argument. Tested on Debian Linux
-with `g++`/`clang++`. On non-x86_64 targets the build fails by design at the
-preprocessor.
+with `g++`/`clang++`. On non-x86 targets the build fails by design at
+the preprocessor. For Windows, see `docs/windows-build.md` (FOSS
+MinGW-w64 toolchain, no Visual Studio needed) and `docs/32bit-support.md`
+for the opt-in 32-bit (i686) cross-compile path.
 
 ## Description
 
