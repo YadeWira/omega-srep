@@ -194,6 +194,40 @@ not investigated -- filed as a follow-up. **Avoid `-hash=sha1` on
 32-bit builds until this is fixed**; every other hash (`vmac` default,
 `md5`, `siphash`, `sha512`) is confirmed working.
 
+## Bug #4 (fixed): SSE4.2 hardware CRC32 asm had the same undeclared-register-modification risk as VMAC
+
+Flagged by a cross-project code review (a different fork of upstream
+SREP shares this exact function) and independently confirmed here.
+`Compression/SREP/hashes.cpp`'s `a_mm_crc32_u8` -- the hardware CRC32C
+instruction wrapper used by `CrcRollingHash` for `-m1`/`-m2`'s
+content-defined chunking, on any CPU with SSE4.2 (32-bit or 64-bit;
+this is a live, actively-used path, not dead code) -- declared its
+byte-sized `value` parameter with a `"rm"` constraint:
+
+```c
+asm("crc32b %[value], %[crc]\n" : [crc] "+r" (crc) : [value] "rm" (value));
+```
+
+`"rm"`'s register alternative allows *any* general-purpose register,
+but on i386 only eax/ebx/ecx/edx have an 8-bit sub-register (esi/edi/
+ebp/esp don't) -- if the allocator ever picks one of those for an
+inlined call site under real register pressure, the build fails
+("unsupported size for integer register"). Confirmed this didn't fire
+in this project's own build only because GCC happened to pick a memory
+operand instead of a register at `-O3` (verified via `objdump`) --
+the same "safe by accident of the current compiler's choices" shape as
+the VMAC bug above, not a guarantee.
+
+**Fix**: `"rm"` → `"qm"`, restricting the register alternative to the
+byte-addressable class (a/b/c/d), valid on both i386 and x86_64.
+Also added an explicit `"cc"` clobber for documentation/defense-in-depth,
+even though CRC32's Intel-documented flags-affected is "None" -- costs
+nothing, removes any doubt, matches the same defensive reasoning applied
+to `poly_step_func` above. Verified byte-for-byte identical output vs.
+unmodified code (`--seed` fixed) on x86_64, and a real 10/10 `-m1`/`-m2`
+round-trip pass on the 32-bit build under Wine (this host has SSE4.2,
+so the hardware path is genuinely exercised, not silently skipped).
+
 ## Building a 32-bit binary
 
 Not yet wired into the Makefile as a named target (the host-arch-vs-

@@ -7,6 +7,25 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com).
 Versions follow `1.<minor>.<patch>` for stable releases and
 `1.0a-beta.N` for pre-1.0 betas.
 
+## [Unreleased]
+
+### Fixed
+
+- **SSE4.2 hardware CRC32 asm had the same undeclared-register-modification
+  risk as the VMAC bug fixed in F6.12.** Flagged by a cross-project code
+  review (a different SREP fork shares this exact function) and
+  independently confirmed. `a_mm_crc32_u8` (`Compression/SREP/hashes.cpp`,
+  used by `-m1`/`-m2`'s CDC rolling hash on any SSE4.2 CPU, 32- or 64-bit —
+  a live path, not dead code) declared its byte-sized operand with a `"rm"`
+  constraint, which allows GCC to pick a non-byte-addressable register
+  (esi/edi/ebp/esp on i386 have no 8-bit sub-register) — this project's own
+  build only avoided it by accident of the compiler currently choosing
+  memory instead. Fixed: `"rm"` → `"qm"` (byte-addressable registers only,
+  valid on both architectures), plus a defensive `"cc"` clobber. Verified
+  byte-for-byte identical x86_64 output and a real 10/10 `-m1`/`-m2`
+  round-trip pass on the 32-bit build under Wine. See `docs/32bit-support.md`
+  Bug #4.
+
 ## [1.0a-beta.5] — 2026-07-10 (pre-release)
 
 Algorithmic + hardening + release-process snapshot since 1.0a-beta.4.

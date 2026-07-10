@@ -207,7 +207,18 @@ const uint32  PRIME1 = 153191,  PRIME2 = 3141601;
 #include <x86intrin.h>
 #include <cpuid.h>
 uint32 a_mm_crc32_u8(uint32 crc, uint8 value) {
-  asm("crc32b %[value], %[crc]\n" : [crc] "+r" (crc) : [value] "rm" (value));
+  // Omega patch: `value` is a byte, but the original "rm" constraint lets
+  // GCC pick ANY general register for the "r" alternative -- on i386, esi/
+  // edi/ebp/esp have no 8-bit sub-register, so if the allocator ever picks
+  // one of those (a real risk once this gets inlined into a hot call site
+  // with real register pressure, unlike a standalone function call), the
+  // build fails with "unsupported size for integer register". "qm"
+  // restricts the register alternative to the byte-addressable class
+  // (a/b/c/d), which exists on both i386 and x86_64. Also added an
+  // explicit "cc" clobber for documentation/defense-in-depth even though
+  // CRC32's Intel-documented flags-affected is "None" -- costs nothing and
+  // removes any doubt, matching this file's nh_16_func/poly_step_func fix.
+  asm("crc32b %[value], %[crc]\n" : [crc] "+r" (crc) : [value] "qm" (value) : "cc");
   return crc;
 }
 #define update_CRC(crc,CRCTable,c)  (a_mm_crc32_u8((crc),(c)))
