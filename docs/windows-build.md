@@ -7,6 +7,11 @@ and it is what the maintainer builds locally before each tag.
 You do not need Visual Studio. Everything below is open-source and
 self-contained.
 
+Everything on this page targets x86_64 (the primary, tested target).
+32-bit (i686) is also supported, opt-in — see `docs/32bit-support.md`
+for the cross-compile command, what's confirmed working, and one known
+issue (`-hash=sha1`) to avoid there.
+
 ## Recommended: MinGW-w64 via scoop
 
 [scoop](https://scoop.sh) gives you a clean, user-local install of

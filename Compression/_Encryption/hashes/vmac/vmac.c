@@ -382,6 +382,29 @@ static void NOINLINE nh_16_func(const uint64_t *mp, const uint64_t *kp, size_t n
 	// to move the lower 32-bits to the stack and then back. Surprisingly,
 	// this is faster than any other method.
 #ifdef __GNUC__
+	/* --- Omega patch (32-bit VMAC crash fix) -----------------------------
+	 * The asm body below uses ESI/EDI/ECX (mp/kp/nw) as live loop-control
+	 * registers -- it advances esi/edi by 16 bytes per iteration and
+	 * decrements ecx as the loop counter -- but the operand list used to
+	 * declare them as plain read-only inputs ("S"/"D"/"c"). Per GCC's
+	 * extended-asm contract, an asm must not modify an input operand's
+	 * register unless it is also an output (or read-write "+") operand.
+	 * Violating this let -O2/-O3's -fipa-ra interprocedural register
+	 * allocator assume ECX was unchanged across a nh_16_func call, so GCC
+	 * sometimes omitted reloading ECX before the second of the two
+	 * back-to-back nh_16_func calls emitted by nh_vmac_nhbytes_2 (used
+	 * whenever VMAC_TAG_LEN == 128, as configured in
+	 * Compression/SREP/hashes.cpp). The callee then ran with ECX == 0,
+	 * "sub ecx,2" underflowed, and the MMX copy loop ran unbounded, walking
+	 * mp/kp off the end of the message buffer -- an i686-only page-fault
+	 * crash. Route mp/kp/nw through local read-write ("+") operands below
+	 * so GCC's dataflow model correctly reflects that the asm modifies
+	 * them (a bare esi/edi/ecx clobber is rejected by GCC here -- "asm
+	 * operand has impossible constraints" -- since they are simultaneously
+	 * fixed hard-register inputs, so "+"-operands are the correct fix). */
+	const uint64_t *mp_scratch = mp;
+	const uint64_t *kp_scratch = kp;
+	size_t nw_scratch = nw;
 	__asm__ __volatile__
 	(
 		".intel_syntax noprefix;"
@@ -468,8 +491,8 @@ static void NOINLINE nh_16_func(const uint64_t *mp, const uint64_t *kp, size_t n
 		AS2(	add		esp, 12)
 #ifdef __GNUC__
 		".att_syntax prefix;"
-		:
-		: "S" (mp), "D" (kp), "c" (nw), "a" (rl), "d" (rh)
+		: "+S" (mp_scratch), "+D" (kp_scratch), "+c" (nw_scratch)
+		: "a" (rl), "d" (rh)
 		: "memory", "cc"
 	);
 #endif
@@ -494,10 +517,24 @@ static void poly_step_func(uint64_t *ahi, uint64_t *alo, const uint64_t *kh,
 
 #ifdef __GNUC__
 	uint32_t temp;
+	// Omega patch: this asm loads `mh` into ESI but later reuses ESI as
+	// pure scratch (`movd esi,mm0` below, read back via `movd mm7,esi`)
+	// without ever dereferencing [esi] again -- an undeclared register
+	// modification of a plain input operand, the same GCC extended-asm
+	// contract violation that caused the nh_16_func crash fixed above
+	// (see that function's comment for the full -fipa-ra mechanism).
+	// poly_step_func is likewise called twice back-to-back for
+	// VMAC_TAG_LEN==128 (poly_step(ch,...) then poly_step(ch2,...)), the
+	// same double-call shape that let -fipa-ra skip a register reload
+	// across nh_16_func's two calls. No failure from this has been
+	// observed in testing, but declaring ESI read-write ("+") closes the
+	// same latent risk rather than leaving it to accident of the current
+	// compiler's behavior.
+	const uint64_t *mh_scratch = mh;
 	__asm__ __volatile__
 	(
 		"mov %%ebx, %0;"
-		"mov %1, %%ebx;"
+		"mov %2, %%ebx;"
 		".intel_syntax noprefix;"
 #else
 		AS2(	mov		ebx, ahi)
@@ -581,8 +618,8 @@ static void poly_step_func(uint64_t *ahi, uint64_t *alo, const uint64_t *kh,
 #ifdef __GNUC__
 		".att_syntax prefix;"
 		"mov %0, %%ebx;"
-		: "=m" (temp)
-		: "m" (ahi), "D" (ml), "d" (kh), "a" (alo), "S" (mh), "c" (kl)
+		: "=m" (temp), "+S" (mh_scratch)
+		: "m" (ahi), "D" (ml), "d" (kh), "a" (alo), "c" (kl)
 		: "memory", "cc"
 	);
 #endif

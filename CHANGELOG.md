@@ -9,6 +9,34 @@ Versions follow `1.<minor>.<patch>` for stable releases and
 
 ## [Unreleased]
 
+### Added
+
+- **32-bit (i686) build support, opt-in (F6.12).** Re-enabled the
+  `_32_or_64`/`_32_only` hooks that were hardcoded off when this fork
+  scoped itself to x86_64-only, and widened the `#error` guards in
+  `Compression/Common.h`/`srep.cpp` to also accept i686. Building and
+  running 32-bit for the first time surfaced two real bugs: (1) `-d`/
+  `-mem=` values >= 4 GiB silently wrapped to a smaller value instead
+  of failing or clamping (`parse_mem_option` was narrowing through
+  `size_t` before its own clamp could see the real value) — fixed by
+  using the already-existing `parseMem64`. (2) the bundled third-party
+  VMAC hash (the *default* hash, and the one `-m0`/`-m1`/`-m2`/`-m3`
+  use internally regardless of `-hash=`) crashed on every 32-bit build
+  — root-caused to a GCC extended-asm bug in `vmac.c`'s hand-written
+  MMX loop (`nh_16_func`: ESI/EDI/ECX modified by the asm but declared
+  as plain read-only inputs, letting `-O2+`'s `-fipa-ra` skip a
+  register reload across two back-to-back calls) — fixed with the
+  correct `"+"`-operand declaration; same defensive fix applied to a
+  second, currently-dormant instance of the same bug class in
+  `poly_step_func`. Both fixes verified against Krovetz's published
+  VMAC known-answer vectors and re-confirmed on a real Windows 7 x64
+  VM (not just Wine). One separate, pre-existing bug found and left
+  open: `-hash=sha1` fails decompression checksum verification on
+  32-bit (unrelated to the VMAC fix, not yet root-caused) — avoid it
+  on 32-bit until fixed. Every other hash and every compression mode
+  is confirmed working. See `docs/32bit-support.md` for the full
+  writeup and evidence.
+
 ### Changed
 
 - **Dropped the F6.2 soak window as a v1.0 stable gate.** F6.2 was a

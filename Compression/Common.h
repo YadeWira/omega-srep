@@ -42,10 +42,13 @@ extern "C" {
 #error "You must define OS! Omega SREP supports FREEARC_WIN (Windows 10/11 x64) or FREEARC_UNIX (Linux x64)."
 #endif
 
-// Omega SREP targets x86_64 only - both Windows 10/11 x64 and Linux x64 are little-endian Intel.
+// Omega SREP targets x86 only - Windows 10/11 x64/x86 and Linux x64/x86 are all
+// little-endian Intel. 32-bit x86 (i686) is a supported, opt-in target alongside
+// the primary x86_64 one; anything that isn't 32- or 64-bit x86 is genuinely
+// untested/unsupported and still rejected below.
 // The historical big-endian branch is gone. The Makefile must still pass -DFREEARC_INTEL_BYTE_ORDER.
-#if !defined(_M_X64) && !defined(_M_AMD64) && !defined(__x86_64__)
-#error "Omega SREP requires a 64-bit x86 target (Windows 10/11 x64 or Linux x64)."
+#if !defined(_M_X64) && !defined(_M_AMD64) && !defined(__x86_64__) && !defined(_M_IX86) && !defined(__i386__) && !defined(__i686__)
+#error "Omega SREP requires an x86 target, 32- or 64-bit (Windows 10/11 x64/x86 or Linux x64/x86)."
 #endif
 #if !defined(FREEARC_INTEL_BYTE_ORDER)
 #error "Omega SREP requires FREEARC_INTEL_BYTE_ORDER to be defined (x86_64 is little-endian)."
@@ -649,7 +652,7 @@ void BigFree(void *address) throw();
 #else
 #define MidAlloc(size) MyAlloc(size)
 #define MidFree(address) MyFree(address)
-static inline void *BigAlloc (int64 size, LPType LargePageMode=DEFAULT)  {return MyAlloc(size);}
+static inline void *BigAlloc (int64 size, LPType LargePageMode=DEFAULT)  {if (size<=0 || size>size_t(-1))  return 0;  return MyAlloc(size);}
 static inline void *BigAllocZero (int64 size, LPType LargePageMode=DEFAULT)  {void *p = BigAlloc(size,LargePageMode);  if (p)  memset(p,0,size);  return p;}
 #define BigFree(address) MyFree(address)
 #endif // !FREEARC_WIN

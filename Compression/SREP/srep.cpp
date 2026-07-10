@@ -59,13 +59,19 @@ static struct {Offset max_offset, find_match, find_match_memaccess, check_hashar
 void error (int ExitCode, char *ErrmsgFormat...);   // Exit on error
 
 
-// Omega SREP targets x86_64 only (Windows 10/11 x64 and Linux x64).
-#if !defined(_M_X64) && !defined(_M_AMD64) && !defined(__x86_64__)
-#error "Omega SREP requires a 64-bit x86 target (Windows 10/11 x64 or Linux x64)."
+// Omega SREP targets x86 (Windows 10/11 or Linux, 64-bit primary / 32-bit opt-in).
+// Anything that isn't 32- or 64-bit x86 is genuinely untested/unsupported.
+#if !defined(_M_X64) && !defined(_M_AMD64) && !defined(__x86_64__) && !defined(_M_IX86) && !defined(__i386__) && !defined(__i686__)
+#error "Omega SREP requires an x86 target, 32- or 64-bit (Windows 10/11 x64/x86 or Linux x64/x86)."
 #endif
+#if defined(_M_X64) || defined(_M_AMD64) || defined(__x86_64__)
 #define _32_or_64(_32,_64) (_64)
 #define _32_only(_32)      (void(0))
-typedef size_t NUMBER;               // loop index type on x86_64
+#else
+#define _32_or_64(_32,_64) (_32)
+#define _32_only(_32)      (_32)
+#endif
+typedef size_t NUMBER;               // loop index type: 64-bit on x86_64, 32-bit on i686
 
 #include "hashes.cpp"
 #include "hash_table.cpp"
@@ -188,8 +194,16 @@ int64 parse_mem_option (char *option, int *errcode, char spec)
 {
   if (*errcode)  return 0;
 
-  // Parse -mem100mb variant
-  int64 mem = parseMem (option, errcode, spec);
+  // Parse -mem100mb variant. Use parseMem64 (int64 arithmetic throughout),
+  // not parseMem (returns MemSize == size_t, 32-bit on an i686 build) --
+  // this function's return value feeds both dictsize (-d) and vm_mem
+  // (-mem=), which must carry a full-width value all the way to their
+  // existing size_t(-1) clamps (srep.cpp ~419/424) on 32-bit; calling the
+  // narrowing parseMem here would silently wrap any >=4GiB request mod
+  // 2^32 before those clamps ever saw it (confirmed on real 32-bit Windows
+  // hardware: -d8gb silently became -d512mb, -d5gb became -d1gb, exit 0,
+  // no warning).
+  int64 mem = parseMem64 (option, errcode, spec);
   if (*errcode==0)  return mem;
   *errcode=0;
 
@@ -203,7 +217,7 @@ int64 parse_mem_option (char *option, int *errcode, char spec)
   // Parse XXmb part
   if      (*option == '\0')   {mem = 0;}                                        // -mem75% variant
   else if (*option++ != '-')  {*errcode=1; return 0;}                           // illegal option
-  else                        {mem = parseMem (option, errcode, spec);}         // -mem75%-600mb variant
+  else                        {mem = parseMem64 (option, errcode, spec);}       // -mem75%-600mb variant
   return percent*(GetPhysicalMemory()/100) - mem;
 }
 
@@ -417,6 +431,7 @@ int srep_main (int argc, char **argv)
     warnings++;
   }
   if (vm_mem > size_t(-1))    vm_mem = size_t(-1);     // For 32-bit systems (say, 50% of 16gb RAM may be a bit too much). Better, use GetTotalMemoryToAlloc()
+  if (dictsize > size_t(-1))  dictsize = size_t(-1);   // For 32-bit systems: clamp *before* io.cpp/compress_inmem.cpp narrow this Offset into a size_t-parameter helper (roundUp/roundup_to_power_of), otherwise an oversized -d value would silently wrap instead of failing/clamping cleanly.
 
   if (filenames[1]==NULL) {
     printf (         "%s: %s\n"
