@@ -7,7 +7,15 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com).
 Versions follow `1.<minor>.<patch>` for stable releases and
 `1.0a-beta.N` for pre-1.0 betas.
 
-## [Unreleased]
+## [1.0a-beta.5] — 2026-07-10 (pre-release)
+
+Algorithmic + hardening + release-process snapshot since 1.0a-beta.4.
+`osrep -m4` and `osrep -dup -m4` (no new flags) produce byte-identical
+archives to beta.4 on the same input + params — every change that
+touches match-search or hashing internals (F3.3e, the VMAC fix) was
+verified byte-for-byte unchanged on the default path before being
+shipped. The two genuinely new, opt-in behaviors are `--chunk-hash=gear`
+(F5.6) and 32-bit build support (F6.12) — neither is on by default.
 
 ### Added
 
@@ -36,32 +44,6 @@ Versions follow `1.<minor>.<patch>` for stable releases and
   on 32-bit until fixed. Every other hash and every compression mode
   is confirmed working. See `docs/32bit-support.md` for the full
   writeup and evidence.
-
-### Changed
-
-- **Dropped the F6.2 soak window as a v1.0 stable gate.** F6.2 was a
-  passive 2-4 week calendar wait (see `docs/upstream-comparison.md`)
-  before declaring v1.0 stable, meant to let real/adversarial usage
-  surface regressions the test suite didn't catch. Decided this isn't
-  worth gating a release on: `tests/local_hardening.sh` (F6.11) now
-  runs the full build+test suite, an ASAN+UBSAN rebuild, a 3-harness
-  libFuzzer soak, and a Windows cross-build/Wine smoke test on every
-  push-equivalent check — the automated coverage the soak window was
-  meant to approximate over time now runs on demand instead. v1.0
-  stable readiness is gated on `tests/local_hardening.sh` passing
-  clean, not on elapsed calendar time.
-
-- **Dropped F6.4 (external community review post) as a v1.0 stable
-  gate.** F6.4 was a plan to post to encode.su/r/cpp/r/compression
-  asking for pre-1.0 review before promoting beta.4 to stable. Decided
-  v1.0 stable no longer waits on that either — the three drafts stay
-  in `docs/review-call-for-feedback.md` for optional, unhurried use if
-  wanted later, but nothing about the release timeline depends on
-  them being published. Combined with the F6.2 drop above, v1.0 stable
-  readiness is now gated purely on `tests/local_hardening.sh` passing
-  clean, with no external-facing or calendar-based precondition.
-
-### Added
 
 - **`--chunk-hash=gear` opt-in CDC hash for `-dup` (F5.6).** The
   default FNV chunker (`h=h*PRIME+byte`, reset only at cuts) has no
@@ -127,6 +109,30 @@ Versions follow `1.<minor>.<patch>` for stable releases and
       copying the two runtime DLLs alongside the exe for the Wine
       smoke test; the gate itself is still `AND NOT WIN32` and should
       be fixed to `AND NOT MSVC`.
+
+### Changed
+
+- **Dropped the F6.2 soak window as a v1.0 stable gate.** F6.2 was a
+  passive 2-4 week calendar wait (see `docs/upstream-comparison.md`)
+  before declaring v1.0 stable, meant to let real/adversarial usage
+  surface regressions the test suite didn't catch. Decided this isn't
+  worth gating a release on: `tests/local_hardening.sh` (F6.11) now
+  runs the full build+test suite, an ASAN+UBSAN rebuild, a 3-harness
+  libFuzzer soak, and a Windows cross-build/Wine smoke test on every
+  push-equivalent check — the automated coverage the soak window was
+  meant to approximate over time now runs on demand instead. v1.0
+  stable readiness is gated on `tests/local_hardening.sh` passing
+  clean, not on elapsed calendar time.
+
+- **Dropped F6.4 (external community review post) as a v1.0 stable
+  gate.** F6.4 was a plan to post to encode.su/r/cpp/r/compression
+  asking for pre-1.0 review before promoting beta.4 to stable. Decided
+  v1.0 stable no longer waits on that either — the three drafts stay
+  in `docs/review-call-for-feedback.md` for optional, unhurried use if
+  wanted later, but nothing about the release timeline depends on
+  them being published. Combined with the F6.2 drop above, v1.0 stable
+  readiness is now gated purely on `tests/local_hardening.sh` passing
+  clean, with no external-facing or calendar-based precondition.
 
 ### Removed
 
