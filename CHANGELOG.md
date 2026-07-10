@@ -23,6 +23,16 @@ Versions follow `1.<minor>.<patch>` for stable releases and
   stable readiness is gated on `tests/local_hardening.sh` passing
   clean, not on elapsed calendar time.
 
+- **Dropped F6.4 (external community review post) as a v1.0 stable
+  gate.** F6.4 was a plan to post to encode.su/r/cpp/r/compression
+  asking for pre-1.0 review before promoting beta.4 to stable. Decided
+  v1.0 stable no longer waits on that either — the three drafts stay
+  in `docs/review-call-for-feedback.md` for optional, unhurried use if
+  wanted later, but nothing about the release timeline depends on
+  them being published. Combined with the F6.2 drop above, v1.0 stable
+  readiness is now gated purely on `tests/local_hardening.sh` passing
+  clean, with no external-facing or calendar-based precondition.
+
 ### Added
 
 - **`--chunk-hash=gear` opt-in CDC hash for `-dup` (F5.6).** The

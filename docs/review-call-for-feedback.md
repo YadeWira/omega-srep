@@ -1,8 +1,13 @@
 # External review post — drafts
 
-Three drafts for the F6.4 task ("post asking for external review on
-the new C++ before promoting v1.0a-beta.2 → v1.0"). Pick one venue,
-copy the corresponding draft, edit names and links to taste.
+Three drafts, originally written for the F6.4 task ("post asking for
+external review on the new C++ before promoting v1.0a-beta.2 → v1.0").
+**F6.4 was discarded as a v1.0 stable gate (2026-07-10, see CHANGELOG
+`[Unreleased]`)** — publishing is no longer required before declaring
+v1.0 stable. The drafts are kept here as-is in case the user wants to
+post for community feedback at their own pace, independent of the
+release timeline; pick one venue, copy the corresponding draft, edit
+names and links to taste.
 
 ---
 
