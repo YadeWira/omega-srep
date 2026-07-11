@@ -7,6 +7,35 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com).
 Versions follow `1.<minor>.<patch>` for stable releases and
 `1.0a-beta.N` for pre-1.0 betas.
 
+## [Unreleased]
+
+### Fixed
+
+- **VMAC's generic 128-bit ADD128/PMUL64 fallback was miscompiled by
+  GCC's strict-aliasing optimizer on i686, producing wrong checksums
+  (not a crash) on the 32-bit build.** Found via real cross-project
+  collaboration with another SREP-derived project (ytool) that migrated
+  to omega-srep and hit a genuine cross-arch decode failure on real
+  Windows hardware (did not reproduce under Wine at all). Reproduced
+  with zero LZ matches involved (`-m1` on 186483 bytes of pure literal
+  content), ruling out match-finding/CDC/Future-LZ entirely, and with
+  every method `-m0`-`-m5`; switching to `-hash=md5` made it pass,
+  isolating it to VMAC specifically. Root cause: `vmac.c`'s
+  `__i386__` branch never defines its own `ADD128`/`MUL64`/`PMUL64`
+  (only `GET_REVERSED_64`), so i386 silently uses the file's generic
+  portable-C fallback -- and GCC's `-O2`+ strict-aliasing optimizations
+  miscompile it (bisected: `-O1` and `-O3 -fno-strict-aliasing` both
+  fix it, `-O3` alone doesn't). Same bug *class* as the `poly_step_func`
+  issue from F6.12 (pointer-cast buffers nearby confusing the aliasing
+  analysis), different macro this time. Fixed with a source-level
+  `#pragma GCC optimize ("no-strict-aliasing")` gated to
+  `__GNUC__ && __i386__` only -- x86_64 is untouched (it has its own
+  asm `ADD128`/`MUL64`, never reaches the fallback). Verified
+  byte-for-byte identical x86_64 output, the real failing archive now
+  decodes correctly on i686 with a byte-identical hash, and a full
+  120-cell matrix (`-m0`-`-m5` × 4 hashes × 5 corpus files) passes
+  clean under Wine. See `docs/32bit-support.md` Bug #5.
+
 ## [1.0a-beta.6] — 2026-07-10 (pre-release)
 
 Small hardening follow-up to beta.5, same day. No behavior change on

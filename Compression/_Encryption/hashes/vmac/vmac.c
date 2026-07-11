@@ -21,6 +21,30 @@
 #include <emmintrin.h>
 #endif
 
+/* Omega patch (32-bit VMAC checksum-mismatch fix): on i386+GCC, the
+ * architecture-specific #if/#elif chain below (see "MUL64/PMUL64/ADD128"
+ * comment) only defines GET_REVERSED_64 -- it does NOT provide its own
+ * ADD128/MUL64/PMUL64, so i386 falls through to the generic, portable C
+ * fallback implementations further down this file. Confirmed empirically
+ * (bisecting -O1 vs -O3, then -O3 -fno-strict-aliasing vs -O3) that GCC's
+ * strict-aliasing-based optimizations at -O2+ miscompile this fallback
+ * path on i386, producing a genuinely wrong 128-bit tag (verified via a
+ * real cross-arch round-trip: win64-encoded archive decoded by an i686
+ * build gave a different tag than an identical win64 decode of the same
+ * bytes -- "checksum of decompressed data is not the same as checksum of
+ * original data"). Same underlying bug *class* as the poly_step_func
+ * strict-aliasing issue documented in docs/32bit-support.md, in a
+ * different macro this time (ADD128/PMUL64's generic fallback, not
+ * poly_step_func's type-punning macros) -- disabling strict-aliasing for
+ * the rest of this translation unit is the narrowest fix that doesn't
+ * require rewriting these macros; -O3 (and every other optimization)
+ * stays on, confirmed by direct A/B test. x86_64 is unaffected -- it uses
+ * its own hand-written asm ADD128/MUL64 (see the __x86_64__ branch above),
+ * never reaching this fallback at all. */
+#if defined(__GNUC__) && defined(__i386__)
+#pragma GCC optimize ("no-strict-aliasing")
+#endif
+
 /* Native word reads. Update (or define via compiler) if incorrect */
 #ifndef VMAC_ARCH_BIG_ENDIAN       /* Assume big-endian unless on the list */
 #define VMAC_ARCH_BIG_ENDIAN \

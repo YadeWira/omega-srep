@@ -228,6 +228,64 @@ unmodified code (`--seed` fixed) on x86_64, and a real 10/10 `-m1`/`-m2`
 round-trip pass on the 32-bit build under Wine (this host has SSE4.2,
 so the hardware path is genuinely exercised, not silently skipped).
 
+## Bug #5 (fixed): VMAC's generic 128-bit ADD128/PMUL64 fallback was miscompiled by GCC's strict-aliasing optimizer on i686
+
+Found via real cross-project collaboration: another AI working on a
+separate SREP-derived project (ytool) migrated to omega-srep, hit a
+genuine cross-arch decode failure, and helped isolate it down to real
+hardware (Windows 7/10, not Wine — this bug did not reproduce under
+Wine at all, only on real WOW64).
+
+**Symptom**: `osrep -d` on a real Windows 32-bit build failed with
+`ERROR! Decompression problem: checksum of decompressed data is not
+the same as checksum of original data` on archives that decoded
+perfectly on the same-source x86_64 build. Reproduced with `-m0`
+through `-m5`, with and without any LZ matches at all (a 186483-byte
+file compressed with `-m1`, zero matches, pure literal content, still
+failed) — ruling out the match-finding/CDC/Future-LZ code entirely.
+Switching to any non-VMAC hash (`-hash=md5`) made it pass, isolating
+the bug to VMAC specifically (the default hash, and the one
+`-m0`-`-m3` use internally regardless of `-hash=`).
+
+**Root cause**: `Compression/_Encryption/hashes/vmac/vmac.c`'s
+`__GNUC__ && __i386__` architecture branch only defines
+`GET_REVERSED_64` — it does **not** provide its own `ADD128`/`MUL64`/
+`PMUL64` (unlike the `__x86_64__` branch, which has hand-written
+`addq`/`adcq` asm for `ADD128`). This means i386+GCC silently falls
+through to the file's generic, portable-C fallback implementations of
+these macros. Bisected with the same technique used for Bug #2 above:
+instrumented `vhash()` to print its internal 128-bit accumulator
+(`ch`/`cl`/`ch2`/`cl2`) right before the final `l3hash()` reduction —
+on the failing input, win32's values differed from win64's (one word
+was off by exactly 1, a classic missed/extra-carry signature; the
+other differed completely). Recompiling win32 at `-O1` instead of
+`-O3` made the values match and the decode succeed; recompiling at
+`-O3 -fno-strict-aliasing` (leaving every other optimization on) also
+fixed it. This is the same **bug class** as the `poly_step_func`
+strict-aliasing issue already documented in this file's "F5.6"-era
+research (a different macro this time — `ADD128`/`PMUL64`'s generic
+fallback, not `poly_step_func`'s pointer type-punning) — GCC's
+strict-aliasing-based optimizations at `-O2`+ miscompile code derived
+from pointer-cast buffers (`m`/`mptr`/`kptr` are repeatedly cast
+between `unsigned char*` and `uint64_t*` throughout this file) in a
+way that corrupts the plain-`uint64_t` carry arithmetic nearby, even
+though `ADD128`/`PMUL64` themselves don't do any pointer casting.
+
+**Fix**: added `#pragma GCC optimize ("no-strict-aliasing")` gated on
+`defined(__GNUC__) && defined(__i386__)`, right after `vmac.c`'s own
+architecture-detection macros (before any function bodies), so it
+applies to every function in the translation unit when targeting
+i386 with GCC and has zero effect on x86_64 (which never reaches the
+generic fallback — it has its own asm `ADD128`/`MUL64`). This is
+source-level, not a build-flag requirement someone could forget to
+pass. Verified: byte-for-byte identical x86_64 output (unaffected, as
+expected), the real failing 186KB archive now decodes correctly on
+i686 with a byte-identical hash to x86_64, and a full 120-cell matrix
+(`-m0`-`-m5` × `{vmac,md5,siphash,sha512}` × 5 corpus files) passes
+clean under Wine (the known `-m0` Wine memory-allocation flake — see
+Bug #2 — accounted for 5 of the first 120 attempts, all confirmed
+passing on retry).
+
 ## Building a 32-bit binary
 
 Not yet wired into the Makefile as a named target (the host-arch-vs-
@@ -273,3 +331,11 @@ flag subset.
 a manually cross-compiled, manually tested target, unlike the primary
 x86_64 path) -- a `tests/local_hardening.sh` stage for this is a
 reasonable follow-up.
+
+(This table originally said ✅ for `vmac` before Bug #5 above was
+found and fixed -- the earlier testing that produced it didn't happen
+to exercise the exact "remaining tail" carry pattern Bug #5 needed to
+manifest. It's accurate now, but worth remembering that a "passing"
+matrix on the corpora tested at the time doesn't guarantee every code
+path was exercised -- this bug specifically needed real cross-project
+testing with different content to surface.)
