@@ -49,6 +49,22 @@ void error (int ExitCode, char *ErrmsgFormat...)
 // amortized against real per-chunk work, small enough to spread work over many worker threads.
 const int PREPARE_BUFFER_STRIPE = 128*kb;
 
+// Task F3.3e follow-up: cap on PrepThreadsCount, independent of -tN/NumThreads.
+// F3.3e's own original measurement (~13-16% faster at -t8 on -m3/-m5) was "roughly
+// a wash" -- sometimes net-negative -- at this host's full-core default (56).
+// A -tN sweep (-t1/2/4/8/16/default, -m3 and -m5, compressible + incompressible
+// 128MiB corpora, 3-rep medians) confirmed this reproducibly: the default
+// (all cores) was never the fastest cell in any of the 4 corpus/mode
+// combinations, and was up to ~7% slower than the -t8..-t16 range in the worst
+// case (-m3, compressible). The likely cause: a 128MiB buffer only splits into
+// a bounded number of PREPARE_BUFFER_STRIPE-sized jobs, so thread counts past
+// that stop finding work and only add pool-coordination overhead. Capping
+// PrepThreadsCount (NOT NumThreads/-tN itself, which -m1/-m2's separate, mature
+// CDC thread pool still uses uncapped) is provably output-safe: stripe
+// assignment in prepare_buffer_striped() below is a pure function of stripe
+// index, never of thread count.
+const int PREP_POOL_MAX = 16;
+
 // Job: run HashTable::prepare_buffer_stripe() (digest precompute + SliceHash, hash_table.cpp) over
 // one disjoint chunk sub-range of the block the BG thread just read. `digest` points at this job's
 // worker slot's own persistent VDigest -- see HashTable::MainDigest/PrepDigest comment (hash_table.cpp):
@@ -106,7 +122,7 @@ struct BG_COMPRESSION_THREAD : BackgroundThread
 
 
   BG_COMPRESSION_THREAD (bool _ROUND_MATCHES, bool _COMPARE_DIGESTS, unsigned _BASE_LEN, unsigned dict_min_match, bool _no_writes, hash_func_t _hash_func, void* _hash_obj, Offset _filesize, Offset inmem_dictsize, unsigned _bufsize, unsigned _header_size, HashTable& _h, DictionaryCompressor& _inmem, MMAP_FILE& _infile, FILE* _fin, FILE* _fout, FILE* _fstat, LPType LargePageMode, int NumThreads)
-    : errcode(NO_ERRORS), k(0), ROUND_MATCHES(_ROUND_MATCHES), COMPARE_DIGESTS(_COMPARE_DIGESTS), BASE_LEN(_BASE_LEN), no_writes(_no_writes), hash_func(_hash_func), hash_obj(_hash_obj), filesize(_filesize), bufsize(_bufsize), header_size(_header_size), h (_h), inmem(_inmem), infile(_infile), fin(_fin), fout(_fout), fstat(_fstat), PrepThreadsCount(mymax(1,NumThreads)), PrepPoolActive(false), PrepDigests(NULL)
+    : errcode(NO_ERRORS), k(0), ROUND_MATCHES(_ROUND_MATCHES), COMPARE_DIGESTS(_COMPARE_DIGESTS), BASE_LEN(_BASE_LEN), no_writes(_no_writes), hash_func(_hash_func), hash_obj(_hash_obj), filesize(_filesize), bufsize(_bufsize), header_size(_header_size), h (_h), inmem(_inmem), infile(_infile), fin(_fin), fout(_fout), fstat(_fstat), PrepThreadsCount(mymin(mymax(1,NumThreads),PREP_POOL_MAX)), PrepPoolActive(false), PrepDigests(NULL)
   {
     dictsize = roundUp(inmem_dictsize,bufsize) + BUFFERS*bufsize;   // Dictionary size should be divisible by bufsize and has additional BUFFERS*bufsize space reserved for background I/O
     dict = (char*) BigAlloc (dictsize, LargePageMode);

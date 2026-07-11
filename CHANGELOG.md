@@ -7,6 +7,99 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com).
 Versions follow `1.<minor>.<patch>` for stable releases and
 `1.0a-beta.N` for pre-1.0 betas.
 
+## [1.0.1] — 2026-07-11
+
+Speed-focused patch release. No archive-format or CLI-default changes —
+every front below is verified byte-for-byte identical to 1.0.0 on the
+default path with `--seed` fixed, and a full `tests/local_hardening.sh`
+pass (4/4 stages) gates the final commit, same as every release since
+1.0.0.
+
+### Added
+
+- **LTO (`-flto`)** added to the Makefile's `OPTIMISATION` (covers both
+  the native Linux build and the MinGW/Windows cross-compile, which
+  share the same variable) and to `CMakeLists.txt`'s non-MSVC path
+  (compile *and* link options -- CMake's `add_executable` splits these
+  into separate steps, unlike the Makefile's single-invocation build).
+  Verified byte-identical across a 90-cell matrix (`-m0`-`-m5` x
+  `-t1`/`-t4`/`-t8` x all 5 test corpora, `--seed=42`) and a full
+  `local_hardening.sh` pass. Honest result: because this codebase
+  compiles from just 2 translation units (`Common.cpp` + `srep.cpp`,
+  everything else `#include`d in), LTO's benefit here is narrower than
+  usual -- 3-rep-median speed comparisons on a 128 MiB corpus showed no
+  consistent win (individual modes ranged -8% to +9%, within
+  measurement noise on this host). Kept anyway: zero output risk,
+  build-time only cost, and a reasonable default for any future
+  refactor that does add more translation units.
+- **`-fprofile-generate`/`-fprofile-use` (PGO), maintainer-only release
+  build step.** New additive Makefile targets (`make bin/osrep-pgo`,
+  `make pgo-clean`) and `tests/pgo_train.sh` (trains across all of
+  `-m0`..`-m5` at `-t1` and `-t8`, against `tests/corpus/*.bin`, so
+  GCC's profile-guided branch/inlining decisions don't overfit to one
+  mode -- `-m3`/`-m4`/`-m5` have measurably different hot-loop
+  profiles). **Not** wired into `make`/`make all`/`make install` --
+  ordinary from-source builds stay a fast single pass with no `.gcda`
+  side effects. Verified: byte-identical vs the plain build across a
+  60-cell matrix (`-m0`-`-m5` x `-t1`/`-t8` x all 5 corpora) plus the
+  full `roundtrip.sh` suite (30/30) run directly against the PGO
+  binary. Speed: noisy, no clearly measurable win at this corpus size
+  on this host, same honest caveat as LTO above. **Windows binaries
+  ship without PGO in this release** -- reusing the Linux-collected
+  profile for the MinGW cross-compile was tried and does not work: GCC
+  ties `-fprofile-use`'s LTO profile data to the exact function/GIMPLE
+  structure recorded during `-fprofile-generate`, and
+  `Compression/Common.cpp`'s `FREEARC_WIN`/`FREEARC_UNIX`-gated code
+  paths are different enough between the two OS targets that the
+  Windows build silently found no usable profile data for most
+  functions. A real Windows PGO profile would need its own
+  Wine-collected training pass -- filed as a follow-up, not attempted
+  here under time pressure with a fix that doesn't actually apply.
+- **Thread-count tuning for F3.3e's prepare_buffer stripe pool**
+  (`-m3`/`-m5` only). A `-tN` sweep (`-t1`/`-t2`/`-t4`/`-t8`/`-t16`/
+  default, 3-rep medians, compressible + incompressible 128 MiB
+  corpora) confirmed F3.3e's own "roughly a wash at this host's full
+  56-core default" finding reproducibly: the default was never the
+  fastest cell in any of the 4 corpus/mode combinations tested, up to
+  ~7% slower than the `-t8`-`-t16` range in the worst case. Fixed by
+  capping `PrepThreadsCount` (the stripe pool's own worker count, in
+  `Compression/SREP/io.cpp`) at a new `PREP_POOL_MAX = 16` constant,
+  independent of `-tN`/`NumThreads` itself -- `-m1`/`-m2`'s separate,
+  mature CDC thread pool is untouched and still scales uncapped.
+  Provably output-safe (stripe assignment is a pure function of stripe
+  index, never of thread count) -- verified via a 60-cell byte-identical
+  matrix plus a full `local_hardening.sh` pass. Also fixed the
+  long-stale `-tN` help text (`srep.cpp`, `dup_wrapper.cpp`), which
+  still said "only for -m1/-m2" since before this pool existed. See
+  `docs/research-notes.md`'s F3.3e section for the full sweep table.
+
+### Fixed
+
+- `CMakeLists.txt`'s non-MSVC build used `-funroll-loops`; the Makefile
+  (the actually-tested, release-binary-building path) uses
+  `-funroll-all-loops`, which `docs/32bit-support.md` documents as
+  specifically required for `compress_cdc.cpp` to compile at all on
+  i686. Not a live bug today (CMake's non-MSVC path is x86_64-only),
+  but a real footgun the moment anyone drives an i686 build through
+  CMake instead of the documented direct cross-compile. Aligned to
+  match the Makefile.
+
+### Considered, declined
+
+- **Bumping the release binaries' compile-time CPU floor** (e.g.
+  `-march=x86-64-v2`) above the current `-msse2`. No file in this repo
+  documents a minimum CPU generation -- only an OS floor ("Windows
+  10/11 x64 and Linux x64") -- and release binaries are prebuilt for
+  arbitrary end-user hardware. A higher floor would `SIGILL`-crash on
+  older-but-still-x86_64 CPUs with zero test coverage to catch it
+  before a user does, which is worse than the byte-diff regressions
+  this project's tests are built to catch. `Compression/SREP/hashes.cpp`'s
+  `crc32c()` already shows the right pattern for unlocking newer
+  instruction sets safely (runtime `__get_cpuid` dispatch, not a
+  compile-time floor bump) -- the right lever if this is revisited, and
+  out of scope for a speed-focused patch release. `-mtune=generic` and
+  the 32-bit build's own `-msse2` floor are both unaffected either way.
+
 ## [1.0.0] — 2026-07-11
 
 **First stable release.** Gated purely on `tests/local_hardening.sh`

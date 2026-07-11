@@ -3,7 +3,7 @@
 // Original mail: Bulat.Ziganshin@gmail.com
 // Omega SREP introduces a new file format (.osr) and is not backward-compatible with .srep.
 
-char *program_version     = "Omega SREP 1.0.0", *program_date = "July 11, 2026";
+char *program_version     = "Omega SREP 1.0.1", *program_date = "July 11, 2026";
 char *program_description = "huge-dictionary LZ77 preprocessor (Omega lineage, fork of SREP by Bulat Ziganshin)";
 char *program_homepage    = "https://github.com/YadeWira/omega-srep";
 
@@ -457,7 +457,8 @@ int srep_main (int argc, char **argv)
                      "   -aX[/Y]: alloc X bytes of those Y bits will be set per L input bytes for compression accelerator\n"
                      "            Y=0/1/2/4/8/16/32/64, -a0 is slowest but requires least memory\n"
                      "   -ia-: disable I/O acceleration to reduce memory usage (-m5* only)\n"
-                     "   -tN: use N compression threads (only for -m1/-m2)\n"
+                     "   -tN: use N compression threads (-m1/-m2's CDC, and -m3/-m5's\n"
+                     "        prepare_buffer stripe pool, capped internally at 16 threads)\n"
                      "   -dBYTES: dictionary size for in-memory compression (REP algorithm), default %dmb\n"
                      "   -dhBYTES/-dcN/-dlN: size of hash / size of hash chunk / minimum match length for in-memory compression\n"
                      "\n"

@@ -447,6 +447,41 @@ independently-capped worker count, separate from `-tN`, to reliably beat
 larger inputs and/or a lower worker-count cap before trusting the
 default on many-core hardware.
 
+### Thread-count tuning follow-up, done (task F3.3e-tuning, 1.0.1)
+
+Swept `-t1`/`-t2`/`-t4`/`-t8`/`-t16`/default (56, this host's core count)
+on `-m3` and `-m5`, against a 128 MiB compressible-text buffer and a
+128 MiB incompressible-random buffer, 3-rep medians (real seconds):
+
+| corpus | mode | t1 | t2 | t4 | t8 | t16 | default(56) |
+|---|---|--:|--:|--:|--:|--:|--:|
+| text (compressible) | -m3 | 0.151 | 0.163 | 0.145 | 0.144 | 0.146 | 0.154 |
+| text (compressible) | -m5 | 0.210 | 0.179 | 0.180 | 0.163 | 0.162 | 0.171 |
+| random (incompressible) | -m3 | 0.378 | 0.412 | 0.375 | 0.339 | 0.342 | 0.386 |
+| random (incompressible) | -m5 | 0.442 | 0.442 | 0.412 | 0.374 | 0.380 | 0.374 |
+
+Confirms the "roughly a wash" finding above reproducibly: **the
+default (all 56 cores) was never the fastest cell in any of the 4
+corpus/mode combinations**, and was up to ~7% slower than the best
+`-t8`..`-t16` cell (`-m3`, compressible: 0.154s default vs 0.144s at
+`-t8`). Likely cause: a 128 MiB buffer only splits into a bounded
+number of `PREPARE_BUFFER_STRIPE`-sized (128 KiB) jobs, so thread
+counts past roughly 8-16 stop finding additional work and only add
+pool-coordination overhead.
+
+**Fix**: capped `PrepThreadsCount` (the prep-buffer stripe pool's own
+worker count) at a new `PREP_POOL_MAX = 16` constant in
+`Compression/SREP/io.cpp`, independent of `NumThreads`/`-tN` itself —
+`-m1`/`-m2`'s separate, mature CDC thread pool is untouched and still
+scales with the user's `-tN`/all-cores default exactly as before.
+Verified output-safe (`prepare_buffer_striped`'s stripe assignment is
+a pure function of stripe index, not thread count) via a `--seed`-fixed
+byte-identical matrix across `-m3`/`-m5` × the 6 swept `-tN` values ×
+all 5 `tests/corpus/*.bin` files (60/60 identical) plus a full
+`tests/local_hardening.sh` clean pass. Also fixed the now-doubly-stale
+`-tN` help text (`srep.cpp`, `dup_wrapper.cpp`) which still said "only
+for -m1/-m2" since before this task even existed.
+
 ### Verdict
 
 **Shipped.** Thread-safety independently re-derived (FIFO
@@ -457,7 +492,9 @@ during review was fixed before commit, not left as a follow-up. The
 speedup is real at moderate thread counts and roughly a wash at this
 host's full 56-core default — good enough to ship given zero downside
 risk (falls back to the unmodified path whenever there's nothing to
-gain), with thread-count tuning flagged as a real, separate follow-up.
+gain). The thread-count tuning follow-up flagged here was completed in
+1.0.1 (see above): `PrepThreadsCount` is now capped at 16, independent
+of `-tN`.
 
 ## CDC rolling hash: FNV lacks a fixed window, so `-dup` needs buffer-aligned duplicates (task F5.6)
 

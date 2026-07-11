@@ -24,7 +24,7 @@ else
   CXX?= $(CXX_CANDIDATE)
 endif
 
-OPTIMISATION+= -O3 -mtune=generic -funroll-all-loops -msse2
+OPTIMISATION+= -O3 -flto -mtune=generic -funroll-all-loops -msse2
 DEBUGGING= -ggdb3 -fverbose-asm
 VERBOSITY= -v
 WARNINGS= -Wno-write-strings -Wno-unused-result
@@ -52,6 +52,32 @@ clean:
 	rm -f -v bin/osrep bin/dedup_test
 
 all: bin/osrep bin/dedup_test
+
+# Profile-guided optimization -- maintainer-only release-build step, NOT part
+# of `all`/`install`. Ordinary from-source builds want a fast single-pass
+# `make bin/osrep`; the instrumented binary is slower and leaves .gcda profile
+# data as a side effect, which plain contributors don't want in their tree.
+#
+#   make bin/osrep-pgo   -- runs the full instrument -> train -> rebuild cycle
+#   make pgo-clean       -- removes all PGO intermediates
+PGO_DIR= pgo-data
+
+bin/osrep-pgo-instrumented: Makefile $(DEPS)
+	mkdir -p -v bin
+	$(CXX) $(CPPFLAGS) $(CFLAGS) -fprofile-generate=$(PGO_DIR) $(CXXSOURCES) $(LDFLAGS) -o bin/osrep-pgo-instrumented
+
+pgo-train: bin/osrep-pgo-instrumented
+	bash tests/pgo_train.sh bin/osrep-pgo-instrumented $(PGO_DIR)
+
+# -fprofile-correction tolerates the minor training/production profile
+# mismatches a multi-threaded program's non-deterministic thread interleaving
+# naturally introduces (-m1/-m2/-m3/-m5 all have real thread-pool activity);
+# GCC's PGO is otherwise strict about profile inconsistencies.
+bin/osrep-pgo: pgo-train
+	$(CXX) $(CPPFLAGS) $(CFLAGS) -fprofile-use=$(PGO_DIR) -fprofile-correction $(CXXSOURCES) $(LDFLAGS) -o bin/osrep-pgo
+
+pgo-clean:
+	rm -rf -v $(PGO_DIR) bin/osrep-pgo-instrumented bin/osrep-pgo
 
 install: all
 	mkdir -p -v "$(PREFIX)"/bin/

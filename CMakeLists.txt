@@ -90,9 +90,14 @@ if(MSVC)
     endif()
 else()
     target_compile_options(osrep PRIVATE
-        -O3 -mtune=generic -funroll-loops -msse2
+        -O3 -flto -mtune=generic -funroll-all-loops -msse2
         -Wno-write-strings -Wno-unused-result
     )
+    # -flto must be repeated on the link step too: unlike the Makefile (which
+    # compiles and links in one $(CXX) invocation), CMake's add_executable
+    # runs them as separate steps, so the compile-time flag alone is not
+    # sufficient here.
+    target_link_options(osrep PRIVATE -flto)
     if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND NOT WIN32)
         target_link_options(osrep PRIVATE -static)
     endif()
