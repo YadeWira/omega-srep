@@ -789,6 +789,18 @@ static inline char* show3 (uint64 n, char *buf, const char *prepend="")
     return p-strlen(prepend);
 }
 
+// Plain decimal digits, no thousands separators -- for machine-parseable
+// output (e.g. "PROGRESS <done> <total>"), where a comma would need escaping
+// or misparsing by a naive space-split consumer. buf must be >=21 bytes
+// (max 20 digits for a 64-bit value, plus the null terminator).
+static inline char* show_plain (uint64 n, char *buf)
+{
+    char *p = buf + 20;
+    *p = '\0';
+    do { *--p = '0' + (n % 10); } while (n /= 10);
+    return p;
+}
+
 // Заменить символы из множества from на символ to
 static inline char *replace (char *str, char* from, char to)
 {

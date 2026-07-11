@@ -7,6 +7,29 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com).
 Versions follow `1.<minor>.<patch>` for stable releases and
 `1.0a-beta.N` for pre-1.0 betas.
 
+## [Unreleased]
+
+### Added
+
+- **`-bar`: machine-parseable progress for subprocess integration.** Emits
+  `PROGRESS <done> <total>` to stderr (plain integers, single space, no
+  thousands separators) roughly every 0.5s during compress/decompress,
+  plus a guaranteed final line with `done==total`. Independent of `-s`/
+  verbosity's own display cadence -- ticks on its own fixed timer, and
+  each line is prefixed with `\n` so it always starts on a clean line
+  even though the human `-s` progress display never emits its own `\n`
+  (it uses `\r` + backspaces to overwrite in place) -- without that, a
+  naive `\n`-splitting consumer could see `PROGRESS` text glued onto
+  stale human-readable output mid-line. `done`/`total` are always the
+  same unit as each other (input bytes for compress, compressed-stream
+  bytes for decompress) though not necessarily the same unit across the
+  two directions. Adopted from **ytool**'s own `-bar` flag/format
+  (already consumed in production by zpaq-std, which embeds ytool as a
+  subprocess) at ytool's suggestion, following up on the earlier VMAC
+  cross-project collaboration -- same flag name and line format
+  intentionally, so a consumer that already parses ytool's `-bar`
+  output recognizes osrep for free with no changes.
+
 ## [1.0a-beta.7] — 2026-07-10 (pre-release)
 
 Small hardening follow-up to beta.6, same day, requested by a

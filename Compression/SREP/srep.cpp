@@ -270,7 +270,7 @@ int srep_main (int argc, char **argv)
   Offset dictsize = 0,  dict_hashsize = 0;
   double GlobalTime0 = GetGlobalTime();
   unsigned L=0, min_match=0, dict_chunk=0, dict_min_match=0, maximum_save=unsigned(-1), accel=9000, ACCELERATOR=9000, vm_block=8*mb, bufsize=8*mb, NumThreads=0;
-  bool INDEX_LZ=true, FUTURE_LZ=false, IO_LZ=false, use_mmap=false, delete_input_files=false, print_pc=false;
+  bool INDEX_LZ=true, FUTURE_LZ=false, IO_LZ=false, use_mmap=false, delete_input_files=false, print_pc=false, option_bar=false;
   char *index_file="",  *tempfile=NULL,  *DEFAULT_TEMPFILE="osrep-data",  *vmfile_name=NULL,  *DEFAULT_VMFILE="osrep-virtual-memory",  *option_s="+";
   int errcode=0, warnings=0, verbosity=2, io_accelerator=1;      LPType LargePageMode=TRY;    char temp1[100];
   struct hash_descriptor *selected_hash = hash_by_name(DEFAULT_HASH, errcode);
@@ -359,6 +359,8 @@ int srep_main (int argc, char **argv)
       L = parseMem (argv[1]+2, &errcode, 'b');
     } else if (start_with(argv[1],"-s")) {
       filesize = parseMem64 (argv[1]+2, &errcode, 'b');
+    } else if (strequ(argv[1],"-bar")) {
+      option_bar = true;
     } else if (start_with(argv[1],"-b")) {
       bufsize = parseMem (argv[1]+2, &errcode, 'm');
     } else if (strequ(argv[1],"-d-")) {
@@ -503,6 +505,10 @@ int srep_main (int argc, char **argv)
                      "   --seed=N: deterministic hash seed (uint64; default is random per-run)\n"
                      "             same seed + same input -> byte-identical archive across runs\n"
                      "             useful for content-addressed storage / reproducible builds\n"
+                     "   -bar: emit \"PROGRESS <done> <total>\" to stderr every ~0.5s, plus a final\n"
+                     "         guaranteed line at done==total -- machine-parseable, for wrapping\n"
+                     "         osrep as a subprocess (same flag name/line format as ytool's -bar,\n"
+                     "         already consumed by zpaq-std)\n"
                      "   --version, -V: print version line and exit\n"
                      "   --help, -h, -?: print this synopsis\n",
                      program_version, program_description, program_date, program_homepage,
@@ -575,6 +581,9 @@ int srep_main (int argc, char **argv)
   double TimeInterval = strequ(option_s,"")? 1e-30 : strequ(option_s,"-")? 1e30 : strequ(option_s,"+")? 0.2 : atof(option_s);
   // Last time/origsize when progress indicator was printed
   double LastGlobalTime = 0;  Offset last_origsize = Offset(-1);
+  // Last time the machine-parseable -bar "PROGRESS" line was printed; independent
+  // of the human -s/TimeInterval cadence above -- fixed ~0.5s tick either way
+  double LastBarTime = 0;  const double BAR_INTERVAL = 0.5;
   // Miscellaneous
   void *hash_obj = NULL;  if (NumThreads==0)  NumThreads = GetProcessorsCount();
   Install_signal_handler(signal_handler);
@@ -735,6 +744,21 @@ int srep_main (int argc, char **argv)
 
 print_stats:
         if (len==0)  bg_thread.wait();     // Wait until all compressed data are successfully saved to disk
+        if (verbosity || option_bar)
+        {
+          double GlobalTime = GetGlobalTime()-GlobalTime0;
+          if (option_bar  &&  (len==0 || GlobalTime-LastBarTime>=BAR_INTERVAL))
+          {
+            LastBarTime = GlobalTime;
+            char bar_done[21], bar_total[21];
+            // Leading \n guarantees this starts on its own clean line: the human
+            // -s progress display above ends each update with \r + backspaces,
+            // never \n, so without this a naive \n-splitting consumer could see
+            // "PROGRESS ..." glued onto the tail of stale human-readable text.
+            fprintf (stderr, "\nPROGRESS %s %s\n", show_plain(origsize,bar_done), show_plain(filesize,bar_total));
+            fflush (stderr);
+          }
+        }
         if (verbosity)
         {
           double GlobalTime = GetGlobalTime()-GlobalTime0;
@@ -1182,6 +1206,17 @@ print_stats:
         checked_file_write (fout, out, origsize1);}
 
 print_decompression_stats:
+      if (verbosity || option_bar)
+      {
+        double GlobalTime = GetGlobalTime()-GlobalTime0;
+        if (option_bar  &&  (finished || GlobalTime-LastBarTime>=BAR_INTERVAL))
+        {
+          LastBarTime = GlobalTime;
+          char bar_done[21], bar_total[21];
+          fprintf (stderr, "\nPROGRESS %s %s\n", show_plain(compsize,bar_done), show_plain(filesize,bar_total));
+          fflush (stderr);
+        }
+      }
       if (verbosity)
       {
         double GlobalTime = GetGlobalTime()-GlobalTime0;
