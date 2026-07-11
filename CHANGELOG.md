@@ -7,7 +7,32 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com).
 Versions follow `1.<minor>.<patch>` for stable releases and
 `1.0a-beta.N` for pre-1.0 betas.
 
-## [Unreleased]
+## [1.0.0] — 2026-07-11
+
+**First stable release.** Gated purely on `tests/local_hardening.sh`
+passing clean (baseline build+full suite, ASAN+UBSAN rebuild+full
+suite, 3-harness libFuzzer soak, mingw-w64 cross-build+Wine smoke
+test) -- all 4 stages PASS on this exact commit, elapsed 210s. The
+calendar soak window (F6.2) and external review post (F6.4) that were
+originally planned as additional v1.0 gates were both explicitly
+dropped in favor of this automated gate (see `[1.0a-beta.5]` below);
+in their place, this release has real independent validation from a
+downstream consumer (**ytool**, via the VMAC cross-project
+collaboration documented in `docs/32bit-support.md` Bug #5 and the
+project wiki) that found and helped fix a genuine cross-arch bug this
+week, and confirmed a clean 357/357 regression suite against this
+codebase after the fix.
+
+**Known, documented limitations** (not blockers, both intentional
+scope decisions):
+- `-hash=sha1` fails decompression checksum verification on 32-bit
+  builds (Bug #3, `docs/32bit-support.md`) -- avoid it there; every
+  other hash and every mode is confirmed working. 32-bit itself
+  remains an opt-in, manually-tested target, not the primary one.
+- No cloud CI (`.github/workflows/ci.yml` was removed -- push/PR
+  triggers never fired on this repo, root cause suspected
+  account-level and unresolved). `tests/local_hardening.sh` is the
+  intentional replacement and this release's actual gate.
 
 ### Added
 

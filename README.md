@@ -19,8 +19,8 @@ platforms.
   avoid there. The historical big-endian, FreeBSD, and macOS branches
   are gone.
 - **Binary name:** `osrep` (replaces `srep`).
-- **Version line:** Omega SREP starts a new lineage at `1.0a beta`,
-  currently `1.0a-beta.5`.
+- **Version line:** Omega SREP starts a new lineage at `1.0a beta`.
+  First stable release: `1.0.0`.
 - **Dictionary cap relaxed (x86_64).** The in-memory REP dictionary
   (`-dBYTES`) is no longer pinned near 2 GB on the primary 64-bit
   build. `-d3gb`, `-d4gb`, and beyond have been smoke-tested for
