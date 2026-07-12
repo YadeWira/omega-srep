@@ -754,6 +754,79 @@ this commit, since it doesn't affect round-trip correctness or the default
 path, and the feature's core case (realistic, non-periodic duplicate content)
 works as intended.
 
+## Profile-guided optimization: Linux profile does not transfer to Windows, a real Windows profile does (task 1.0.1/1.0.2 PGO)
+
+### What we tried first (1.0.1) and why it didn't extend to Windows
+
+1.0.1 added `make bin/osrep-pgo` (instrument -> train against
+`tests/corpus/*.bin` across all `-mN` at `-t1`/`-t8` -> `-fprofile-use`
+rebuild), verified byte-identical and shipped in the **Linux** release
+binary. The natural next step -- reuse that same Linux-collected
+`.gcda` data for the MinGW-cross-compiled Windows binary -- was tried
+and confirmed **not viable**, not just suboptimal: rebuilding with
+`-fprofile-use=pgo-data -fprofile-correction` while targeting Windows
+produced `-Wmissing-profile` warnings for essentially every function in
+`Compression/Common.cpp` and `dup_wrapper.cpp`. This is not a filename
+or path-matching bug (verified by making the `-o` output path exactly
+match the instrumented build's) -- it's that `Common.cpp`'s
+`FREEARC_WIN`-gated code paths (TCHAR-based filename API, COM calls for
+shell integration, etc.) are simply **never compiled** into the Linux
+(`FREEARC_UNIX`) instrumented binary in the first place, so there is no
+profile data for them at all to find. 1.0.1 shipped its Windows
+binaries as plain `-flto` (no PGO), with this filed as an open
+follow-up rather than papered over.
+
+### What actually works: train on a real Windows-targeted binary, on real Windows
+
+Cross-compiled a **Windows-targeted** instrumented binary (same
+`-fprofile-generate=pgo-data-win`, but with `-DFREEARC_WIN` instead of
+`-DFREEARC_UNIX`), then ran the real training workload (all `-mN` x
+`-t1`/`-t8`, `tests/corpus/*.bin`) on the actual Windows 10 VM
+documented in `CONEXION-IA.md` (over SSH, not Wine -- see below for why
+Wine specifically was ruled out for the *speed measurement*, though it
+would likely work fine just for profile *collection*). Copied the
+resulting `.gcda` tree back and rebuilt with `-fprofile-use=pgo-data-win
+-fprofile-correction`, using the exact same absolute `-o` path as the
+instrumented build (GCC's LTO profile lookup is keyed to this) --
+**zero missing-profile warnings this time**, confirming the profile
+applied. Automated as `tests/pgo_train_windows_vm.sh` (maintainer-only,
+requires the VM from `CONEXION-IA.md`).
+
+**Verification**: byte-identical output vs. the native Linux build
+across a 60-cell matrix (`-m0`-`-m5` x `-t1`/`-t8` x all 5 corpus
+files, `--seed=42`) -- confirms the real-profile Windows binary is
+still correct, cross-platform, not just "differently optimized."
+Round-trip decompress confirmed separately.
+
+**Speed**: measured natively on the Windows VM (Wine's own emulation
+startup overhead dominates timings this small and made the plain-vs-PGO
+comparison meaningless -- e.g. a first-invocation Wine run of one
+`-m3` cell took 0.911s wall-clock against later reps of 0.35s for the
+*identical* binary/input, pure Wine/DLL-cache warmup noise). 128 MiB
+compressible corpus, 3-rep medians, `Measure-Command`:
+
+| mode | plain (LTO, no PGO) | PGO (real Windows profile) | delta |
+|---|--:|--:|--:|
+| -m3 | 0.031s | 0.030s | -3% (noise) |
+| -m4 | 0.036s | 0.040s | +11% (noise -- reps overlapped: 0.036/0.036/0.054 vs 0.025/0.040/0.044) |
+| -m5 | 0.040s | 0.024s | **-40%, all 3 PGO reps beat all 3 plain reps (non-overlapping)** |
+
+`-m5` (exhaustive match search, the most branch-heavy hot loop of the
+three) shows a real, reproducible win -- every PGO rep was faster than
+every plain rep, not just a favorable median. `-m3` is flat and `-m4`
+is genuinely noisy at this input size (all 6 samples span only 15-20ms,
+close to `Measure-Command`'s own timer granularity on a VM) -- reported
+honestly rather than cherry-picked.
+
+### Verdict
+
+**Shipped in 1.0.2.** Same output-safety bar as every prior front:
+byte-identical matrix + round-trip, not just "it built." The Linux
+PGO story from 1.0.1 is unchanged (still Linux-trained, still
+verified); this closes the Windows gap 1.0.1 explicitly left open, with
+a working, documented, repeatable process instead of a shortcut that
+silently didn't apply.
+
 ## References
 
 - [Intensity/srep](https://github.com/Intensity/srep) — upstream

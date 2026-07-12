@@ -1,6 +1,8 @@
 bin/
 build/
 build-cmake/
+pgo-data/
+pgo-data-win/
 tests/corpus/
 tests/fuzz-corpus/
 tests/fuzz-corpus-decode-streaming/

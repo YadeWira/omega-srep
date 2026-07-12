@@ -7,6 +7,37 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com).
 Versions follow `1.<minor>.<patch>` for stable releases and
 `1.0a-beta.N` for pre-1.0 betas.
 
+## [1.0.2] — 2026-07-12
+
+Follow-up to 1.0.1: closes the Windows PGO gap that release explicitly
+left open, using the real Windows VM documented in `CONEXION-IA.md`
+instead of the Wine emulation used elsewhere in this project's testing.
+
+### Fixed
+
+- **Windows binaries now ship with a real, Windows-native PGO profile**,
+  not the plain-LTO fallback 1.0.1 shipped. 1.0.1 found that reusing
+  the Linux-collected profile for the MinGW cross-compile doesn't
+  work -- confirmed here to be because `Compression/Common.cpp`'s
+  `FREEARC_WIN`-gated code is never even compiled into a
+  `FREEARC_UNIX`-targeted instrumented binary, so there's no profile
+  data for it to reuse in the first place, not a lookup bug. Fix:
+  cross-compile a *Windows-targeted* instrumented binary, run the real
+  training workload on the real Windows 10 VM over SSH (not Wine --
+  Wine's own emulation startup overhead dominates timings this small
+  and made an early plain-vs-PGO comparison meaningless), copy the
+  resulting profile data back, and rebuild with `-fprofile-use`
+  pointed at it. Automated as `tests/pgo_train_windows_vm.sh`
+  (maintainer-only, requires VM access). Verified byte-identical vs.
+  the native Linux build across a 60-cell matrix (`--seed` fixed) and
+  round-trip decompress. Speed, measured natively on the VM (not
+  Wine): `-m5` (exhaustive match search) is a real, reproducible ~40%
+  faster -- every PGO rep beat every plain rep, not just a favorable
+  median; `-m3` is flat and `-m4` is genuinely noisy at this input
+  size, reported honestly rather than cherry-picked. See
+  `docs/research-notes.md`'s PGO section for the full story and
+  numbers.
+
 ## [1.0.1] — 2026-07-11
 
 Speed-focused patch release. No archive-format or CLI-default changes —
