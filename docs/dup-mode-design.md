@@ -5,6 +5,15 @@ content-defined-chunking deduplication pre-pass inspired by FA 0.11
 (FreeArc'Next). Implementation follows in F5.2 (encoder), F5.3
 (decoder + format), F5.4 (validation bench).
 
+> **Correction (2026-07-12, task 1.0.4):** this doc's "Hash for dedup"
+> section below says VMAC was chosen for the internal per-chunk dedup
+> hash. That was the plan, but it's not what shipped — the internal
+> hash has always been a plain FNV-1a (since as-shipped, replaced with
+> a faster word-at-a-time hash in 1.0.4), completely unrelated to VMAC.
+> Left the original text below for history; don't treat it as current.
+
+
+
 ## Why
 
 Two motivations, both quantified:

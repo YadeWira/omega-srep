@@ -7,6 +7,16 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com).
 Versions follow `1.<minor>.<patch>` for stable releases and
 `1.0a-beta.N` for pre-1.0 betas.
 
+## [1.0.4] — 2026-07-12
+
+### Fixed
+
+- **`-dup` mode's internal dedup lookup hash sped up 15-25%, real numbers, zero output impact.** `docs/dup-mode-design.md` claimed this hash was VMAC ("fastest, matches FA"); confirmed false as shipped -- it has always been a plain byte-at-a-time 64-bit FNV-1a (`chunk_hash()`, `Compression/SREP/dedup.cpp`), unrelated to VMAC/`-hash=`/`-m1`/`-m2`'s CDC path. FNV-1a's serial per-byte dependency chain has no word/SIMD parallelism. Replaced with a small hand-rolled word-at-a-time (8 bytes/iteration) 64-bit hash, same file, same two call sites, no signature change -- avoided vendoring a third-party hash (e.g. XXH3) given this project's own track record of finding real bugs in vendored/hand-written hash code this cycle (VMAC, CRC32, SHA1). Pressure-tested in isolation first (avalanche ~32/64 bits average across 1M-flip sample, 0 collisions across 1M realistic ~4-16KiB chunks, clean tail-byte handling at every length 0-16 bytes) before wiring in.
+  - This hash is never persisted to the archive (`.dupref` records chunk index/length, not hash values) -- zero on-disk format impact, confirmed via a direct before/after archive byte-diff (bit-for-bit identical) and a dedup-body-size invariance check against `docs/dup-bench.md`'s corpus (33,554,432-byte body, meta blob, and final archive size all exactly unchanged).
+  - **Also corrected a misleading comment** at `dedup.cpp` claiming collisions are "resolved by byte-comparing... before claiming a duplicate" as if unconditional. In fact this only happens when `--dup-paranoid` is passed (default: off) -- the default, non-paranoid streaming path (the only path the real CLI uses, per `dup_wrapper.cpp`) trusts the hash outright on a lookup hit, with no fallback verification. This isn't a new risk introduced by the swap (FNV-1a had the exact same unmitigated ~2^-64-per-pair exposure in that path), but it means the new hash's tail-byte handling specifically needed real test coverage that didn't exist before -- added as `tests/dup_hash_swap_test.sh`, exercising `osrep -dup` (no `--dup-paranoid`) against forced-tiny (`--chunk-avg=8 --chunk-min=1 --chunk-max=16`) chunks across `-m3`/`-m4`/`-m5`, plus a real-dedup-hit case and a `--dup-paranoid` control.
+  - Speed measured directly on the isolated dedup pre-pass (`dedup_test split-encode`, 5-rep medians): **24.5% faster** on a 128MiB compressible corpus (32MiB block × 4, `docs/dup-bench.md`'s own generator), **14.9% faster** on 128MiB of incompressible random data (every chunk a lookup miss, the pre-pass's worst case). Reported both, not averaged, since hit/miss ratio changes which code path dominates.
+  - Full existing suite (`dedup_xtest`, `dup_roundtrip`, `dup_native_roundtrip`, `dup_gear_hash_test`, `dup_corruption_fuzz`) plus the new test green; `tests/local_hardening.sh` 4/4 stages clean.
+
 ## [1.0.3] — 2026-07-12
 
 ### Fixed

@@ -413,16 +413,30 @@ static inline void cdc_split(const uint8_t* data, size_t size,
     }
 }
 
-// 64-bit FNV-1a over chunk bytes. Used only for the in-memory dedup
-// hash table; never emitted to the .dupref file. Collisions are
-// resolved by byte-comparing against the stored unique chunk before
-// claiming a duplicate.
+// 64-bit word-at-a-time hash over chunk bytes (replaces a prior FNV-1a,
+// whose byte-at-a-time serial dependency chain has no word/SIMD
+// parallelism). Used only for the in-memory dedup hash table; never
+// emitted to the .dupref file, so this is x86_64-only-build-safe
+// unaligned-load territory, same idiom as get_u64_le/put_u64_le above.
+// Collisions are resolved by byte-comparing against the stored unique
+// chunk ONLY when --dup-paranoid is set (see the `paranoid` check at
+// this file's encode_streaming) -- the default non-paranoid streaming
+// path (the one the real CLI always uses) trusts this hash outright,
+// same unmitigated ~2^-64-per-pair exposure the previous FNV-1a had.
 static inline uint64_t chunk_hash(const uint8_t* p, size_t n) {
-    uint64_t h = 0xcbf29ce484222325ULL;
-    for (size_t i = 0; i < n; ++i) {
-        h ^= p[i];
-        h *= 0x100000001b3ULL;
+    uint64_t h = 0x9E3779B97F4A7C15ULL;
+    size_t i = 0;
+    for (; i + 8 <= n; i += 8) {
+        uint64_t w; memcpy(&w, p + i, 8);
+        h ^= w;
+        h *= 0x9E3779B97F4A7C15ULL;
+        h ^= h >> 32;
     }
+    uint64_t tail = 0;
+    memcpy(&tail, p + i, n - i);
+    h ^= tail;
+    h *= 0xC2B2AE3D27D4EB4FULL;
+    h ^= h >> 29;
     return h;
 }
 
