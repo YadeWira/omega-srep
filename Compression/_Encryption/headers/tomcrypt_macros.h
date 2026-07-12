@@ -69,18 +69,30 @@
 
 #if !defined(LTC_NO_BSWAP) && (defined(INTEL_CC) || (defined(__GNUC__) && (defined(__DJGPP__) || defined(__CYGWIN__) || defined(__MINGW32__) || defined(__i386__) || defined(__x86_64__))))
 
+/* Omega patch: these two asm blocks read/write *y through a pointer held in
+ * a plain register operand ("r"(y)), never declaring that memory access to
+ * GCC via a memory operand or clobber. This is the same undeclared-side-
+ * effect bug class documented in docs/32bit-support.md (VMAC, CRC32) -- GCC
+ * is free to reorder or cache surrounding accesses to *y across this asm at
+ * -O2+ since, as written, it looks like a pure-register operation to the
+ * optimizer. Confirmed as the root cause of Bug #3 (docs/32bit-support.md):
+ * -hash=sha1 (the only hash using these particular H-suffixed macros --
+ * md5 uses the L-suffixed/little-endian macros, sha512 only hits this asm
+ * on __x86_64__, never __i386__) failed decompression checksum verification
+ * on every 32-bit build. Fixed with an explicit "memory" clobber on both.
+ */
 #define STORE32H(x, y)           \
 asm __volatile__ (               \
    "bswapl %0     \n\t"          \
    "movl   %0,(%1)\n\t"          \
    "bswapl %0     \n\t"          \
-      ::"r"(x), "r"(y));
+      ::"r"(x), "r"(y) : "memory");
 
 #define LOAD32H(x, y)          \
 asm __volatile__ (             \
    "movl (%1),%0\n\t"          \
    "bswapl %0\n\t"             \
-   :"=r"(x): "r"(y));
+   :"=r"(x): "r"(y) : "memory");
 
 #else
 
@@ -100,18 +112,27 @@ asm __volatile__ (             \
 /* x86_64 processor */
 #if !defined(LTC_NO_BSWAP) && (defined(__GNUC__) && defined(__x86_64__))
 
+/* Omega patch: same undeclared-memory-side-effect pattern as STORE32H/
+ * LOAD32H above (missing "memory" clobber for a pointer-held register
+ * operand). No observed failure from this instance -- sha512 is confirmed
+ * working on 32-bit (it never reaches this __x86_64__-gated block there)
+ * and x86_64 has been "safe by accident of the current compiler's choices"
+ * per the same reasoning already applied elsewhere in this codebase -- but
+ * fixed defensively rather than left as a latent risk, same as
+ * poly_step_func's bonus hardening in docs/32bit-support.md Bug #2.
+ */
 #define STORE64H(x, y)           \
 asm __volatile__ (               \
    "bswapq %0     \n\t"          \
    "movq   %0,(%1)\n\t"          \
    "bswapq %0     \n\t"          \
-      ::"r"(x), "r"(y));
+      ::"r"(x), "r"(y) : "memory");
 
 #define LOAD64H(x, y)          \
 asm __volatile__ (             \
    "movq (%1),%0\n\t"          \
    "bswapq %0\n\t"             \
-   :"=r"(x): "r"(y));
+   :"=r"(x): "r"(y) : "memory");
 
 #else
 

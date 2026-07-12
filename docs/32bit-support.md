@@ -182,17 +182,70 @@ three files, clean `0`/`0`/`0` exit codes. This is meaningfully
 stronger evidence than Wine alone: WOW64 is Windows' own real 32-bit
 compatibility subsystem, not an independent reimplementation.
 
-## Bug #3 (open, not fixed): `-hash=sha1` fails decompression checksum verification on 32-bit
+## Bug #3 (fixed): `-hash=sha1` failed decompression checksum verification on 32-bit
 
-`-hash=sha1` compresses successfully but fails at decompression time:
+`-hash=sha1` compressed successfully but failed at decompression time:
 `ERROR! Decompression problem: checksum of decompressed data is not the
 same as checksum of original data`. Deterministic, 100% reproducible,
 every mode, every corpus file tested, on both Wine and the real Win7
-VM. Confirmed unrelated to the VMAC fix above (`git diff --stat` shows
-zero lines touched in `sha1.c` or anything sha1-related). Root cause
-not investigated -- filed as a follow-up. **Avoid `-hash=sha1` on
-32-bit builds until this is fixed**; every other hash (`vmac` default,
-`md5`, `siphash`, `sha512`) is confirmed working.
+VM. Confirmed unrelated to the VMAC fix above (`git diff --stat` showed
+zero lines touched in `sha1.c` or anything sha1-related) -- the actual
+bug turned out to be one directory up, in a header the VMAC/CRC32 fixes
+never touched.
+
+### Root cause
+
+`Compression/_Encryption/headers/tomcrypt_macros.h`'s `STORE32H`/
+`LOAD32H` macros -- LibTomCrypt's big-endian 32-bit load/store helpers,
+used only by `sha1.c` (`md5.c` uses the separate little-endian
+`STORE32L`/`LOAD32L` macros; `sha512.c` uses `STORE64H`/`LOAD64H`,
+whose own hand-written asm is gated to `__x86_64__` only, so it never
+reaches the affected code on 32-bit at all) -- had hand-written GCC
+extended inline asm that reads/writes `*y` through a pointer held in a
+plain register operand (`"r"(y)`), with **no memory clobber and no
+memory operand** declaring that side effect to GCC:
+
+```c
+#define STORE32H(x, y)           \
+asm __volatile__ (               \
+   "bswapl %0     \n\t"          \
+   "movl   %0,(%1)\n\t"          \
+   "bswapl %0     \n\t"          \
+      ::"r"(x), "r"(y));
+```
+
+This is the same undeclared-side-effect bug *class* as Bug #2 (VMAC's
+register-clobber) and Bug #4 (CRC32's constraint issue) below/above --
+GCC's optimizer at `-O2`+ is free to reorder or cache surrounding
+memory accesses to `*y` across this asm, since as written it looks
+like a pure-register operation. Gated to `__i386__`/`__x86_64__`/
+MinGW/DJGPP/Cygwin, so it fires on both primary targets -- but
+apparently "safe by accident of the current compiler's choices" on
+x86_64 (matching this project's recurring finding for this bug class),
+while genuinely miscompiling on i686.
+
+**Fix**: added an explicit `"memory"` clobber to `STORE32H`/`LOAD32H`.
+Also applied the identical defensive fix to the `__x86_64__`-only
+`STORE64H`/`LOAD64H` (used by `sha512.c`) even though no failure was
+observed there -- same bonus-hardening reasoning as `poly_step_func`
+in Bug #2.
+
+**Verification**: the real failing case now round-trips correctly
+(`-hash=sha1` matrix, 5 corpus files × `-m0`-`-m5`, under Wine --
+29/30 clean, the one remaining cell being the already-documented
+Wine/32-bit `-m0` allocation flake above, confirmed unrelated by
+retry). The stored digest for a literal `"abc"` input matches the
+official SHA1 known-answer vector byte-for-byte
+(`a9993e364706816aba3e25717850c26c9cd0d89`), confirming this isn't
+just internally self-consistent but cryptographically correct.
+x86_64 confirmed byte-identical before/after the fix, for both
+`-hash=sha1` and `-hash=sha512` (which shares the also-patched
+`STORE64H`/`LOAD64H`), across the same 30-cell matrix with `--seed`
+fixed. Full test suite (`roundtrip.sh` 30/30, `local_hardening.sh`
+4/4 stages) clean.
+
+`-hash=sha1` is now confirmed working on 32-bit, same as every other
+hash.
 
 ## Bug #4 (fixed): SSE4.2 hardware CRC32 asm had the same undeclared-register-modification risk as VMAC
 
@@ -317,18 +370,19 @@ flag subset.
 
 ## Summary: what works today
 
-| mode | default hash (vmac) | md5 / siphash / sha512 | sha1 |
-|---|---|---|---|
-| -m0 | ✅ | ✅ | ❌ (known bug, above) |
-| -m1 | ✅ | ✅ | ❌ |
-| -m2 | ✅ | ✅ | ❌ |
-| -m3 | ✅ | ✅ | ❌ |
-| -m4 | ✅ | ✅ | ❌ |
-| -m5 | ✅ | ✅ | ❌ |
+| mode | vmac (default) / md5 / siphash / sha512 / sha1 |
+|---|---|
+| -m0 | ✅ |
+| -m1 | ✅ |
+| -m2 | ✅ |
+| -m3 | ✅ |
+| -m4 | ✅ |
+| -m5 | ✅ |
 
-32-bit support is real and usable for every mode with any hash except
-`-hash=sha1`. Not yet covered by automated CI/local hardening (this is
-a manually cross-compiled, manually tested target, unlike the primary
+32-bit support is real and usable for every mode with every hash --
+`-hash=sha1` (Bug #3 above) was the last documented gap and is now
+fixed. Not yet covered by automated CI/local hardening (this is a
+manually cross-compiled, manually tested target, unlike the primary
 x86_64 path) -- a `tests/local_hardening.sh` stage for this is a
 reasonable follow-up.
 

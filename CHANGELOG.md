@@ -7,6 +7,34 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com).
 Versions follow `1.<minor>.<patch>` for stable releases and
 `1.0a-beta.N` for pre-1.0 betas.
 
+## [1.0.3] — 2026-07-12
+
+### Fixed
+
+- **`-hash=sha1` failed decompression checksum verification on 32-bit
+  builds** (Bug #3, the last documented open bug for the 32-bit
+  target). Root cause: `tomcrypt_macros.h`'s `STORE32H`/`LOAD32H` --
+  LibTomCrypt's big-endian load/store macros, used only by `sha1.c`
+  (`md5.c` uses the separate little-endian `L`-suffixed macros;
+  `sha512.c`'s `STORE64H`/`LOAD64H` asm is gated `__x86_64__`-only, so
+  it never hits this on 32-bit) -- had hand-written GCC extended
+  asm that read/wrote through a pointer-held register operand with no
+  memory clobber declared, the same undeclared-side-effect bug class
+  as the VMAC (F6.12) and CRC32 fixes already shipped this cycle. Fixed
+  with an explicit `"memory"` clobber; the same defensive fix applied
+  to the `__x86_64__`-only `STORE64H`/`LOAD64H` (used by `sha512.c`)
+  even though no failure was observed there, matching the
+  `poly_step_func` bonus-hardening precedent. Verified: the real
+  failing case round-trips correctly (30-cell Wine matrix, 29/30 --
+  the one gap being the already-documented `-m0` Wine allocation
+  flake, confirmed unrelated by retry); the stored digest for `"abc"`
+  matches the official SHA1 known-answer vector byte-for-byte; x86_64
+  confirmed byte-identical before/after for both `-hash=sha1` and
+  `-hash=sha512` across a 30-cell `--seed`-fixed matrix; full suite
+  (`roundtrip.sh` 30/30, `local_hardening.sh` 4/4) clean. See
+  `docs/32bit-support.md` Bug #3 for the full writeup. 32-bit support
+  now works for every mode with every hash.
+
 ## [1.0.2] — 2026-07-12
 
 Follow-up to 1.0.1: closes the Windows PGO gap that release explicitly
