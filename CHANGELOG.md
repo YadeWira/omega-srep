@@ -7,6 +7,12 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com).
 Versions follow `1.<minor>.<patch>` for stable releases and
 `1.0a-beta.N` for pre-1.0 betas.
 
+## [1.0.5] — 2026-07-14
+
+### Fixed
+
+- **CDC rolling hash cross-architecture corruption (-m1/-m2, all suffix variants: `f`/`o`).** The content-defined chunking path used `PolynomialRollingHash<size_t>` whose internal arithmetic modulo is `2^32` on 32-bit builds and `2^64` on 64-bit builds, producing completely different chunk boundaries on each architecture. An archive compressed on one word-size silently decompressed to garbage on the other (no error, no crash, just wrong bytes). Fixed by pinning the template to `uint64` in the CDC path (`Compression/SREP/compress_cdc.cpp`), guaranteeing identical chunking on every architecture and compiler. The in-memory REP path (`-m0`) uses the same hash type independently and is unaffected. Verified: 15-mode round-trip matrix × 4 build targets (Linux i686/x86_64, Windows i686/x86_64 on real Win10/Win7 VMs), 60/60 PASS, plus cross-arch 64→32 and 32→64 and `-dup` smoke tests.
+
 ## [1.0.4] — 2026-07-12
 
 ### Fixed

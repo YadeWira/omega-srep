@@ -3,7 +3,7 @@
 // Original mail: Bulat.Ziganshin@gmail.com
 // Omega SREP introduces a new file format (.osr) and is not backward-compatible with .srep.
 
-char *program_version     = "Omega SREP 1.0.4", *program_date = "July 12, 2026";
+char *program_version     = "Omega SREP 1.0.5", *program_date = "July 14, 2026";
 char *program_description = "huge-dictionary LZ77 preprocessor (Omega lineage, fork of SREP by Bulat Ziganshin)";
 char *program_homepage    = "https://github.com/YadeWira/omega-srep";
 

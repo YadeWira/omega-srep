@@ -127,14 +127,14 @@ struct CDC_Job
   bool ZPAQ_CDC;
   BYTE *ptr, *pend, *buf, *bufend;
   unsigned L, MIN_MATCH;
-  PolynomialRollingHash<size_t> *hash1;
+  PolynomialRollingHash<uint64> *hash1;
   CrcRollingHash       <uint32> *hash2;
 
   void process()
   {
     t->lastmark = ZPAQ_CDC? zpaq_find_chunks<uint32>                                                 (ptr, pend, buf, bufend, t->marks, L, MIN_MATCH)
                  :crc32c()? fast_find_chunks<uint32, CrcRollingHash<uint32>,        WINSIZE, STRIPE> (ptr, pend, buf, bufend, t->marks, L, MIN_MATCH, *hash2)
-                          : fast_find_chunks<size_t, PolynomialRollingHash<size_t>, WINSIZE, STRIPE> (ptr, pend, buf, bufend, t->marks, L, MIN_MATCH, *hash1);
+                          : fast_find_chunks<uint64, PolynomialRollingHash<uint64>, WINSIZE, STRIPE> (ptr, pend, buf, bufend, t->marks, L, MIN_MATCH, *hash1);
 #ifndef FIND_ONLY
     t->compute_chunk_hashes();
 #endif
@@ -177,7 +177,7 @@ void compress_CDC (bool ZPAQ_CDC, unsigned L, unsigned MIN_MATCH, Offset block_s
 {
   BYTE *buf = (BYTE *)_buf,  *bufend = buf+block_size;  literal_bytes = 0;  stat = statbuf;
   BYTE *last_match = buf,  *last_chunk = buf;  if (MIN_MATCH < MINIMAL_MIN_MATCH)   MIN_MATCH = MINIMAL_MIN_MATCH;
-  PolynomialRollingHash<size_t>  hash1 (WINSIZE, PRIME1);
+  PolynomialRollingHash<uint64>  hash1 (WINSIZE, PRIME1);
   CrcRollingHash       <uint32>  hash2 (WINSIZE, Crc32CastagnoliPolynom);
 
   int free_jobs=g.Threads.NumThreads, num_thread=0;
