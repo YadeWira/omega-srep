@@ -2,10 +2,13 @@
 
 Omega SREP's primary, tested target remains x86_64 (Windows 10/11 x64,
 Linux x64). This document covers the **opt-in** 32-bit x86 (i686)
-target: what changed to enable it, two real bugs found and fixed by
-actually building and running it for the first time, one real bug
-found and left open, and the evidence this is based on -- including a
-run on a real Windows 7 x64 VM, not just Wine emulation.
+target: what changed to enable it, six real bugs found and fixed by
+actually building and running it for the first time (Bugs #1-#6
+below), and the evidence this is based on -- including runs on real
+Windows 7/10 x64 VMs, not just Wine emulation. A separate, distinct
+decompression failure on `-m3f`-`-m5f` remains open, unreproduced
+despite real effort on two independent sides -- see Bug #6's closing
+note.
 
 ## Why 32-bit at all
 
@@ -338,6 +341,65 @@ i686 with a byte-identical hash to x86_64, and a full 120-cell matrix
 clean under Wine (the known `-m0` Wine memory-allocation flake — see
 Bug #2 — accounted for 5 of the first 120 attempts, all confirmed
 passing on retry).
+
+## Bug #6 (fixed): CDC rolling hash used a word-width-dependent type, corrupting any archive decoded on a different architecture than it was encoded on
+
+Found via an external forum bug report relayed to this project,
+describing two symptoms on 32-bit builds: `-m1`/`-m2` (and their
+`f`/`o` suffix variants) "crashing", and a downstream consumer
+(ytool)'s own `-ddX` modes hanging on decompress (0% CPU, 0-byte
+output, no error). Root-caused and fixed in `v1.0.5` (commit
+`4de83a2`); this entry documents it here for consistency with the
+Bug #1-#5 writeups above, since it landed via a different tool
+without a matching write-up in this file.
+
+**Root cause**: `Compression/SREP/compress_cdc.cpp`'s content-defined
+chunking path used `PolynomialRollingHash<size_t>` for its rolling
+hash. `size_t` is 32-bit on i686 and 64-bit on x86_64, and the
+polynomial hash's internal arithmetic is implicitly modulo the width
+of its template type — so the exact same input bytes produce
+**different chunk-boundary decisions** depending on which
+architecture compiled the binary. Since chunk boundaries are never
+stored in the archive (they're re-derived from the hash at decode
+time, same as the CDC boundary hash discussed in `dedup-mode-design.md`),
+a mismatch here doesn't fail loudly — it just makes the decoder look
+for matches at the wrong offsets, silently producing garbage output
+(or, in cases where the resulting bogus offsets drive the decoder into
+an unexpected loop state, a hang) instead of an error. Same
+undeclared-behavior bug *family* as Bugs #2/#4/#5 above, but a
+logic/type-width issue rather than an asm-constraint one — the
+common thread across all six 32-bit bugs found this cycle is code
+that happened to behave correctly on x86_64 by accident of that
+architecture's own native word size, with nobody having compiled or
+exercised the 32-bit path before.
+
+**Fix**: pinned the rolling hash's template parameter to `uint64`
+instead of `size_t` (`compress_cdc.cpp`), so chunk-boundary decisions
+are identical on every architecture and compiler regardless of native
+pointer width. The in-memory REP path (`-m0`) uses a separately
+instantiated hash and was never affected.
+
+**Verification**: independently re-verified real cross-architecture
+round-trips (not just same-arch): 64-bit compress → 32-bit decompress
+and the reverse, across all of `-m1`/`-m1f`/`-m1o`/`-m2`/`-m2f`/`-m2o`
+— 12/12 clean. Separately, the downstream consumer whose bug report
+prompted this (ytool) rebuilt fresh (Linux + Win64 + Win32 cross),
+ran their own 378/378 regression suite, and specifically re-tested
+the reported hang scenario on a **real Windows 7 x64 VM** (not
+cross-compiled) across multiple codecs — clean, bit-exact, no hang.
+
+A second, distinct symptom from the same bug report — `-m3f`-`-m5f`
+decompression failing (0-byte output or a partial extract followed by
+a checksum error) — was investigated in parallel but **not
+reproduced** by either side (extensive attempts: small and large
+files, real cross-arch, and forced-low `-mem` to exercise Future-LZ's
+disk-spill path, the leading suspect since it was never validated on
+32-bit). Filed as open, blocked on an actual repro file or exact
+parameters from the original report — not fixed here, and not
+believed to share the same root cause as Bug #6 above (that bug's
+symptom was silent corruption or, at most, an infinite loop from
+bogus offsets — not a clean decompression failure with a proper CRC
+error on part of the data).
 
 ## Building a 32-bit binary
 
