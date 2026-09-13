@@ -9,8 +9,7 @@ self-contained.
 
 Everything on this page targets x86_64 (the primary, tested target).
 32-bit (i686) is also supported, opt-in — see `docs/32bit-support.md`
-for the cross-compile command, what's confirmed working, and one known
-issue (`-hash=sha1`) to avoid there.
+for the cross-compile command and what's confirmed working.
 
 ## Recommended: MinGW-w64 via scoop
 
@@ -89,7 +88,7 @@ binaries are built from it). CMake is purely an alternative.
 Should print:
 
 ```
-Omega SREP 1.0a-beta.4 (April 27, 2026): ...
+Omega SREP 1.0.5 (July 14, 2026): ...
 ```
 
 Round-trip smoke test:

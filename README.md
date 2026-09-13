@@ -14,10 +14,9 @@ platforms.
   the upstream tool first.
 - **Supported platforms:** Windows 10/11 x64 and Linux x64 (primary,
   tested target). 32-bit x86 (i686) is also supported as an **opt-in**
-  build — see `docs/32bit-support.md` for the cross-compile command,
-  what's confirmed working, and one known issue (`-hash=sha1`) to
-  avoid there. The historical big-endian, FreeBSD, and macOS branches
-  are gone.
+  build — see `docs/32bit-support.md` for the cross-compile command
+  and what's confirmed working. The historical big-endian, FreeBSD, and
+  macOS branches are gone.
 - **Binary name:** `osrep` (replaces `srep`).
 - **Version line:** Omega SREP starts a new lineage at `1.0a beta`.
   First stable release: `1.0.0`.

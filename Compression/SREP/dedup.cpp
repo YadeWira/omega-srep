@@ -18,8 +18,8 @@
 //   body:
 //     concatenated unique chunk bytes in order of first appearance.
 //
-// F5.3 will #include this from srep.cpp to wire dedup into the main
-// pipeline; for now the module is exercised by tests/dedup_test.cpp.
+// srep.cpp #includes this to wire dedup into the main pipeline;
+// tests/dedup_test.cpp exercises the module directly.
 //
 // F5.6: the chunk-boundary hash is selectable (CDC_HASH_FNV, the
 // default/legacy algorithm, or CDC_HASH_GEAR, an opt-in Gear-hash CDC

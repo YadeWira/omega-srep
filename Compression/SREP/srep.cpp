@@ -336,6 +336,15 @@ int srep_main (int argc, char **argv)
       selected_hash = hash_by_name("", errcode);
     } else if (start_with(argv[1],"-hash=")) {
       selected_hash = hash_by_name(argv[1]+6, errcode);
+    } else if (start_with(argv[1],"-vmfile=")) {
+      // These must be matched *before* the "-v" verbosity cases below:
+      // "-vmfile=..." and "-vmblock=..." both start with "-v", so
+      // start_with(argv[1],"-v") would otherwise swallow them as a malformed
+      // verbosity value ("Invalid option"), making the documented options
+      // unreachable.
+      vmfile_name = argv[1]+8;
+    } else if (start_with(argv[1],"-vmblock=")) {
+      vm_block = parseMem (argv[1]+9, &errcode, 'm');
     } else if (strequ(argv[1],"-v")) {
       verbosity = 1;
     } else if (start_with(argv[1],"-v")) {
@@ -347,10 +356,6 @@ int srep_main (int argc, char **argv)
       index_file = argv[1]+7;
     } else if (start_with(argv[1],"-temp=")) {
       tempfile = argv[1]+6;
-    } else if (start_with(argv[1],"-vmfile=")) {
-      vmfile_name = argv[1]+8;
-    } else if (start_with(argv[1],"-vmblock=")) {
-      vm_block = parseMem (argv[1]+9, &errcode, 'm');
     } else if (start_with(argv[1],"-mem")) {
       vm_mem = parse_mem_option (argv[1]+4, &errcode, 'm');
     } else if (start_with(argv[1],"-l")) {
@@ -434,6 +439,17 @@ int srep_main (int argc, char **argv)
   }
   if (vm_mem > size_t(-1))    vm_mem = size_t(-1);     // For 32-bit systems (say, 50% of 16gb RAM may be a bit too much). Better, use GetTotalMemoryToAlloc()
   if (dictsize > size_t(-1))  dictsize = size_t(-1);   // For 32-bit systems: clamp *before* io.cpp/compress_inmem.cpp narrow this Offset into a size_t-parameter helper (roundUp/roundup_to_power_of), otherwise an oversized -d value would silently wrap instead of failing/clamping cleanly.
+
+  // Future-LZ/Index-LZ decompression keeps cross-block matches in memory and
+  // spills them to the VM file one VMBLOCK_SIZE block at a time. An encoded
+  // record is 20+len bytes (STAT len + two Offset positions + payload), so a
+  // match longer than a block can never be evicted by
+  // VIRTUAL_MEMORY_MANAGER::save_to_disk() -- if one is present while spilling
+  // is active, that function's loop makes no progress, spinning forever and
+  // growing the VM file without bound. Cap the in-memory store threshold at one
+  // block so oversized matches take the existing "read back from the output
+  // file" path instead (the exact mechanism an explicit -m uses).
+  if (vm_block > 24  &&  maximum_save > vm_block-24)   maximum_save = vm_block-24;
 
   if (filenames[1]==NULL) {
     printf (         "%s: %s\n"

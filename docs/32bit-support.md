@@ -401,11 +401,45 @@ symptom was silent corruption or, at most, an infinite loop from
 bogus offsets — not a clean decompression failure with a proper CRC
 error on part of the data).
 
+**Follow-up (v1.0.5):** the exact CRC-error symptom above still has not
+been reproduced, but its named "leading suspect" -- Future-LZ's
+disk-spill path -- turned out to harbor a real, distinct bug. When
+`-mem` is low enough to force spilling, a match longer than one VM block
+(`-vmblock`, default 8 mib) can never be evicted by
+`VIRTUAL_MEMORY_MANAGER::save_to_disk()`, whose eviction loop only packs
+records that fit one block; if such a match is present while spilling is
+active, the spill loop makes no progress and the process spins forever at
+0% CPU while the VM file grows without bound. This is **not** 32-bit
+specific (reproduced identically on i686 and x86_64), and its symptom is
+the "hang, 0-byte output, no error message" one -- not the partial
+extract + CRC error of the original report. Fixed in v1.0.5 by capping
+the in-memory store threshold at one VM block, so oversized matches take
+the existing "read back from the output file" path instead (the exact
+mechanism an explicit `-mBYTES` uses); the now-reachable `-vmblock=`
+option also lets a user raise the cap if they want such matches kept in
+memory. Anyone who still has the original `-m3f`/`-m5f` CRC-failing file
+is invited to re-test on v1.0.5.
+
 ## Building a 32-bit binary
 
-Not yet wired into the Makefile as a named target (the host-arch-vs-
-target-arch detection in the Makefile's Windows/Unix branch selection
-would need adjusting first). Cross-compile directly:
+Wired into the Makefile as named targets, one per OS:
+
+```bash
+make bin/osrep32.exe        # Windows i686, needs i686-w64-mingw32-g++ in PATH
+make bin/osrep32            # Linux i686,  needs g++-multilib (g++ -m32)
+```
+
+The Windows target produces `bin/osrep32.exe` (the same shape as the
+`osrep-windows-x86.exe` release asset); the Linux target produces
+`bin/osrep32` (a native i686 ELF). Both are intentionally not part of
+`all`, since they need a multilib/cross toolchain most contributors don't
+have. The Windows target injects a one-line `ShObjIdl.h` shim under
+`bin/win32-shim/` so the cross-build also works on a case-sensitive host
+filesystem from Linux (see below); the Linux target fails fast with a
+clear message if `g++ -m32` can't be exercised.
+
+To cross-compile the Windows artifact by hand instead, the equivalent
+direct command is:
 
 ```bash
 i686-w64-mingw32-g++ -DFREEARC_WIN -DUNICODE -D_UNICODE \
@@ -421,7 +455,8 @@ i686-w64-mingw32-g++ -DFREEARC_WIN -DUNICODE -D_UNICODE \
 
 (On a case-sensitive filesystem you'll also need the same lowercase
 `ShObjIdl.h` shim `tests/local_hardening.sh`'s mingw stage already
-documents, for `Compression/Common.cpp:1052`'s mixed-case include.)
+documents, for `Compression/Common.cpp:1052`'s mixed-case include -- the
+`make` target above does this for you.)
 
 `-funroll-all-loops` is required alongside `-O3`/`-msse2` -- without it,
 `Compression/SREP/compress_cdc.cpp` fails to compile on i686 at all

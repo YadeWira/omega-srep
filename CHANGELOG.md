@@ -7,6 +7,40 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com).
 Versions follow `1.<minor>.<patch>` for stable releases and
 `1.0a-beta.N` for pre-1.0 betas.
 
+## [Unreleased]
+
+### Fixed
+
+- **`-vmfile=` and `-vmblock=` were unreachable.** Both were matched *after*
+  the `-v` (verbosity) clause, so `start_with(argv[1],"-v")` swallowed them
+  first and every use of either documented option failed with `Invalid
+  option`. Moved their handling ahead of the verbosity match.
+- **Future-LZ/Index-LZ decompression could hang forever when spilling to the
+  VM file.** With `-mem` low enough to force spilling, a match longer than one
+  VM block (`-vmblock`, default 8 mib) can never be evicted by
+  `VIRTUAL_MEMORY_MANAGER::save_to_disk()` -- its eviction loop only packs
+  records that fit one block -- so the spill loop made no progress: 0% CPU,
+  no error, and a VM file growing without bound. Fixed by capping the
+  in-memory store threshold at one VM block, so oversized matches fall through
+  to the existing "read back from the output file" path (the same mechanism an
+  explicit `-mBYTES` uses). Not 32-bit specific -- reproduced identically on
+  i686 and x86_64; see `docs/32bit-support.md` for the writeup.
+
+### Added
+
+- **`make bin/osrep32`** -- opt-in native Linux i686 build, complementing the
+  existing `make bin/osrep32.exe` Windows i686 cross-build. Both stay out of
+  `all` and fail fast with a clear message if their toolchain is missing.
+
+### Documentation
+
+- Corrected stale docs: `docs/format-spec.md` claimed `--seed=N` was
+  unimplemented (it shipped in v1.0a-beta.2); `README.md`,
+  `docs/windows-build.md`, and `man/osrep.1` still said 32-bit was out of
+  scope / carried a `-hash=sha1` "known issue" (fixed in 1.0.3);
+  `docs/windows-build.md`'s sample output showed an old version.
+  `Compression/SREP/dedup.cpp`'s forward-reference comment corrected.
+
 ## [1.0.5] — 2026-07-14
 
 ### Fixed

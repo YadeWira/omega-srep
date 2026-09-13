@@ -306,8 +306,9 @@ Per-run hash seed makes archive bytes non-reproducible by default. Use
 .B --seed=\fIN\fR
 for byte-stable output.
 .IP \(bu 2
-Targets x86_64 only (Linux + Windows 10/11). 32-bit, big-endian, and
-strict-alignment ports are explicitly out of scope.
+Targets 32-bit and 64-bit x86 (Linux + Windows 10/11). 64-bit is the
+primary, tested target; 32-bit (i686) is supported as an opt-in build.
+Big-endian and strict-alignment ports are explicitly out of scope.
 .IP \(bu 2
 .B -dup
 peak RAM scales with the chunk table (~23 KiB per MiB of input at

@@ -48,8 +48,46 @@ bin/dedup_test: Makefile tests/dedup_test.cpp Compression/SREP/dedup.cpp
 	mkdir -p -v bin
 	$(CXX) -O2 -Wall -Wextra -Wno-unused-parameter tests/dedup_test.cpp -lstdc++ $(STATIC) -o bin/dedup_test
 
+# Opt-in 32-bit (i686) Windows cross-build (see docs/32bit-support.md).
+# The primary target stays bin/osrep (host arch); this one produces the 32-bit
+# Windows artifact via the mingw-w64 i686 cross compiler -- the same binary the
+# `osrep-windows-x86.exe` release asset is built from. Deliberately NOT part of
+# `all`: it needs a cross toolchain most contributors don't have. The host
+# arch is irrelevant (the Makefile's own OS_DEFINE/CFLAGS are for bin/osrep),
+# so the target spells out the Windows defines and flags explicitly.
+WIN32_CXX?= i686-w64-mingw32-g++
+WIN32_DEFINES= -DFREEARC_WIN -DUNICODE -D_UNICODE -DFREEARC_INTEL_BYTE_ORDER -D_FILE_OFFSET_BITS=64
+WIN32_LDFLAGS= -lstdc++ -lole32 -luuid -lshell32 -ladvapi32 $(STATIC)
+# mingw-w64 ships this header lowercase (shobjidl.h); Common.cpp includes it
+# mixed-case (<ShObjIdl.h>), which only breaks on a case-sensitive host fs
+# (i.e. cross-building from Linux). A one-line shim keeps `make bin/osrep32.exe`
+# working unmodified there; on Windows the real header resolves first anyway.
+WIN32_SHIM= bin/win32-shim/ShObjIdl.h
+# -funroll-all-loops is required alongside -O3/-msse2 on i686: without it
+# compress_cdc.cpp fails to compile ("unsupported size for integer register").
+bin/osrep32.exe: Makefile $(DEPS)
+	@command -v $(WIN32_CXX) >/dev/null 2>&1 || { echo "ERROR: $(WIN32_CXX) not found in PATH (install the mingw-w64 i686 cross toolchain)" >&2; exit 1; }
+	mkdir -p -v bin bin/win32-shim
+	printf '\043include <shobjidl.h>\n' > $(WIN32_SHIM)
+	$(WIN32_CXX) -m32 $(WIN32_DEFINES) $(INCLUDES) -Ibin/win32-shim \
+	  -O3 -mtune=generic -funroll-all-loops -msse2 $(WARNINGS) \
+	  $(CXXSOURCES) $(WIN32_LDFLAGS) -o bin/osrep32.exe
+
+# Opt-in 32-bit (i686) *Linux* build (see docs/32bit-support.md). Same
+# rationale as bin/osrep32.exe above: not part of `all`, needs a multilib
+# toolchain (g++-multilib / gcc-multilib + libc6-dev-i386). The i386 target is
+# spelled out explicitly (FREEARC_UNIX, not the host's OS_DEFINE) so this is
+# unambiguously the native 32-bit Linux artifact regardless of host branch.
+bin/osrep32: Makefile $(DEPS)
+	@$(CXX) -m32 -E -x c++ /dev/null >/dev/null 2>&1 || { echo "ERROR: $(CXX) cannot target i686 (install g++-multilib / gcc-multilib)" >&2; exit 1; }
+	mkdir -p -v bin
+	$(CXX) -m32 -DFREEARC_UNIX -DFREEARC_INTEL_BYTE_ORDER -D_FILE_OFFSET_BITS=64 $(INCLUDES) \
+	  -O3 -mtune=generic -funroll-all-loops -msse2 $(WARNINGS) \
+	  $(CXXSOURCES) -lpthread -lstdc++ $(STATIC) -o bin/osrep32
+
 clean:
-	rm -f -v bin/osrep bin/dedup_test
+	rm -f -v bin/osrep bin/dedup_test bin/osrep32 bin/osrep32.exe
+	rm -rf -v bin/win32-shim
 
 all: bin/osrep bin/dedup_test
 

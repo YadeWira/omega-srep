@@ -243,6 +243,7 @@ whole input and rarely align.
 
 `hash_seed_size` bytes are per-archive random material, so two
 compressions of the same input produce different `.osr` bytes.
-Round-trip is deterministic; the archive is not. Adding `--seed=N`
-for byte-stable output is on the v1.x roadmap but not implemented
-today.
+Round-trip is deterministic; the archive is not. Pass `--seed=N`
+(since v1.0a-beta.2) to derive the per-archive hash seed
+deterministically from `N` instead of a PRNG, making the output
+byte-stable for a given input + toolchain.
