@@ -401,7 +401,7 @@ symptom was silent corruption or, at most, an infinite loop from
 bogus offsets — not a clean decompression failure with a proper CRC
 error on part of the data).
 
-**Follow-up (v1.0.5):** the exact CRC-error symptom above still has not
+**Follow-up (v1.0.6):** the exact CRC-error symptom above still has not
 been reproduced, but its named "leading suspect" -- Future-LZ's
 disk-spill path -- turned out to harbor a real, distinct bug. When
 `-mem` is low enough to force spilling, a match longer than one VM block
@@ -412,13 +412,13 @@ active, the spill loop makes no progress and the process spins forever at
 0% CPU while the VM file grows without bound. This is **not** 32-bit
 specific (reproduced identically on i686 and x86_64), and its symptom is
 the "hang, 0-byte output, no error message" one -- not the partial
-extract + CRC error of the original report. Fixed in v1.0.5 by capping
+extract + CRC error of the original report. Fixed in v1.0.6 by capping
 the in-memory store threshold at one VM block, so oversized matches take
 the existing "read back from the output file" path instead (the exact
 mechanism an explicit `-mBYTES` uses); the now-reachable `-vmblock=`
 option also lets a user raise the cap if they want such matches kept in
 memory. Anyone who still has the original `-m3f`/`-m5f` CRC-failing file
-is invited to re-test on v1.0.5.
+is invited to re-test on v1.0.6.
 
 ## Building a 32-bit binary
 
