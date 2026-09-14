@@ -26,11 +26,11 @@
 #     the decoded bytes must still be right (spilling is a transparent
 #     re-encoding, so it can never change the output).
 #
-# The v3/v4 archives are produced with `-t1`. The default multi-threaded
-# Future-LZ *encoder* has an intermittent race that occasionally writes an
-# archive whose stored match data disagrees with its own input (the C++'s own
-# decoder rejects it too), so it is not a sound oracle for a decoder test.
-# `-t1` is deterministic and correct.
+# The v3/v4 archives are produced with `-t1`. The encoder is deterministic for a
+# fixed seed regardless of thread count, but `-t1` keeps this oracle obviously
+# so; the encoder's own determinism and round-trip are checked separately by
+# `tests/futurelz_race_regression.sh`, which is where an encoder bug belongs
+# rather than in a decoder test that would only fail intermittently.
 #
 # Skips cleanly (exit 0 with a notice) if the Rust toolchain is missing.
 set -eu

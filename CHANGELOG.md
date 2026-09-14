@@ -61,26 +61,50 @@ Versions follow `1.<minor>.<patch>` for stable releases and
   `decode-streaming` subcommand are what the differential harness diffs
   against the Rust port.
 
-### Known issues
-
-- **Intermittent Future-LZ encoding corruption under `-m5f`.** About 1.5% of
-  `-m5f` compressions (and ~8.5% at the default thread count — 3/200 and 17/200
-  measured on the test corpus) emit an archive whose stored per-block digest
-  does not match the data the match list decodes to. The encoder reports
-  success; the failure is only visible on decompression, where both the C++
-  decoder and the Rust port reject the block with a checksum error — the
-  reported symptom is "first N blocks extracted, then CRC error". `-m3f`/`-m4f`
-  have not been observed to fail, nor have the v4 modes. Compression is
-  deterministic for a fixed `--seed` (five runs byte-identical), which makes the
-  trigger seed- or allocation-dependent rather than a pure schedule race, but
-  the thread-count sensitivity points at a shared-state read. Not root-caused.
-  Repro: `for i in $(seq 1 200); do bin/osrep -m5f -b64k in out.osr; bin/osrep
-  -d out.osr out 2>/dev/null || echo corrupt; done`. This is why the v3/v4
-  decode conformance feeds the encoder `-t1`; the decoder port itself is
-  correct, and faithfully rejects the same archives the C++ rejects.
-
 ### Fixed
 
+- **Every Future-LZ/Index-LZ decompression leaked an empty tempfile into
+  `$TMPDIR`.** `VIRTUAL_MEMORY_MANAGER`'s path is created eagerly with
+  `mkstemp()` when decompression starts, but the `FILE*` is only `fopen()`ed on
+  the first spill -- and the destructor removed the file only inside
+  `if (vmfile)`. So the common case, a v3/v4 archive decoded without ever
+  exhausting the memory budget, left `$TMPDIR/osrep-virtual-memory-XXXXXX`
+  behind every single time; a session accumulates thousands. The destructor now
+  removes the path unconditionally (and uses `delete[]` to match
+  `new char[]` in `save_to_disk`). `tests/vm_tempfile_leak_regression.sh`
+  decompresses with `TMPDIR` pointed at a directory that must stay empty -- 24
+  plain decodes plus one forced to spill (`-mem=8mb -vmblock=256k`) -- and it
+  reports 24 leftovers on the pre-fix code.
+- **`-m5f` -- and every other Future-LZ/Index-LZ mode -- could report success
+  and then write an archive that does not decompress.** The main thread filled
+  the block header, copied it (including `header[3..]`, the per-block digest the
+  *background* thread computes with `hash_func`) into the `COMPRESSED_BLOCK` it
+  keeps for the second pass, and only *then* called `bg_thread.write()`. But
+  `write()` is what signals `WriteReady`, and the BG thread's next-next
+  iteration reuses that same header buffer for the block after next -- so the
+  copy raced the digest write. `VHash::compute` stores the 16-byte digest as two
+  8-byte `memcpy`s (`hashes.cpp:377-379`), so a block could be stored, and later
+  written to the file, with another block's digest or with half of it stale. The
+  captured failure showed it exactly: the archive's 4th block carried a digest
+  whose first half was the VMAC of the *empty string* -- the EOF block the BG
+  thread was hashing at that moment -- and whose second half was untouched
+  zeros. Measured at 3/200 single-threaded and 17/200 at the default thread
+  count, on `-m5f` (which is also what made `-m3f`/`-m4f` and the v4 modes
+  "halfly broken" in the upstream report: compression ok, decompress fails, the
+  first N blocks come out and then a CRC error). The header is now copied
+  *before* the signal. For a fixed seed the output is byte-for-byte identical to
+  the previous correct output, and `tests/futurelz_race_regression.sh` pins the
+  seed of the captured failure via the new `OSREP_SEED_HEX` hook below and
+  asserts 450 archives are byte-identical and all round-trip; it fails on the
+  pre-fix code by run 25.
+- **`OSREP_SEED_HEX` (debug/determinism hook, not a CLI option).** Setting it to
+  the `hash_seed_size` bytes stored right after an archive's 16-byte header
+  makes the encoder use exactly that hash seed, so a specific failing
+  compression can be replayed forever. It exists because the encoder race above
+  is deterministic per `(input, options, seed)` -- without it, reproducing one
+  captured failure means re-rolling random seeds until it happens again. It is
+  ignored if malformed; `--seed=N` remains the user-facing way to get
+  reproducible output.
 - **`-dup` decode could index an empty vector on a corrupt archive.**
   `decode_streaming` validated a chunk reference against the meta
   header's `unique_count` and then indexed `unique_slots`, which only

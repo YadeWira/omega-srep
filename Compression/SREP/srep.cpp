@@ -260,6 +260,22 @@ static void osrep_fill_seed_from(void *out, size_t out_size, unsigned long long 
     }
 }
 
+// Debug hook, not a CLI option: fix the hash seed to the exact bytes stored in
+// an archive (the hash_seed_size bytes right after the 16-byte archive header)
+// so a specific failure can be re-run deterministically. Set OSREP_SEED_HEX to
+// that hex string; returns false (and leaves the seed alone) if it is malformed.
+static bool osrep_seed_from_hex (void *out, size_t out_size, const char *hex)
+{
+    if (strlen(hex) != out_size*2)  return false;
+    unsigned char *p = (unsigned char *)out;
+    for (size_t i = 0; i < out_size; ++i) {
+        unsigned v;
+        if (sscanf (hex+2*i, "%2x", &v) != 1)  return false;
+        p[i] = (unsigned char)v;
+    }
+    return true;
+}
+
 int srep_main (int argc, char **argv)
 {
   COMMAND_MODE cmdmode = COMPRESSION;
@@ -627,7 +643,10 @@ int srep_main (int argc, char **argv)
     void *seed = malloc(selected_hash->hash_seed_size);
     if (selected_hash->new_hash)
     {
-      if (osrep_user_seed_specified)
+      const char *seed_hex = getenv("OSREP_SEED_HEX");
+      if (seed_hex && osrep_seed_from_hex (seed, selected_hash->hash_seed_size, seed_hex))
+        ;                                            // debug hook: use the given seed verbatim
+      else if (osrep_user_seed_specified)
         osrep_fill_seed_from (seed, selected_hash->hash_seed_size, osrep_user_seed_value);
       else
         cryptographic_prng (seed, selected_hash->hash_seed_size);
@@ -727,11 +746,14 @@ int srep_main (int argc, char **argv)
         header[1] = len;
         header[2] = (INDEX_LZ? 0 : stat_size);
 
-        // Write compressed block to output file(s)
-        bg_thread.write (header[2], stat, literal_bytes);
-        if (bg_thread.errcode)  {errcode = bg_thread.errcode; goto cleanup;}
-
-        // Store matches in memory
+        // Store matches in memory BEFORE handing the buffer back to the BG
+        // thread. `bg_thread.write` below signals WriteReady, and the BG
+        // thread's next-next iteration reuses this very header buffer for the
+        // block after next -- including header[3..], the digest it computes
+        // with hash_func. Copying header[] out after the signal therefore races
+        // that hash write (which itself is two 8-byte stores, so a torn read is
+        // possible): the block can end up stored, and later written to the
+        // file, with another block's digest or with half of it stale.
         if (FUTURE_LZ || INDEX_LZ)
         {
           total_blocks++;
@@ -760,6 +782,10 @@ int srep_main (int argc, char **argv)
           if (INDEX_LZ)
             compsize += sizeof(STAT);   // accounting for the future write of statsize_buf[]
         }
+
+        // Write compressed block to output file(s)
+        bg_thread.write (header[2], stat, literal_bytes);
+        if (bg_thread.errcode)  {errcode = bg_thread.errcode; goto cleanup;}
 
         // Update statistics
         total_stat_size += stat_size;

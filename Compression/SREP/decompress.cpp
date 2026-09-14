@@ -225,7 +225,12 @@ struct VIRTUAL_MEMORY_MANAGER
   Offset total_read, total_write;           // Bytes read/written to disk by VMM
 
   VIRTUAL_MEMORY_MANAGER (char *_vmfile_name, Offset _VMBLOCK_SIZE)  :  vmfile_name(_vmfile_name), vmfile(NULL), vmbuf(NULL), VMBLOCK_SIZE(_VMBLOCK_SIZE), new_block(0), total_read(0), total_write(0) {}
-  ~VIRTUAL_MEMORY_MANAGER() {delete vmbuf;  if(vmfile) {fclose(vmfile); remove(vmfile_name);}}
+  // vmfile_name is created eagerly with mkstemp() in srep.cpp, but vmfile is
+  // only fopen()ed on the first spill -- so a decode that never spills (the
+  // common case for v3/v4) has to remove the file here anyway, or every run
+  // leaks an empty tempfile into $TMPDIR. `delete[]` matches `new char[]` in
+  // save_to_disk.
+  ~VIRTUAL_MEMORY_MANAGER() {delete[] vmbuf;  if(vmfile) fclose(vmfile);  if(vmfile_name) remove(vmfile_name);}
   Offset current_mem()      {return max_mem() - free_blocks.size()*VMBLOCK_SIZE;}
   Offset max_mem()          {return new_block*VMBLOCK_SIZE;}
 

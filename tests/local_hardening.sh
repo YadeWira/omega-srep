@@ -149,6 +149,13 @@ stage1_baseline() {
     bash tests/container_conformance.sh
     echo "  -> Rust conformance (I/O-LZ decoder vs C++ archives)"
     bash tests/decode_conformance.sh
+    # The Future-LZ/Index-LZ encoder race fix: needs many runs to be a
+    # meaningful check, so it lives here rather than in the shared core
+    # suite (which stage 2 also runs, under a slower sanitizer build).
+    echo "  -> Future-LZ encoder determinism + round-trip (race regression)"
+    bash tests/futurelz_race_regression.sh
+    echo "  -> decompression leaves no VM tempfile behind"
+    bash tests/vm_tempfile_leak_regression.sh
 
     STAGE_STATUS[s1]="PASS"
 }
