@@ -64,10 +64,14 @@ is the path `osrep -dup` actually uses), `selftest` stdout, and the corrupt
 forward-ref meta (both must reject with `DEDUP_ERR_BAD_REF` and not crash).
 
 For the digests it diffs `tests/hash_test.cpp` (backed by the real
-`Compression/SREP/hashes.cpp`) against `hash_conformance` — `md5`/`sha1`/`sha512`
-now, `vmac`/`siphash` as they are ported — at the MD5/SHA-1 64-byte and SHA-512
-128-byte padding boundaries (0, 55, 56, 63, 64, 65, 111, 112, 119, 120, 127, 128,
-129, …), which is where hand-written digest ports break.
+`Compression/SREP/hashes.cpp`) against `hash_conformance` — all five of
+`md5`/`sha1`/`sha512`/`siphash`/`vmac` now — at the MD5/SHA-1 64-byte and
+SHA-512 128-byte padding boundaries (0, 55, 56, 63, 64, 65, 111, 112, 119, 120,
+127, 128, 129, …), which is where hand-written digest ports break. Dedicated
+sweeps then cover the paths a boundary bug would hide in: `vmac` over several
+keys and lengths around the 4096-byte NH block, and `aes` (AES-256 ECB, not a
+`-hash=` algorithm but the primitive `vmac` builds on) over several keys and
+block counts.
 
 ## Phases
 
@@ -75,7 +79,7 @@ now, `vmac`/`siphash` as they are ported — at the MD5/SHA-1 64-byte and SHA-51
 |---|---|---|
 | **0** | Fix the real bugs in C++ first (corrupt-meta read, 64-bit hash trust, spill backstop, CLI validation) and rewrite `docs/format-spec.md` to match the code — the oracle and the contract must be right before porting against them. | **done** |
 | **1** | Workspace, toolchain pin, cross-compile config, differential harness. | **done** |
-| **2** | Leaf modules: `dedup` (done), then the digests — `md5`/`sha1`/`sha512` and `siphash` (done), and `vmac`/`vhash` + AES, the default and the only one whose parity is not covered by a published test-vector set. | in progress |
+| **2** | Leaf modules: `dedup`, the digests `md5`/`sha1`/`sha512`/`siphash`, `aes` (AES-256 encrypt-only, the `vmac` primitive) and `vmac`/`vhash` (the default hash, VMAC-128). | **done** |
 | **3** | Container/IO: header/footer/block codec (read v1–v4, write v4 and v5), buffered IO, mmap, the VM spill manager. | not started |
 | **4** | The LZ core: hash-table match finder, `compress` (-m3/-m4/-m5 + accelerator), CDC (-m1/-m2), in-memory REP (-m0), the Future/Index-LZ second pass and the three decoders. Gate: byte-identical v4 archives across the whole matrix. | not started |
 | **5** | v5 format, CLI, retire the C++. | not started |
@@ -89,9 +93,12 @@ wrapper around the same payload.
 
 * **Licence.** The C++ core is Bulat Ziganshin's ("All rights reserved", with a
   commercial-licence offer); `_Encryption/hashes/siphash/siphash.c` carries no
-  licence header at all. Whether the Rust port is a faithful translation (a
-  derivative work) or a clean-room implementation from the format spec is not
-  decided, so the workspace deliberately declares no licence. Settle this before
-  publishing anything from the Rust tree.
+  licence header at all. Two of the ported modules are clearer: `vmac/vmac.c`
+  is explicitly placed in the public domain by its authors, and
+  `ciphers/aes/aes.c` is LibTomCrypt's "free for all purposes" notice. Whether
+  the Rust port is a faithful translation (a derivative work) or a clean-room
+  implementation from the format spec is still not decided, so the workspace
+  deliberately declares no licence. Settle this before publishing anything from
+  the Rust tree.
 * **MSRV.** The 1.77.2 pin caps dependency choice at 2024-era crates. Keep the
   dependency set small; `osrep-core` currently has none.

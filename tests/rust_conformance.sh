@@ -28,7 +28,7 @@ if ! command -v cargo >/dev/null 2>&1; then
 fi
 
 say "building the C++ oracle (bin/dedup_test)"
-[[ -x bin/dedup_test ]] || make bin/dedup_test >/dev/null 2>&1
+make bin/dedup_test >/dev/null 2>&1
 
 say "building the Rust port (osrep-conformance)"
 if ! cargo build --release -p osrep-conformance >/tmp/rust-conformance-build.log 2>&1; then
@@ -152,7 +152,7 @@ pass=$((pass+1))
 # --- digests (hashes.cpp) -------------------------------------------- #
 
 say "building the C++ digest oracle (bin/hash_test)"
-[[ -x bin/hash_test ]] || make bin/hash_test >/dev/null 2>&1
+make bin/hash_test >/dev/null 2>&1
 
 # Padding boundaries for MD5/SHA-1 (64-byte blocks) and SHA-512
 # (128-byte blocks): the lengths where the "1" bit and the length field
@@ -186,6 +186,71 @@ for algo in md5 sha1 sha512 vmac siphash; do
     done
 done
 say "digests: $hash_pass matched, $hash_skip skipped (not ported yet)"
+
+# --- VMAC-128 (the default hash) ------------------------------------- #
+
+say "vmac-128 vs the vendored vmac.c"
+python3 - "$TMP" <<'PY'
+import os, sys
+d = sys.argv[1]
+# Lengths around the 4096-byte NH block and the 16-byte sub-chunk boundary:
+# where the first-block absorb switches to poly_step, and where the padded
+# tail kicks in.
+for n in (0, 1, 15, 16, 17, 31, 32, 63, 64, 4095, 4096, 4097, 8191, 8192,
+          8193, 12288, 12345, 40000):
+    open(os.path.join(d, f"vmac-{n}.bin"), "wb").write(
+        bytes((i * 7 + 3) & 0xFF for i in range(n)))
+PY
+
+VMAC_KEYS=(
+    "0000000000000000000000000000000000000000000000000000000000000000"
+    "abababababababababababababababababababababababababababababababab"
+    "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+)
+VMAC_LENS="0 1 15 16 17 31 32 63 64 4095 4096 4097 8191 8192 8193 12288 12345 40000"
+vmac_pass=0
+for key in "${VMAC_KEYS[@]}"; do
+    for n in $VMAC_LENS; do
+        ./bin/hash_test vmac "$key" "$TMP/vmac-$n.bin" > "$TMP/cpp.vmac" 2>&1 \
+            || fail "cpp hash_test vmac len=$n"
+        "$RS_DIR/hash_conformance" vmac "$key" "$TMP/vmac-$n.bin" > "$TMP/rs.vmac" 2>&1 \
+            || fail "rust hash_conformance vmac len=$n"
+        check "vmac len=$n key=${key:0:8}" "$TMP/cpp.vmac" "$TMP/rs.vmac"
+        vmac_pass=$((vmac_pass+1))
+    done
+done
+say "vmac: $vmac_pass matched"
+
+# --- AES-256 ECB (the primitive vmac is built on) -------------------- #
+
+say "aes-256 ecb vs the vendored aes.c"
+python3 - "$TMP" <<'PY'
+import os, sys
+d = sys.argv[1]
+for n in (0, 16, 32, 48, 64, 256, 4096, 65536):
+    open(os.path.join(d, f"aes-{n}.bin"), "wb").write(
+        bytes((i * 13 + 5) & 0xFF for i in range(n)))
+PY
+
+# Three 32-byte keys: all-zero, the FIPS-197 example, and a repeated byte.
+KEYS=(
+    "0000000000000000000000000000000000000000000000000000000000000000"
+    "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+    "abababababababababababababababababababababababababababababababab"
+)
+AES_LENS="0 16 32 48 64 256 4096 65536"
+aes_pass=0
+for key in "${KEYS[@]}"; do
+    for n in $AES_LENS; do
+        ./bin/hash_test aes "$key" "$TMP/aes-$n.bin" > "$TMP/cpp.aes" 2>&1 \
+            || fail "cpp hash_test aes len=$n"
+        "$RS_DIR/hash_conformance" aes "$key" "$TMP/aes-$n.bin" > "$TMP/rs.aes" 2>&1 \
+            || fail "rust hash_conformance aes len=$n"
+        check "aes len=$n key=${key:0:8}" "$TMP/cpp.aes" "$TMP/rs.aes"
+        aes_pass=$((aes_pass+1))
+    done
+done
+say "aes: $aes_pass matched"
 
 # --- Summary --------------------------------------------------------- #
 

@@ -5,6 +5,8 @@
 //! inputs through both and diffs the bytes. See `dedup` for the first
 //! ported module.
 
+pub mod aes;
 pub mod dedup;
 pub mod hashes;
 pub mod hashes_keyed;
+pub mod vmac;

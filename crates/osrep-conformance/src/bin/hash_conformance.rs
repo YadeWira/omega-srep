@@ -10,8 +10,10 @@
 use std::fs;
 use std::process::ExitCode;
 
+use osrep_core::aes;
 use osrep_core::hashes;
 use osrep_core::hashes_keyed;
+use osrep_core::vmac;
 
 const NOT_PORTED: u8 = 3;
 
@@ -35,6 +37,7 @@ fn main() -> ExitCode {
         "md5" | "sha1" | "sha512" => 0usize,
         "vmac" => 32,
         "siphash" => 16,
+        "aes" => 32,
         other => {
             eprintln!("unknown hash: {other} (want vmac(default)/siphash/md5/sha1/sha512)");
             return ExitCode::from(2);
@@ -92,6 +95,33 @@ fn main() -> ExitCode {
             let mut key = [0u8; hashes_keyed::SIPHASH_KEY_LEN_BYTES];
             key.copy_from_slice(&seed);
             hex(&hashes_keyed::siphash(&key, &data))
+        }
+        "vmac" => {
+            let mut key = [0u8; vmac::VMAC_KEY_LEN_BYTES];
+            key.copy_from_slice(&seed);
+            hex(&vmac::Vmac::new(&key).compute(&data))
+        }
+        "aes" => {
+            // AES-256 ECB over the whole input, block by block, mirroring the
+            // `aes` mode of tests/hash_test.cpp (the key is the seed).
+            if data.len() % aes::AES_BLOCK_SIZE != 0 {
+                eprintln!(
+                    "aes input must be a multiple of 16 bytes, got {}",
+                    data.len()
+                );
+                return ExitCode::from(2);
+            }
+            let mut key = [0u8; aes::AES256_KEY_LEN];
+            key.copy_from_slice(&seed);
+            let cipher = aes::Aes256::new(&key);
+            let mut out = Vec::with_capacity(data.len());
+            let mut ct = [0u8; aes::AES_BLOCK_SIZE];
+            for chunk in data.chunks_exact(aes::AES_BLOCK_SIZE) {
+                let pt: [u8; aes::AES_BLOCK_SIZE] = chunk.try_into().unwrap();
+                cipher.encrypt_block(&pt, &mut ct);
+                out.extend_from_slice(&ct);
+            }
+            hex(&out)
         }
         other => {
             eprintln!("{other}: not ported to Rust yet");
