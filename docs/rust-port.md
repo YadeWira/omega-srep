@@ -107,8 +107,40 @@ the input. Truncated archives must error, never panic.
 | **3a** | Container framing: archive header, hash-descriptor table, version predicates, block header, v4 index footer + block-size table, ODUP trailer — read v1–v4 and write v4, byte-exact in both directions. | **done** |
 | **4a** | The I/O-LZ decoder (format v1/v2): record decoding, the literal/match interleaving, both match sources (read back from the output sink, and LZ77 replication within the block, which is `memcpy_lz_match`'s forward byte copy and NOT memmove), and per-block digest verification through the already-ported hashes. | **done** |
 | **4b** | `MEMORY_MANAGER`, the VM spill manager and the Future/Index-LZ decoder (v3/v4): both are driven only by `decompress_FUTURE_LZ`, so they port together rather than standing alone. | **done** |
-| **4c** | The encoder: hash-table match finder, `compress` (-m3/-m4/-m5 + accelerator), CDC (-m1/-m2), in-memory REP (-m0) and the Future/Index-LZ second pass. Gate: byte-identical v4 archives across the whole matrix. | not started |
+| **4c** | The encoder: hash-table match finder, `compress` (-m3/-m4/-m5 + accelerator), CDC (-m1/-m2), in-memory REP (-m0) and the Future/Index-LZ second pass. Gate: byte-identical v4 archives across the whole matrix. | **in progress** |
 | **5** | v5 format, CLI, retire the C++. | not started |
+
+### Phase 4c pre-port experiments (run before writing any Rust)
+
+Each of these decides how much of the encoder the port has to reproduce, so they
+ran against the C++ binary first, on a redundant input (16 copies of a 1 MiB
+random block — 16.8 MB → ~1.05 MB at `-m0/-m3/-m4/-m5`, ~1.13 MB at `-m1`) with
+`--seed=7` so archives are byte-comparable:
+
+| experiment | result |
+|---|---|
+| `-a0` vs `-a1` vs `-a16` vs default, and `-ia+` vs `-ia-` (`-m3/-m4/-m5`, and `-f`) | **byte-identical** — the accelerator, `bitarr` and the prefetch/batching machinery are output-neutral. The port implements one path: the plain per-position rolling hash. |
+| `-t1` vs `-t8` vs default (`-m0`…`-m5`, `-m1f`, `-m5f`) | **byte-identical** — thread count does not affect output. The port is single-threaded per block. |
+| `-m1` built normally vs built with `#if GCC_VERSION >= 403` forced to `#if 0` (`hashes.cpp:204`, which makes `crc32c()` the `false` macro at `hashes.cpp:236`) | **different archives** (1,125,378 vs 1,158,094 bytes) — the two CDC routes are real algorithms, not a tuning knob. Both must be ported. |
+
+Two consequences worth recording:
+
+* **`crc32c()` is a runtime check** (`hashes.cpp:226`, CPUID SSE4.2), so `-m1`
+  output is CPU-dependent in the C++. The port implements both routes —
+  `CrcRollingHash<uint32>` over the hardware CRC32C instruction (what any SSE4.2
+  x86 takes, i.e. effectively every x86_64) and `PolynomialRollingHash<uint64>`
+  (the fallback) — and the differential gate needs **two** `-m1` oracles. The
+  fallback oracle is reproducible with that one-line `#if 0` sed.
+* **`tests/corpus` is `-m1`/`-m2`-blind**: every file there compresses at 100 %
+  through `-m1` because CDC never finds a duplicate chunk (measured 0 chunk
+  boundaries leading to a match on `text.bin`). Any `-m1`/`-m2` differential test
+  built on that corpus would pass vacuously, for both the CRC and polynomial
+  routes. The encoder harness therefore adds its own dup-friendly input.
+
+Also confirmed while measuring: `-m4` collapses the 16× duplicated input to
+almost exactly one copy's worth of bytes (1,048,760 ≈ 1 MiB + framing), which is
+the shape the match-finder port has to reproduce.
+
 
 Phase 4b keeps two details of the C++ that are not obvious from the format spec.
 The first is `maximum_save`: `srep.cpp:459` clamps it to `vm_block - 24` whenever
