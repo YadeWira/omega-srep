@@ -46,7 +46,7 @@ bin/osrep: Makefile $(DEPS)
 
 bin/dedup_test: Makefile tests/dedup_test.cpp Compression/SREP/dedup.cpp
 	mkdir -p -v bin
-	$(CXX) -O2 -Wall -Wextra -Wno-unused-parameter tests/dedup_test.cpp -lstdc++ $(STATIC) -o bin/dedup_test
+	$(CXX) $(CPPFLAGS) $(CFLAGS) -Wno-unused-result tests/dedup_test.cpp $(LDFLAGS) -o bin/dedup_test
 
 # Opt-in 32-bit (i686) Windows cross-build (see docs/32bit-support.md).
 # The primary target stays bin/osrep (host arch); this one produces the 32-bit

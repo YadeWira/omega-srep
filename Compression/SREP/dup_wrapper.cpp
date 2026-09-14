@@ -23,6 +23,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
 #include <unistd.h>
 #include <sys/stat.h>
 #include <string>
@@ -69,6 +70,7 @@ struct ParseResult {
     bool dup_mode;
     bool decompress;
     bool dup_paranoid;       // --dup-paranoid: byte-compare on every hash hit
+    bool seed_invalid;       // --seed= carried a non-integer value
     int  method;            // -1 if not specified
     size_t chunk_avg;
     size_t chunk_min;
@@ -88,6 +90,7 @@ static ParseResult parse_args(int argc, char** argv) {
     r.dup_mode      = false;
     r.decompress    = false;
     r.dup_paranoid  = false;
+    r.seed_invalid  = false;
     r.method        = -1;
     r.chunk_avg     = osrep_dedup::DEFAULT_AVG;
     r.chunk_min     = osrep_dedup::DEFAULT_MIN;
@@ -112,8 +115,19 @@ static ParseResult parse_args(int argc, char** argv) {
         if (strcmp(a, "-dup") == 0)         { r.dup_mode = true; continue; }
         if (strcmp(a, "--dup-paranoid") == 0) { r.dup_paranoid = true; continue; }
         if (starts_with(a, "--seed=")) {
+            // Validate instead of silently treating garbage as 0: a typo
+            // here turns deterministic (reproducible) archives into
+            // something else while looking like it worked.
+            const char* v = a + 7;
+            char* end = NULL;
+            errno = 0;
+            unsigned long long parsed = strtoull(v, &end, 0);
+            if (v[0] == '\0' || end == v || *end != '\0' || errno == ERANGE) {
+                r.seed_invalid = true;
+                continue;
+            }
             ::osrep_user_seed_specified = 1;
-            ::osrep_user_seed_value     = strtoull(a + 7, NULL, 0);
+            ::osrep_user_seed_value     = parsed;
             continue;
         }
         if (starts_with(a, "--chunk-avg=")) { r.chunk_avg = (size_t)strtoull(a + 12, NULL, 10); continue; }
@@ -195,6 +209,10 @@ static int run_compress(const ParseResult& p, char* finame, char* foname) {
     }
     if (p.chunk_hash != osrep_dedup::CDC_HASH_FNV && p.chunk_hash != osrep_dedup::CDC_HASH_GEAR) {
         fprintf(stderr, "\n  ERROR! --chunk-hash must be 'fnv' or 'gear'\n");
+        return ERR_CMDLINE;
+    }
+    if (p.seed_invalid) {
+        fprintf(stderr, "\n  ERROR! --seed= needs an integer (decimal or 0x-prefixed hex)\n");
         return ERR_CMDLINE;
     }
 

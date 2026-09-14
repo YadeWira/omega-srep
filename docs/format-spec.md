@@ -13,89 +13,155 @@ of scope.
 ## 1. Standard `.osr` archive (no `-dup`)
 
 ```
-+-----------------+
-| archive header  |  16 bytes
-+-----------------+
-| hash seed       |  variable; size declared in header[2] high half
-+-----------------+
-| block 1         |
-+-----------------+
-| block 2         |
-+-----------------+
-|     ...         |
-+-----------------+
-| block N         |
-+-----------------+
-| footer          |  20 bytes
-+-----------------+
++---------------------+-------------------------------------------------------+
+| archive header      |  16 bytes (4 × uint32 LE)                             |
++---------------------+-------------------------------------------------------+
+| hash seed           |  hash_seed_size bytes (0 for md5/sha1/sha512/-hash-)  |
++---------------------+-------------------------------------------------------+
+| blocks              |  v1-v3: per block = header → match list → literals    |
+|                     |  v4:    per block = header → literals, then one       |
+|                     |         concatenated match list for all blocks        |
++---------------------+-------------------------------------------------------+
+| block-size table    |  v4 only: N × uint32 (match-list size of each block)  |
++---------------------+-------------------------------------------------------+
+| footer              |  v4 only: 24 bytes (6 × uint32 LE)                    |
++---------------------+-------------------------------------------------------+
 ```
 
 ### 1.1 Archive header (16 bytes = 4 × uint32 LE)
 
-| offset | size | field           | value(s)                              |
-|-------:|-----:|-----------------|---------------------------------------|
-|      0 |    4 | filesize_low    | low 32 bits of filesize_when_compressed |
-|      4 |    4 | magic           | `0x5052534F` (`"OSRP"` LE)             |
-|      8 |    4 | format_version_packed | low 16: format version 1–4; high 16: hash_seed_size in bytes |
-|     12 |    4 | filesize_high   | high 32 bits of filesize_when_compressed |
+| offset | field | value |
+|-------:|-------|-------|
+| 0 | `header[0]` | `BULAT_ZIGANSHIN_SIGNATURE` = `0x26351817` (constant) |
+| 4 | `header[1]` | `SREP_SIGNATURE` = `0x5052534F` (`"OSRP"` LE) |
+| 8 | `header[2]` | packed version/hash selector, see below |
+| 12 | `header[3]` | `BASE_LEN` — the match-length base needed to decode records |
 
-`filesize_when_compressed` (uint64 split across header[0] and
-header[3]) records the original input size at compress time. Used
-by the decompressor for progress reporting and sanity checks.
+`header[2]` is four 8-bit fields:
 
-`format_version`:
+| bits | field | meaning |
+|-----:|-------|---------|
+| 0–7 | `format_version` | 1–4 (see below) |
+| 8–15 | `hash_num` | hash-descriptor index: `md5`=0, disabled=1, `sha1`=2, `sha512`=3, `vmac`=4, `siphash`=5 |
+| 16–23 | `hash_seed_size` | bytes of seed that follow the header |
+| 24–31 | `hash_size − 16` | digest bytes per block, stored offset by 16 |
 
-| value | meaning |
-|------:|---------|
-|     1 | round-matches; in-memory REP variant (`-m0`) |
-|     2 | content-defined chunking (`-m1`/`-m2`) |
-|     3 | Future-LZ output (`-mNf` flag) |
-|     4 | Index-LZ output (default for `-m3`/`-m4`/`-m5`) |
+There is **no filesize field** anywhere in the archive. In particular
+`header[3]` is the match base, not an input size: for I/O-LZ (v1/v2) it
+is `min(min_match, dict_min_match)`; for v3/v4 it is 0.
 
-`hash_seed_size`: number of bytes that follow the header for the
-per-archive hash-key material (e.g. VMAC = 16 bytes, SHA-1 = 0).
-Read off the high 16 bits of `format_version_packed`.
+`format_version` is chosen at compress time as:
+
+| value | encoder flags | decoder path | match records |
+|------:|---------------|--------------|---------------|
+| 1 | `ROUND_MATCHES` + I/O-LZ (`o` suffix, `-m3` family) | I/O-LZ | 3 STATs |
+| 2 | I/O-LZ (`o` suffix) without `ROUND_MATCHES` | I/O-LZ | 4 STATs |
+| 3 | Future-LZ (`f` suffix) | Future-LZ | 4 STATs |
+| 4 | Index-LZ — the default (no `f`/`o` suffix) | Index-LZ | 4 STATs |
+
+So v1/v2 are the `o` (I/O-LZ) variants and v4 is the default for every
+unsuffixed method: the version says how the archive stores its match
+lists, not which match finder (`-m0`…`-m5`) produced them.
+
+Per-hash sizes (`hash_size` / `hash_seed_size`):
+
+| `-hash=` | `hash_num` | seed bytes | digest bytes |
+|----------|-----------:|-----------:|-------------:|
+| `md5` | 0 | 0 | 16 |
+| disabled (`-hash-`) | 1 | 0 | 16 (field left unfilled) |
+| `sha1` | 2 | 0 | 20 |
+| `sha512` | 3 | 0 | 64 |
+| `vmac` (default) | 4 | 32 | 16 |
+| `siphash` | 5 | 16 | 8 |
 
 ### 1.2 Hash seed (variable)
 
-Raw bytes of the hash key chosen at compress time (per-archive
-random material). Size = `hash_seed_size` from the header. The
-decompressor uses this to seed its hash function so digests match
-the encoder's.
+Raw bytes of the hash key chosen at compress time (per-archive random
+material; `--seed=N` makes it deterministic). Size = `hash_seed_size`
+from `header[2]`, and it is 0 for the unkeyed hashes. The decompressor
+uses it to re-key its hash so per-block digests match the encoder's.
 
-### 1.3 Block (variable)
+### 1.3 Block
 
-Each block follows a 12-byte header (3 × uint32 LE) plus a hash
-digest plus the compressed block body:
+Each block is a 12-byte header (3 × uint32 LE), then `hash_size` digest
+bytes, then the match list, then the literal bytes:
 
 ```
-+--------------------+----------------------+----------------------+
-| origsize  (uint32) | compsize  (uint32)   | statsize  (uint32)   |
-+--------------------+----------------------+----------------------+
-| hash digest (hash_size bytes; per the hash chosen by -hash=)     |
-+------------------------------------------------------------------+
-| compressed body (compsize bytes)                                 |
-+------------------------------------------------------------------+
-| stat block (statsize bytes; encoded LZ matches)                  |
-+------------------------------------------------------------------+
++----------------------+----------------------+----------------------+
+| literal_bytes (4)    | origsize      (4)    | statsize      (4)    |
++----------------------+----------------------+----------------------+
+| block hash digest (hash_size bytes)                                |
++--------------------------------------------------------------------+
+| match list (statsize bytes; whole STATS_PER_MATCH × uint32 records)|
++--------------------------------------------------------------------+
+| literal bytes (literal_bytes bytes; the block's non-match data)    |
++--------------------------------------------------------------------+
 ```
 
-A block of size 0 (`origsize = 0`) is the end-of-archive marker; the
-decompressor stops reading blocks here.
+| field | meaning |
+|-------|---------|
+| `header[0]` = `literal_bytes` | how many literal bytes this block contributes |
+| `header[1]` = `origsize` | uncompressed size of this block |
+| `header[2]` = `statsize` | match-list bytes in this block; **forced to 0 for v4**, where the size comes from the block-size table instead |
 
-### 1.4 Footer (20 bytes = 5 × uint32 LE)
+The **match list** is a sequence of records, each
+`STATS_PER_MATCH(ROUND_MATCHES)` uint32s — 3 for v1 (round matches), 4
+otherwise. The trailing literals after the last record are not a record;
+the decoder copies whatever literals remain. `statsize` is therefore
+always a whole number of records.
 
-| offset | size | field            | value(s)                              |
-|-------:|-----:|------------------|---------------------------------------|
-|      0 |    4 | compsize_low     | low 32 bits of total compressed size  |
-|      4 |    4 | compsize_high    | high 32 bits of total compressed size |
-|      8 |    4 | stat_size_total  | total stat-block bytes across blocks  |
-|     12 |    4 | footer_version   | `1` (only version defined)            |
-|     16 |    4 | footer_magic     | `~0x5052534F` = `0xAFADACB0`           |
+Where the match list physically sits depends on the version:
 
-The decompressor seeks to end-of-file − 20 bytes, validates
-`footer_magic == ~OSRP`, then walks back to find the start of the
-block stream.
+* **v1/v2/v3** — inline, per block, between the digest and the literals.
+* **v4** — per-block regions hold only `header` + literals (with
+  `statsize = 0`); a **single match list** covering all blocks, in block
+  order, is written after the last block, followed by the block-size
+  table and the footer (§1.4).
+
+### 1.4 Index footer (v4 only)
+
+After the last block (and, for v4, after the single match list) come the
+block-size table and a 24-byte footer.
+
+**Block-size table** — `N` × uint32, one per block, each holding that
+block's match-list size in bytes. `N` is derived, not stored:
+`N = (footer_size − 24) / 4`.
+
+**Footer** — 24 bytes = 6 × uint32 LE, the very last bytes of the file:
+
+| offset | field | value |
+|-------:|-------|-------|
+| 0 | `total_stat_size` low 32 | total match-list bytes across all blocks |
+| 4 | `total_stat_size` high 32 | high half of that uint64 total |
+| 8 | `footer_size` | `24 + table_size` |
+| 12 | `footer_version` | `1` (only version defined) |
+| 16 | `~SREP_SIGNATURE` | `0xAFADACB0` |
+| 20 | `~BULAT_ZIGANSHIN_SIGNATURE` | `0xD9CAE7E8` |
+
+Decoder: seek to `EOF − 24`, read the footer, validate the two inverted
+signatures and `footer_version`, then `stat_size = footer[0] |
+(footer[1] << 32)`, seek to `EOF − footer_size − stat_size` and read the
+match list, then read the table, then seek back to the first block.
+
+### 1.5 End of stream
+
+* **v1/v2/v3** — no terminator block is written. The decoder reads block
+  headers until **EOF** (a zero-length read), with the pending-match heap
+  drained (`lz_matches.size() == 1`, the loop barrier).
+* **v4** — the block count comes from the footer's table; the decoder
+  stops after exactly `N` blocks and does not rely on EOF.
+
+An older revision of this document claimed a zero-length "end-of-archive
+block" is emitted; the encoder does not write one.
+
+### 1.6 Byte order and layout assumptions
+
+Every integer is written straight out of native memory, so the format is
+fixed **little-endian**: `STAT` is a 4-byte `uint32`, and 64-bit totals
+are stored as two little-endian uint32 halves. There is no padding or
+alignment in the file. The build refuses non-x86 hosts, so this is not
+conditional on the host.
+
 
 ## 2. `-dup` archive (with ODUP trailer)
 

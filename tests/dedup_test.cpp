@@ -260,9 +260,27 @@ static int cmd_split_decode(int argc, char** argv) {
     return wr;
 }
 
+// decode-streaming <meta> <body> <out>
+//   Exercises the file-based streaming decoder the CLI's ODUP path
+//   actually uses (decode_streaming writes straight to <out>). Kept
+//   distinct from `decode`, which uses the in-memory decoder, so
+//   corruption tests target the shipped code path.
+static int cmd_decode_streaming(int argc, char** argv) {
+    if (argc < 5) {
+        fprintf(stderr, "usage: dedup_test decode-streaming <meta> <body> <out>\n");
+        return 2;
+    }
+    std::vector<uint8_t> meta;
+    if (read_file(argv[2], meta) != 0) return 1;
+    int rc = decode_streaming(meta.data(), meta.size(), argv[3], argv[4]);
+    if (rc != DEDUP_OK) { fprintf(stderr, "decode_streaming rc=%d\n", rc); return 1; }
+    printf("meta=%zu ok\n", meta.size());
+    return 0;
+}
+
 int main(int argc, char** argv) {
     if (argc < 2) {
-        fprintf(stderr, "usage: %s {selftest|encode|decode|split-encode|split-decode} ...\n", argv[0]);
+        fprintf(stderr, "usage: %s {selftest|encode|decode|split-encode|split-decode|decode-streaming} ...\n", argv[0]);
         return 2;
     }
     if (strcmp(argv[1], "selftest")     == 0) return cmd_selftest();
@@ -270,6 +288,7 @@ int main(int argc, char** argv) {
     if (strcmp(argv[1], "decode")       == 0) return cmd_decode(argc, argv);
     if (strcmp(argv[1], "split-encode") == 0) return cmd_split_encode(argc, argv);
     if (strcmp(argv[1], "split-decode") == 0) return cmd_split_decode(argc, argv);
+    if (strcmp(argv[1], "decode-streaming") == 0) return cmd_decode_streaming(argc, argv);
     fprintf(stderr, "unknown command: %s\n", argv[1]);
     return 2;
 }

@@ -111,12 +111,20 @@ run_logged() {
     fi
 }
 
-# resolve_cxx: mirror the Makefile's own CXX_CANDIDATE fallback chain
-# (which c++ -> which g++ -> which clang++ -> g++) so the manually
-# -compiled bin/dedup_test in stage 2 uses the same compiler the
-# Makefile would pick for bin/osrep on this host.
-resolve_cxx() {
-    command -v c++ 2>/dev/null || command -v g++ 2>/dev/null || command -v clang++ 2>/dev/null || echo g++
+# Shared core suite, run by stages 1 and 2 (stage 2 with the sanitizer
+# env exported around it). $1 is the fuzz.sh iteration count.
+run_core_suite() {
+    bash tests/roundtrip.sh
+    OSREP_FUZZ_DUP=1 bash tests/fuzz.sh "$1"
+    bash tests/dedup_xtest.sh
+    bash tests/dup_roundtrip.sh
+    bash tests/dup_native_roundtrip.sh
+    bash tests/dup_corruption_fuzz.sh
+    bash tests/dup_concurrency.sh
+    bash tests/fuzz_regression.sh
+    bash tests/dup_ref_oob_regression.sh
+    bash tests/vm_options_regression.sh
+    bash tests/mode_suffix_hash_matrix.sh
 }
 
 # ---------------------------------------------------------------- #
@@ -131,14 +139,7 @@ stage1_baseline() {
         make -j"$NPROC" bin/osrep bin/dedup_test
 
     echo "  -> running full test suite (unsanitized baseline)"
-    bash tests/roundtrip.sh
-    OSREP_FUZZ_DUP=1 bash tests/fuzz.sh 10
-    bash tests/dedup_xtest.sh
-    bash tests/dup_roundtrip.sh
-    bash tests/dup_native_roundtrip.sh
-    bash tests/dup_corruption_fuzz.sh
-    bash tests/dup_concurrency.sh
-    bash tests/fuzz_regression.sh
+    run_core_suite 10
 
     STAGE_STATUS[s1]="PASS"
 }
@@ -158,46 +159,20 @@ stage2_sanitizer() {
     note "combined variant."
 
     run_logged "make clean" "$LOGDIR/s2-clean.log" make clean
-    run_logged "make bin/osrep (ASAN+UBSAN)" "$LOGDIR/s2-build-osrep.log" \
-        make -j"$NPROC" bin/osrep \
+    # bin/dedup_test used to ignore $(CFLAGS)/$(LDFLAGS) (it hardcoded its
+    # own compile line), so sanitizer runs silently left it uninstrumented
+    # while dedup_xtest.sh/fuzz_regression.sh exercised it. The rule was
+    # fixed to use the shared flags, so one `make` now instruments both.
+    run_logged "make bin/osrep bin/dedup_test (ASAN+UBSAN)" "$LOGDIR/s2-build.log" \
+        make -j"$NPROC" bin/osrep bin/dedup_test \
         CFLAGS="-O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer" \
         LDFLAGS="-lpthread -lstdc++ -fsanitize=address,undefined" \
         STATIC=""
 
-    # Makefile gap discovered while building this script: the
-    # bin/dedup_test rule hardcodes its own compile line and does not
-    # reference $(CFLAGS)/$(LDFLAGS) at all, so the documented
-    # recipe `make bin/osrep bin/dedup_test CFLAGS=... LDFLAGS=...`
-    # silently produces an *uninstrumented* dedup_test (verified: `nm
-    # bin/dedup_test | grep asan` is empty after that invocation).
-    # That means dedup_xtest.sh and fuzz_regression.sh -- both of
-    # which exercise bin/dedup_test, not bin/osrep -- would get zero
-    # sanitizer coverage under the documented recipe. Compile it
-    # directly instead so this stage actually covers it.
-    note "Makefile's bin/dedup_test rule ignores CFLAGS/LDFLAGS (real gap,"
-    note "not fixed here -- see script comments); compiling it directly"
-    note "with sanitizer flags instead so dedup_xtest.sh/fuzz_regression.sh"
-    note "actually get ASAN+UBSAN coverage."
-    local cxx
-    cxx="$(resolve_cxx)"
-    run_logged "compile bin/dedup_test (ASAN+UBSAN, direct)" \
-        "$LOGDIR/s2-build-dedup_test.log" \
-        "$cxx" -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
-        -Wall -Wextra -Wno-unused-parameter \
-        tests/dedup_test.cpp -lstdc++ -fsanitize=address,undefined \
-        -o bin/dedup_test
-
     echo "  -> running full test suite under ASAN+UBSAN"
     export ASAN_OPTIONS="detect_leaks=0:halt_on_error=1"
     export UBSAN_OPTIONS="halt_on_error=0:print_stacktrace=0"
-    bash tests/roundtrip.sh
-    OSREP_FUZZ_DUP=1 bash tests/fuzz.sh 5
-    bash tests/dedup_xtest.sh
-    bash tests/dup_roundtrip.sh
-    bash tests/dup_native_roundtrip.sh
-    bash tests/dup_corruption_fuzz.sh
-    bash tests/dup_concurrency.sh
-    bash tests/fuzz_regression.sh
+    run_core_suite 5
     unset ASAN_OPTIONS UBSAN_OPTIONS
 
     STAGE_STATUS[s2]="PASS"

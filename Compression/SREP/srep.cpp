@@ -297,7 +297,11 @@ int srep_main (int argc, char **argv)
       use_mmap = true;
     } else if (strequ(argv[1],"-nommap")) {
       use_mmap = false;
-    } else if (strequ(argv[1],"-s")  ||  strequ(argv[1],"-s-") ||  strequ(argv[1],"-s+")  ||  (start_with(argv[1],"-s") && (strchr(argv[1],'.')||strchr(argv[1],'e')))) {
+    } else if (strequ(argv[1],"-s")  ||  strequ(argv[1],"-s-") ||  strequ(argv[1],"-s+")  ||  (start_with(argv[1],"-s") && strchr(argv[1],'.'))) {
+      // A fractional value is a stats interval ("-s1.5" = 1.5s). A plain
+      // value is a declared filesize ("-s1e6" = 1000000 bytes): the old
+      // heuristic also sent anything containing 'e' here, which turned
+      // scientific-notation sizes into ~11-day stats intervals.
       option_s = argv[1]+2;
     } else if (start_with(argv[1],"-m")  &&  (isdigit(argv[1][2]) || argv[1][2]=='x')) {
       SREP_METHOD new_method  =  (argv[1][2]=='x'?  SREP_METHOD_LAST  :  SREP_METHOD(argv[1][2]-'0'));
@@ -335,7 +339,10 @@ int srep_main (int argc, char **argv)
     } else if (strequ(argv[1],"-hash-") || strequ(argv[1],"-nomd5")) {
       selected_hash = hash_by_name("", errcode);
     } else if (start_with(argv[1],"-hash=")) {
-      selected_hash = hash_by_name(argv[1]+6, errcode);
+      // "-hash=" with an empty name would match the disabled "" descriptor
+      // and silently turn block checksums off; require the explicit "-hash-".
+      if (argv[1][6] == '\0')  errcode = 1;
+      else  selected_hash = hash_by_name(argv[1]+6, errcode);
     } else if (start_with(argv[1],"-vmfile=")) {
       // These must be matched *before* the "-v" verbosity cases below:
       // "-vmfile=..." and "-vmblock=..." both start with "-v", so

@@ -7,6 +7,76 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com).
 Versions follow `1.<minor>.<patch>` for stable releases and
 `1.0a-beta.N` for pre-1.0 betas.
 
+## [Unreleased]
+
+### Fixed
+
+- **`-dup` decode could index an empty vector on a corrupt archive.**
+  `decode_streaming` validated a chunk reference against the meta
+  header's `unique_count` and then indexed `unique_slots`, which only
+  grows as unique records are seen -- so a meta whose first record is a
+  ref indexed `unique_slots[0]` while its size was still 0. That is UB
+  (`.reserve()` guarantees capacity, not initialization), so a
+  corrupt/crafted archive could read a garbage slot and produce spurious
+  failures or wrong output rather than a clean rejection. It is now
+  rejected with `DEDUP_ERR_BAD_REF`; `tests/dup_ref_oob_regression.sh`
+  covers it directly and through `osrep -d`.
+- **Streaming `-dup` trusted a 64-bit chunk hash.** A hash hit was
+  accepted as a duplicate without comparing bytes unless `--dup-paranoid`
+  was set, so a 64-bit collision would silently emit a reference to the
+  wrong chunk. The streaming encoder now keys on a 128-bit tag
+  (`chunk_hash` plus a second independent mix), which makes that
+  practically impossible with no extra I/O; `--dup-paranoid` still layers
+  a full byte-compare on top. (The full-buffer `encode` path already
+  byte-compared, so the two paths now agree on collisions.)
+- **Future-LZ/Index-LZ spill could loop forever.** `save_to_disk` now
+  reports whether it evicted anything, and both callers treat "no
+  progress possible" as bad compressed data instead of spinning and
+  growing the VM file without bound. This is a backstop behind the
+  `maximum_save` cap added in 1.0.6 and turns an unanticipated case into
+  a clean error.
+- **`-hash=` with an empty name silently disabled checksums** (it
+  matched the disabled-hash descriptor). It is now an invalid-option
+  error; `-hash-` remains the explicit way to disable checksums.
+- **`--seed=` accepted garbage**, silently parsing it as 0 while still
+  selecting reproducible mode; it is now validated and rejected.
+- **`-s1e6` was parsed as a stats interval.** The `-s` disambiguation
+  treated any value containing `e` as an interval, turning a
+  scientific-notation filesize into an ~11-day progress interval. Only a
+  fractional value (`-s1.5`) is an interval now.
+- **`make bin/dedup_test` ignored `$(CFLAGS)`/`$(LDFLAGS)`**, so
+  sanitizer builds silently produced an uninstrumented `dedup_test` and
+  `dedup_xtest.sh`/`fuzz_regression.sh` got no sanitizer coverage. The
+  rule now uses the shared flags, and `local_hardening.sh` builds both
+  binaries in one `make`.
+- **CMake's `-static` gate excluded MinGW**, so the cross-built
+  `osrep.exe` came out dynamically linked; the gate is now GNU/Clang
+  (MinGW included).
+
+### Documentation
+
+- **`docs/format-spec.md` section 1 rewritten against the code.** It
+  described a header with a `filesize` field and the magic at offset 0, a
+  block whose body preceded its match list, a 20-byte footer and a
+  zero-length end-of-archive block -- none of which the implementation
+  does. It now documents the real layout: the two constant signature
+  words, the packed version/hash selector, `BASE_LEN` in `header[3]`, the
+  `literal_bytes`/`origsize`/`statsize` block header, the
+  match-list-before-literals order, the per-hash seed/digest sizes, the
+  v4 block-size table and 24-byte footer, and the real end-of-stream
+  conditions. This is the contract the Rust port is being written
+  against.
+
+### Tests
+
+- New `tests/dup_ref_oob_regression.sh`, `tests/vm_options_regression.sh`
+  (per-method round-trip with `-mem8mb -vmblock=64kb -vmfile=`, i.e. the
+  forced-spill path) and `tests/mode_suffix_hash_matrix.sh` (6 methods ×
+  3 suffixes × 6 `-hash=` choices). All three run in both
+  `local_hardening.sh` stages.
+- `tests/dedup_test.cpp` gained a `decode-streaming` subcommand, so the
+  streaming decoder the CLI actually uses can be exercised directly.
+
 ## [1.0.6] — 2026-09-13
 
 ### Fixed

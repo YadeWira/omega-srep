@@ -98,7 +98,10 @@ else()
     # runs them as separate steps, so the compile-time flag alone is not
     # sufficient here.
     target_link_options(osrep PRIVATE -flto)
-    if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND NOT WIN32)
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+        # -static for every GNU/Clang target, MinGW included: the
+        # cross-built osrep.exe used to come out dynamically linked
+        # because the gate also excluded WIN32.
         target_link_options(osrep PRIVATE -static)
     endif()
 endif()

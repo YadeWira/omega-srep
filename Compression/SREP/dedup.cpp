@@ -418,11 +418,10 @@ static inline void cdc_split(const uint8_t* data, size_t size,
 // parallelism). Used only for the in-memory dedup hash table; never
 // emitted to the .dupref file, so this is x86_64-only-build-safe
 // unaligned-load territory, same idiom as get_u64_le/put_u64_le above.
-// Collisions are resolved by byte-comparing against the stored unique
-// chunk ONLY when --dup-paranoid is set (see the `paranoid` check at
-// this file's encode_streaming) -- the default non-paranoid streaming
-// path (the one the real CLI always uses) trusts this hash outright,
-// same unmitigated ~2^-64-per-pair exposure the previous FNV-1a had.
+// The full-buffer encoder byte-compares on a hit, so a collision is
+// detected there. The streaming encoder pairs this with chunk_hash_alt
+// as a 128-bit key so it does not have to trust a 64-bit hash outright
+// (see DedupKey and encode_streaming).
 static inline uint64_t chunk_hash(const uint8_t* p, size_t n) {
     uint64_t h = 0x9E3779B97F4A7C15ULL;
     size_t i = 0;
@@ -439,6 +438,44 @@ static inline uint64_t chunk_hash(const uint8_t* p, size_t n) {
     h ^= h >> 29;
     return h;
 }
+
+// Second, independent 64-bit mix (different constants/rotation) used
+// together with chunk_hash as a 128-bit dedup key by the streaming
+// encoder. Two independent halves make a silent false duplicate
+// (hash collision -> wrong ref_index -> silent corruption) practically
+// impossible, so the streaming path no longer has to trust a 64-bit
+// hash outright -- without paying the per-hit disk seek that
+// --dup-paranoid performs as a full byte-compare.
+static inline uint64_t chunk_hash_alt(const uint8_t* p, size_t n) {
+    uint64_t h = 0xD1B54A32D192ED03ULL;
+    size_t i = 0;
+    for (; i + 8 <= n; i += 8) {
+        uint64_t w; memcpy(&w, p + i, 8);
+        h ^= w * 0xC2B2AE3D27D4EB4FULL;
+        h = (h << 27) | (h >> 37);
+        h *= 0x165667B19E3779F9ULL;
+    }
+    uint64_t tail = 0;
+    memcpy(&tail, p + i, n - i);
+    h ^= tail;
+    h *= 0x9E3779B97F4A7C15ULL;
+    h ^= h >> 31;
+    return h;
+}
+
+struct DedupKey { uint64_t a, b; };
+struct DedupKeyHash {
+    size_t operator()(const DedupKey& k) const {
+        uint64_t x = k.a ^ (k.b * 0x9E3779B97F4A7C15ULL);
+        x ^= x >> 32;
+        return (size_t)x;
+    }
+};
+struct DedupKeyEq {
+    bool operator()(const DedupKey& x, const DedupKey& y) const {
+        return x.a == y.a && x.b == y.b;
+    }
+};
 
 // LEB128 unsigned varint. Buffer must hold at least 10 bytes.
 static inline size_t varint_encode(uint64_t value, uint8_t* out) {
@@ -745,6 +782,17 @@ static int decode_streaming(const uint8_t* meta, size_t meta_size,
             out_pos += need;
         } else {
             uint64_t uidx = records[i].payload;
+            // unique_count is only validated against chunk_count above,
+            // while unique_slots grows as unique records are processed.
+            // A corrupt/crafted meta whose first record is a ref would
+            // therefore index unique_slots[0] while its size() is still
+            // 0 -- UB (.reserve() only guarantees capacity, so this
+            // reads uninitialized storage and can silently yield a
+            // garbage Slot, spurious failures or wrong output). Require
+            // the referenced chunk to have been seen already.
+            if (uidx >= (uint64_t)unique_slots.size()) {
+                fclose(fb); fclose(fo); return DEDUP_ERR_BAD_REF;
+            }
             const Slot& src = unique_slots[(size_t)uidx];
             // Seek back, read, then fseek to end and append.
             uint32_t remaining = src.len;
@@ -847,14 +895,13 @@ static int encode_split(const uint8_t* data, size_t size,
 // independent of input size. This is the API dup_wrapper.cpp uses to
 // avoid the encode_split full-buffer load.
 //
-// `paranoid`: when true, perform a byte-compare against the
-// already-written body before accepting a hash hit as a duplicate
-// (re-reads the candidate chunk from the body file via fseek). This
-// protects against the 64-bit hash collision case (collision rate
-// of order 1e-7 per million chunks) at the cost of one disk seek +
-// read per dedup hit. When false (default), the encoder trusts the
-// 64-bit hash — matching the original F5.3c behavior and the
-// design-doc "acceptable in practice" stance.
+// `paranoid`: when true, additionally byte-compare a hash hit against
+// the already-written body before accepting it as a duplicate
+// (re-reads the candidate chunk from the body file via fseek). The
+// default path already keys on a 128-bit tag, so this is belt-and-
+// suspenders at the cost of one disk seek + read per dedup hit; it is
+// only needed for callers who want a byte-level guarantee. When false
+// (default), the encoder trusts the 128-bit tag.
 static int encode_streaming(const char* in_path, const char* body_path,
                             uint8_t** meta_buf, size_t* meta_size,
                             size_t avg = DEFAULT_AVG,
@@ -881,16 +928,17 @@ static int encode_streaming(const char* in_path, const char* body_path,
     // buffer" only when the file fits below this cap.
     size_t effective_buf = buf_size > 0 ? buf_size : (8 * 1024 * 1024);
 
-    // Streaming mode trusts the 64-bit chunk_hash for dedup decisions
-    // rather than byte-comparing on every match — keeping all unique
-    // chunk bytes resident would defeat the RAM goal. The design doc
-    // already documents 64-bit collision probability as "acceptable
-    // in practice"; on real data this matches encode_split's output
-    // byte-for-byte modulo collisions.
+    // Streaming mode keys duplicate detection on a 128-bit tag
+    // (chunk_hash ^ chunk_hash_alt) instead of guarding every hit with
+    // a byte-compare: keeping all unique chunk bytes resident would
+    // defeat the RAM goal, and a 64-bit tag alone could silently map a
+    // collision to the wrong ref_index. 128 bits makes that
+    // astronomically unlikely; --dup-paranoid still byte-compares on
+    // top for callers who want certainty.
     std::vector<uint8_t> work(effective_buf);
     struct Rec { uint8_t tag; uint64_t payload; };
     std::vector<Rec> records;
-    std::unordered_map<uint64_t, uint64_t> seen;
+    std::unordered_map<DedupKey, uint64_t, DedupKeyHash, DedupKeyEq> seen;
     uint64_t unique_count = 0;
     // Paranoid mode tracks where each unique chunk lives in the body
     // file so we can fseek back to byte-compare on a hash hit.
@@ -910,8 +958,8 @@ static int encode_streaming(const char* in_path, const char* body_path,
             const ChunkRange& c = chunks[ci];
             size_t clen = c.end - c.start;
             const uint8_t* cp = work.data() + c.start;
-            uint64_t h = chunk_hash(cp, clen);
-            std::unordered_map<uint64_t, uint64_t>::iterator it = seen.find(h);
+            DedupKey h = { chunk_hash(cp, clen), chunk_hash_alt(cp, clen) };
+            std::unordered_map<DedupKey, uint64_t, DedupKeyHash, DedupKeyEq>::iterator it = seen.find(h);
             bool is_dup = (it != seen.end());
 
             if (is_dup && paranoid) {

@@ -229,8 +229,16 @@ struct VIRTUAL_MEMORY_MANAGER
   Offset current_mem()      {return max_mem() - free_blocks.size()*VMBLOCK_SIZE;}
   Offset max_mem()          {return new_block*VMBLOCK_SIZE;}
 
-  // Save matches with largest LZ.dest to disk
-  void save_to_disk (MEMORY_MANAGER &mm, LZ_MATCH_HEAP &lz_matches)
+  // Save matches with largest LZ.dest to disk.
+  //
+  // Returns the number of matches evicted into the block. 0 means no
+  // progress is possible: every remaining match is either not stored
+  // (INVALID_INDEX) or too large to fit one VM block (the 24+len test
+  // below). srep.cpp caps maximum_save below VMBLOCK_SIZE so that case
+  // should not arise, but if it ever does the callers must stop rather
+  // than spin forever writing empty blocks and growing the VM file --
+  // so a 0 return must not write a block or push a marking point.
+  int save_to_disk (MEMORY_MANAGER &mm, LZ_MATCH_HEAP &lz_matches)
   {
     if (!vmbuf)    vmbuf  = new char[VMBLOCK_SIZE];
     if (!vmfile)   vmfile = fopen(vmfile_name, "w+b");
@@ -239,6 +247,7 @@ struct VIRTUAL_MEMORY_MANAGER
     Offset min_dest = Offset(-1);
     LZ_MATCH_REVERSE_ITERATOR lz = lz_matches.rbegin();
     char *p = vmbuf;
+    int evicted = 0;
     for (;;)
     {
       lz++;
@@ -252,7 +261,9 @@ struct VIRTUAL_MEMORY_MANAGER
 
       lz->free(mm);
       lz_matches.erase(*lz);
+      evicted++;
     }
+    if (evicted == 0)   return 0;   // Nothing to spill: do not write an empty block / grow the heap
     *(STAT*)p = 0;       // End-of-block mark
 
     // Save block to disk, and add to the heap pseudo-match marking the restore point
@@ -262,14 +273,18 @@ struct VIRTUAL_MEMORY_MANAGER
     total_write += VMBLOCK_SIZE;
     FUTURE_LZ_MATCH mark;  mark.src=block;  mark.dest=min_dest;  mark.set_marking_point();
     lz_matches.insert(mark);
+    return evicted;
   }
 
 
-  // Restore matches, pointed by mark, from disk
-  void restore_from_disk (MEMORY_MANAGER &mm, LZ_MATCH_HEAP &lz_matches, LZ_MATCH_ITERATOR &mark)
+  // Restore matches, pointed by mark, from disk.
+  // Returns false if the required VM space could never be freed (would
+  // otherwise loop forever); the caller treats that as bad input.
+  bool restore_from_disk (MEMORY_MANAGER &mm, LZ_MATCH_HEAP &lz_matches, LZ_MATCH_ITERATOR &mark)
   {
     // Free up enough memory to ensure that there are space to restore the block
-    while (mm.available_space() < VMBLOCK_SIZE)   save_to_disk (mm, lz_matches);
+    while (mm.available_space() < VMBLOCK_SIZE)
+      if (save_to_disk (mm, lz_matches) == 0)   return false;    // cannot make progress
 
     // Read block from disk
     unsigned block = mark->src;
@@ -286,6 +301,7 @@ struct VIRTUAL_MEMORY_MANAGER
       lz_matches.insert(lz);
       p += 20 + lz.len;
     }
+    return true;
   }
 };
 
@@ -317,7 +333,7 @@ bool decompress_FUTURE_LZ (bool ROUND_MATCHES, unsigned L, FILE *fout, Offset bl
   for (LZ_MATCH_ITERATOR lz_match = lz_matches.begin();  lz_match->dest < block_end;  lz_match = lz_matches.begin())
   {
     if (lz_match->is_marking_point()) {
-      vm.restore_from_disk (mm, lz_matches, lz_match);
+      if (!vm.restore_from_disk (mm, lz_matches, lz_match))   return false;    // Bad compressed data: cannot free enough VM space
     } else {
       // Copy literal data up to match start
       int lit_len = (lz_match->dest - block_start) - (out-outbuf);
@@ -351,7 +367,8 @@ bool decompress_FUTURE_LZ (bool ROUND_MATCHES, unsigned L, FILE *fout, Offset bl
     {
       if (lz_match.len >= maximum_save)  PLUS_MATCH(0);
       else {
-        while (lz_match.len > mm.available_space())   vm.save_to_disk (mm, lz_matches);
+        while (lz_match.len > mm.available_space())
+          if (vm.save_to_disk (mm, lz_matches) == 0)   return false;   // Bad compressed data: cannot free enough VM space
         lz_match.save_match_data (mm, outbuf + (lz_match.src-block_start));      // copy match data into dynamically-allocated buffer
       }
       lz_matches.insert(lz_match);

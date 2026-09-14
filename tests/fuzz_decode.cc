@@ -2,7 +2,7 @@
 //
 // Build:
 //   clang++ -O1 -g -fsanitize=fuzzer,address,undefined \
-//           -I Compression -I Compression/SREP \
+//           -I . -I Compression -I Compression/SREP \
 //           tests/fuzz_decode.cc \
 //           -o bin/fuzz_decode
 //
