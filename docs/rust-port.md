@@ -46,7 +46,8 @@ inspecting the PE import table; a real Win7 VM run is still on the checklist.)
 crates/osrep-core/         library; modules are ported here
 crates/osrep-cli/          the `osrep` binary
 crates/osrep-conformance/  differential harness; mirrors tests/dedup_test.cpp's CLI
-tests/rust_conformance.sh  runs both implementations and diffs the output
+tests/rust_conformance.sh       runs both implementations and diffs the output
+tests/container_conformance.sh  validates the container framing against real archives
 ```
 
 `crates/osrep-conformance` deliberately reproduces the C++ test tool's command
@@ -73,6 +74,17 @@ keys and lengths around the 4096-byte NH block, and `aes` (AES-256 ECB, not a
 `-hash=` algorithm but the primitive `vmac` builds on) over several keys and
 block counts.
 
+The container codec has no standalone C++ counterpart to diff against, so
+`tests/container_conformance.sh` pins each archive four ways instead: every
+field the Rust derives must equal what the encoder was asked for (version, hash
+tag, seed/digest sizes, match base), the framing must recover the exact
+uncompressed size on its own, re-encoding the header and the v4 footer must
+reproduce the file's bytes exactly (which tests the write direction), and
+`osrep -i`'s own reading of the same framing must agree on the mode word, the
+hash name and the original size. The `-dup` ODUP trailer gets its boundary
+checked the same way, with an incompressible input as the exact oracle: every
+CDC chunk is unique there, so the body must equal the input byte for byte.
+
 ## Phases
 
 | | scope | status |
@@ -80,8 +92,9 @@ block counts.
 | **0** | Fix the real bugs in C++ first (corrupt-meta read, 64-bit hash trust, spill backstop, CLI validation) and rewrite `docs/format-spec.md` to match the code — the oracle and the contract must be right before porting against them. | **done** |
 | **1** | Workspace, toolchain pin, cross-compile config, differential harness. | **done** |
 | **2** | Leaf modules: `dedup`, the digests `md5`/`sha1`/`sha512`/`siphash`, `aes` (AES-256 encrypt-only, the `vmac` primitive) and `vmac`/`vhash` (the default hash, VMAC-128). | **done** |
-| **3** | Container/IO: header/footer/block codec (read v1–v4, write v4 and v5), buffered IO, mmap, the VM spill manager. | not started |
-| **4** | The LZ core: hash-table match finder, `compress` (-m3/-m4/-m5 + accelerator), CDC (-m1/-m2), in-memory REP (-m0), the Future/Index-LZ second pass and the three decoders. Gate: byte-identical v4 archives across the whole matrix. | not started |
+| **3a** | Container framing: archive header, hash-descriptor table, version predicates, block header, v4 index footer + block-size table, ODUP trailer — read v1–v4 and write v4, byte-exact in both directions. | **done** |
+| **3b** | IO: a seekable file abstraction and the tempfile/stdout-spooling policy the decoder needs (the C++ uses bare `FILE*`; mmap is compression-only and optional). | not started |
+| **4** | The LZ core: hash-table match finder, `compress` (-m3/-m4/-m5 + accelerator), CDC (-m1/-m2), in-memory REP (-m0), the Future/Index-LZ second pass and the three decoders. Also `MEMORY_MANAGER` and the VM spill manager: both are driven only by Future/Index-LZ decoding (`decompress_FUTURE_LZ`), so they port with the decoders rather than standing alone. Gate: byte-identical v4 archives across the whole matrix. | not started |
 | **5** | v5 format, CLI, retire the C++. | not started |
 
 The rule that makes phase 4 tractable: **separate the algorithm from the

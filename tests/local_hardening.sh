@@ -145,6 +145,8 @@ stage1_baseline() {
     # so this does not gate machines without a Rust toolchain.
     echo "  -> Rust conformance (Rust port vs C++ oracle)"
     bash tests/rust_conformance.sh
+    echo "  -> Rust conformance (container framing vs C++ archives)"
+    bash tests/container_conformance.sh
 
     STAGE_STATUS[s1]="PASS"
 }
