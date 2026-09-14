@@ -13,6 +13,7 @@ use std::process::ExitCode;
 use osrep_core::aes;
 use osrep_core::hashes;
 use osrep_core::hashes_keyed;
+use osrep_core::rolling;
 use osrep_core::vmac;
 
 const NOT_PORTED: u8 = 3;
@@ -32,6 +33,62 @@ fn main() -> ExitCode {
         return ExitCode::from(2);
     }
     let algo = args[1].as_str();
+
+    // Rolling-hash sequences: the mirror of the `poly`/`crc32c` modes in
+    // tests/hash_test.cpp. argv[2] is the window size L rather than a seed,
+    // and the tool prints one hash per line -- the hash of each L-byte window
+    // at every position -- which is the exact sequence the encoder's match
+    // finders consume. A window that does not fit produces no output, on both
+    // sides.
+    if algo == "poly" || algo == "crc32c" {
+        let l: usize = match args[2].parse() {
+            Ok(l) if l > 0 => l,
+            _ => {
+                eprintln!("{algo} needs a positive window size");
+                return ExitCode::from(2);
+            }
+        };
+        let data = match fs::read(&args[3]) {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("{}: {e}", args[3]);
+                return ExitCode::from(1);
+            }
+        };
+        let n = data.len();
+        if n < l {
+            return ExitCode::SUCCESS;
+        }
+        let mut out = String::new();
+        if algo == "poly" {
+            let mut h = rolling::PolynomialRollingHash::new(l, rolling::PRIME1);
+            h.moveto(&data);
+            let mut i = 0usize;
+            loop {
+                out.push_str(&format!("{:016x}\n", h.value));
+                if i + l >= n {
+                    break;
+                }
+                h.update(data[i], data[i + l]);
+                i += 1;
+            }
+        } else {
+            let mut h = rolling::CrcRollingHash::new(l, rolling::CRC32_CASTAGNOLI_POLYNOM);
+            h.moveto(&data);
+            let mut i = 0usize;
+            loop {
+                out.push_str(&format!("{:08x}\n", h.value));
+                if i + l >= n {
+                    break;
+                }
+                h.update(data[i], data[i + l]);
+                i += 1;
+            }
+        }
+        print!("{out}");
+        return ExitCode::SUCCESS;
+    }
+
 
     let seed_len = match algo {
         "md5" | "sha1" | "sha512" => 0usize,

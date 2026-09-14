@@ -12,4 +12,5 @@ pub mod dedup;
 pub mod future_lz;
 pub mod hashes;
 pub mod hashes_keyed;
+pub mod rolling;
 pub mod vmac;

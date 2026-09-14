@@ -187,6 +187,35 @@ for algo in md5 sha1 sha512 vmac siphash; do
 done
 say "digests: $hash_pass matched, $hash_skip skipped (not ported yet)"
 
+# --- rolling hashes (the encoder's match finders) -------------------- #
+
+# `PolynomialRollingHash` and `CrcRollingHash` decide where -m1/-m2 cut
+# chunks and which positions -m3/-m4/-m5 probe, so the port must produce
+# the same value sequence, not just a same-looking digest. The window
+# sizes sweep `moveto`'s 16-byte unrolled/tail boundary and the small-L
+# shapes the encoder builds.
+say "rolling hashes vs hashes.cpp"
+python3 - "$TMP" <<'PY'
+import os, sys
+d = sys.argv[1]
+n = 8192
+open(os.path.join(d, "roll.bin"), "wb").write(
+    bytes((i * 31 + 11) & 0xFF for i in range(n)))
+PY
+
+roll_pass=0
+for algo in poly crc32c; do
+    for l in 1 15 16 17 31 32 48 64 512 4096; do
+        ./bin/hash_test "$algo" "$l" "$TMP/roll.bin" > "$TMP/cpp.roll" 2>&1 \
+            || fail "cpp hash_test $algo l=$l"
+        "$RS_DIR/hash_conformance" "$algo" "$l" "$TMP/roll.bin" > "$TMP/rs.roll" 2>&1 \
+            || fail "rust hash_conformance $algo l=$l"
+        check "rolling $algo l=$l" "$TMP/cpp.roll" "$TMP/rs.roll"
+        roll_pass=$((roll_pass+1))
+    done
+done
+say "rolling: $roll_pass sequences matched"
+
 # --- VMAC-128 (the default hash) ------------------------------------- #
 
 say "vmac-128 vs the vendored vmac.c"

@@ -122,6 +122,41 @@ int main (int argc, char **argv)
         return 0;
     }
 
+    // Rolling-hash sequences: what the encoder's match finders actually
+    // compare. For `poly`/`crc32c`, argv[2] is the window size L (decimal)
+    // rather than a seed, and the tool prints one hash per line -- the hash of
+    // each L-byte window starting at positions 0..n-L -- which is the exact
+    // value sequence `find_match`/`add_hash`/`fast_find_chunks` see. These are
+    // not `-hash=` algorithms either, so they are handled before the hash
+    // descriptors.
+    if (strcmp(argv[1], "poly") == 0 || strcmp(argv[1], "crc32c") == 0) {
+        int L = atoi(argv[2]);
+        if (L <= 0) { fprintf(stderr, "%s needs a positive window size\n", argv[1]); return 2; }
+        std::vector<unsigned char> buf;
+        if (read_file(argv[3], buf) != 0) return 1;
+        size_t n = buf.size();
+        if (n < (size_t)L) return 0;   // no window fits: the encoder would see no chunks either
+
+        if (strcmp(argv[1], "poly") == 0) {
+            PolynomialRollingHash<uint64> h(L, PRIME1);
+            h.moveto(buf.data());
+            for (size_t i = 0; ; ++i) {
+                printf("%016llx\n", (unsigned long long)h.value);
+                if (i + (size_t)L >= n) break;
+                h.update(buf[i], buf[i + L]);
+            }
+        } else {
+            CrcRollingHash<uint32> h(L, Crc32CastagnoliPolynom);
+            h.moveto(buf.data());
+            for (size_t i = 0; ; ++i) {
+                printf("%08x\n", (unsigned)h.value);
+                if (i + (size_t)L >= n) break;
+                h.update(buf[i], buf[i + L]);
+            }
+        }
+        return 0;
+    }
+
     int errcode = 0;
     struct hash_descriptor *d = hash_by_name(argv[1], errcode);
     if (!d || errcode) {
