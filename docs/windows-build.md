@@ -88,7 +88,7 @@ binaries are built from it). CMake is purely an alternative.
 Should print:
 
 ```
-Omega SREP 1.0.6 (September 13, 2026): ...
+Omega SREP 1.0.7 (September 14, 2026): ...
 ```
 
 Round-trip smoke test:

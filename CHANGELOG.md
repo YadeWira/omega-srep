@@ -9,6 +9,8 @@ Versions follow `1.<minor>.<patch>` for stable releases and
 
 ## [Unreleased]
 
+## [1.0.7] — 2026-09-14
+
 ### Added
 
 - **Rust port of the Future/Index-LZ decoder (format v3/v4), with the memory
