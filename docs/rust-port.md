@@ -107,8 +107,24 @@ the input. Truncated archives must error, never panic.
 | **3a** | Container framing: archive header, hash-descriptor table, version predicates, block header, v4 index footer + block-size table, ODUP trailer — read v1–v4 and write v4, byte-exact in both directions. | **done** |
 | **4a** | The I/O-LZ decoder (format v1/v2): record decoding, the literal/match interleaving, both match sources (read back from the output sink, and LZ77 replication within the block, which is `memcpy_lz_match`'s forward byte copy and NOT memmove), and per-block digest verification through the already-ported hashes. | **done** |
 | **4b** | `MEMORY_MANAGER`, the VM spill manager and the Future/Index-LZ decoder (v3/v4): both are driven only by `decompress_FUTURE_LZ`, so they port together rather than standing alone. | **done** |
-| **4c** | The encoder: hash-table match finder, `compress` (-m3/-m4/-m5 + accelerator), CDC (-m1/-m2), in-memory REP (-m0) and the Future/Index-LZ second pass. Gate: byte-identical v4 archives across the whole matrix. | **in progress** |
+| **4c** | The encoder: hash-table match finder, `compress` (-m3/-m4/-m5 + accelerator), CDC (-m1/-m2), in-memory REP (-m0) and the Future/Index-LZ second pass. Gate: byte-identical v4 archives across the whole matrix. | **in progress** — 4c-0/1/2 done: rolling hashes, `-m0o` byte-identical (45/45 in `tests/encode_conformance.sh`) |
 | **5** | v5 format, CLI, retire the C++. | not started |
+
+### Phase 4c notes worth keeping
+
+* **`DictionaryCompressor`'s window is `-dc`, not `-c`.** The C++ builds it as
+  `DictionaryCompressor(dictsize, dict_hashsize, dict_min_match, dict_chunk,
+  BASE_LEN, ...)` (`srep.cpp:663`), and `dict_chunk` defaults to
+  `dict_min_match / 8` = 64 (`srep.cpp:456`) — while `-l`/`-c` default to 512.
+  Porting the compressor with `-l`'s window produces archives that decode
+  fine but disagree with the C++ from the first match on. This cost a
+  differential bisect through `prepare_buffer` (a C++ probe linking the real
+  `compress_inmem.cpp` settled it in one run).
+* **The dictionary ring is zero-filled in practice.** The C++ allocates it with
+  `BigAlloc` (uninitialized) but never reads a region it has not written — the
+  `LowBound`/`DataStart` bounds exist precisely for that — so the port's
+  zeroed `Vec` agrees, and `--seed=N` reproducibility on the C++ side is what
+  proves those regions are never read.
 
 ### Phase 4c pre-port experiments (run before writing any Rust)
 
