@@ -476,6 +476,21 @@ pub struct BlockInfo {
     /// Match-list bytes actually belonging to this block. For v4 this is the
     /// table entry; otherwise it is `header.statsize`.
     pub stat_size: usize,
+    /// Offset of the block header within the archive.
+    pub file_offset: usize,
+}
+
+impl BlockInfo {
+    /// Where this block's match list sits in the file. For v4 the match lists
+    /// are concatenated out of line, so this is not the block's own region.
+    pub fn stat_offset(&self) -> usize {
+        self.file_offset + BLOCK_HEADER_SIZE
+    }
+
+    /// Where this block's literal bytes sit in the file.
+    pub fn literal_offset(&self) -> usize {
+        self.stat_offset() + self.stat_size
+    }
 }
 
 /// A structurally parsed archive: header, block framing and (for v4) footer.
@@ -620,6 +635,7 @@ impl Archive {
             blocks.push(BlockInfo {
                 header: bh,
                 stat_size,
+                file_offset: pos,
             });
             pos += need;
         }

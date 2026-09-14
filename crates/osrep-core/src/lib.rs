@@ -7,6 +7,7 @@
 
 pub mod aes;
 pub mod container;
+pub mod decompress;
 pub mod dedup;
 pub mod hashes;
 pub mod hashes_keyed;

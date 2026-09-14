@@ -85,6 +85,18 @@ hash name and the original size. The `-dup` ODUP trailer gets its boundary
 checked the same way, with an incompressible input as the exact oracle: every
 CDC chunk is unique there, so the body must equal the input byte for byte.
 
+The I/O-LZ decoder has the strongest oracle of all: `tests/decode_conformance.sh`
+feeds archives written by the real C++ encoder to the Rust decoder and diffs its
+output against the original input, byte for byte. That one comparison exercises
+the framing, the record decoding, the literal/match interleaving and both match
+sources at once. Two negative cases then check that verification is doing
+something rather than being vacuous: flipping a byte inside a block's literals
+must fail with a digest mismatch (the region is located with
+`container_conformance blocks`, because for a compressible input the trailing
+blocks have no literals and the last byte of the file belongs to the match
+list), and the same flip with `-hash-` must decode to bytes that *differ* from
+the input. Truncated archives must error, never panic.
+
 ## Phases
 
 | | scope | status |
@@ -93,14 +105,24 @@ CDC chunk is unique there, so the body must equal the input byte for byte.
 | **1** | Workspace, toolchain pin, cross-compile config, differential harness. | **done** |
 | **2** | Leaf modules: `dedup`, the digests `md5`/`sha1`/`sha512`/`siphash`, `aes` (AES-256 encrypt-only, the `vmac` primitive) and `vmac`/`vhash` (the default hash, VMAC-128). | **done** |
 | **3a** | Container framing: archive header, hash-descriptor table, version predicates, block header, v4 index footer + block-size table, ODUP trailer — read v1–v4 and write v4, byte-exact in both directions. | **done** |
-| **3b** | IO: a seekable file abstraction and the tempfile/stdout-spooling policy the decoder needs (the C++ uses bare `FILE*`; mmap is compression-only and optional). | not started |
-| **4** | The LZ core: hash-table match finder, `compress` (-m3/-m4/-m5 + accelerator), CDC (-m1/-m2), in-memory REP (-m0), the Future/Index-LZ second pass and the three decoders. Also `MEMORY_MANAGER` and the VM spill manager: both are driven only by Future/Index-LZ decoding (`decompress_FUTURE_LZ`), so they port with the decoders rather than standing alone. Gate: byte-identical v4 archives across the whole matrix. | not started |
+| **4a** | The I/O-LZ decoder (format v1/v2): record decoding, the literal/match interleaving, both match sources (read back from the output sink, and LZ77 replication within the block, which is `memcpy_lz_match`'s forward byte copy and NOT memmove), and per-block digest verification through the already-ported hashes. | **done** |
+| **4b** | `MEMORY_MANAGER`, the VM spill manager and the Future/Index-LZ decoder (v3/v4): both are driven only by `decompress_FUTURE_LZ`, so they port together rather than standing alone. | not started |
+| **4c** | The encoder: hash-table match finder, `compress` (-m3/-m4/-m5 + accelerator), CDC (-m1/-m2), in-memory REP (-m0) and the Future/Index-LZ second pass. Gate: byte-identical v4 archives across the whole matrix. | not started |
 | **5** | v5 format, CLI, retire the C++. | not started |
 
 The rule that makes phase 4 tractable: **separate the algorithm from the
 container.** The match stream is identical in v4 and v5, so the ported LZ core
 can be verified byte-for-byte against the C++ by emitting v4 — v5 is a different
 wrapper around the same payload.
+
+The decoder's IO is a plain `Read + Write + Seek` sink rather than a bespoke
+abstraction, because that is exactly what the C++ relies on: one `FILE*` opened
+`"w+b"` that is both written to and seeked back into, so a match starting in an
+earlier block can be re-read. A write-only file is not enough and fails with
+`EBADF` on the first back-reference. What is still missing is the CLI-level
+policy the C++ wraps around it — spooling to a tempfile when the real output is
+stdout and the format needs read-back (`srep.cpp:1124-1136`) — which belongs
+with the binary in phase 5.
 
 ## Open questions
 

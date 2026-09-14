@@ -147,6 +147,8 @@ stage1_baseline() {
     bash tests/rust_conformance.sh
     echo "  -> Rust conformance (container framing vs C++ archives)"
     bash tests/container_conformance.sh
+    echo "  -> Rust conformance (I/O-LZ decoder vs C++ archives)"
+    bash tests/decode_conformance.sh
 
     STAGE_STATUS[s1]="PASS"
 }

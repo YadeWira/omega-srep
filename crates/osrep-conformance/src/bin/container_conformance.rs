@@ -105,6 +105,32 @@ fn check(path: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Print per-block offsets, so a harness can corrupt a byte inside a region it
+/// actually knows the meaning of (e.g. a block's literals, rather than "the
+/// last byte of the file", which for a compressible input lands in the match
+/// list because the trailing blocks have no literals at all).
+fn blocks(path: &str) -> Result<(), String> {
+    let raw = load(path)?;
+    let bytes: &[u8] = match split_trailer(&raw).map_err(|e| e.to_string())? {
+        Trailer::Plain => &raw,
+        Trailer::Odup { body_len, .. } => &raw[..body_len],
+    };
+    let a = Archive::parse(bytes).map_err(|e| e.to_string())?;
+    println!("blocks={}", a.blocks.len());
+    for (i, b) in a.blocks.iter().enumerate() {
+        println!(
+            "block={i} offset={} stat_start={} stat_len={} literal_start={} literal_len={} origsize={}",
+            b.file_offset,
+            b.stat_offset(),
+            b.stat_size,
+            b.literal_offset(),
+            b.header.literal_bytes,
+            b.header.origsize,
+        );
+    }
+    Ok(())
+}
+
 fn trailer(path: &str) -> Result<(), String> {
     let raw = load(path)?;
     match split_trailer(&raw).map_err(|e| e.to_string())? {
@@ -119,12 +145,13 @@ fn trailer(path: &str) -> Result<(), String> {
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
     if args.len() != 3 {
-        eprintln!("usage: container_conformance <dump|check|trailer> <archive.osr>");
+        eprintln!("usage: container_conformance <dump|check|blocks|trailer> <archive.osr>");
         return ExitCode::from(2);
     }
     let result = match args[1].as_str() {
         "dump" => dump(&args[2]),
         "check" => check(&args[2]),
+        "blocks" => blocks(&args[2]),
         "trailer" => trailer(&args[2]),
         other => {
             eprintln!("unknown subcommand: {other}");
