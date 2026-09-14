@@ -28,14 +28,15 @@ if ! command -v cargo >/dev/null 2>&1; then
 fi
 
 say "building the C++ oracle (bin/dedup_test)"
-[[ -x bin/dedup_test ]] || make bin/dedup_test >/dev/null
+[[ -x bin/dedup_test ]] || make bin/dedup_test >/dev/null 2>&1
 
 say "building the Rust port (osrep-conformance)"
 if ! cargo build --release -p osrep-conformance >/tmp/rust-conformance-build.log 2>&1; then
     cat /tmp/rust-conformance-build.log >&2
     fail "cargo build failed"
 fi
-RS=target/release/dedup_conformance
+RS_DIR=target/release
+RS=$RS_DIR/dedup_conformance
 [[ -x "$RS" ]] || fail "missing $RS"
 
 say "rustc: $(rustc --version)"
@@ -147,6 +148,44 @@ set -e
 grep -q 'rc=5' "$TMP/cpp.bad.err" || fail "cpp did not report DEDUP_ERR_BAD_REF: $(cat "$TMP/cpp.bad.err")"
 grep -q 'rc=5' "$TMP/rs.bad.err"  || fail "rust did not report DEDUP_ERR_BAD_REF: $(cat "$TMP/rs.bad.err")"
 pass=$((pass+1))
+
+# --- digests (hashes.cpp) -------------------------------------------- #
+
+say "building the C++ digest oracle (bin/hash_test)"
+[[ -x bin/hash_test ]] || make bin/hash_test >/dev/null 2>&1
+
+# Padding boundaries for MD5/SHA-1 (64-byte blocks) and SHA-512
+# (128-byte blocks): the lengths where the "1" bit and the length field
+# straddle a block edge. This is where hand-written digest ports break.
+python3 - "$TMP" <<'PY'
+import os, sys
+d = sys.argv[1]
+for n in (0, 1, 55, 56, 63, 64, 65, 111, 112, 119, 120, 127, 128, 129, 255, 256, 1000, 4096, 100000):
+    open(os.path.join(d, f"pad-{n}.bin"), "wb").write(
+        bytes((i * 7 + 3) & 0xFF for i in range(n)))
+PY
+
+hash_pass=0; hash_skip=0
+for algo in md5 sha1 sha512 vmac siphash; do
+    case "$algo" in
+        md5|sha1|sha512) seed=none ;;
+        vmac)    seed="$(printf 'ab%.0s' $(seq 1 32))" ;;
+        siphash) seed="$(printf 'cd%.0s' $(seq 1 16))" ;;
+    esac
+    for n in 0 1 55 56 63 64 65 111 112 119 120 127 128 129 255 256 1000 4096 100000; do
+        ./bin/hash_test "$algo" "$seed" "$TMP/pad-$n.bin" > "$TMP/cpp.hash" 2>&1 \
+            || fail "cpp hash_test $algo $n"
+        set +e
+        "$RS_DIR/hash_conformance" "$algo" "$seed" "$TMP/pad-$n.bin" > "$TMP/rs.hash" 2>&1
+        rc=$?
+        set -e
+        if [ "$rc" -eq 3 ]; then hash_skip=$((hash_skip+1)); continue; fi
+        [ "$rc" -eq 0 ] || fail "rust hash_conformance $algo $n (rc=$rc)"
+        check "hash $algo len=$n" "$TMP/cpp.hash" "$TMP/rs.hash"
+        hash_pass=$((hash_pass+1))
+    done
+done
+say "digests: $hash_pass matched, $hash_skip skipped (not ported yet)"
 
 # --- Summary --------------------------------------------------------- #
 

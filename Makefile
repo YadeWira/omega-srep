@@ -48,6 +48,13 @@ bin/dedup_test: Makefile tests/dedup_test.cpp Compression/SREP/dedup.cpp
 	mkdir -p -v bin
 	$(CXX) $(CPPFLAGS) $(CFLAGS) -Wno-unused-result tests/dedup_test.cpp $(LDFLAGS) -o bin/dedup_test
 
+# Standalone digest tool: computes one of the -hash= algorithms over a
+# file with the same code the encoder uses, so tests/rust_conformance.sh
+# can diff the Rust port against it.
+bin/hash_test: Makefile tests/hash_test.cpp Compression/SREP/hashes.cpp
+	mkdir -p -v bin
+	$(CXX) $(CPPFLAGS) $(CFLAGS) -Wno-unused-result tests/hash_test.cpp $(LDFLAGS) -o bin/hash_test
+
 # Opt-in 32-bit (i686) Windows cross-build (see docs/32bit-support.md).
 # The primary target stays bin/osrep (host arch); this one produces the 32-bit
 # Windows artifact via the mingw-w64 i686 cross compiler -- the same binary the
@@ -86,7 +93,7 @@ bin/osrep32: Makefile $(DEPS)
 	  $(CXXSOURCES) -lpthread -lstdc++ $(STATIC) -o bin/osrep32
 
 clean:
-	rm -f -v bin/osrep bin/dedup_test bin/osrep32 bin/osrep32.exe
+	rm -f -v bin/osrep bin/dedup_test bin/hash_test bin/osrep32 bin/osrep32.exe
 	rm -rf -v bin/win32-shim
 
 all: bin/osrep bin/dedup_test

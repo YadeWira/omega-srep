@@ -6,3 +6,4 @@
 //! ported module.
 
 pub mod dedup;
+pub mod hashes;

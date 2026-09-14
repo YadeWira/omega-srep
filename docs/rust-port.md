@@ -63,13 +63,19 @@ cross-decode in both directions, `split-encode` (identical meta and body),
 is the path `osrep -dup` actually uses), `selftest` stdout, and the corrupt
 forward-ref meta (both must reject with `DEDUP_ERR_BAD_REF` and not crash).
 
+For the digests it diffs `tests/hash_test.cpp` (backed by the real
+`Compression/SREP/hashes.cpp`) against `hash_conformance` — `md5`/`sha1`/`sha512`
+now, `vmac`/`siphash` as they are ported — at the MD5/SHA-1 64-byte and SHA-512
+128-byte padding boundaries (0, 55, 56, 63, 64, 65, 111, 112, 119, 120, 127, 128,
+129, …), which is where hand-written digest ports break.
+
 ## Phases
 
 | | scope | status |
 |---|---|---|
 | **0** | Fix the real bugs in C++ first (corrupt-meta read, 64-bit hash trust, spill backstop, CLI validation) and rewrite `docs/format-spec.md` to match the code — the oracle and the contract must be right before porting against them. | **done** |
 | **1** | Workspace, toolchain pin, cross-compile config, differential harness. | **done** |
-| **2** | Leaf modules: `dedup` (done), then `hashes` (VMAC/SipHash must match exactly for `--seed=N` to stay byte-stable). | in progress |
+| **2** | Leaf modules: `dedup` (done), then the unkeyed digests `md5`/`sha1`/`sha512` (done) and the keyed `siphash` + `vmac`/`vhash` (with AES) — the keyed pair must match exactly for `--seed=N` to stay byte-stable. | in progress |
 | **3** | Container/IO: header/footer/block codec (read v1–v4, write v4 and v5), buffered IO, mmap, the VM spill manager. | not started |
 | **4** | The LZ core: hash-table match finder, `compress` (-m3/-m4/-m5 + accelerator), CDC (-m1/-m2), in-memory REP (-m0), the Future/Index-LZ second pass and the three decoders. Gate: byte-identical v4 archives across the whole matrix. | not started |
 | **5** | v5 format, CLI, retire the C++. | not started |

@@ -11,6 +11,17 @@ Versions follow `1.<minor>.<patch>` for stable releases and
 
 ### Added
 
+- **Rust port of the unkeyed digests** (`md5`/`sha1`/`sha512` in
+  `crates/osrep-core::hashes`), including the padding edge cases that
+  hand-written digest code gets wrong. Verified two ways: FIPS 180-4 /
+  RFC 1321 known-answer vectors as Rust unit tests, and — the one that
+  matters — a byte-for-byte diff against the *vendored LibTomCrypt*
+  copies in `Compression/SREP/hashes.cpp`. The new `tests/hash_test.cpp`
+  exposes those copies as a standalone tool (`bin/hash_test <algo>
+  <seed-hex|none> <file>`), and `tests/rust_conformance.sh` now diffs it
+  against `hash_conformance` at every padding boundary (0, 55, 56, 63,
+  64, 65, 111, 112, 119, 120, 127, 128, 129, …). Harness total:
+  **383 checks, 0 mismatches**.
 - **Rust workspace, and the first ported module.** `crates/osrep-core`
   now carries a Rust port of the `-dup` CDC/dedup codec, verified
   against the C++ implementation by a new differential harness

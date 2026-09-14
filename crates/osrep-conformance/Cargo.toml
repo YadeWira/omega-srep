@@ -8,7 +8,11 @@ publish.workspace = true
 
 [[bin]]
 name = "dedup_conformance"
-path = "src/main.rs"
+path = "src/bin/dedup_conformance.rs"
+
+[[bin]]
+name = "hash_conformance"
+path = "src/bin/hash_conformance.rs"
 
 [dependencies]
 osrep-core = { path = "../osrep-core" }
