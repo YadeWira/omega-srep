@@ -1,4 +1,6 @@
-bin/
+# Build output. Anchored: an unanchored `bin/` would also swallow the
+# crates' `src/bin/` sources.
+/bin/
 target/
 build/
 build-cmake/

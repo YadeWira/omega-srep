@@ -7,3 +7,4 @@
 
 pub mod dedup;
 pub mod hashes;
+pub mod hashes_keyed;
