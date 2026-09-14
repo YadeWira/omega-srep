@@ -1,0 +1,35 @@
+# Rust workspace for the Omega SREP port.
+#
+# The C++ implementation stays the reference oracle while modules are
+# ported one at a time; crates/osrep-conformance runs both and diffs the
+# results, so every ported module is checked against the shipped binary
+# rather than against a second reading of the spec.
+#
+# `license` is deliberately unset: the C++ core is Bulat Ziganshin's
+# ("All rights reserved", with a commercial-licence offer) and whether the
+# Rust port is a translation or a clean-room reimplementation is an open
+# decision. Do not add a licence field until that is settled.
+
+[workspace]
+resolver = "2"
+members = [
+    "crates/osrep-core",
+    "crates/osrep-cli",
+    "crates/osrep-conformance",
+]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.77"
+publish = false
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+
+# The C++ release build uses -O3 -flto; keep the profiles comparable so
+# conformance runs do not hide a divergence behind different inlining.
+[profile.dev]
+opt-level = 1

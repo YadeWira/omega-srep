@@ -1,0 +1,9 @@
+[package]
+name = "osrep-core"
+description = "Omega SREP core library (Rust port)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]

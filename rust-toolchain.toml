@@ -1,0 +1,17 @@
+# Pinned to the last Rust release with native Windows 7 support.
+#
+# Rust 1.78 raised the minimum supported Windows version to Windows 10 for
+# every *-pc-windows-* target (msvc, gnu and gnullvm, x86_64 and i686).
+# Omega SREP targets Windows 7 x64/x86, so 1.77.2 is the newest toolchain
+# that can build for it without nightly + the Tier 3 *-win7-windows-*
+# targets (which ship no prebuilt std). See docs/windows-build.md.
+#
+# All three targets are listed so `rustup` keeps them installed; the
+# MinGW linkers are wired up in .cargo/config.toml.
+[toolchain]
+channel = "1.77.2"
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "x86_64-pc-windows-gnu",
+    "i686-pc-windows-gnu",
+]

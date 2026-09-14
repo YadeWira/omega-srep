@@ -1,0 +1,12 @@
+# Cross-compilation to Windows uses the same mingw-w64 toolchain the C++
+# build uses (see Makefile's bin/osrep32.exe rule), so no MSVC/Visual
+# Studio is required. Rust's *-pc-windows-gnu std is built against the
+# msvcrt runtime, which is present on unpatched Windows 7.
+
+[target.x86_64-pc-windows-gnu]
+linker = "x86_64-w64-mingw32-gcc"
+ar = "x86_64-w64-mingw32-ar"
+
+[target.i686-pc-windows-gnu]
+linker = "i686-w64-mingw32-gcc"
+ar = "i686-w64-mingw32-ar"

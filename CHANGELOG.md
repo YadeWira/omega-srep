@@ -9,6 +9,32 @@ Versions follow `1.<minor>.<patch>` for stable releases and
 
 ## [Unreleased]
 
+### Added
+
+- **Rust workspace, and the first ported module.** `crates/osrep-core`
+  now carries a Rust port of the `-dup` CDC/dedup codec, verified
+  against the C++ implementation by a new differential harness
+  (`tests/rust_conformance.sh` + `crates/osrep-conformance`, which
+  mirrors `tests/dedup_test.cpp`'s CLI). For 6 inputs × 6 parameter sets
+  it asserts byte-identical `encode` blobs, cross-decoding in both
+  directions, byte-identical `split-encode` meta+body and
+  `encode-streaming` meta+body (with and without `--paranoid` — the path
+  `osrep -dup` actually uses), identical `selftest` output, and the same
+  clean rejection of a forward-ref meta: **326 checks, 0 mismatches**.
+  The harness runs in `local_hardening.sh` stage 1 and skips cleanly
+  where cargo is absent. See `docs/rust-port.md` for the plan.
+- The workspace pins **Rust 1.77.2** (`rust-toolchain.toml`): Rust 1.78
+  raised the minimum Windows version to Windows 10 for every
+  `*-pc-windows-*` target, and Omega SREP targets Windows 7 x64/x86.
+  Cross-compilation to `x86_64-pc-windows-gnu` and `i686-pc-windows-gnu`
+  is wired up in `.cargo/config.toml` using the same mingw-w64 toolchain
+  the C++ build uses.
+- `tests/dedup_test.cpp` gained an `encode-streaming` subcommand, so the
+  streaming encoder the CLI uses can finally be tested directly (it had
+  been exercised only through `osrep -dup`). Both it and the new
+  `decode-streaming` subcommand are what the differential harness diffs
+  against the Rust port.
+
 ### Fixed
 
 - **`-dup` decode could index an empty vector on a corrupt archive.**

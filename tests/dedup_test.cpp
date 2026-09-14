@@ -260,6 +260,64 @@ static int cmd_split_decode(int argc, char** argv) {
     return wr;
 }
 
+static int64_t file_size(const char* path) {
+    FILE* f = fopen(path, "rb");
+    if (!f) return -1;
+    if (fseeko(f, 0, SEEK_END) != 0) { fclose(f); return -1; }
+    int64_t n = (int64_t)ftello(f);
+    fclose(f);
+    return n;
+}
+
+// encode-streaming <in> <meta> <body> [--avg N --min N --max N --buf N
+//                                     --hash fnv|gear] [--paranoid]
+//   Exercises the streaming encoder the CLI's ODUP path actually uses
+//   (writes unique chunks to <body> as it goes, returns only the meta
+//   blob). Kept separate from split-encode because the two encoders
+//   have different buffer semantics.
+static int cmd_encode_streaming(int argc, char** argv) {
+    if (argc < 5) {
+        fprintf(stderr, "usage: dedup_test encode-streaming <in> <meta> <body> "
+                        "[--avg N --min N --max N --buf N --hash fnv|gear] [--paranoid]\n");
+        return 2;
+    }
+    const char* in_path   = argv[2];
+    const char* meta_path = argv[3];
+    const char* body_path = argv[4];
+    size_t avg = DEFAULT_AVG, mn = DEFAULT_MIN, mx = DEFAULT_MAX;
+    size_t buf = DEFAULT_BUF_SIZE;
+    bool paranoid = false;
+    int hash_algo = DEFAULT_CHUNK_HASH;
+    for (int i = 5; i < argc; ++i) {
+        if (strcmp(argv[i], "--paranoid") == 0) { paranoid = true; continue; }
+        if (i + 1 >= argc) { fprintf(stderr, "missing value for %s\n", argv[i]); return 2; }
+        if      (strcmp(argv[i], "--avg") == 0) { avg = (size_t)strtoull(argv[++i], NULL, 10); }
+        else if (strcmp(argv[i], "--min") == 0) { mn  = (size_t)strtoull(argv[++i], NULL, 10); }
+        else if (strcmp(argv[i], "--max") == 0) { mx  = (size_t)strtoull(argv[++i], NULL, 10); }
+        else if (strcmp(argv[i], "--buf") == 0) { buf = (size_t)strtoull(argv[++i], NULL, 10); }
+        else if (strcmp(argv[i], "--hash") == 0) {
+            if (!parse_hash_flag(argv[++i], &hash_algo)) {
+                fprintf(stderr, "bad --hash value: %s (want fnv|gear)\n", argv[i]); return 2;
+            }
+        }
+        else { fprintf(stderr, "unknown flag: %s\n", argv[i]); return 2; }
+    }
+
+    int64_t insize = file_size(in_path);
+    if (insize < 0) { perror(in_path); return 1; }
+
+    uint8_t* meta = NULL; size_t meta_size = 0;
+    int rc = encode_streaming(in_path, body_path, &meta, &meta_size,
+                              avg, mn, mx, buf, paranoid, hash_algo);
+    if (rc != DEDUP_OK) { fprintf(stderr, "encode_streaming rc=%d\n", rc); return 1; }
+    int wm = write_file(meta_path, meta, meta_size);
+    int64_t bodysize = file_size(body_path);
+    printf("input=%lld meta=%zu body=%lld\n", (long long)insize, meta_size,
+           (long long)(bodysize < 0 ? 0 : bodysize));
+    free_buf(meta);
+    return wm;
+}
+
 // decode-streaming <meta> <body> <out>
 //   Exercises the file-based streaming decoder the CLI's ODUP path
 //   actually uses (decode_streaming writes straight to <out>). Kept
@@ -289,6 +347,7 @@ int main(int argc, char** argv) {
     if (strcmp(argv[1], "split-encode") == 0) return cmd_split_encode(argc, argv);
     if (strcmp(argv[1], "split-decode") == 0) return cmd_split_decode(argc, argv);
     if (strcmp(argv[1], "decode-streaming") == 0) return cmd_decode_streaming(argc, argv);
+    if (strcmp(argv[1], "encode-streaming") == 0) return cmd_encode_streaming(argc, argv);
     fprintf(stderr, "unknown command: %s\n", argv[1]);
     return 2;
 }

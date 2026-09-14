@@ -141,6 +141,11 @@ stage1_baseline() {
     echo "  -> running full test suite (unsanitized baseline)"
     run_core_suite 10
 
+    # Rust port vs the C++ oracle. Skips cleanly where cargo is absent,
+    # so this does not gate machines without a Rust toolchain.
+    echo "  -> Rust conformance (Rust port vs C++ oracle)"
+    bash tests/rust_conformance.sh
+
     STAGE_STATUS[s1]="PASS"
 }
 
