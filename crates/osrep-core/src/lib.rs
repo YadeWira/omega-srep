@@ -9,6 +9,7 @@ pub mod aes;
 pub mod container;
 pub mod decompress;
 pub mod dedup;
+pub mod future_lz;
 pub mod hashes;
 pub mod hashes_keyed;
 pub mod vmac;

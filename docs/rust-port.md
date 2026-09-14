@@ -106,9 +106,33 @@ the input. Truncated archives must error, never panic.
 | **2** | Leaf modules: `dedup`, the digests `md5`/`sha1`/`sha512`/`siphash`, `aes` (AES-256 encrypt-only, the `vmac` primitive) and `vmac`/`vhash` (the default hash, VMAC-128). | **done** |
 | **3a** | Container framing: archive header, hash-descriptor table, version predicates, block header, v4 index footer + block-size table, ODUP trailer — read v1–v4 and write v4, byte-exact in both directions. | **done** |
 | **4a** | The I/O-LZ decoder (format v1/v2): record decoding, the literal/match interleaving, both match sources (read back from the output sink, and LZ77 replication within the block, which is `memcpy_lz_match`'s forward byte copy and NOT memmove), and per-block digest verification through the already-ported hashes. | **done** |
-| **4b** | `MEMORY_MANAGER`, the VM spill manager and the Future/Index-LZ decoder (v3/v4): both are driven only by `decompress_FUTURE_LZ`, so they port together rather than standing alone. | not started |
+| **4b** | `MEMORY_MANAGER`, the VM spill manager and the Future/Index-LZ decoder (v3/v4): both are driven only by `decompress_FUTURE_LZ`, so they port together rather than standing alone. | **done** |
 | **4c** | The encoder: hash-table match finder, `compress` (-m3/-m4/-m5 + accelerator), CDC (-m1/-m2), in-memory REP (-m0) and the Future/Index-LZ second pass. Gate: byte-identical v4 archives across the whole matrix. | not started |
 | **5** | v5 format, CLI, retire the C++. | not started |
+
+Phase 4b keeps two details of the C++ that are not obvious from the format spec.
+The first is `maximum_save`: `srep.cpp:459` clamps it to `vm_block - 24` whenever
+`vm_block > 24`, and the archive does **not** record the value — encoder and
+decoder must agree through the shared default `-vmblock` (8 MiB). It decides
+whether a match long enough to be a nuisance is held in memory or re-read from
+the output file, and it is also what guarantees every *stored* match fits one VM
+block. The port applies the same clamp.
+
+The second is the match heap. The C++ uses a `std::multiset` ordered by
+destination and erases with `lz_matches.erase(*it)`, which resolves to the *key*
+overload: it drops every element equivalent to that key, i.e. every match sharing
+that destination. A `BTreeMap<dest, Vec<Match>>` is the exact shape of those
+equivalence classes, and `take_class` reproduces the key-erase.
+
+Spilling is modelled faithfully but backed by memory rather than a scratch file:
+a VM block is written and read by the same process within one decode and is
+never observable outside it, so there is nothing to match on disk. What is kept
+is the *behaviour*: `save_to_disk` evicts the largest-destination matches first,
+returns 0 when it cannot make progress, and every caller turns that into a
+clean `BadData` rather than a retry — the contract the 1.0.6 spill-hang fix
+introduced. `decode_conformance` forces the path with `--mem`/`--vmblock` and
+asserts the spill actually ran (`vmw > 0`), because a transparent re-encoding
+that silently never executes would otherwise look like a pass.
 
 The rule that makes phase 4 tractable: **separate the algorithm from the
 container.** The match stream is identical in v4 and v5, so the ported LZ core

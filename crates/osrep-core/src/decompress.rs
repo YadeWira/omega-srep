@@ -29,6 +29,8 @@ pub enum DecodeError {
     BadData(&'static str),
     /// The archive is not v1/v2.
     NotIoLz(Version),
+    /// The archive is not v3/v4.
+    NotFutureLz(Version),
     /// A block's stored digest does not match the decoded bytes.
     DigestMismatch {
         block: usize,
@@ -42,6 +44,9 @@ impl std::fmt::Display for DecodeError {
             DecodeError::Io(e) => write!(f, "{e}"),
             DecodeError::BadData(why) => write!(f, "broken compressed data: {why}"),
             DecodeError::NotIoLz(v) => write!(f, "not an I/O-LZ archive (v{})", v.code()),
+            DecodeError::NotFutureLz(v) => {
+                write!(f, "not a Future/Index-LZ archive (v{})", v.code())
+            }
             DecodeError::DigestMismatch { block } => {
                 write!(
                     f,
@@ -86,7 +91,7 @@ pub struct DecodeStats {
 /// single memmove; the overlapping one is seeded with the `dest - src` bytes
 /// before the destination and then extended by doubling, which reproduces the
 /// period-`dist` pattern without a per-byte loop.
-fn lz_copy(buf: &mut [u8], src: usize, dest: usize, len: usize) {
+pub(crate) fn lz_copy(buf: &mut [u8], src: usize, dest: usize, len: usize) {
     if len == 0 {
         return;
     }
@@ -186,7 +191,7 @@ fn decompress_block<S: Read + Write + Seek>(
 }
 
 /// A block digest, or the absence of one.
-enum Digest {
+pub(crate) enum Digest {
     None,
     Md5,
     Sha1,
@@ -199,7 +204,7 @@ impl Digest {
     /// Pick the verifier for an archive, mirroring `srep.cpp:1017-1029`: the
     /// tag selects the descriptor, and verification is silently skipped when
     /// the archive's sizes exceed what that descriptor produces.
-    fn for_archive(header: &ArchiveHeader, seed: &[u8]) -> Digest {
+    pub(crate) fn for_archive(header: &ArchiveHeader, seed: &[u8]) -> Digest {
         let Some(info) = header.hash() else {
             return Digest::None;
         };
@@ -229,11 +234,11 @@ impl Digest {
         }
     }
 
-    fn enabled(&self) -> bool {
+    pub(crate) fn enabled(&self) -> bool {
         !matches!(self, Digest::None)
     }
 
-    fn compute(&self, data: &[u8]) -> Vec<u8> {
+    pub(crate) fn compute(&self, data: &[u8]) -> Vec<u8> {
         match self {
             Digest::None => Vec::new(),
             Digest::Md5 => hashes::md5(data).to_vec(),
@@ -246,7 +251,7 @@ impl Digest {
 }
 
 /// Read exactly `n` bytes, mapping a short read to `Truncated`.
-fn read_exact_or_eof<R: Read>(r: &mut R, buf: &mut [u8]) -> Result<bool, DecodeError> {
+pub(crate) fn read_exact_or_eof<R: Read>(r: &mut R, buf: &mut [u8]) -> Result<bool, DecodeError> {
     let mut filled = 0;
     while filled < buf.len() {
         match r.read(&mut buf[filled..])? {

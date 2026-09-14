@@ -11,6 +11,19 @@ Versions follow `1.<minor>.<patch>` for stable releases and
 
 ### Added
 
+- **Rust port of the Future/Index-LZ decoder (format v3/v4), with the memory
+  manager and its VM spill.** `crates/osrep-core::future_lz` ports
+  `MEMORY_MANAGER`, `VIRTUAL_MEMORY_MANAGER` and `decompress_FUTURE_LZ` — the
+  three parts of `decompress.cpp` that v3 and v4 have in common — plus the v3/v4
+  arms of the block loop. The spill store is modelled in memory rather than as a
+  scratch file (a VM block never escapes the decoding process), but its
+  behaviour is kept exactly: evict largest-destination first, report "no
+  progress" rather than retry. `tests/decode_conformance.sh` gains a v3/v4
+  matrix (v3 = `-mNf`, v4 = the default `-mN`) over the same 5 inputs and 4 hash
+  configurations, a forced-spill case that asserts the spill path actually ran,
+  and the same corruption/truncation checks the v1/v2 decoder already had:
+  **116 checks, 0 mismatches** (65 v3/v4 round-trips, 2 forced-spill, 8 digest
+  corruption, 6 truncation, 35 v1/v2). See `docs/rust-port.md`.
 - **Rust port of four digests** (`md5`/`sha1`/`sha512` in
   `crates/osrep-core::hashes`, `siphash` in `hashes_keyed`), including the
   padding edge cases that hand-written digest code gets wrong. Verified two
@@ -47,6 +60,24 @@ Versions follow `1.<minor>.<patch>` for stable releases and
   been exercised only through `osrep -dup`). Both it and the new
   `decode-streaming` subcommand are what the differential harness diffs
   against the Rust port.
+
+### Known issues
+
+- **Intermittent Future-LZ encoding corruption under `-m5f`.** About 1.5% of
+  `-m5f` compressions (and ~8.5% at the default thread count — 3/200 and 17/200
+  measured on the test corpus) emit an archive whose stored per-block digest
+  does not match the data the match list decodes to. The encoder reports
+  success; the failure is only visible on decompression, where both the C++
+  decoder and the Rust port reject the block with a checksum error — the
+  reported symptom is "first N blocks extracted, then CRC error". `-m3f`/`-m4f`
+  have not been observed to fail, nor have the v4 modes. Compression is
+  deterministic for a fixed `--seed` (five runs byte-identical), which makes the
+  trigger seed- or allocation-dependent rather than a pure schedule race, but
+  the thread-count sensitivity points at a shared-state read. Not root-caused.
+  Repro: `for i in $(seq 1 200); do bin/osrep -m5f -b64k in out.osr; bin/osrep
+  -d out.osr out 2>/dev/null || echo corrupt; done`. This is why the v3/v4
+  decode conformance feeds the encoder `-t1`; the decoder port itself is
+  correct, and faithfully rejects the same archives the C++ rejects.
 
 ### Fixed
 
