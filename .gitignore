@@ -18,3 +18,9 @@ data.tar
 doubled.*
 fa011.zip
 srep392.zip
+SREP_Technical_Documentation.zip
+
+# Session state, not project files: the agent tool's own settings, and the
+# notes that get exchanged with other sessions working alongside this one.
+.commandcode/
+message-from-*.md
