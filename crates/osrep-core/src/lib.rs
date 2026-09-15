@@ -21,4 +21,5 @@ pub mod lz;
 pub mod rolling;
 pub mod second_pass;
 pub mod util;
+pub mod v5;
 pub mod vmac;

@@ -62,13 +62,13 @@ como herramienta de interoperabilidad.
 |   tabla de chunks (igual que hoy)                         |
 |   meta_crc  u32   CRC-32C de todo el meta salvo este campo|
 +-----------------------------------------------------------+
-| footer (24 bytes)                                         |
+| footer (32 bytes)                                         |
 |   magic        u32  "OSRF" = 0x4652534F LE                |
 |   block_count  u32  (debe coincidir con el header)        |
 |   stat_size    u64  bytes totales de listas de matches    |
 |   meta_offset  u64  offset del meta, o 0                  |
 |   meta_size    u32  bytes del meta, o 0                   |
-|   footer_crc   u32  CRC-32C de los 20 bytes anteriores    |
+|   footer_crc   u32  CRC-32C de los 28 bytes anteriores    |
 +-----------------------------------------------------------+
 ```
 

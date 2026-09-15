@@ -279,3 +279,16 @@ mod tests {
         assert_eq!(table[..], standard[..]);
     }
 }
+
+/// CRC-32C over a whole buffer, unkeyed. `docs/format-spec-v5.md` uses it for
+/// the v5 header, footer and `-dup` meta: a corruption check, not a MAC, chosen
+/// because its table is already here.
+pub fn crc32c_of(data: &[u8]) -> u32 {
+    let mut table = [0u32; 256];
+    fast_table_build(&mut table, CRC32_CASTAGNOLI_POLYNOM, CRC32_CASTAGNOLI_POLYNOM);
+    let mut crc: u32 = 0;
+    for b in data {
+        crc = update_crc(crc, &table, *b);
+    }
+    crc
+}
