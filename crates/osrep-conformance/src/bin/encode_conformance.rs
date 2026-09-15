@@ -49,6 +49,8 @@ fn parse_mode(s: &str) -> Option<encoder::Mode> {
     }
     let kind = match b[1] {
         b'0' => encoder::Kind::Inmem,
+        b'1' => encoder::Kind::Cdc,
+        b'2' => encoder::Kind::CdcZpaq,
         b'3' => encoder::Kind::Digest,
         b'4' => encoder::Kind::Fixed,
         b'5' => encoder::Kind::FixedExhaustive,

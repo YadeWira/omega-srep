@@ -44,6 +44,7 @@ pub fn power(base: u64, n: u32) -> u64 {
 /// The encoder builds several of these (`hash1`/`hash2` in `compress.cpp`,
 /// `hash` in `compress_inmem.cpp`) and rolls them one byte at a time, so the
 /// port does the same rather than recomputing each window from scratch.
+#[derive(Clone)]
 pub struct PolynomialRollingHash {
     pub value: u64,
     prime: u64,
@@ -126,6 +127,7 @@ fn update_crc(crc: u32, table: &[u32; 256], byte: u8) -> u32 {
 /// `CrcRollingHash<uint32>` (`hashes.cpp:241`): a CRC-32C over the L-byte
 /// window, rolled by XOR-ing out the byte that leaves through
 /// `RollingCRCTab`.
+#[derive(Clone)]
 pub struct CrcRollingHash {
     pub value: u32,
     crc_tab: [u32; 256],

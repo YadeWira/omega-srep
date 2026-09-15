@@ -133,6 +133,23 @@ for input in tests/corpus/mixed.bin tests/corpus/text.bin tests/corpus/random.bi
     enc "$input" -m5f m5f
 done
 
+say "-m1/-m2 (content-defined chunking) vs the C++ encoder"
+# tests/corpus is CDC-blind (no duplicate chunks anywhere in it), so these use
+# the harness's own duplicate-heavy inputs; dup20m also crosses block
+# boundaries. The boundary hash the C++ picks (CRC32C vs polynomial) is a
+# runtime CPU choice -- this machine takes CRC32C, and the polynomial route is
+# checked separately with OSREP_CDC_POLY and a patched oracle (docs/rust-port.md).
+for input in tests/corpus/mixed.bin "$TMP/dup4m.bin" "$TMP/dup20m.bin"; do
+    enc "$input" -m1o m1o
+    enc "$input" -m1 m1
+    enc "$input" -m1f m1f
+    enc "$input" -m2o m2o
+    enc "$input" -m2 m2
+    enc "$input" -m2f m2f
+    enc "$input" -m1o m1o -l2048
+    enc "$input" -m1o m1o -b1mb
+done
+
 # Degenerate inputs and the C++'s own 512 MiB dictionary default.
 enc "$TMP/empty.bin" -m0o m0o -d16mb
 enc "$TMP/tiny.bin"  -m0o m0o -d16mb
@@ -140,13 +157,15 @@ enc tests/corpus/tiny.bin -m0o m0o
 
 say "encode_conformance: passed=$pass"
 
-# --- not ported yet -------------------------------------------------- #
+# --- unknown modes --------------------------------------------------- #
 
+# Every real mode is ported now; an unknown one must still report "not ported"
+# (rc=3) rather than silently doing something.
 set +e
-"$RS" m1o -d16mb --seed=7 "$TMP/dup4m.bin" "$TMP/rs.osr" >/dev/null 2>&1
+"$RS" m9 --seed=7 "$TMP/dup4m.bin" "$TMP/rs.osr" >/dev/null 2>&1
 rc=$?
 set -e
 if [ "$rc" -ne 3 ]; then
-    fail "expected 'm1o: not ported' (rc=3), got rc=$rc"
+    fail "expected 'm9: not ported' (rc=3), got rc=$rc"
 fi
-say "unported modes report rc=3 as expected"
+say "unknown modes report rc=3 as expected"

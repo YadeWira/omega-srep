@@ -6,6 +6,7 @@
 //! ported module.
 
 pub mod aes;
+pub mod cdc;
 pub mod compress;
 pub mod container;
 pub mod decompress;

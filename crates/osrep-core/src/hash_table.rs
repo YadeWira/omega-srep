@@ -22,6 +22,9 @@ use std::io::{Read, Seek};
 use crate::util::roundup_to_power_of_two;
 use crate::vmac::{VDigest, DIGEST_SIZE};
 
+/// Bytes of one CDC chunk's hash pair: `vhash1` then `vhash2`.
+pub const VHASH_BYTES: usize = 32;
+
 /// `MAX_HASH_CHAIN` (`hash_table.cpp:13`).
 pub const MAX_HASH_CHAIN: u32 = 12;
 /// `NOT_FOUND` (`hash_table.cpp:12`): chunk 0 doubles as "no match", which is
@@ -161,12 +164,18 @@ pub struct HashTable {
     pub round_matches: bool,
     pub compare_digests: bool,
     pub precompute_digests: bool,
+    pub content_defined_chunking: bool,
     pub l: usize,
     pub filesize: u64,
     pub total_chunks: u64,
     chunknum_mask: u32,
     hash_mask: u32,
     hashsize1: u64,
+    /// `curchunk` (`hash_table.cpp:127`): the CDC path numbers chunks as it
+    /// meets them.
+    curchunk: u32,
+    /// `startarr` (`hash_table.cpp:132`): byte offset of each CDC chunk.
+    startarr: Vec<u64>,
     /// `Chunk` (uint32) slots, zeroed (`BigAllocZero`).
     chunkarr: Vec<u32>,
     /// `StoredHashValue` (uint32) slots. The C++ allocates these *uninitialized*
@@ -191,14 +200,18 @@ impl HashTable {
         round_matches: bool,
         compare_digests: bool,
         precompute_digests: bool,
+        content_defined_chunking: bool,
         l: usize,
         min_match: usize,
         io_accelerator: i32,
         filesize: u64,
     ) -> HashTable {
         let filesize = filesize.max(l as u64);
-        let total_chunks = filesize / l as u64;
-        // (The CDC variant adds 10% headroom here; that lands with 4c-6.)
+        let mut total_chunks = filesize / l as u64;
+        if content_defined_chunking {
+            // Chunks may have any size, so 10% extra slots (`hash_table.cpp:150`).
+            total_chunks += total_chunks / if total_chunks > 1024 { 10 } else { 1 };
+        }
         let chunknum_mask = (roundup_to_power_of_two(total_chunks + 2) - 1) as u32;
         let hash_mask = !chunknum_mask;
         let hashsize = roundup_to_power_of_two(min_hash_size(total_chunks));
@@ -207,6 +220,7 @@ impl HashTable {
             round_matches,
             compare_digests,
             precompute_digests,
+            content_defined_chunking,
             l,
             filesize,
             total_chunks,
@@ -214,7 +228,17 @@ impl HashTable {
             hash_mask,
             hashsize1: hashsize - 1,
             chunkarr: vec![0u32; hashsize as usize],
-            hasharr: vec![0u32; total_chunks as usize],
+            hasharr: if content_defined_chunking {
+                Vec::new()
+            } else {
+                vec![0u32; total_chunks as usize]
+            },
+            curchunk: 0,
+            startarr: if content_defined_chunking {
+                vec![0u64; total_chunks as usize]
+            } else {
+                Vec::new()
+            },
             slicehash,
             digestarr: if compare_digests {
                 vec![[0u8; DIGEST_SIZE]; total_chunks as usize]
@@ -376,6 +400,82 @@ impl HashTable {
             }
         }
         NOT_FOUND
+    }
+
+    /// `find_match_CDC` (`hash_table.cpp:407-431`): record the chunk that
+    /// starts at `offset` with the 32-byte hash pair `vhashes`
+    /// (`vhash1 ++ vhash2`), and return the byte distance to an earlier chunk
+    /// with the same digest *and the same size*, or 0.
+    pub fn find_match_cdc(&mut self, offset: u64, size: usize, vhashes: &[u8; VHASH_BYTES]) -> u64 {
+        self.curchunk += 1;
+        if self.curchunk as u64 >= self.total_chunks {
+            return 0;
+        }
+        let curchunk = self.curchunk as usize;
+        self.startarr[curchunk] = offset;
+        // The digest is the first 20 bytes; the table index is the 8 that
+        // follow, so the two together need 28 of the 32.
+        self.digestarr[curchunk].copy_from_slice(&vhashes[..DIGEST_SIZE]);
+        let index = u64::from_le_bytes(
+            vhashes[DIGEST_SIZE..DIGEST_SIZE + 8]
+                .try_into()
+                .expect("8 bytes"),
+        );
+
+        let chunk = self.add_hash_cdc(index, curchunk);
+        if chunk != NOT_FOUND && self.chunksize_cdc(chunk as usize) == size as u64 {
+            offset - self.startarr[chunk as usize]
+        } else {
+            0
+        }
+    }
+
+    /// `chunksize_CDC` (`hash_table.cpp:401`).
+    fn chunksize_cdc(&self, chunk: usize) -> u64 {
+        self.startarr[chunk + 1] - self.startarr[chunk]
+    }
+
+    /// `add_hash0<CDC = true>` (`hash_table.cpp:252-282`): the CDC probe skips
+    /// the `hasharr` write entirely, accepts any candidate whose 20-byte digest
+    /// matches (`COMPARE_DIGESTS` is on for `-m1`/`-m2`), and inserts at the
+    /// slot the walk ended on.
+    fn add_hash_cdc(&mut self, index: u64, curchunk: usize) -> u32 {
+        if curchunk as u32 == NOT_FOUND {
+            return NOT_FOUND;
+        }
+        let saved_hash = self.chunkarr_value(index, 0);
+        let mut h = index;
+        let mut limit = MAX_HASH_CHAIN;
+        let mut found = NOT_FOUND;
+        loop {
+            let value = self.chunkarr[self.hash_index(h)];
+            if value == NOT_FOUND {
+                break;
+            }
+            limit -= 1;
+            if limit == 0 {
+                break;
+            }
+            if self.get_hash(value) == saved_hash {
+                let chunk = self.get_chunk(value);
+                // CDC's `slicehash` is always inactive (`MIN_MATCH < L`), so
+                // the non-digest branch would accept unconditionally.
+                if !self.compare_digests
+                    || self.digestarr[chunk as usize] == self.digestarr[curchunk]
+                {
+                    found = chunk;
+                    break;
+                }
+            }
+            h += 1;
+            if limit & 3 == 0 {
+                h = next_hash_slot(h);
+            }
+        }
+        let value = self.chunkarr_value(index, curchunk as u32);
+        let slot = self.hash_index(h);
+        self.chunkarr[slot] = value;
+        found
     }
 
     /// `match_len` (`hash_table.cpp:332-394`) for `!COMPARE_DIGESTS`.

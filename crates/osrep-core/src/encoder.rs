@@ -21,6 +21,7 @@
 
 use std::io::{Read, Seek, SeekFrom, Write};
 
+use crate::cdc;
 use crate::compress as lz_compress;
 use crate::container::{self, ArchiveHeader, BlockHeader, HashInfo, Version};
 use crate::hash_table::HashTable;
@@ -43,6 +44,10 @@ const BUFFERS: usize = 2;
 pub enum Kind {
     /// `-m0`: the in-memory REP pass, no hash table.
     Inmem,
+    /// `-m1`: content-defined chunking.
+    Cdc,
+    /// `-m2`: content-defined chunking with the ZPAQ boundary model.
+    CdcZpaq,
     /// `-m4`: fixed-size chunks, matches verified by rereading the input.
     Fixed,
     /// `-m5`: `-m4` with exhaustive search and the slice filter.
@@ -227,6 +232,7 @@ pub fn encode<R: Read + Seek, W: Write>(
     mode: Mode,
 ) -> Result<u64, EncodeError> {
     let kind = mode.kind;
+    let cdc = matches!(kind, Kind::Cdc | Kind::CdcZpaq);
     let io_lz = mode.container == Container::IoLz;
     let index_lz = mode.container == Container::IndexLz;
     let future_lz = mode.container == Container::FutureLz;
@@ -239,17 +245,26 @@ pub fn encode<R: Read + Seek, W: Write>(
     // CONTENT_DEFINED_CHUNKING nor EXHAUSTIVE_SEARCH, so its `min_match`
     // defaults to 512 and `L` to it; `-m5` searches exhaustively from half the
     // window, so its `L` is the power of two below `min_match`, divided by two.
-    let min_match = if opts.min_match != 0 { opts.min_match } else { 512 };
-    let l = if opts.l != 0 {
-        opts.l
-    } else {
-        match kind {
-            Kind::Inmem | Kind::Fixed | Kind::Digest => min_match,
-            Kind::FixedExhaustive => {
-                (rounddown_to_power_of_two(min_match as u64 + 1) / 2) as usize
-            }
+    // `srep.cpp:448-454`, in the C++'s own order: for CDC, `-l` becomes the
+    // window `L` and `MIN_MATCH` collapses to DEFAULT_MIN_MATCH (32).
+    let mut min_match = opts.min_match;
+    let mut l = opts.l;
+    if l == 0 && min_match == 0 {
+        min_match = if cdc { 4096 } else { 512 };
+    }
+    if l == 0 {
+        if cdc {
+            l = min_match;
+            min_match = 0;
+        } else if kind == Kind::FixedExhaustive {
+            l = (rounddown_to_power_of_two(min_match as u64 + 1) / 2) as usize;
+        } else {
+            l = min_match;
         }
-    };
+    }
+    if min_match == 0 {
+        min_match = if cdc { 32 } else { l };
+    }
     let dict_min_match = if opts.dict_min_match != 0 {
         opts.dict_min_match
     } else {
@@ -300,14 +315,28 @@ pub fn encode<R: Read + Seek, W: Write>(
     // filter empty (its `check_slices` is <= 0), `-m5` fills it.
     let mut table = match kind {
         Kind::Inmem => None,
-        Kind::Fixed | Kind::FixedExhaustive | Kind::Digest => {
+        Kind::Cdc | Kind::CdcZpaq | Kind::Fixed | Kind::FixedExhaustive | Kind::Digest => {
             let filesize = input.seek(SeekFrom::End(0))?;
             input.seek(SeekFrom::Start(0))?;
             // `io_accelerator` defaults to 1 (srep.cpp:291). `-m3` is the one
             // mode that precomputes and compares per-chunk digests.
-            let digests = kind == Kind::Digest;
+            // `COMPARE_DIGESTS = (method <= -m3)` and
+            // `PRECOMPUTE_DIGESTS = (method == -m3)` (`srep.cpp:441-442`):
+            // `-m1`/`-m2` *compare* chunk digests but do not precompute them.
+            let compare_digests = matches!(
+                kind,
+                Kind::Inmem | Kind::Cdc | Kind::CdcZpaq | Kind::Digest
+            );
+            let precompute_digests = kind == Kind::Digest;
             Some(HashTable::new(
-                round_matches, digests, digests, l, min_match, 1, filesize,
+                round_matches,
+                compare_digests,
+                precompute_digests,
+                cdc,
+                l,
+                min_match,
+                1,
+                filesize,
             ))
         }
     };
@@ -335,6 +364,10 @@ pub fn encode<R: Read + Seek, W: Write>(
     // `buf_offset` is a BYTE offset into the ring, cycling by `bufsize` exactly
     // like the C++'s `buf_offset = (buf_offset + bufsize) % dictsize`
     // (io.cpp:250).
+    // The CDC chunk hasher (`-m1`/`-m2`), created once like the C++'s
+    // per-thread `VHash` pair.
+    let cdc_hasher = cdc::CdcChunkHasher::new();
+
     // Blocks captured for the second pass (`COMPRESSED_BLOCK`), in file order.
     let mut blocks: Vec<CompressedBlock> = Vec::new();
     let mut buf_offset = 0usize;
@@ -378,6 +411,20 @@ pub fn encode<R: Read + Seek, W: Write>(
                     &hashptr,
                     &mut literal_bytes,
                     &mut stat,
+                )?;
+            }
+            Kind::Cdc | Kind::CdcZpaq => {
+                cdc::compress_cdc(
+                    kind == Kind::CdcZpaq,
+                    l,
+                    min_match,
+                    block_start,
+                    table.as_mut().unwrap(),
+                    &dict[buf_offset..],
+                    filled,
+                    &mut literal_bytes,
+                    &mut stat,
+                    &cdc_hasher,
                 )?;
             }
             Kind::Fixed | Kind::FixedExhaustive | Kind::Digest => {

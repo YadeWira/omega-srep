@@ -107,7 +107,7 @@ the input. Truncated archives must error, never panic.
 | **3a** | Container framing: archive header, hash-descriptor table, version predicates, block header, v4 index footer + block-size table, ODUP trailer — read v1–v4 and write v4, byte-exact in both directions. | **done** |
 | **4a** | The I/O-LZ decoder (format v1/v2): record decoding, the literal/match interleaving, both match sources (read back from the output sink, and LZ77 replication within the block, which is `memcpy_lz_match`'s forward byte copy and NOT memmove), and per-block digest verification through the already-ported hashes. | **done** |
 | **4b** | `MEMORY_MANAGER`, the VM spill manager and the Future/Index-LZ decoder (v3/v4): both are driven only by `decompress_FUTURE_LZ`, so they port together rather than standing alone. | **done** |
-| **4c** | The encoder: hash-table match finder, `compress` (-m3/-m4/-m5 + accelerator), CDC (-m1/-m2), in-memory REP (-m0) and the Future/Index-LZ second pass. Gate: byte-identical v4 archives across the whole matrix. | **in progress** — everything but CDC: `-m0/-m3/-m4/-m5` and the `o`/`f` suffixes are byte-identical (150/150 in `tests/encode_conformance.sh`); `-m1`/`-m2` land with 4c-6 |
+| **4c** | The encoder: hash-table match finder, `compress` (-m3/-m4/-m5 + accelerator), CDC (-m1/-m2), in-memory REP (-m0) and the Future/Index-LZ second pass. Gate: byte-identical archives across the whole matrix. | **done** — every mode (`-m0`…`-m5`) and every suffix (`o`/`f`/default) is byte-identical to the C++: 174/174 in `tests/encode_conformance.sh` |
 | **5** | v5 format, CLI, retire the C++. | not started |
 
 ### Phase 4c notes worth keeping
@@ -171,6 +171,22 @@ the input. Truncated archives must error, never panic.
   it belongs to an earlier block; `saved_i` is what lets the next block
   re-examine those. `lz_match_heap`/`ram` in the C++ only feed the progress
   report and are not modelled.
+
+* **CDC's boundary hash is a runtime CPU choice, and both routes are
+  ported.** `crc32c()` (`hashes.cpp:226`) selects `CrcRollingHash<uint32>` and
+  falls back to `PolynomialRollingHash<uint64>`; the 4c-0 experiment showed the
+  two produce different archives, so `cdc.rs` keeps both. The fallback is
+  unreachable on any SSE4.2 machine, so `OSREP_CDC_POLY=1` (a test hook like
+  the C++'s `OSREP_SEED_HEX`) forces it and the polynomial route is diffed
+  against an oracle built with `#if GCC_VERSION >= 403` patched to `#if 0`.
+* **A CDC chunk's 32 hash bytes carry both the digest and the table index.**
+  `CDC_Thread::compute_single_chunk_hash` writes `vhash1` at 0 and `vhash2` at
+  16 -- *not* the overlapping `VDigest` layout -- because `find_match_CDC`
+  reads the first 20 bytes as the digest and the 8 after them as the `BigHash`
+  index.
+* **`COMPARE_DIGESTS` is `method <= -m3`, `PRECOMPUTE_DIGESTS` is `method ==
+  -m3`.** `-m1`/`-m2` therefore allocate `digestarr` and compare chunk digests
+  *without* precomputing them, and `-m4`/`-m5` have no digest array at all.
 
 ### Phase 4c pre-port experiments (run before writing any Rust)
 
