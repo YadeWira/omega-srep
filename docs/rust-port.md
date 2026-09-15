@@ -243,15 +243,24 @@ overload: it drops every element equivalent to that key, i.e. every match sharin
 that destination. A `BTreeMap<dest, Vec<Match>>` is the exact shape of those
 equivalence classes, and `take_class` reproduces the key-erase.
 
-Spilling is modelled faithfully but backed by memory rather than a scratch file:
-a VM block is written and read by the same process within one decode and is
-never observable outside it, so there is nothing to match on disk. What is kept
-is the *behaviour*: `save_to_disk` evicts the largest-destination matches first,
-returns 0 when it cannot make progress, and every caller turns that into a
-clean `BadData` rather than a retry — the contract the 1.0.6 spill-hang fix
-introduced. `decode_conformance` forces the path with `--mem`/`--vmblock` and
-asserts the spill actually ran (`vmw > 0`), because a transparent re-encoding
-that silently never executes would otherwise look like a pass.
+Spilling goes to a scratch file, one `-vmblock` slot per block index, exactly as
+the C++'s `VIRTUAL_MEMORY_MANAGER` does (`decompress.cpp:276`/`:296` seek to
+`block*VMBLOCK_SIZE`). The file is opened on the *first* spill, not eagerly: the
+C++ allocates its name up front and `fopen`s it in `save_to_disk`
+(`decompress.cpp:249`), so a decode that never spills -- most of them -- touches
+no disk either way. It is removed when the decode ends, including when
+`-vmfile=` named it, which is what the C++'s destructor does: the block area is
+scratch, but it has to live somewhere other than RAM, or the `-mem` budget the
+manager enforces means nothing. `save_to_disk` evicts the largest-destination
+matches first, returns 0 when it cannot make progress, and every caller turns
+that into a clean `BadData` rather than a retry — the contract the 1.0.6
+spill-hang fix introduced. `decode_conformance` forces the path with
+`--mem`/`--vmblock` and asserts the spill actually ran (`vmw > 0`), because a
+transparent re-encoding that silently never executes would otherwise look like
+a pass. `tests/vm_tempfile_leak_regression.sh` had the same problem in the other
+direction: its "spilling" decode used `-mem=8mb -vmblock=256k`, which for
+`far.bin` never evicts anything, so the cleanup it asserted was never exercised.
+It now uses the budget `decode_conformance` proves spills.
 
 The rule that makes phase 4 tractable: **separate the algorithm from the
 container.** The match stream is identical in v4 and v5, so the ported LZ core
@@ -353,11 +362,9 @@ with the binary in phase 5.
 * **What the CLI accepts and does not act on**: `-t` (the port is single-threaded
   per block), `-a`/`-ia`/`-slp`/`-pc`/`-mmap`/`-nommap`/`-rem` -- all proven
   output-neutral by the phase 4c pre-port experiments. `-mem` and `-vmblock=`
-  map onto the spill budget. `-vmfile=` is accepted but never written, because
-  the port models the VM spill in memory; that is why
-  `tests/vm_tempfile_leak_regression.sh` finds an empty `$TMPDIR` by
-  construction rather than by cleanup. `-index=` is refused outright: silently
-  ignoring it would leave a user with an archive they believe has an index.
+  map onto the spill budget, and `-vmfile=` names the spill file. `-index=` is
+  refused outright: silently ignoring it would leave a user with an archive they
+  believe has an index.
 * **`-i` needs no match walk.** The C++ derives the original size for Index-LZ
   from the footer arithmetic plus a walk of every match; the port reads the
   per-block `origsize` out of the framing, which is the same number and does not

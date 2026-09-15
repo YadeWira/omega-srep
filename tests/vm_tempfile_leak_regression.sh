@@ -10,10 +10,13 @@
 #
 # The test decompresses with TMPDIR pointed at a directory that should stay
 # completely empty, and asserts it does -- for both the common no-spill path and
-# a decode whose memory settings make the VM file actually be opened
-# (-mem=8mb -vmblock=256k). The second case is known to spill: the pre-fix
-# binary leaves *no* leftover there (it opened the file, and so removed it),
-# while it leaves exactly one for a plain decode.
+# a decode whose memory settings make the VM file actually be opened. The
+# spilling case is `-mem=1mb -vmblock=128k`, which is the budget
+# tests/decode_conformance.sh proves spills (`vmw=2359296` for `far.bin`); the
+# 8mb/256k pair this used to spell out never evicted anything, so the assertion
+# it carried was vacuous. The pre-fix binary leaves *no* leftover in the
+# spilling case (it opened the file, and so removed it) while it leaves exactly
+# one for a plain decode, which is what the first half covers.
 set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -62,7 +65,7 @@ n=$(leftovers)
 say "no-spill: 24 decodes (v3 + v4) left the TMPDIR empty"
 
 # --- spilling path (the VM file really is opened) ----------------------- #
-TMPDIR="$VMTMP" $OSREP -d -mem=8mb -vmblock=256k "$WORK/far.osr" "$WORK/out-far" >/dev/null 2>&1 \
+TMPDIR="$VMTMP" $OSREP -d -mem=1mb -vmblock=128k "$WORK/far.osr" "$WORK/out-far" >/dev/null 2>&1 \
     || fail "spilling decode failed"
 cmp -s "$WORK/far.bin" "$WORK/out-far" || fail "spilling decode produced the wrong bytes"
 n=$(leftovers)

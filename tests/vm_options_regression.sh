@@ -39,6 +39,15 @@ for m in m0 m1 m2 m3 m4 m5; do
     else
         echo "FAIL -$m decode: $(echo "$out" | tail -1)"; fail=$((fail+1))
     fi
+    # `-vmfile=` names a scratch file: the C++ removes it when the decode ends
+    # (its destructor does `if (vmfile_name) remove(vmfile_name)`), so a decode
+    # that leaves it behind is a regression, and one that never created it at
+    # all would be a different kind of surprise.
+    if [ -e "$TMP/$m.vm" ]; then
+        echo "FAIL -$m left its -vmfile behind"; fail=$((fail+1))
+    else
+        pass=$((pass+1))
+    fi
     # Same archive with default options must also round-trip.
     if "$OSREP" -d "$TMP/$m.osr" "$TMP/$m.out2" >/dev/null 2>&1 && cmp -s "$TMP/in.bin" "$TMP/$m.out2"; then
         pass=$((pass+1))

@@ -437,6 +437,7 @@ fn decode_options(o: &Options) -> FutureLzOptions {
         mem_limit: o.vm_mem,
         vm_block: o.vm_block,
         maximum_save,
+        vmfile: o.vmfile.as_ref().map(PathBuf::from),
     }
 }
 
@@ -595,9 +596,9 @@ fn info(o: &Options, finame: &str) -> Result<i32, RunError> {
             report::show3(info.origsize),
             report::show3(info.compsize)
         );
-        // The C++ reports the peak RAM its spill would need. The port models the
-        // spill in memory and never measures a peak, so that one field is a
-        // placeholder; everything else on the line is real.
+        // The C++ reports the peak RAM its spill would need, which it computes
+        // by walking the match lists; the port does not measure a peak, so that
+        // one field is a placeholder. Everything else on the line is real.
         let maximum_save = if opts.maximum_save == u32::MAX {
             None
         } else {

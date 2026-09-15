@@ -23,7 +23,9 @@
 //! contract (`save_to_disk` returning 0).
 
 use std::collections::{BTreeMap, HashMap};
+use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::path::{Path, PathBuf};
 
 use crate::container::{
     ArchiveHeader, BlockHeader, ContainerError, FooterHead, ARCHIVE_HEADER_SIZE,
@@ -32,6 +34,7 @@ use crate::container::{
 use crate::decompress::{
     read_exact_or_eof, DecodeError, DecodeStats, Digest, lz_copy,
 };
+use crate::util::TempFile;
 
 /// `MEMORY_MANAGER::INVALID_INDEX` (`decompress.cpp:137`): chunk 0 is reserved
 /// as the "no data" sentinel, so the first allocatable chunk is 1.
@@ -172,29 +175,90 @@ impl MemoryManager {
 
 // -------------------------------------------------- VIRTUAL_MEMORY_MANAGER --
 
-/// `VIRTUAL_MEMORY_MANAGER` (`decompress.cpp:217-306`): the spill area. The C++
-/// backs it with a scratch file; here the blocks live in memory, because a
-/// block is only ever written and read by this same process within one decode
-/// -- nothing about it is persisted or observable.
+/// Where a spilled block goes (`vmfile_name`, `decompress.cpp:219`).
+///
+/// A block is only ever written and read by this same process within one
+/// decode, so the file is scratch -- but it has to be a *file*: keeping the
+/// blocks in memory would make the `-mem` budget meaningless, which is exactly
+/// what the C++ uses them for.
+enum VmPath {
+    /// A scratch file this decode allocated under `$TMPDIR`.
+    Temp(TempFile),
+    /// `-vmfile=`. The C++ removes it when the decode ends regardless of who
+    /// asked for it (`decompress.cpp:233`), and so does this.
+    Given(PathBuf),
+}
+
+impl VmPath {
+    fn path(&self) -> &Path {
+        match self {
+            VmPath::Temp(t) => t.path(),
+            VmPath::Given(p) => p,
+        }
+    }
+}
+
+impl Drop for VmPath {
+    fn drop(&mut self) {
+        if let VmPath::Given(p) = self {
+            let _ = std::fs::remove_file(p);
+        }
+    }
+}
+
+/// `VIRTUAL_MEMORY_MANAGER` (`decompress.cpp:217-306`): the spill area, one
+/// `VMBLOCK_SIZE` slot per block index.
 pub(crate) struct VirtualMemory {
     vm_block: u64,
     free_blocks: Vec<u32>,
     new_block: u32,
-    store: HashMap<u32, Vec<u8>>,
+    /// `-vmfile=`, if the caller named one.
+    vmfile: Option<PathBuf>,
+    /// The block file, opened on the first spill -- the C++ allocates the name
+    /// eagerly and `fopen`s it here (`decompress.cpp:249`), so a decode that
+    /// never spills (which is most of them) touches no disk at all.
+    spill: Option<(File, VmPath)>,
     pub(crate) total_read: u64,
     pub(crate) total_write: u64,
 }
 
 impl VirtualMemory {
-    pub(crate) fn new(vm_block: u64) -> VirtualMemory {
+    pub(crate) fn new(vm_block: u64, vmfile: Option<PathBuf>) -> VirtualMemory {
         VirtualMemory {
             vm_block,
             free_blocks: Vec::new(),
             new_block: 0,
-            store: HashMap::new(),
+            vmfile,
+            spill: None,
             total_read: 0,
             total_write: 0,
         }
+    }
+
+    /// Open the block file if this is the first spill.
+    fn spill_file(&mut self) -> Result<&mut File, DecodeError> {
+        if self.spill.is_none() {
+            let path = match &self.vmfile {
+                Some(p) => VmPath::Given(p.clone()),
+                None => VmPath::Temp(
+                    TempFile::new("osrep-virtual-memory")
+                        .map_err(|_| DecodeError::BadData("cannot allocate the VM scratch file"))?,
+                ),
+            };
+            let file = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(path.path())?;
+            self.spill = Some((file, path));
+        }
+        Ok(&mut self.spill.as_mut().unwrap().0)
+    }
+
+    /// The byte offset of a block index (`block*VMBLOCK_SIZE`, `:276`/`:296`).
+    fn offset(&self, block: u32) -> u64 {
+        u64::from(block) * self.vm_block
     }
 
     fn alloc_block(&mut self) -> u32 {
@@ -212,7 +276,11 @@ impl VirtualMemory {
     /// evicted; 0 means no progress was possible (every remaining match is
     /// unstored, or too large for one block) and the caller must stop rather
     /// than spin.
-    pub(crate) fn save_to_disk(&mut self, mm: &mut MemoryManager, heap: &mut MatchHeap) -> usize {
+    pub(crate) fn save_to_disk(
+        &mut self,
+        mm: &mut MemoryManager,
+        heap: &mut MatchHeap,
+    ) -> Result<usize, DecodeError> {
         let mut buf = vec![0u8; self.vm_block as usize];
         let mut p = 0u64;
         let mut evicted = 0usize;
@@ -253,20 +321,25 @@ impl VirtualMemory {
         }
 
         if evicted == 0 {
-            return 0;
+            return Ok(0);
         }
         buf[p as usize..p as usize + 4].copy_from_slice(&0u32.to_le_bytes());
 
         let block = self.alloc_block();
-        self.store.insert(block, buf);
-        self.total_write += self.vm_block;
+        let offset = self.offset(block);
+        let vm_block = self.vm_block;
+        let file = self.spill_file()?;
+        file.seek(SeekFrom::Start(offset))?;
+        file.write_all(&buf)?;
+        self.total_write += vm_block;
+
         heap.insert(Match {
             src: u64::from(block),
             dest: min_dest,
             len: 0, // marking point
             index: INVALID_INDEX,
         });
-        evicted
+        Ok(evicted)
     }
 
     /// `restore_from_disk` (`decompress.cpp:283-305`). Returns `BadData` when
@@ -279,7 +352,7 @@ impl VirtualMemory {
         block: u64,
     ) -> Result<(), DecodeError> {
         while mm.available_space() < self.vm_block {
-            if self.save_to_disk(mm, heap) == 0 {
+            if self.save_to_disk(mm, heap)? == 0 {
                 return Err(DecodeError::BadData(
                     "cannot free enough VM space to restore a spilled block",
                 ));
@@ -287,11 +360,11 @@ impl VirtualMemory {
         }
 
         let block = block as u32;
-        let data = self
-            .store
-            .get(&block)
-            .cloned()
-            .ok_or(DecodeError::BadData("spilled block was never written"))?;
+        let offset = self.offset(block);
+        let mut data = vec![0u8; self.vm_block as usize];
+        let file = self.spill_file()?;
+        file.seek(SeekFrom::Start(offset))?;
+        file.read_exact(&mut data)?;
         self.total_read += self.vm_block;
         self.free_blocks.push(block);
 
@@ -399,7 +472,7 @@ impl MatchHeap {
 
 /// Tuning for [`decode_future_lz`]. The defaults never spill for ordinary
 /// inputs; the harness lowers `mem_limit`/`vm_block` to force the spill path.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct FutureLzOptions {
     /// `MEMORY_MANAGER` budget. The C++ derives it from `-mem` minus the I/O
     /// buffers; the value changes only spill timing.
@@ -409,6 +482,10 @@ pub struct FutureLzOptions {
     /// `maximum_save` (`-m`): matches at least this long are read back from the
     /// sink instead of held in memory. `u32::MAX` is the C++ default.
     pub maximum_save: u32,
+    /// `-vmfile=` (`vmfile_name`): where the spill goes. `None` allocates a
+    /// scratch file under `$TMPDIR`, which is what the C++ does. Either way the
+    /// file is removed when the decode ends.
+    pub vmfile: Option<PathBuf>,
 }
 
 impl Default for FutureLzOptions {
@@ -417,6 +494,7 @@ impl Default for FutureLzOptions {
             mem_limit: 1 << 30,
             vm_block: 8 << 20,
             maximum_save: u32::MAX,
+            vmfile: None,
         }
     }
 }
@@ -544,7 +622,7 @@ fn decompress_block<S: Read + Write + Seek>(
                 INVALID_INDEX // too large to hold: re-read from the sink instead
             } else {
                 while u64::from(rec.len) > mm.available_space() {
-                    if vm.save_to_disk(mm, heap) == 0 {
+                    if vm.save_to_disk(mm, heap)? == 0 {
                         return Err(DecodeError::BadData(
                             "cannot free enough memory to store a match",
                         ));
@@ -680,7 +758,7 @@ pub fn decode_future_lz<R: Read + Seek, S: Read + Write + Seek>(
     };
 
     let mut mm = MemoryManager::new(opts.mem_limit);
-    let mut vm = VirtualMemory::new(opts.vm_block);
+    let mut vm = VirtualMemory::new(opts.vm_block, opts.vmfile.clone());
     let mut heap = MatchHeap::new();
 
     let mut block_buf = vec![0u8; block_header_size];
@@ -872,6 +950,55 @@ mod tests {
         assert_eq!(heap.min_dest(), Some(9));
     }
 
+    /// The blocks have to leave RAM, or the `-mem` budget the manager enforces
+    /// is a fiction: the evicted bytes would sit in the heap regardless.
+    #[test]
+    fn the_spill_lands_in_the_named_file_and_is_removed_with_it() {
+        let path = std::env::temp_dir().join(format!("osrep-vm-test-{}", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+
+        let mut mm = MemoryManager::new(1 << 30);
+        let mut heap = MatchHeap::new();
+        let data: Vec<u8> = (0..100).map(|i| i as u8).collect();
+        heap.insert(Match {
+            src: 10,
+            dest: 1000,
+            len: 100,
+            index: mm.save(&data),
+        });
+
+        {
+            let mut vm = VirtualMemory::new(4096, Some(path.clone()));
+            assert!(!path.exists(), "nothing may be created before the first spill");
+            let evicted = vm.save_to_disk(&mut mm, &mut heap).unwrap();
+            assert!(evicted >= 1, "the match must be evicted");
+            assert!(path.exists(), "the spill must land in the named file");
+            // One whole `-vmblock` slot, at block index 0.
+            assert_eq!(std::fs::metadata(&path).unwrap().len(), 4096);
+
+            // And it comes back byte-for-byte.
+            let mark_dest = heap
+                .dests_descending()
+                .find(|d| *d != u64::MAX)
+                .expect("a marking point");
+            let mark = heap.class(mark_dest)[0];
+            vm.restore_from_disk(&mut mm, &mut heap, mark.src).unwrap();
+        }
+        // `-vmfile=` names a scratch file; the C++ removes it when the decode
+        // ends and so does this.
+        assert!(!path.exists(), "the spill file must be removed");
+
+        let mut out = vec![0u8; 100];
+        for (_, class) in heap.entries.iter() {
+            for m in class {
+                if m.index != INVALID_INDEX && m.len == 100 {
+                    mm.restore(m.index, &mut out);
+                    assert_eq!(out, data);
+                }
+            }
+        }
+    }
+
     #[test]
     fn spill_moves_matches_out_and_back() {
         let mut mm = MemoryManager::new(1 << 30);
@@ -891,9 +1018,9 @@ mod tests {
             len: 80,
             index: mm.save(&d1),
         });
-        let mut vm = VirtualMemory::new(1 << 16);
+        let mut vm = VirtualMemory::new(1 << 16, None);
 
-        let evicted = vm.save_to_disk(&mut mm, &mut heap);
+        let evicted = vm.save_to_disk(&mut mm, &mut heap).unwrap();
         assert!(evicted >= 1, "the largest-dest match must be evicted");
         // The evicted data is gone from the manager and a marking point exists.
         assert!(heap.len() >= 2); // barrier + marking point (maybe + leftover)
@@ -1030,7 +1157,7 @@ pub fn decode_v5<R: Read + Seek, S: Read + Write + Seek>(
     };
 
     let mut mm = MemoryManager::new(opts.mem_limit);
-    let mut vm = VirtualMemory::new(opts.vm_block);
+    let mut vm = VirtualMemory::new(opts.vm_block, opts.vmfile.clone());
     let mut heap = MatchHeap::new();
 
     let mut block_start = 0u64;
