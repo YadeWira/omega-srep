@@ -48,13 +48,11 @@ como herramienta de interoperabilidad.
 | hash seed (seed_size bytes; 0 si el hash no lleva clave)  |
 +-----------------------------------------------------------+
 | bloque 1 .. bloque N:                                     |
-|   header  : origsize u32, literal_bytes u32, statsize u32  |
+|   header  : literal_bytes u32, origsize u32, statsize u32  |
 |   digest  : hash_size bytes (ausente si hash_size == 0)   |
+|   records : statsize bytes, triples varint (§3)           |
 |   literales: literal_bytes bytes                          |
-+-----------------------------------------------------------+
-| listas de matches concatenadas, en orden de bloque        |
-+-----------------------------------------------------------+
-| tabla de tamaños: block_count × u32                       |
+| (cada bloque es autocontenido: sin tabla al final)        |
 +-----------------------------------------------------------+
 | meta de -dup (sólo si flags.bit0):                        |
 |   magic "DUPR" u32, version u8, 3 bytes reservados        |

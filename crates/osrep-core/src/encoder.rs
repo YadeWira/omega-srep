@@ -22,6 +22,7 @@
 use std::io::{Read, Seek, SeekFrom, Write};
 
 use crate::cdc;
+use crate::v5;
 use crate::compress as lz_compress;
 use crate::container::{self, ArchiveHeader, BlockHeader, HashInfo, Version};
 use crate::hash_table::HashTable;
@@ -66,6 +67,9 @@ pub enum Container {
     IndexLz,
     /// `f`: matches hoisted to their source block, format v3.
     FutureLz,
+    /// v5 (`docs/format-spec-v5.md`): the same self-contained block shape as
+    /// Future-LZ, with the v5 container and LEB128 records.
+    V5,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -236,6 +240,7 @@ pub fn encode<R: Read + Seek, W: Write>(
     let io_lz = mode.container == Container::IoLz;
     let index_lz = mode.container == Container::IndexLz;
     let future_lz = mode.container == Container::FutureLz;
+    let v5 = mode.container == Container::V5;
     let hash = match container::hash_by_name(&opts.hash) {
         Some(h) => h,
         None => return Err(EncodeError::UnknownHash(opts.hash.clone())),
@@ -308,7 +313,28 @@ pub fn encode<R: Read + Seek, W: Write>(
     // the v3/v4 decoder reads its match-length base from here, and 0 is what
     // makes those records carry raw lengths.
     let futurelz_base_len = if io_lz { base_len as u32 } else { 0 };
-    output.write_all(&ArchiveHeader::new(version, hash, futurelz_base_len).encode())?;
+    if v5 {
+        // `docs/format-spec-v5.md` §2: one magic, the hash pair un-biased, and
+        // the block count and input size written down instead of inferred.
+        let filesize = input.seek(SeekFrom::End(0))?;
+        input.seek(SeekFrom::Start(0))?;
+        let block_count = filesize.div_ceil(bufsize as u64) as u32;
+        output.write_all(
+            &v5::Header {
+                flags: 0,
+                hash_id: hash.num,
+                // `-hash-` is the descriptor with no digest at all, and v5
+                // encodes that as size 0 rather than reserving 16 dead bytes.
+                hash_size: if hash.name.is_empty() { 0 } else { hash.hash_size },
+                max_match: v5::DEFAULT_MAX_MATCH,
+                block_count,
+                original_size: filesize,
+            }
+            .encode(),
+        )?;
+    } else {
+        output.write_all(&ArchiveHeader::new(version, hash, futurelz_base_len).encode())?;
+    }
     output.write_all(&seed)?;
 
     // The match finder, for the modes that have one. `-m4` leaves the slice
@@ -483,10 +509,10 @@ pub fn encode<R: Read + Seek, W: Write>(
         };
         header[0..container::BLOCK_HEADER_SIZE].copy_from_slice(&bh.encode());
 
-        if future_lz {
+        if future_lz || v5 {
             // `no_writes = FUTURE_LZ` (`io.cpp:270`): the first pass writes
             // nothing at all -- the second pass re-emits the header, the match
-            // list and the literals.
+            // list and the literals. v5 keeps that self-contained block shape.
             blocks.push(CompressedBlock {
                 start: block_start,
                 end: block_start + filled as u64,
@@ -545,6 +571,7 @@ pub fn encode<R: Read + Seek, W: Write>(
             futurelz_base_len,
             future_lz,
             index_lz,
+            v5,
         )?;
     }
     Ok(compsize)

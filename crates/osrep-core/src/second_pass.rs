@@ -49,6 +49,7 @@ pub fn second_pass<R: Read + Seek, W: Write>(
     futurelz_base_len: u32,
     future_lz: bool,
     index_lz: bool,
+    v5: bool,
 ) -> Result<u64, EncodeError> {
     // 1. Collect every block's matches (`srep.cpp:863-878`).
     let mut matches: Vec<lz::LzMatch> = Vec::new();
@@ -111,8 +112,32 @@ pub fn second_pass<R: Read + Seek, W: Write>(
         }
         i = saved_i;
 
-        let stat_size = (stat.len() * 4) as u32;
-        if future_lz {
+        // v5 replaces the fixed 4-word records with raw LEB128 triples, so the
+        // list is rebuilt from the very words just emitted (which already carry
+        // raw lengths: their base is 0 and nothing is rounded).
+        let mut stat_bytes: Vec<u8> = Vec::new();
+        if v5 {
+            let mut rest = &stat[..];
+            let mut at = b.start;
+            while rest.len() >= lz::stats_per_match(round_matches) {
+                let (m, used) = lz::decode_lz_match(rest, false, false, 0, at)
+                    .map_err(|_| EncodeError::BadBlockRecord)?;
+                crate::v5::Record {
+                    lit_len: m.lit_len as u64,
+                    match_len: m.len as u64,
+                    distance: m.dest - m.src,
+                }
+                .encode(&mut stat_bytes);
+                at += m.lit_len as u64 + m.len as u64;
+                rest = &rest[used..];
+            }
+        }
+        let stat_size = if v5 {
+            stat_bytes.len() as u32
+        } else {
+            (stat.len() * 4) as u32
+        };
+        if future_lz || v5 {
             // `block->header[2] = stat_size` (`srep.cpp:934`) -- the first pass
             // left it zero because it wrote nothing.
             let mut header = b.header.clone();
@@ -121,15 +146,20 @@ pub fn second_pass<R: Read + Seek, W: Write>(
             compsize += header.len() as u64;
         }
 
-        for word in &stat {
-            output.write_all(&word.to_le_bytes())?;
+        if v5 {
+            output.write_all(&stat_bytes)?;
+            compsize += stat_bytes.len() as u64;
+        } else {
+            for word in &stat {
+                output.write_all(&word.to_le_bytes())?;
+            }
+            compsize += stat.len() as u64 * 4;
         }
-        compsize += stat.len() as u64 * 4;
 
         statsize_table.push(stat_size);
         total_stat_size += stat_size as u64;
 
-        if future_lz {
+        if future_lz || v5 {
             // Copy the literal bytes the block's own (first pass) records leave
             // uncovered (`srep.cpp:945-961`).
             block_buf.resize(b.size, 0);
@@ -161,6 +191,19 @@ pub fn second_pass<R: Read + Seek, W: Write>(
 
     if index_lz {
         let footer = IndexFooter::new(total_stat_size, statsize_table);
+        let bytes = footer.encode();
+        compsize += bytes.len() as u64;
+        output.write_all(&bytes)?;
+    }
+    if v5 {
+        let footer = crate::v5::Footer {
+            block_count: blocks.len() as u32,
+            stat_size: total_stat_size,
+            // The `-dup` meta is located by arithmetic in v5; until the CLI
+            // writes it there is none.
+            meta_offset: 0,
+            meta_size: 0,
+        };
         let bytes = footer.encode();
         compsize += bytes.len() as u64;
         output.write_all(&bytes)?;

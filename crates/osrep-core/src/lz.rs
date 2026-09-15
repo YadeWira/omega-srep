@@ -27,6 +27,9 @@ pub enum EncodeError {
     /// `match_len < BASE_LEN`: the record shape cannot encode a match this
     /// short.
     MatchTooSmall { match_len: u32, base_len: u32 },
+    /// The input-match list (`aux_statbuf`) did not decode. Unreachable for a
+    /// list the driver just built; the C++ would abort on it.
+    BadInputMatch,
 }
 
 /// `ENCODE_LZ_MATCH` (`srep.cpp:116-122`): append one record to `out`.

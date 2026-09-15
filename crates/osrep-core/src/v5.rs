@@ -28,6 +28,10 @@ pub const BLOCK_HEADER_SIZE: usize = 12;
 pub const FLAG_HAS_DUP: u8 = 1;
 /// The only bits `flags` may carry today.
 pub const KNOWN_FLAGS: u8 = FLAG_HAS_DUP;
+/// The C++'s effective default `maximum_save`: `vm_block - 24` with the default
+/// 8 MiB `-vmblock` (`srep.cpp:288,459`). v4 never records it, so encoder and
+/// decoder have to agree through the shared default; v5 writes it down.
+pub const DEFAULT_MAX_MATCH: u32 = 8 * 1024 * 1024 - 24;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum V5Error {
@@ -245,25 +249,41 @@ pub fn decode_records(list: &[u8]) -> Result<Vec<Record>, V5Error> {
 
 // ---------------------------------------------------------- reader --
 
-/// What a decoded v5 archive yields: the original bytes plus, per block, the
-/// match list it carried (for the stream-equivalence gate).
+/// One block of a parsed archive, borrowed from the input.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Decoded {
-    pub output: Vec<u8>,
-    pub matches: Vec<Vec<Record>>,
-    pub header: Header,
+pub struct BlockView<'a> {
+    pub literal_bytes: u32,
+    pub origsize: u32,
+    pub statsize: u32,
+    pub digest: &'a [u8],
+    pub literals: &'a [u8],
+    pub records: Vec<Record>,
 }
 
-/// Decode a whole v5 archive held in memory.
+/// A v5 archive taken apart, without reconstructing the data.
 ///
-/// The output is a plain `Vec`, so a match may reach back into any byte written
-/// before it -- the cross-block references the format allows. That is what the
-/// C++ does through a `Read + Write + Seek` file; the port keeps the same
-/// semantics in memory, which is enough for the conformance gate and the
-/// matrix sizes it uses.
-pub fn decode(bytes: &[u8]) -> Result<Decoded, V5Error> {
+/// Reconstruction is deliberately *not* done here: a v5 block's records are
+/// anchored at their **source** (`src = block cursor + lit_len`,
+/// `dest = src + distance`), exactly like v3/v4, so the destination of a match
+/// can lie far ahead of the block that carries it. That is what
+/// `future_lz.rs` implements with the VM, and a plain in-order pass over the
+/// bytes cannot honour it. The v5 front-end for that decoder arrives with the
+/// CLI; what this checks is the container and the record syntax.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Parsed<'a> {
+    pub header: Header,
+    pub seed: &'a [u8],
+    pub blocks: Vec<BlockView<'a>>,
+    pub footer: Footer,
+}
+
+/// Take a v5 archive apart, validating every structure it can without
+/// reconstructing: the three CRCs, the magic numbers, the flags, the hash
+/// pair, the block count agreement, and every varint.
+pub fn parse(bytes: &[u8]) -> Result<Parsed<'_>, V5Error> {
     let header = Header::decode(bytes)?;
     let hash = header.hash()?;
+    let hash_size = header.hash_size as usize;
 
     let mut pos = HEADER_SIZE;
     let seed_size = hash.seed_size as usize;
@@ -273,110 +293,58 @@ pub fn decode(bytes: &[u8]) -> Result<Decoded, V5Error> {
     let seed = &bytes[pos..pos + seed_size];
     pos += seed_size;
 
-    let block_count = header.block_count as usize;
-    let mut block_headers: Vec<(u32, u32, u32)> = Vec::with_capacity(block_count);
-    let mut literals: Vec<&[u8]> = Vec::with_capacity(block_count);
-    let hash_size = header.hash_size as usize;
-    for _ in 0..block_count {
+    let mut blocks: Vec<BlockView> = Vec::with_capacity(header.block_count as usize);
+    let mut total_stat: u64 = 0;
+    for block in 0..header.block_count as usize {
         if bytes.len() < pos + BLOCK_HEADER_SIZE + hash_size {
             return Err(V5Error::Truncated);
         }
-        let origsize = u32::from_le_bytes(bytes[pos..pos + 4].try_into().unwrap());
-        let literal_bytes = u32::from_le_bytes(bytes[pos + 4..pos + 8].try_into().unwrap());
+        // The block header keeps the C++'s field order (`srep.cpp:743-747`):
+        // literal bytes, block size, match-list bytes.
+        let literal_bytes = u32::from_le_bytes(bytes[pos..pos + 4].try_into().unwrap());
+        let origsize = u32::from_le_bytes(bytes[pos + 4..pos + 8].try_into().unwrap());
         let statsize = u32::from_le_bytes(bytes[pos + 8..pos + 12].try_into().unwrap());
-        let digest_at = pos + BLOCK_HEADER_SIZE;
-        let digest = &bytes[digest_at..digest_at + hash_size];
-        let lit_at = digest_at + hash_size;
-        if bytes.len() < lit_at + literal_bytes as usize {
+        pos += BLOCK_HEADER_SIZE;
+        if bytes.len() < pos + hash_size + statsize as usize + literal_bytes as usize {
             return Err(V5Error::Truncated);
         }
-        literals.push(&bytes[lit_at..lit_at + literal_bytes as usize]);
-        block_headers.push((origsize, literal_bytes, statsize));
-        pos = lit_at + literal_bytes as usize;
-
-        // Verify the digest here so a corrupt block is caught before its
-        // matches are replayed.
-        if hash_size > 0 {
-            if !digest_matches(hash, seed, literals.last().unwrap(), digest) {
-                return Err(V5Error::BadDigest {
-                    block: block_headers.len() - 1,
-                });
-            }
-        }
+        let digest = &bytes[pos..pos + hash_size];
+        pos += hash_size;
+        // A self-contained block: the records, then the literals it leaves.
+        let records = decode_records(&bytes[pos..pos + statsize as usize])?;
+        pos += statsize as usize;
+        let literals = &bytes[pos..pos + literal_bytes as usize];
+        pos += literal_bytes as usize;
+        total_stat += statsize as u64;
+        let _ = block;
+        blocks.push(BlockView {
+            literal_bytes,
+            origsize,
+            statsize,
+            digest,
+            literals,
+            records,
+        });
     }
 
-    // The match lists and the table, then the footer.
-    if bytes.len() < pos + FOOTER_SIZE {
-        return Err(V5Error::Truncated);
+    let footer = Footer::decode(&bytes[pos..])?;
+    if pos + FOOTER_SIZE != bytes.len() {
+        return Err(V5Error::BadCrc("footer"));
     }
-    let footer = Footer::decode(&bytes[bytes.len() - FOOTER_SIZE..])?;
-    if footer.block_count != header.block_count {
+    if footer.block_count != header.block_count || footer.stat_size != total_stat {
         return Err(V5Error::BlockCountMismatch);
     }
-
-    // The lists sit just before the table; the table just before the footer.
-    let table_len = block_count * 4;
-    let lists_end = bytes.len() - FOOTER_SIZE - table_len;
-    let mut total_stat: u64 = 0;
-    for (_, _, statsize) in &block_headers {
-        total_stat += *statsize as u64;
-    }
-    if total_stat != footer.stat_size {
-        return Err(V5Error::BlockCountMismatch);
-    }
-    if lists_end < total_stat as usize {
-        return Err(V5Error::Truncated);
-    }
-    let lists_start = lists_end - total_stat as usize;
-
-    // Rebuild: literals and matches interleave per block, in order.
-    let mut output: Vec<u8> = Vec::with_capacity(header.original_size as usize);
-    let mut matches: Vec<Vec<Record>> = Vec::with_capacity(block_count);
-    let mut list_pos = lists_start;
-    for (block, (origsize, _literal_bytes, statsize)) in block_headers.iter().enumerate() {
-        let list = &bytes[list_pos..list_pos + *statsize as usize];
-        list_pos += *statsize as usize;
-        let records = decode_records(list)?;
-
-        let mut lit_pos = 0usize;
-        for r in &records {
-            let lit = r.lit_len as usize;
-            if lit > literals[block].len() - lit_pos {
-                return Err(V5Error::BadBlock);
-            }
-            output.extend_from_slice(&literals[block][lit_pos..lit_pos + lit]);
-            lit_pos += lit;
-            let dest = output.len() as u64;
-            if r.distance > dest || r.match_len > u64::MAX / 2 {
-                return Err(V5Error::BadBlock);
-            }
-            let src = (dest - r.distance) as usize;
-            let len = r.match_len as usize;
-            // A match may overlap its own output (LZ77 replication), so this is
-            // a forward byte copy, not a `copy_within`.
-            for i in 0..len {
-                let b = output[src + i];
-                output.push(b);
-            }
-        }
-        output.extend_from_slice(&literals[block][lit_pos..]);
-        let produced = output.len() as u64;
-        let _ = origsize;
-        let _ = produced;
-        matches.push(records);
-    }
-
-    if output.len() as u64 != header.original_size {
-        return Err(V5Error::BlockCountMismatch);
-    }
-    Ok(Decoded {
-        output,
-        matches,
+    Ok(Parsed {
         header,
+        seed,
+        blocks,
+        footer,
     })
 }
 
-/// `hash_func(hash_obj, buf, size, out)` over one block.
+/// `hash_func(hash_obj, buf, size, out)` over one block. The reconstruction
+/// step (CLI) verifies each block with it.
+#[allow(dead_code)]
 fn digest_matches(hash: &'static HashInfo, seed: &[u8], data: &[u8], expected: &[u8]) -> bool {
     match hash.name {
         "vmac" => {
@@ -442,12 +410,10 @@ mod tests {
             original_size: 16,
         };
         let mut out = header.encode().to_vec();
-        // block header: origsize, literal_bytes, statsize
-        out.extend_from_slice(&16u32.to_le_bytes());
+        // block header: literal_bytes, origsize, statsize
         out.extend_from_slice(&8u32.to_le_bytes());
+        out.extend_from_slice(&16u32.to_le_bytes());
         out.extend_from_slice(&3u32.to_le_bytes());
-        // no digest (hash_size == 0), then the literals
-        out.extend_from_slice(b"abcdefgh");
         // the match list: lit_len=8, match_len=8, distance=8
         Record {
             lit_len: 8,
@@ -455,8 +421,8 @@ mod tests {
             distance: 8,
         }
         .encode(&mut out);
-        // block-size table, then the footer
-        out.extend_from_slice(&3u32.to_le_bytes());
+        // ... then the literals, then the footer (no tail table in v5)
+        out.extend_from_slice(b"abcdefgh");
         out.extend_from_slice(
             &Footer {
                 block_count: 1,
@@ -503,12 +469,12 @@ mod tests {
     fn header_and_footer_reject_a_flipped_bit() {
         let mut bytes = synthetic();
         bytes[20] ^= 0x01; // inside the header's original_size
-        assert_eq!(decode(&bytes), Err(V5Error::BadCrc("header")));
+        assert!(matches!(parse(&bytes), Err(V5Error::BadCrc("header"))));
 
         let mut bytes = synthetic();
         let n = bytes.len();
         bytes[n - 12] ^= 0x01; // inside the footer's stat_size
-        assert_eq!(decode(&bytes), Err(V5Error::BadCrc("footer")));
+        assert!(matches!(parse(&bytes), Err(V5Error::BadCrc("footer"))));
     }
 
     #[test]
@@ -545,36 +511,44 @@ mod tests {
         let crc = crc32c_of(&b[..24]);
         b[24..28].copy_from_slice(&crc.to_le_bytes());
         assert_eq!(Header::decode(&b).unwrap().hash_size, 16);
-        assert_eq!(
-            decode(&b),
+        assert!(matches!(
+            parse(&b),
             Err(V5Error::BadHash { id: 1, size: 16 })
-        );
+        ));
     }
 
     #[test]
-    fn decodes_a_synthetic_block() {
-        let d = decode(&synthetic()).unwrap();
-        assert_eq!(d.output, b"abcdefghabcdefgh");
+    fn parses_a_synthetic_block() {
+        let bytes = synthetic();
+        let p = parse(&bytes).unwrap();
+        assert_eq!(p.header.original_size, 16);
+        assert_eq!(p.blocks.len(), 1);
+        let b = &p.blocks[0];
+        assert_eq!(b.literals, b"abcdefgh");
+        assert_eq!(b.origsize, 16);
+        assert_eq!(b.literal_bytes, 8);
+        assert_eq!(b.statsize, 3);
+        assert!(b.digest.is_empty()); // hash_size == 0 means no digest at all
         assert_eq!(
-            d.matches,
-            vec![vec![Record {
+            b.records,
+            vec![Record {
                 lit_len: 8,
                 match_len: 8,
                 distance: 8
-            }]]
+            }]
         );
-        assert_eq!(d.header.original_size, 16);
+        assert_eq!(p.footer.stat_size, 3);
     }
 
     #[test]
-    fn rejects_a_distance_reaching_before_the_output() {
+    fn rejects_a_record_list_that_runs_past_its_size() {
         let mut bytes = synthetic();
-        // The list is the 3 bytes before the table and footer.
-        let list_at = bytes.len() - FOOTER_SIZE - 4 - 3;
+        // The list is the 3 bytes before the literals and the footer.
+        let list_at = bytes.len() - FOOTER_SIZE - 8 - 3;
         assert_eq!(bytes[list_at], 8);
-        bytes[list_at + 2] = 100; // distance 100 > the 16 bytes written
-        // The lists are not covered by a CRC, so nothing else has to change.
-        assert_eq!(decode(&bytes), Err(V5Error::BadBlock));
+        // A continuation bit with nothing after it inside the list.
+        bytes[list_at + 2] = 0x80;
+        assert_eq!(parse(&bytes), Err(V5Error::BadVarint));
     }
 
     #[test]
@@ -583,10 +557,9 @@ mod tests {
         bytes[12] = 2; // header.block_count = 2
         let crc = crc32c_of(&bytes[..24]);
         bytes[24..28].copy_from_slice(&crc.to_le_bytes());
-        // The reader runs off the end of the data before it reaches the footer.
-        assert!(matches!(
-            decode(&bytes),
-            Err(V5Error::Truncated) | Err(V5Error::BlockCountMismatch)
-        ));
+        // The reader now expects a second block where the footer is. Which
+        // error fires depends on how the footer's bytes parse; what matters is
+        // that it is rejected rather than silently truncated.
+        assert!(parse(&bytes).is_err());
     }
 }
