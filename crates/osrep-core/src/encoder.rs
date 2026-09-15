@@ -26,6 +26,7 @@ use crate::container::{self, ArchiveHeader, BlockHeader, HashInfo, Version};
 use crate::hash_table::HashTable;
 use crate::inmem::DictionaryCompressor;
 use crate::lz;
+use crate::second_pass::{self, CompressedBlock};
 use crate::util::rounddown_to_power_of_two;
 use crate::{hashes, hashes_keyed, vmac};
 
@@ -36,19 +37,36 @@ pub const DEFAULT_DICTSIZE: u64 = 512 * 1024 * 1024;
 /// `BUFFERS` (`io.cpp:90`): the ring carries two extra blocks of headroom.
 const BUFFERS: usize = 2;
 
-/// Which per-block compressor runs. These are the ones the single-pass I/O-LZ
-/// path can drive; `-m3` and `-m1`/`-m2` land with 4c-4/4c-6.
+/// Which per-block compressor runs (`-m0`/`-m3`/`-m4`/`-m5`); `-m1`/`-m2`
+/// (CDC) land with 4c-6.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Mode {
+pub enum Kind {
     /// `-m0`: the in-memory REP pass, no hash table.
     Inmem,
     /// `-m4`: fixed-size chunks, matches verified by rereading the input.
     Fixed,
     /// `-m5`: `-m4` with exhaustive search and the slice filter.
     FixedExhaustive,
-    /// `-m3`: fixed chunks with a precomputed 20-byte digest per chunk, and
-    /// round matches (3-word records, format v1) when there is no dictionary.
+    /// `-m3`: fixed chunks with a precomputed 20-byte digest per chunk.
     Digest,
+}
+
+/// How the match lists reach the archive, i.e. the `f`/`o` suffix
+/// (`srep.cpp:693`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Container {
+    /// No suffix (`o`): per-block match lists inline, format v1/v2.
+    IoLz,
+    /// No suffix at all: one match list for all blocks at the tail, format v4.
+    IndexLz,
+    /// `f`: matches hoisted to their source block, format v3.
+    FutureLz,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Mode {
+    pub kind: Kind,
+    pub container: Container,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -202,12 +220,16 @@ pub fn fill_seed_from(out: &mut [u8], seed64: u64) {
 /// Returns the compressed size. `opts.dictsize` is the `-d` value (0 = no
 /// in-memory pass); the caller applies the `-m0` default itself if it wants
 /// one.
-pub fn encode_io_lz<R: Read + Seek, W: Write>(
+pub fn encode<R: Read + Seek, W: Write>(
     input: &mut R,
     output: &mut W,
     opts: &EncodeOptions,
     mode: Mode,
 ) -> Result<u64, EncodeError> {
+    let kind = mode.kind;
+    let io_lz = mode.container == Container::IoLz;
+    let index_lz = mode.container == Container::IndexLz;
+    let future_lz = mode.container == Container::FutureLz;
     let hash = match container::hash_by_name(&opts.hash) {
         Some(h) => h,
         None => return Err(EncodeError::UnknownHash(opts.hash.clone())),
@@ -221,9 +243,9 @@ pub fn encode_io_lz<R: Read + Seek, W: Write>(
     let l = if opts.l != 0 {
         opts.l
     } else {
-        match mode {
-            Mode::Inmem | Mode::Fixed | Mode::Digest => min_match,
-            Mode::FixedExhaustive => {
+        match kind {
+            Kind::Inmem | Kind::Fixed | Kind::Digest => min_match,
+            Kind::FixedExhaustive => {
                 (rounddown_to_power_of_two(min_match as u64 + 1) / 2) as usize
             }
         }
@@ -243,7 +265,7 @@ pub fn encode_io_lz<R: Read + Seek, W: Write>(
 
     // `ROUND_MATCHES = (method == -m3) && dictsize == 0` (`srep.cpp:443`):
     // `-m3o` writes format v1 with 3-word records, `-m3o -d` falls back to v2.
-    let round_matches = mode == Mode::Digest && opts.dictsize == 0;
+    let round_matches = kind == Kind::Digest && opts.dictsize == 0;
 
     // The archive seed (`srep.cpp:643-653`); without `--seed=N` the C++ draws
     // it from Fortuna, which is not reproducible, so the port refuses.
@@ -258,20 +280,32 @@ pub fn encode_io_lz<R: Read + Seek, W: Write>(
     let mut hasher = BlockHasher::new(hash, &seed);
 
     let header_size = container::BLOCK_HEADER_SIZE + hash.hash_size as usize;
-    let version = if round_matches { Version::V1 } else { Version::V2 };
-    output.write_all(&ArchiveHeader::new(version, hash, base_len as u32).encode())?;
+    let version = if index_lz {
+        Version::V4
+    } else if future_lz {
+        Version::V3
+    } else if round_matches {
+        Version::V1
+    } else {
+        Version::V2
+    };
+    // `header[3] = FUTURELZ_BASE_LEN = IO_LZ? BASE_LEN : 0` (`srep.cpp:458`):
+    // the v3/v4 decoder reads its match-length base from here, and 0 is what
+    // makes those records carry raw lengths.
+    let futurelz_base_len = if io_lz { base_len as u32 } else { 0 };
+    output.write_all(&ArchiveHeader::new(version, hash, futurelz_base_len).encode())?;
     output.write_all(&seed)?;
 
     // The match finder, for the modes that have one. `-m4` leaves the slice
     // filter empty (its `check_slices` is <= 0), `-m5` fills it.
-    let mut table = match mode {
-        Mode::Inmem => None,
-        Mode::Fixed | Mode::FixedExhaustive | Mode::Digest => {
+    let mut table = match kind {
+        Kind::Inmem => None,
+        Kind::Fixed | Kind::FixedExhaustive | Kind::Digest => {
             let filesize = input.seek(SeekFrom::End(0))?;
             input.seek(SeekFrom::Start(0))?;
             // `io_accelerator` defaults to 1 (srep.cpp:291). `-m3` is the one
             // mode that precomputes and compares per-chunk digests.
-            let digests = mode == Mode::Digest;
+            let digests = kind == Kind::Digest;
             Some(HashTable::new(
                 round_matches, digests, digests, l, min_match, 1, filesize,
             ))
@@ -301,6 +335,8 @@ pub fn encode_io_lz<R: Read + Seek, W: Write>(
     // `buf_offset` is a BYTE offset into the ring, cycling by `bufsize` exactly
     // like the C++'s `buf_offset = (buf_offset + bufsize) % dictsize`
     // (io.cpp:250).
+    // Blocks captured for the second pass (`COMPRESSED_BLOCK`), in file order.
+    let mut blocks: Vec<CompressedBlock> = Vec::new();
     let mut buf_offset = 0usize;
     let mut next_pos: u64 = 0;
     let mut filled = read_block_at(input, next_pos, &mut dict[buf_offset..buf_offset + bufsize])?;
@@ -328,8 +364,8 @@ pub fn encode_io_lz<R: Read + Seek, W: Write>(
 
         let mut stat: Vec<u32> = Vec::new();
         let mut literal_bytes = 0u32;
-        match mode {
-            Mode::Inmem => {
+        match kind {
+            Kind::Inmem => {
                 // `-m0`: the in-memory pass *is* the compressor; no fence and
                 // no second compressor (srep.cpp:726-727).
                 let mut hashptr = Vec::new();
@@ -344,7 +380,7 @@ pub fn encode_io_lz<R: Read + Seek, W: Write>(
                     &mut stat,
                 )?;
             }
-            Mode::Fixed | Mode::FixedExhaustive | Mode::Digest => {
+            Kind::Fixed | Kind::FixedExhaustive | Kind::Digest => {
                 // `srep.cpp:722-724`: the in-memory pass (only with `-d`)
                 // writes into the aux list, then the fence `len+1 / BASE_LEN /
                 // BASE_LEN` is appended; its match starts past the block, so
@@ -395,36 +431,53 @@ pub fn encode_io_lz<R: Read + Seek, W: Write>(
         let bh = BlockHeader {
             literal_bytes,
             origsize: filled as u32,
-            statsize: (stat.len() * 4) as u32,
+            // `header[2] = (INDEX_LZ? 0 : stat_size)` (`srep.cpp:747`).
+            statsize: if index_lz { 0 } else { (stat.len() * 4) as u32 },
         };
         header[0..container::BLOCK_HEADER_SIZE].copy_from_slice(&bh.encode());
 
-        // `save_data` (`io.cpp:282-307`): header, whole match list, then the
-        // literal runs the records interleave with.
-        output.write_all(&header)?;
-        for word in &stat {
-            output.write_all(&word.to_le_bytes())?;
-        }
-        compsize += (header.len() + stat.len() * 4) as u64;
-
-        let mut in_pos = 0usize;
-        let mut rest = &stat[..];
-        while rest.len() >= lz::stats_per_match(round_matches) {
-            let (m, used) =
-                lz::decode_lz_match(rest, round_matches, false, base_len as u32, 0)?;
-            let lit = m.lit_len as usize;
-            if lit > filled - in_pos {
-                return Err(EncodeError::BadBlockRecord);
+        if future_lz {
+            // `no_writes = FUTURE_LZ` (`io.cpp:270`): the first pass writes
+            // nothing at all -- the second pass re-emits the header, the match
+            // list and the literals.
+            blocks.push(CompressedBlock {
+                start: block_start,
+                end: block_start + filled as u64,
+                size: filled,
+                header: header.clone(),
+                stat: stat.clone(),
+            });
+        } else {
+            // `save_data` (`io.cpp:282-307`): the header, the match list (which
+            // is empty for Index-LZ) and then the literal runs the records
+            // interleave with.
+            output.write_all(&header)?;
+            compsize += header.len() as u64;
+            if !index_lz {
+                for word in &stat {
+                    output.write_all(&word.to_le_bytes())?;
+                }
+                compsize += stat.len() as u64 * 4;
             }
-            output.write_all(&dict[buf_offset + in_pos..buf_offset + in_pos + lit])?;
-            in_pos += lit + m.len as usize;
-            if in_pos > filled {
-                return Err(EncodeError::BadBlockRecord);
+            compsize += write_literals(
+                &dict,
+                buf_offset,
+                filled,
+                &stat,
+                round_matches,
+                base_len as u32,
+                output,
+            )?;
+            if index_lz {
+                blocks.push(CompressedBlock {
+                    start: block_start,
+                    end: block_start + filled as u64,
+                    size: filled,
+                    header: header.clone(),
+                    stat: stat.clone(),
+                });
             }
-            rest = &rest[used..];
         }
-        output.write_all(&dict[buf_offset + in_pos..buf_offset + filled])?;
-        compsize += (filled - in_pos) as u64;
 
         // Advance; a zero read (EOF) ends the loop, like the background
         // thread's step 4.
@@ -433,7 +486,52 @@ pub fn encode_io_lz<R: Read + Seek, W: Write>(
         buf_offset = next_offset;
         filled = next_filled;
     }
+
+    // Future-LZ and Index-LZ re-emit every block's match list (`srep.cpp:820`).
+    if !io_lz {
+        compsize += second_pass::second_pass(
+            &blocks,
+            input,
+            output,
+            round_matches,
+            base_len as u32,
+            futurelz_base_len,
+            future_lz,
+            index_lz,
+        )?;
+    }
     Ok(compsize)
+}
+
+/// The literal runs `save_data` writes between the records, in the block's
+/// record order. Returns the number of literal bytes written.
+#[allow(clippy::too_many_arguments)]
+fn write_literals<W: Write>(
+    dict: &[u8],
+    buf_offset: usize,
+    filled: usize,
+    stat: &[u32],
+    round_matches: bool,
+    base_len: u32,
+    output: &mut W,
+) -> Result<u64, EncodeError> {
+    let mut in_pos = 0usize;
+    let mut rest = stat;
+    while rest.len() >= lz::stats_per_match(round_matches) {
+        let (m, used) = lz::decode_lz_match(rest, round_matches, false, base_len, 0)?;
+        let lit = m.lit_len as usize;
+        if lit > filled - in_pos {
+            return Err(EncodeError::BadBlockRecord);
+        }
+        output.write_all(&dict[buf_offset + in_pos..buf_offset + in_pos + lit])?;
+        in_pos += lit + m.len as usize;
+        if in_pos > filled {
+            return Err(EncodeError::BadBlockRecord);
+        }
+        rest = &rest[used..];
+    }
+    output.write_all(&dict[buf_offset + in_pos..buf_offset + filled])?;
+    Ok((filled - in_pos) as u64)
 }
 
 /// `roundUp` (`Common.h:692`) for the base the ring uses.

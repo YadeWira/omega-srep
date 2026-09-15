@@ -119,6 +119,20 @@ for input in tests/corpus/mixed.bin tests/corpus/text.bin tests/corpus/random.bi
     enc "$input" -m3o m3o -l1024
 done
 
+say "-m0/-m3/-m4/-m5 (Index-LZ, v4) and the f suffix (Future-LZ, v3)"
+# These are the modes that go through the second pass: the first pass leaves
+# the match lists in its own record shape and the tail is rebuilt from them.
+for input in tests/corpus/mixed.bin tests/corpus/text.bin tests/corpus/random.bin \
+             "$TMP/dup4m.bin" "$TMP/dup20m.bin"; do
+    enc "$input" -m0 m0 -d16mb
+    enc "$input" -m3 m3
+    enc "$input" -m4 m4
+    enc "$input" -m5 m5
+    enc "$input" -m3f m3f
+    enc "$input" -m4f m4f
+    enc "$input" -m5f m5f
+done
+
 # Degenerate inputs and the C++'s own 512 MiB dictionary default.
 enc "$TMP/empty.bin" -m0o m0o -d16mb
 enc "$TMP/tiny.bin"  -m0o m0o -d16mb
@@ -129,10 +143,10 @@ say "encode_conformance: passed=$pass"
 # --- not ported yet -------------------------------------------------- #
 
 set +e
-"$RS" m4 -d16mb --seed=7 "$TMP/dup4m.bin" "$TMP/rs.osr" >/dev/null 2>&1
+"$RS" m1o -d16mb --seed=7 "$TMP/dup4m.bin" "$TMP/rs.osr" >/dev/null 2>&1
 rc=$?
 set -e
 if [ "$rc" -ne 3 ]; then
-    fail "expected 'm4: not ported' (rc=3), got rc=$rc"
+    fail "expected 'm1o: not ported' (rc=3), got rc=$rc"
 fi
 say "unported modes report rc=3 as expected"

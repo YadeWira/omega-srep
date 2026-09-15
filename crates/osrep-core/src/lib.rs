@@ -18,5 +18,6 @@ pub mod hashes_keyed;
 pub mod inmem;
 pub mod lz;
 pub mod rolling;
+pub mod second_pass;
 pub mod util;
 pub mod vmac;

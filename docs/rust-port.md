@@ -107,7 +107,7 @@ the input. Truncated archives must error, never panic.
 | **3a** | Container framing: archive header, hash-descriptor table, version predicates, block header, v4 index footer + block-size table, ODUP trailer — read v1–v4 and write v4, byte-exact in both directions. | **done** |
 | **4a** | The I/O-LZ decoder (format v1/v2): record decoding, the literal/match interleaving, both match sources (read back from the output sink, and LZ77 replication within the block, which is `memcpy_lz_match`'s forward byte copy and NOT memmove), and per-block digest verification through the already-ported hashes. | **done** |
 | **4b** | `MEMORY_MANAGER`, the VM spill manager and the Future/Index-LZ decoder (v3/v4): both are driven only by `decompress_FUTURE_LZ`, so they port together rather than standing alone. | **done** |
-| **4c** | The encoder: hash-table match finder, `compress` (-m3/-m4/-m5 + accelerator), CDC (-m1/-m2), in-memory REP (-m0) and the Future/Index-LZ second pass. Gate: byte-identical v4 archives across the whole matrix. | **in progress** — 4c-0..4 done: rolling hashes, `-m0o`, `-m4o`/`-m5o`, `-m3o` byte-identical (115/115 in `tests/encode_conformance.sh`) |
+| **4c** | The encoder: hash-table match finder, `compress` (-m3/-m4/-m5 + accelerator), CDC (-m1/-m2), in-memory REP (-m0) and the Future/Index-LZ second pass. Gate: byte-identical v4 archives across the whole matrix. | **in progress** — everything but CDC: `-m0/-m3/-m4/-m5` and the `o`/`f` suffixes are byte-identical (150/150 in `tests/encode_conformance.sh`); `-m1`/`-m2` land with 4c-6 |
 | **5** | v5 format, CLI, retire the C++. | not started |
 
 ### Phase 4c notes worth keeping
@@ -154,6 +154,23 @@ the input. Truncated archives must error, never panic.
   identical *decisions*, so the port pins it to zeroes. `VDigest::compute`
   writes `vhash1` at offset 0 and `vhash2` at offset 4, so the digest is
   `v1[0..4] ++ v2[0..16]` — the first tag's last 12 bytes are overwritten.
+
+* **v4 writes 4-word records with base 0, even for `-m3`.** `ROUND_MATCHES`
+  only shapes the *first* pass's intra-block records, which are temporary; the
+  second pass always re-encodes with `FUTURELZ_BASE_LEN`, and `header[3]`
+  (which the decoder uses as the record base) is `IO_LZ ? BASE_LEN : 0`. That
+  is why `-m3`'s v4 archive has `header[3] = 0` and 16-byte records while
+  `-m3o`'s v1 archive has `BASE_LEN` and 12-byte ones.
+* **What each container writes during the first pass**: I/O-LZ writes
+  `header → match list → literals` inline; Index-LZ writes `header` (with
+  `statsize = 0`) `→ literals` and leaves every match list to the tail; Future-LZ
+  writes nothing at all (`no_writes = FUTURE_LZ`, `io.cpp:270`) and the second
+  pass re-emits `header → match list → literals` per block.
+* **The second pass re-emits with a trim**: a match is clipped to
+  `[max(src, block.start), min(dest end, block.end)]` and skipped entirely if
+  it belongs to an earlier block; `saved_i` is what lets the next block
+  re-examine those. `lz_match_heap`/`ram` in the C++ only feed the progress
+  report and are not modelled.
 
 ### Phase 4c pre-port experiments (run before writing any Rust)
 

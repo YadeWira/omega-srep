@@ -40,6 +40,29 @@ fn parse_mem(s: &str) -> u64 {
     digits.parse::<u64>().unwrap_or(0).saturating_mul(mul)
 }
 
+/// `-m<0|3|4|5>[f|o]` -> the compressor and the container shape. Anything else
+/// is "not ported".
+fn parse_mode(s: &str) -> Option<encoder::Mode> {
+    let b = s.as_bytes();
+    if b.len() < 2 || b[0] != b'm' {
+        return None;
+    }
+    let kind = match b[1] {
+        b'0' => encoder::Kind::Inmem,
+        b'3' => encoder::Kind::Digest,
+        b'4' => encoder::Kind::Fixed,
+        b'5' => encoder::Kind::FixedExhaustive,
+        _ => return None,
+    };
+    let container = match &s[2..] {
+        "o" => encoder::Container::IoLz,
+        "" => encoder::Container::IndexLz,
+        "f" => encoder::Container::FutureLz,
+        _ => return None,
+    };
+    Some(encoder::Mode { kind, container })
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
@@ -115,19 +138,15 @@ fn main() -> ExitCode {
     };
     let mut output = output;
 
-    let result = match mode.as_str() {
-        "m0o" => encoder::encode_io_lz(&mut input, &mut output, &opts, encoder::Mode::Inmem).map(|_| ()),
-        "m3o" => encoder::encode_io_lz(&mut input, &mut output, &opts, encoder::Mode::Digest).map(|_| ()),
-        "m4o" => encoder::encode_io_lz(&mut input, &mut output, &opts, encoder::Mode::Fixed).map(|_| ()),
-        "m5o" => {
-            encoder::encode_io_lz(&mut input, &mut output, &opts, encoder::Mode::FixedExhaustive)
-                .map(|_| ())
-        }
-        other => {
-            eprintln!("{other}: not ported to Rust yet");
+    let parsed = match parse_mode(&mode) {
+        Some(m) => m,
+        None => {
+            eprintln!("{mode}: not ported to Rust yet");
             return ExitCode::from(NOT_PORTED);
         }
     };
+
+    let result = encoder::encode(&mut input, &mut output, &opts, parsed).map(|_| ());
 
     match result {
         Ok(()) => ExitCode::SUCCESS,
