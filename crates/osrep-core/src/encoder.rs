@@ -46,6 +46,9 @@ pub enum Mode {
     Fixed,
     /// `-m5`: `-m4` with exhaustive search and the slice filter.
     FixedExhaustive,
+    /// `-m3`: fixed chunks with a precomputed 20-byte digest per chunk, and
+    /// round matches (3-word records, format v1) when there is no dictionary.
+    Digest,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -219,7 +222,7 @@ pub fn encode_io_lz<R: Read + Seek, W: Write>(
         opts.l
     } else {
         match mode {
-            Mode::Inmem | Mode::Fixed => min_match,
+            Mode::Inmem | Mode::Fixed | Mode::Digest => min_match,
             Mode::FixedExhaustive => {
                 (rounddown_to_power_of_two(min_match as u64 + 1) / 2) as usize
             }
@@ -238,6 +241,10 @@ pub fn encode_io_lz<R: Read + Seek, W: Write>(
     let base_len = min_match.min(dict_min_match);
     let bufsize = opts.bufsize;
 
+    // `ROUND_MATCHES = (method == -m3) && dictsize == 0` (`srep.cpp:443`):
+    // `-m3o` writes format v1 with 3-word records, `-m3o -d` falls back to v2.
+    let round_matches = mode == Mode::Digest && opts.dictsize == 0;
+
     // The archive seed (`srep.cpp:643-653`); without `--seed=N` the C++ draws
     // it from Fortuna, which is not reproducible, so the port refuses.
     let seed_size = hash.seed_size as usize;
@@ -251,18 +258,23 @@ pub fn encode_io_lz<R: Read + Seek, W: Write>(
     let mut hasher = BlockHasher::new(hash, &seed);
 
     let header_size = container::BLOCK_HEADER_SIZE + hash.hash_size as usize;
-    output.write_all(&ArchiveHeader::new(Version::V2, hash, base_len as u32).encode())?;
+    let version = if round_matches { Version::V1 } else { Version::V2 };
+    output.write_all(&ArchiveHeader::new(version, hash, base_len as u32).encode())?;
     output.write_all(&seed)?;
 
     // The match finder, for the modes that have one. `-m4` leaves the slice
     // filter empty (its `check_slices` is <= 0), `-m5` fills it.
     let mut table = match mode {
         Mode::Inmem => None,
-        Mode::Fixed | Mode::FixedExhaustive => {
+        Mode::Fixed | Mode::FixedExhaustive | Mode::Digest => {
             let filesize = input.seek(SeekFrom::End(0))?;
             input.seek(SeekFrom::Start(0))?;
-            // `io_accelerator` defaults to 1 (srep.cpp:291).
-            Some(HashTable::new(false, false, l, min_match, 1, filesize))
+            // `io_accelerator` defaults to 1 (srep.cpp:291). `-m3` is the one
+            // mode that precomputes and compares per-chunk digests.
+            let digests = mode == Mode::Digest;
+            Some(HashTable::new(
+                round_matches, digests, digests, l, min_match, 1, filesize,
+            ))
         }
     };
 
@@ -332,7 +344,7 @@ pub fn encode_io_lz<R: Read + Seek, W: Write>(
                     &mut stat,
                 )?;
             }
-            Mode::Fixed | Mode::FixedExhaustive => {
+            Mode::Fixed | Mode::FixedExhaustive | Mode::Digest => {
                 // `srep.cpp:722-724`: the in-memory pass (only with `-d`)
                 // writes into the aux list, then the fence `len+1 / BASE_LEN /
                 // BASE_LEN` is appended; its match starts past the block, so
@@ -353,7 +365,7 @@ pub fn encode_io_lz<R: Read + Seek, W: Write>(
                 }
                 lz::encode_lz_match(
                     &mut in_stat,
-                    false,
+                    round_matches,
                     base_len as u32,
                     (filled + 1) as u32,
                     base_len as u64,
@@ -365,7 +377,7 @@ pub fn encode_io_lz<R: Read + Seek, W: Write>(
                     &dict,
                     buf_offset,
                     filled,
-                    false,
+                    round_matches,
                     l,
                     min_match,
                     base_len as u32,
@@ -397,8 +409,9 @@ pub fn encode_io_lz<R: Read + Seek, W: Write>(
 
         let mut in_pos = 0usize;
         let mut rest = &stat[..];
-        while rest.len() >= lz::stats_per_match(false) {
-            let (m, used) = lz::decode_lz_match(rest, false, false, base_len as u32, 0)?;
+        while rest.len() >= lz::stats_per_match(round_matches) {
+            let (m, used) =
+                lz::decode_lz_match(rest, round_matches, false, base_len as u32, 0)?;
             let lit = m.lit_len as usize;
             if lit > filled - in_pos {
                 return Err(EncodeError::BadBlockRecord);

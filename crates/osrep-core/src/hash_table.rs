@@ -20,6 +20,7 @@
 use std::io::{Read, Seek};
 
 use crate::util::roundup_to_power_of_two;
+use crate::vmac::{VDigest, DIGEST_SIZE};
 
 /// `MAX_HASH_CHAIN` (`hash_table.cpp:13`).
 pub const MAX_HASH_CHAIN: u32 = 12;
@@ -159,6 +160,7 @@ impl SliceHash {
 pub struct HashTable {
     pub round_matches: bool,
     pub compare_digests: bool,
+    pub precompute_digests: bool,
     pub l: usize,
     pub filesize: u64,
     pub total_chunks: u64,
@@ -172,6 +174,13 @@ pub struct HashTable {
     /// written first, so zeroing is equivalent.
     hasharr: Vec<u32>,
     slicehash: SliceHash,
+    /// `digestarr`: one 20-byte digest per chunk, filled in by
+    /// `prepare_digests_range` when `PRECOMPUTE_DIGESTS` is on (`-m3`).
+    digestarr: Vec<[u8; DIGEST_SIZE]>,
+    /// `MainDigest` (`hash_table.cpp:135`). The C++ keeps a second copy
+    /// (`PrepDigest`) only because two threads may hash at once; the port runs
+    /// one, and both would share a key anyway.
+    main_digest: VDigest,
 }
 
 impl HashTable {
@@ -181,6 +190,7 @@ impl HashTable {
     pub fn new(
         round_matches: bool,
         compare_digests: bool,
+        precompute_digests: bool,
         l: usize,
         min_match: usize,
         io_accelerator: i32,
@@ -196,6 +206,7 @@ impl HashTable {
         HashTable {
             round_matches,
             compare_digests,
+            precompute_digests,
             l,
             filesize,
             total_chunks,
@@ -205,6 +216,12 @@ impl HashTable {
             chunkarr: vec![0u32; hashsize as usize],
             hasharr: vec![0u32; total_chunks as usize],
             slicehash,
+            digestarr: if compare_digests {
+                vec![[0u8; DIGEST_SIZE]; total_chunks as usize]
+            } else {
+                Vec::new()
+            },
+            main_digest: VDigest::new(),
         }
     }
 
@@ -218,8 +235,26 @@ impl HashTable {
     pub fn prepare_buffer(&mut self, buf: &[u8], buf_off: usize, block_len: usize, offset: u64) {
         let curchunk = (offset / self.l as u64) as usize;
         let nchunks = block_len / self.l;
+        if self.precompute_digests {
+            self.prepare_digests_range(buf, buf_off, curchunk, curchunk + nchunks);
+        }
         self.slicehash
             .prepare_buffer_range(buf, buf_off, curchunk, curchunk + nchunks);
+    }
+
+    /// `prepare_digests_range` (`hash_table.cpp:188-192`): the digest of every
+    /// whole chunk the block covers, saved for the trustworthy `-m3` compare.
+    fn prepare_digests_range(
+        &mut self,
+        buf: &[u8],
+        buf_off: usize,
+        chunk_start: usize,
+        chunk_end: usize,
+    ) {
+        for curchunk in chunk_start..chunk_end {
+            let at = buf_off + (curchunk - chunk_start) * self.l;
+            self.digestarr[curchunk] = self.main_digest.compute(&buf[at..at + self.l]);
+        }
     }
 
     /// `chunkarr_value` (`hash_table.cpp:244`).
@@ -317,7 +352,17 @@ impl HashTable {
             if self.get_hash(value) == saved_hash {
                 let chunk = self.get_chunk(value);
                 if self.hasharr[chunk as usize] == stored_value {
-                    if self.slicehash.check(chunk as usize, buf, buf_off, i, block_size) {
+                    if self.compare_digests {
+                        // `-m3` (`hash_table.cpp:318-322`): compare the whole
+                        // 20-byte chunk digest. A mismatch does *not* end the
+                        // probe, unlike the -m5 slice check below.
+                        let dig = self
+                            .main_digest
+                            .compute(&buf[buf_off + i..buf_off + i + self.l]);
+                        if dig == self.digestarr[chunk as usize] {
+                            return chunk;
+                        }
+                    } else if self.slicehash.check(chunk as usize, buf, buf_off, i, block_size) {
                         return chunk;
                     } else {
                         // `speed_opt`: do not walk the rest of the chain.
@@ -365,7 +410,27 @@ impl HashTable {
         // below the block start and the tail's index wraps.
         let mut stopped = false;
 
-        if !self.compare_digests && old_offset < offset {
+        if self.compare_digests {
+            // `-m3` (`hash_table.cpp:340-353`): extend the match chunk by chunk
+            // by comparing the saved digests. The first chunk was already
+            // checked by `find_match`, hence the advance before the test.
+            loop {
+                p += self.l;
+                old_offset += l;
+                if old_offset >= offset {
+                    break;
+                }
+                if p + self.l > last_p {
+                    stopped = true;
+                    break;
+                }
+                let dig = self.main_digest.compute(&dict[p..p + self.l]);
+                if dig != self.digestarr[(old_offset / l) as usize] {
+                    stopped = true;
+                    break;
+                }
+            }
+        } else if old_offset < offset {
             // -m4/-m5 with the matched chunk in a previous block: reread the
             // old data from the input file.
             let n = old_offset.min(l).min((start_p - min_p) as u64);

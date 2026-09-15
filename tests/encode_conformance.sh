@@ -108,6 +108,17 @@ for input in tests/corpus/mixed.bin tests/corpus/text.bin tests/corpus/random.bi
     enc "$input" -m5o m5o -l256
 done
 
+say "-m3o (digest-verified chunks, format v1) vs the C++ encoder"
+# -m3 with no dictionary writes v1 (3-word round matches); adding -d drops
+# ROUND_MATCHES and so falls back to v2 -- both shapes are covered here.
+for input in tests/corpus/mixed.bin tests/corpus/text.bin tests/corpus/random.bin \
+             "$TMP/dup4m.bin" "$TMP/dup20m.bin"; do
+    enc "$input" -m3o m3o
+    enc "$input" -m3o m3o -b1mb
+    enc "$input" -m3o m3o -d16mb
+    enc "$input" -m3o m3o -l1024
+done
+
 # Degenerate inputs and the C++'s own 512 MiB dictionary default.
 enc "$TMP/empty.bin" -m0o m0o -d16mb
 enc "$TMP/tiny.bin"  -m0o m0o -d16mb

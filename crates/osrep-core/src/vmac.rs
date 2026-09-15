@@ -450,3 +450,44 @@ mod tests {
         );
     }
 }
+
+/// `Digest` (`hashes.cpp:11`): the 20-byte per-chunk digest `-m3` compares.
+pub const DIGEST_SIZE: usize = 20;
+
+/// `VDigest` (`hashes.cpp:399-408`): two VMAC instances over one shared key,
+/// writing `vhash1`'s tag at offset 0 and `vhash2`'s at offset
+/// `DIGEST_SIZE - VMAC_TAG_LEN_BYTES` (4) -- so the last 4 bytes of the first
+/// tag are overwritten and the digest is `v1[0..4] ++ v2[0..16]`.
+///
+/// The C++ keys both instances from `cryptographic_prng()` and never stores
+/// them: the digests only ever get compared for *equality* against other
+/// digests from the same instances (`hash_table.cpp:321`), so the key cannot
+/// affect the archive. The port pins it to zeroes, which keeps `--seed=N` runs
+/// byte-identical and makes the digest reproducible across builds.
+pub struct VDigest {
+    vhash1: Vmac,
+    vhash2: Vmac,
+}
+
+impl Default for VDigest {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl VDigest {
+    pub fn new() -> VDigest {
+        let key = [0u8; VMAC_KEY_LEN_BYTES];
+        VDigest {
+            vhash1: Vmac::new(&key),
+            vhash2: Vmac::new(&key),
+        }
+    }
+
+    pub fn compute(&self, data: &[u8]) -> [u8; DIGEST_SIZE] {
+        let mut out = [0u8; DIGEST_SIZE];
+        out[..VMAC_TAG_LEN_BYTES].copy_from_slice(&self.vhash1.compute(data));
+        out[DIGEST_SIZE - VMAC_TAG_LEN_BYTES..].copy_from_slice(&self.vhash2.compute(data));
+        out
+    }
+}

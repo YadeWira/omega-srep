@@ -107,7 +107,7 @@ the input. Truncated archives must error, never panic.
 | **3a** | Container framing: archive header, hash-descriptor table, version predicates, block header, v4 index footer + block-size table, ODUP trailer — read v1–v4 and write v4, byte-exact in both directions. | **done** |
 | **4a** | The I/O-LZ decoder (format v1/v2): record decoding, the literal/match interleaving, both match sources (read back from the output sink, and LZ77 replication within the block, which is `memcpy_lz_match`'s forward byte copy and NOT memmove), and per-block digest verification through the already-ported hashes. | **done** |
 | **4b** | `MEMORY_MANAGER`, the VM spill manager and the Future/Index-LZ decoder (v3/v4): both are driven only by `decompress_FUTURE_LZ`, so they port together rather than standing alone. | **done** |
-| **4c** | The encoder: hash-table match finder, `compress` (-m3/-m4/-m5 + accelerator), CDC (-m1/-m2), in-memory REP (-m0) and the Future/Index-LZ second pass. Gate: byte-identical v4 archives across the whole matrix. | **in progress** — 4c-0..3 done: rolling hashes, `-m0o`, `-m4o`/`-m5o` byte-identical (95/95 in `tests/encode_conformance.sh`) |
+| **4c** | The encoder: hash-table match finder, `compress` (-m3/-m4/-m5 + accelerator), CDC (-m1/-m2), in-memory REP (-m0) and the Future/Index-LZ second pass. Gate: byte-identical v4 archives across the whole matrix. | **in progress** — 4c-0..4 done: rolling hashes, `-m0o`, `-m4o`/`-m5o`, `-m3o` byte-identical (115/115 in `tests/encode_conformance.sh`) |
 | **5** | v5 format, CLI, retire the C++. | not started |
 
 ### Phase 4c notes worth keeping
@@ -146,6 +146,14 @@ the input. Truncated archives must error, never panic.
   port has one handle, and `match_len` seeks it freely, so the sequential
   block reads must re-anchor to their known offset or they silently continue
   from wherever the last reread left the position.
+* **`-m3`'s digests are keyed by a PRNG and never stored.** `VDigest::init`
+  (`hashes.cpp:402`) keys both VMAC instances from `cryptographic_prng()`, so
+  a bit-exact port would be impossible — except that the 20-byte digests only
+  ever get compared for equality against digests from the same instances
+  (`hash_table.cpp:321`), and never reach the archive. Any shared key gives
+  identical *decisions*, so the port pins it to zeroes. `VDigest::compute`
+  writes `vhash1` at offset 0 and `vhash2` at offset 4, so the digest is
+  `v1[0..4] ++ v2[0..16]` — the first tag's last 12 bytes are overwritten.
 
 ### Phase 4c pre-port experiments (run before writing any Rust)
 

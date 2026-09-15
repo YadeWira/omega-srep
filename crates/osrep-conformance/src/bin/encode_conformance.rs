@@ -117,6 +117,7 @@ fn main() -> ExitCode {
 
     let result = match mode.as_str() {
         "m0o" => encoder::encode_io_lz(&mut input, &mut output, &opts, encoder::Mode::Inmem).map(|_| ()),
+        "m3o" => encoder::encode_io_lz(&mut input, &mut output, &opts, encoder::Mode::Digest).map(|_| ()),
         "m4o" => encoder::encode_io_lz(&mut input, &mut output, &opts, encoder::Mode::Fixed).map(|_| ()),
         "m5o" => {
             encoder::encode_io_lz(&mut input, &mut output, &opts, encoder::Mode::FixedExhaustive)
