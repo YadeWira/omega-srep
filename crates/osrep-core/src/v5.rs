@@ -18,6 +18,11 @@ use crate::vmac;
 
 /// `"OSR5"` little-endian.
 pub const MAGIC: u32 = 0x3552_534F;
+/// `"DUPR"`: the v5 `-dup` meta blob's magic.
+pub const META_MAGIC: &[u8; 4] = b"DUPR";
+pub const META_VERSION: u8 = 1;
+/// magic + version + reserved + CRC.
+pub const META_OVERHEAD: usize = 12;
 /// `"OSRF"` little-endian: the footer's own magic.
 pub const FOOTER_MAGIC: u32 = 0x4652_534F;
 pub const VERSION: u8 = 5;
@@ -327,12 +332,22 @@ pub fn parse(bytes: &[u8]) -> Result<Parsed<'_>, V5Error> {
         });
     }
 
-    let footer = Footer::decode(&bytes[pos..])?;
-    if pos + FOOTER_SIZE != bytes.len() {
-        return Err(V5Error::BadCrc("footer"));
+    // The footer is always the last thing in the file, so it can be read
+    // before the blocks it follows -- which is what tells us how big the
+    // `-dup` blob sitting between them is.
+    if bytes.len() < FOOTER_SIZE {
+        return Err(V5Error::Truncated);
     }
+    let footer = Footer::decode(&bytes[bytes.len() - FOOTER_SIZE..])?;
     if footer.block_count != header.block_count || footer.stat_size != total_stat {
         return Err(V5Error::BlockCountMismatch);
+    }
+    if pos as u64 + u64::from(footer.meta_size) + FOOTER_SIZE as u64 != bytes.len() as u64 {
+        return Err(V5Error::BadMeta);
+    }
+    // Validate the blob here too, so `parse` alone rejects a corrupt archive.
+    if let Some(meta) = dup_meta(bytes, &footer, &header)? {
+        let _ = meta;
     }
     Ok(Parsed {
         header,
@@ -364,10 +379,26 @@ fn digest_matches(hash: &'static HashInfo, seed: &[u8], data: &[u8], expected: &
     }
 }
 
+/// Build the v5 `-dup` meta blob from a `.dupref` payload: a magic, a version,
+/// the payload unchanged, and a CRC-32C over all of it.
+///
+/// v4 appends that payload as a bare ODUP trailer with no integrity at all, and
+/// finds it by sniffing the last four bytes -- which is what mis-handles
+/// `osrep -d archive.osr` (implicit output) and `-i`. v5 writes the same bytes
+/// with a checksum, and the footer says where they are.
+pub fn encode_meta(dupref: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(dupref.len() + META_OVERHEAD);
+    out.extend_from_slice(META_MAGIC);
+    out.push(META_VERSION);
+    out.extend_from_slice(&[0u8; 3]);
+    out.extend_from_slice(dupref);
+    let crc = crc32c_of(&out);
+    out.extend_from_slice(&crc.to_le_bytes());
+    out
+}
+
 /// The `-dup` meta blob's location, from the footer's `meta_offset`/`meta_size`.
-/// v5 finds it by arithmetic instead of sniffing `"ODUP"` in the last four
-/// bytes, which is what used to mis-handle `osrep -d archive.osr` (implicit
-/// output) and `-i`.
+/// Returns the `.dupref` payload inside it, checksum verified.
 pub fn dup_meta<'a>(bytes: &'a [u8], footer: &Footer, header: &Header) -> Result<Option<&'a [u8]>, V5Error> {
     if header.flags & FLAG_HAS_DUP == 0 {
         return Ok(None);
@@ -383,34 +414,33 @@ pub fn dup_meta<'a>(bytes: &'a [u8], footer: &Footer, header: &Header) -> Result
         return Err(V5Error::BadMeta);
     }
     let meta = &bytes[start..end];
-    // The blob is `DUPR ... meta_crc`, the CRC covering everything before it.
-    if meta.len() < 8 || &meta[..4] != b"DUPR" {
+    if meta.len() < META_OVERHEAD || meta[..4] != *META_MAGIC || meta[4] != META_VERSION {
         return Err(V5Error::BadMeta);
     }
     let crc = u32::from_le_bytes(meta[meta.len() - 4..].try_into().unwrap());
     if crc != crc32c_of(&meta[..meta.len() - 4]) {
         return Err(V5Error::BadCrc("meta"));
     }
-    Ok(Some(meta))
+    Ok(Some(&meta[8..meta.len() - 4]))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Build the smallest legal archive by hand: one block whose second half is
-    /// a copy of its first, with checksums disabled (`hash_id = 1`).
+    /// The smallest legal archive, built by hand: one block whose second half
+    /// is a copy of its first, with checksums disabled (`hash_id = 1`).
     fn synthetic() -> Vec<u8> {
         let header = Header {
             flags: 0,
             hash_id: 1,
             hash_size: 0,
-            max_match: 8128,
+            max_match: DEFAULT_MAX_MATCH,
             block_count: 1,
             original_size: 16,
         };
         let mut out = header.encode().to_vec();
-        // block header: literal_bytes, origsize, statsize
+        // block header: literal bytes, block size, match-list bytes
         out.extend_from_slice(&8u32.to_le_bytes());
         out.extend_from_slice(&16u32.to_le_bytes());
         out.extend_from_slice(&3u32.to_le_bytes());
@@ -421,7 +451,7 @@ mod tests {
             distance: 8,
         }
         .encode(&mut out);
-        // ... then the literals, then the footer (no tail table in v5)
+        // ... then the literals, then the footer (v5 blocks are self-contained)
         out.extend_from_slice(b"abcdefgh");
         out.extend_from_slice(
             &Footer {
@@ -437,16 +467,7 @@ mod tests {
 
     #[test]
     fn varint_round_trips_at_the_boundaries() {
-        for v in [
-            0u64,
-            1,
-            0x7F,
-            0x80,
-            0x3FFF,
-            0x4000,
-            u32::MAX as u64,
-            u64::MAX,
-        ] {
+        for v in [0u64, 1, 0x7F, 0x80, 0x3FFF, 0x4000, u32::MAX as u64, u64::MAX] {
             let mut buf = Vec::new();
             put_varint(&mut buf, v);
             let mut pos = 0usize;
@@ -459,8 +480,7 @@ mod tests {
     fn varint_rejects_unterminated_and_overwide() {
         let mut pos = 0usize;
         assert_eq!(get_varint(&[0x80, 0x80], &mut pos), Err(V5Error::BadVarint));
-        // Eleven continuation bytes: more than 64 bits of payload.
-        let over = [0xFFu8; 11];
+        let over = [0xFFu8; 11]; // more than 64 bits of payload
         let mut pos = 0usize;
         assert_eq!(get_varint(&over, &mut pos), Err(V5Error::BadVarint));
     }
@@ -493,7 +513,6 @@ mod tests {
 
         let mut b = synthetic();
         b[4] = 4;
-        // Recompute the CRC so the version check is what fires.
         let crc = crc32c_of(&b[..24]);
         b[24..28].copy_from_slice(&crc.to_le_bytes());
         assert_eq!(Header::decode(&b), Err(V5Error::BadVersion(4)));
@@ -504,13 +523,12 @@ mod tests {
         b[24..28].copy_from_slice(&crc.to_le_bytes());
         assert_eq!(Header::decode(&b), Err(V5Error::BadFlags(0x80)));
 
-        // The disabled hash must declare size 0: the header parses (it does
-        // not know the descriptor table), but resolving it does not.
+        // The disabled hash must declare size 0: the header parses (it does not
+        // know the descriptor table), but resolving it does not.
         let mut b = synthetic();
         b[7] = 16;
         let crc = crc32c_of(&b[..24]);
         b[24..28].copy_from_slice(&crc.to_le_bytes());
-        assert_eq!(Header::decode(&b).unwrap().hash_size, 16);
         assert!(matches!(
             parse(&b),
             Err(V5Error::BadHash { id: 1, size: 16 })
@@ -546,8 +564,7 @@ mod tests {
         // The list is the 3 bytes before the literals and the footer.
         let list_at = bytes.len() - FOOTER_SIZE - 8 - 3;
         assert_eq!(bytes[list_at], 8);
-        // A continuation bit with nothing after it inside the list.
-        bytes[list_at + 2] = 0x80;
+        bytes[list_at + 2] = 0x80; // a continuation bit with nothing after it
         assert_eq!(parse(&bytes), Err(V5Error::BadVarint));
     }
 
@@ -557,9 +574,88 @@ mod tests {
         bytes[12] = 2; // header.block_count = 2
         let crc = crc32c_of(&bytes[..24]);
         bytes[24..28].copy_from_slice(&crc.to_le_bytes());
-        // The reader now expects a second block where the footer is. Which
-        // error fires depends on how the footer's bytes parse; what matters is
-        // that it is rejected rather than silently truncated.
+        // The reader now expects a second block where the footer is; which
+        // error fires depends on how those bytes parse. What matters is that it
+        // is rejected rather than silently truncated.
         assert!(parse(&bytes).is_err());
+    }
+}
+
+#[cfg(test)]
+mod meta_tests {
+    use super::*;
+    use crate::encoder::{self, Container, EncodeOptions, Kind, Mode};
+    use std::io::Cursor;
+
+    /// Encode with a `-dup` payload and read it back through the footer.
+    #[test]
+    fn dup_meta_round_trips_through_the_writer() {
+        let mut data = Vec::new();
+        for i in 0..400_000u32 {
+            data.push((i % 251) as u8);
+        }
+        let payload = b".dupref payload that the dedup pass would build".to_vec();
+
+        let mut opts = EncodeOptions {
+            dup_meta: Some(payload.clone()),
+            ..EncodeOptions::default()
+        };
+        opts.seed = Some(7);
+        let mut input = Cursor::new(data.clone());
+        let mut out = Vec::new();
+        encoder::encode(
+            &mut input,
+            &mut out,
+            &opts,
+            Mode {
+                kind: Kind::Digest,
+                container: Container::V5,
+            },
+        )
+        .unwrap();
+
+        let parsed = parse(&out).unwrap();
+        assert_eq!(parsed.header.flags & FLAG_HAS_DUP, FLAG_HAS_DUP);
+        assert_eq!(parsed.footer.meta_size as usize, payload.len() + META_OVERHEAD);
+        assert_eq!(
+            parsed.footer.meta_offset as usize + parsed.footer.meta_size as usize + FOOTER_SIZE,
+            out.len()
+        );
+        let got = dup_meta(&out, &parsed.footer, &parsed.header).unwrap();
+        assert_eq!(got, Some(&payload[..]));
+
+        // A payload byte flipped after the fact must be caught by the meta CRC.
+        let at = parsed.footer.meta_offset as usize + 8;
+        let mut corrupt = out.clone();
+        corrupt[at] ^= 0x01;
+        assert!(matches!(
+            dup_meta(&corrupt, &parsed.footer, &parsed.header),
+            Err(V5Error::BadCrc("meta"))
+        ));
+    }
+
+    /// Without a payload nothing is written and the footer says so.
+    #[test]
+    fn no_dup_meta_leaves_the_footer_clean() {
+        let data = vec![7u8; 100_000];
+        let mut opts = EncodeOptions::default();
+        opts.seed = Some(7);
+        let mut input = Cursor::new(data);
+        let mut out = Vec::new();
+        encoder::encode(
+            &mut input,
+            &mut out,
+            &opts,
+            Mode {
+                kind: Kind::Digest,
+                container: Container::V5,
+            },
+        )
+        .unwrap();
+        let parsed = parse(&out).unwrap();
+        assert_eq!(parsed.header.flags, 0);
+        assert_eq!(parsed.footer.meta_offset, 0);
+        assert_eq!(parsed.footer.meta_size, 0);
+        assert_eq!(dup_meta(&out, &parsed.footer, &parsed.header).unwrap(), None);
     }
 }

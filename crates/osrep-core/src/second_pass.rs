@@ -50,6 +50,8 @@ pub fn second_pass<R: Read + Seek, W: Write>(
     future_lz: bool,
     index_lz: bool,
     v5: bool,
+    base_offset: u64,
+    meta: Option<&[u8]>,
 ) -> Result<u64, EncodeError> {
     // 1. Collect every block's matches (`srep.cpp:863-878`).
     let mut matches: Vec<lz::LzMatch> = Vec::new();
@@ -196,13 +198,24 @@ pub fn second_pass<R: Read + Seek, W: Write>(
         output.write_all(&bytes)?;
     }
     if v5 {
+        // The `-dup` payload, if any, goes here: after the blocks, before the
+        // footer that locates it. `base_offset` is where this pass's output
+        // starts, so the footer can name an absolute offset.
+        let (meta_offset, meta_size) = match meta {
+            Some(payload) => {
+                let blob = crate::v5::encode_meta(payload);
+                let at = base_offset + compsize;
+                output.write_all(&blob)?;
+                compsize += blob.len() as u64;
+                (at, blob.len() as u32)
+            }
+            None => (0, 0),
+        };
         let footer = crate::v5::Footer {
             block_count: blocks.len() as u32,
             stat_size: total_stat_size,
-            // The `-dup` meta is located by arithmetic in v5; until the CLI
-            // writes it there is none.
-            meta_offset: 0,
-            meta_size: 0,
+            meta_offset,
+            meta_size,
         };
         let bytes = footer.encode();
         compsize += bytes.len() as u64;

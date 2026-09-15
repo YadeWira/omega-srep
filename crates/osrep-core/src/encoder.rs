@@ -143,6 +143,10 @@ pub struct EncodeOptions {
     pub seed: Option<u64>,
     /// `-hash=` name; empty selects disabled checksums (`-hash-`).
     pub hash: String,
+    /// The `-dup` `.dupref` payload to embed. The dedup pass builds it; the v5
+    /// writer puts it before the footer and points the footer at it. v4 keeps
+    /// its ODUP trailer, which the caller appends itself.
+    pub dup_meta: Option<Vec<u8>>,
 }
 
 impl Default for EncodeOptions {
@@ -157,6 +161,7 @@ impl Default for EncodeOptions {
             l: 0,
             seed: None,
             hash: container::DEFAULT_HASH_NAME.to_string(),
+            dup_meta: None,
         }
     }
 }
@@ -321,7 +326,7 @@ pub fn encode<R: Read + Seek, W: Write>(
         let block_count = filesize.div_ceil(bufsize as u64) as u32;
         output.write_all(
             &v5::Header {
-                flags: 0,
+                flags: if opts.dup_meta.is_some() { v5::FLAG_HAS_DUP } else { 0 },
                 hash_id: hash.num,
                 // `-hash-` is the descriptor with no digest at all, and v5
                 // encodes that as size 0 rather than reserving 16 dead bytes.
@@ -336,6 +341,13 @@ pub fn encode<R: Read + Seek, W: Write>(
         output.write_all(&ArchiveHeader::new(version, hash, futurelz_base_len).encode())?;
     }
     output.write_all(&seed)?;
+
+    // Where the second pass's output starts, for the footer's absolute offsets.
+    let archive_header_len = if v5 {
+        (v5::HEADER_SIZE + seed.len()) as u64
+    } else {
+        0
+    };
 
     // The match finder, for the modes that have one. `-m4` leaves the slice
     // filter empty (its `check_slices` is <= 0), `-m5` fills it.
@@ -572,6 +584,8 @@ pub fn encode<R: Read + Seek, W: Write>(
             future_lz,
             index_lz,
             v5,
+            archive_header_len,
+            opts.dup_meta.as_deref(),
         )?;
     }
     Ok(compsize)
