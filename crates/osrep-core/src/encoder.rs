@@ -91,6 +91,9 @@ pub enum EncodeError {
     /// Fortuna, which no port can reproduce.
     NeedsSeed,
     UnknownHash(String),
+    /// `EncodeOptions::dup_meta` is not a `.dupref` payload, so it cannot be
+    /// embedded as a v5 `-dup` meta blob.
+    BadDupMeta,
 }
 
 impl From<std::io::Error> for EncodeError {
@@ -118,6 +121,7 @@ impl From<lz::DecodeError> for EncodeError {
 
 /// Everything the driver needs besides the input. Defaults mirror the option
 /// defaults in `srep.cpp`.
+#[derive(Debug, Clone)]
 pub struct EncodeOptions {
     /// `-b` (block size).
     pub bufsize: usize,
@@ -304,7 +308,17 @@ pub fn encode<R: Read + Seek, W: Write>(
     }
     let mut hasher = BlockHasher::new(hash, &seed);
 
-    let header_size = container::BLOCK_HEADER_SIZE + hash.hash_size as usize;
+    // v5 omits the digest field entirely when checksums are off (`hash_size =
+    // 0`, `docs/format-spec-v5.md` §2), where v1-v4 always reserve the
+    // descriptor's 16 bytes. Sizing the per-block header from the descriptor
+    // either way writes 16 bytes the reader is not expecting, which
+    // desynchronizes every block that follows.
+    let stored_hash_size = if v5 && hash.name.is_empty() {
+        0
+    } else {
+        hash.hash_size as usize
+    };
+    let header_size = container::BLOCK_HEADER_SIZE + stored_hash_size;
     let version = if index_lz {
         Version::V4
     } else if future_lz {

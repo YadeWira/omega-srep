@@ -70,6 +70,13 @@ como herramienta de interoperabilidad.
 +-----------------------------------------------------------+
 ```
 
+El meta **es** el blob `.dupref` (`docs/format-spec.md` §3.1), verbatim, con el
+CRC pegado al final: `meta_size = dupref.len() + 4`. Su `version u8` + 3
+reservados son el campo `version u32 = 1` del `.dupref`, visto byte a byte, así
+que el meta empieza con `DUPR` exactamente como el trailer de v4 — no lleva un
+header propio encima. Lo único que cambia respecto de v4 es *dónde* está y que
+ahora tiene integridad.
+
 ## 3. El record de match en v5
 
 La lista de un bloque es una secuencia de **triples varint** LEB128:

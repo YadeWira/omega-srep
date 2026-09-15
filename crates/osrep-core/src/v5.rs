@@ -18,11 +18,17 @@ use crate::vmac;
 
 /// `"OSR5"` little-endian.
 pub const MAGIC: u32 = 0x3552_534F;
-/// `"DUPR"`: the v5 `-dup` meta blob's magic.
+/// `"DUPR"`: the v5 `-dup` meta blob's magic. v5 does **not** wrap the payload
+/// in a header of its own -- the blob *is* the `.dupref` payload, so this is
+/// that format's magic (`docs/format-spec.md` §3.1) and its version, which v5
+/// describes as one byte plus three reserved ones.
 pub const META_MAGIC: &[u8; 4] = b"DUPR";
 pub const META_VERSION: u8 = 1;
-/// magic + version + reserved + CRC.
-pub const META_OVERHEAD: usize = 12;
+/// The `.dupref` header every payload starts with: magic, version,
+/// `chunk_count`, `unique_count`.
+pub const META_PAYLOAD_HEADER_SIZE: usize = 24;
+/// What the blob carries on top of the payload: the trailing CRC-32C.
+pub const META_OVERHEAD: usize = 4;
 /// `"OSRF"` little-endian: the footer's own magic.
 pub const FOOTER_MAGIC: u32 = 0x4652_534F;
 pub const VERSION: u8 = 5;
@@ -379,22 +385,36 @@ fn digest_matches(hash: &'static HashInfo, seed: &[u8], data: &[u8], expected: &
     }
 }
 
-/// Build the v5 `-dup` meta blob from a `.dupref` payload: a magic, a version,
-/// the payload unchanged, and a CRC-32C over all of it.
+/// Build the v5 `-dup` meta blob from a `.dupref` payload: the payload
+/// unchanged, plus a trailing CRC-32C over all of it.
 ///
 /// v4 appends that payload as a bare ODUP trailer with no integrity at all, and
 /// finds it by sniffing the last four bytes -- which is what mis-handles
 /// `osrep -d archive.osr` (implicit output) and `-i`. v5 writes the same bytes
 /// with a checksum, and the footer says where they are.
-pub fn encode_meta(dupref: &[u8]) -> Vec<u8> {
+///
+/// The payload already starts with the `.dupref` header, so the blob's first
+/// four bytes are `DUPR` exactly as in v4, and `meta_size` is
+/// `payload.len() + META_OVERHEAD` (`docs/format-spec-v5.md` §2). Rejecting a
+/// payload that is not a `.dupref` blob keeps a caller from silently writing an
+/// archive that no reader can take apart.
+pub fn encode_meta(dupref: &[u8]) -> Result<Vec<u8>, V5Error> {
+    if !is_dupref(dupref) {
+        return Err(V5Error::BadMeta);
+    }
     let mut out = Vec::with_capacity(dupref.len() + META_OVERHEAD);
-    out.extend_from_slice(META_MAGIC);
-    out.push(META_VERSION);
-    out.extend_from_slice(&[0u8; 3]);
     out.extend_from_slice(dupref);
     let crc = crc32c_of(&out);
     out.extend_from_slice(&crc.to_le_bytes());
-    out
+    Ok(out)
+}
+
+/// The `.dupref` header a payload must carry: the magic, the version, and
+/// enough bytes for the two counts (`docs/format-spec.md` §3.1).
+fn is_dupref(payload: &[u8]) -> bool {
+    payload.len() >= META_PAYLOAD_HEADER_SIZE
+        && payload[..4] == *META_MAGIC
+        && payload[4] == META_VERSION
 }
 
 /// The `-dup` meta blob's location, from the footer's `meta_offset`/`meta_size`.
@@ -413,15 +433,26 @@ pub fn dup_meta<'a>(bytes: &'a [u8], footer: &Footer, header: &Header) -> Result
     if end > bytes.len() {
         return Err(V5Error::BadMeta);
     }
-    let meta = &bytes[start..end];
-    if meta.len() < META_OVERHEAD || meta[..4] != *META_MAGIC || meta[4] != META_VERSION {
+    Ok(Some(decode_meta(&bytes[start..end])?))
+}
+
+/// Take a standalone meta blob apart: the `.dupref` payload it carries, with
+/// the trailing CRC verified. `dup_meta` is the same thing for a caller that
+/// has the whole archive; this one is for a caller that read just the blob,
+/// which is what a decoder working over a file (rather than a byte slice) has.
+pub fn decode_meta(blob: &[u8]) -> Result<&[u8], V5Error> {
+    if blob.len() < META_PAYLOAD_HEADER_SIZE + META_OVERHEAD {
         return Err(V5Error::BadMeta);
     }
-    let crc = u32::from_le_bytes(meta[meta.len() - 4..].try_into().unwrap());
-    if crc != crc32c_of(&meta[..meta.len() - 4]) {
+    let (payload, crc_bytes) = blob.split_at(blob.len() - META_OVERHEAD);
+    if !is_dupref(payload) {
+        return Err(V5Error::BadMeta);
+    }
+    let crc = u32::from_le_bytes(crc_bytes.try_into().unwrap());
+    if crc != crc32c_of(payload) {
         return Err(V5Error::BadCrc("meta"));
     }
-    Ok(Some(&meta[8..meta.len() - 4]))
+    Ok(payload)
 }
 
 #[cfg(test)]
@@ -588,19 +619,24 @@ mod meta_tests {
     use std::io::Cursor;
 
     /// Encode with a `-dup` payload and read it back through the footer.
+    ///
+    /// The payload is a real `.dupref` blob rather than arbitrary bytes,
+    /// because what this has to catch is v5 wrapping it a *second* time: the
+    /// stored blob must be that payload plus nothing but the CRC.
     #[test]
     fn dup_meta_round_trips_through_the_writer() {
         let mut data = Vec::new();
         for i in 0..400_000u32 {
             data.push((i % 251) as u8);
         }
-        let payload = b".dupref payload that the dedup pass would build".to_vec();
+        let (payload, _body) =
+            crate::dedup::encode_split(&data, crate::dedup::Params::default()).unwrap();
 
-        let mut opts = EncodeOptions {
+        let opts = EncodeOptions {
             dup_meta: Some(payload.clone()),
+            seed: Some(7),
             ..EncodeOptions::default()
         };
-        opts.seed = Some(7);
         let mut input = Cursor::new(data.clone());
         let mut out = Vec::new();
         encoder::encode(
@@ -621,17 +657,42 @@ mod meta_tests {
             parsed.footer.meta_offset as usize + parsed.footer.meta_size as usize + FOOTER_SIZE,
             out.len()
         );
+        // The bytes on disk: the payload verbatim, then the CRC. A `DUPR`
+        // header of its own in front would make the dedup pass read the blob
+        // one field out of step.
+        let at = parsed.footer.meta_offset as usize;
+        let blob = &out[at..at + parsed.footer.meta_size as usize];
+        assert_eq!(&blob[..payload.len()], &payload[..]);
+        assert_eq!(&blob[payload.len()..], &crc32c_of(&payload).to_le_bytes());
+
         let got = dup_meta(&out, &parsed.footer, &parsed.header).unwrap();
         assert_eq!(got, Some(&payload[..]));
 
         // A payload byte flipped after the fact must be caught by the meta CRC.
-        let at = parsed.footer.meta_offset as usize + 8;
         let mut corrupt = out.clone();
-        corrupt[at] ^= 0x01;
+        corrupt[at + 8] ^= 0x01;
         assert!(matches!(
             dup_meta(&corrupt, &parsed.footer, &parsed.header),
             Err(V5Error::BadCrc("meta"))
         ));
+    }
+
+    /// A payload that is not a `.dupref` blob is refused when the blob is
+    /// built, rather than written into an archive no reader can take apart.
+    #[test]
+    fn a_payload_that_is_not_dupref_is_refused() {
+        assert_eq!(encode_meta(b"not a .dupref blob"), Err(V5Error::BadMeta));
+
+        let mut header = [0u8; META_PAYLOAD_HEADER_SIZE];
+        header[..4].copy_from_slice(META_MAGIC);
+        header[4] = META_VERSION;
+        assert!(encode_meta(&header).is_ok());
+
+        header[4] = META_VERSION + 1;
+        assert_eq!(encode_meta(&header), Err(V5Error::BadMeta));
+        header[4] = META_VERSION;
+        header[0] = b'X';
+        assert_eq!(encode_meta(&header), Err(V5Error::BadMeta));
     }
 
     /// Without a payload nothing is written and the footer says so.

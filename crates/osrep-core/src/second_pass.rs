@@ -117,12 +117,20 @@ pub fn second_pass<R: Read + Seek, W: Write>(
         // v5 replaces the fixed 4-word records with raw LEB128 triples, so the
         // list is rebuilt from the very words just emitted (which already carry
         // raw lengths: their base is 0 and nothing is rounded).
+        //
+        // `at` is the *source* the next record is anchored at -- what
+        // `encode_lz_match` was given above -- which is the v5 record's own
+        // anchor (`docs/format-spec-v5.md` §3). Decoding with the destination
+        // anchor instead (`future_lz = false`) still yields the right
+        // `distance` through wrapping arithmetic, but drives `src` below zero
+        // on any match whose offset exceeds the source position, which is a
+        // panic in a debug build.
         let mut stat_bytes: Vec<u8> = Vec::new();
         if v5 {
             let mut rest = &stat[..];
             let mut at = b.start;
             while rest.len() >= lz::stats_per_match(round_matches) {
-                let (m, used) = lz::decode_lz_match(rest, false, false, 0, at)
+                let (m, used) = lz::decode_lz_match(rest, false, true, 0, at)
                     .map_err(|_| EncodeError::BadBlockRecord)?;
                 crate::v5::Record {
                     lit_len: m.lit_len as u64,
@@ -203,7 +211,7 @@ pub fn second_pass<R: Read + Seek, W: Write>(
         // starts, so the footer can name an absolute offset.
         let (meta_offset, meta_size) = match meta {
             Some(payload) => {
-                let blob = crate::v5::encode_meta(payload);
+                let blob = crate::v5::encode_meta(payload).map_err(|_| EncodeError::BadDupMeta)?;
                 let at = base_offset + compsize;
                 output.write_all(&blob)?;
                 compsize += blob.len() as u64;

@@ -951,12 +951,36 @@ pub fn decode_v5<R: Read + Seek, S: Read + Write + Seek>(
     sink: &mut S,
     opts: &FutureLzOptions,
 ) -> Result<FutureLzStats, DecodeError> {
+    // The footer is always the last thing in the file, and when the archive
+    // carries a `-dup` meta blob it is the only thing that says how big that
+    // blob is: the blocks end where the blob begins. Read it up front.
+    let file_len = input.seek(SeekFrom::End(0))?;
+    if file_len < (crate::v5::HEADER_SIZE + crate::v5::FOOTER_SIZE) as u64 {
+        return Err(ContainerError::Truncated.into());
+    }
+    input.seek(SeekFrom::Start(file_len - crate::v5::FOOTER_SIZE as u64))?;
+    let mut footer_bytes = [0u8; crate::v5::FOOTER_SIZE];
+    if !read_exact_or_eof(input, &mut footer_bytes)? {
+        return Err(ContainerError::Truncated.into());
+    }
+    let footer =
+        crate::v5::Footer::decode(&footer_bytes).map_err(|_| DecodeError::BadData("v5 footer"))?;
+    input.seek(SeekFrom::Start(0))?;
+
     let mut header_bytes = [0u8; crate::v5::HEADER_SIZE];
     if !read_exact_or_eof(input, &mut header_bytes)? {
         return Err(ContainerError::Truncated.into());
     }
     let header =
         crate::v5::Header::decode(&header_bytes).map_err(|_| DecodeError::BadData("v5 header"))?;
+    if footer.block_count != header.block_count {
+        return Err(DecodeError::BadData("v5 footer disagrees with the blocks"));
+    }
+    // `flags.bit0` and a non-zero `meta_size` state the same fact twice; an
+    // archive where only one of them holds is corrupt.
+    if (header.flags & crate::v5::FLAG_HAS_DUP != 0) != (footer.meta_size != 0) {
+        return Err(DecodeError::BadData("v5 -dup meta disagrees with the flags"));
+    }
     let hash = header
         .hash()
         .map_err(|_| DecodeError::BadData("v5 hash descriptor"))?;
@@ -984,6 +1008,9 @@ pub fn decode_v5<R: Read + Seek, S: Read + Write + Seek>(
 
     let mut block_start = 0u64;
     let mut total_stat: u64 = 0;
+    // Counted rather than read from the reader: the caller may hand us a
+    // buffered stream, whose position runs ahead of what has been consumed.
+    let mut consumed: u64 = (crate::v5::HEADER_SIZE + seed.len()) as u64;
 
     for blocks in 0..header.block_count as usize {
         let mut bh_bytes = [0u8; BLOCK_HEADER_SIZE];
@@ -1034,23 +1061,30 @@ pub fn decode_v5<R: Read + Seek, S: Read + Write + Seek>(
 
         block_start += u64::from(bh.origsize);
         total_stat += u64::from(bh.statsize);
+        consumed += BLOCK_HEADER_SIZE as u64
+            + hash_size as u64
+            + u64::from(bh.statsize)
+            + u64::from(bh.literal_bytes);
     }
 
-    // The footer closes the file: nothing may follow it, and its counts must
-    // agree with what was actually decoded.
-    let mut footer_bytes = [0u8; crate::v5::FOOTER_SIZE];
-    if !read_exact_or_eof(input, &mut footer_bytes)? {
-        return Err(ContainerError::Truncated.into());
+    // The blocks stop exactly where the meta blob starts -- or where the footer
+    // does, when the archive has no blob. Nothing else can be between them, and
+    // nothing was read past the last block, so the reader never has to guess
+    // where the block list ends (which is the whole reason the footer is read
+    // first).
+    let meta_at = (file_len - crate::v5::FOOTER_SIZE as u64)
+        .checked_sub(u64::from(footer.meta_size))
+        .ok_or(DecodeError::BadData("v5 -dup meta runs past the file"))?;
+    if consumed != meta_at {
+        return Err(DecodeError::BadData("v5 blocks do not end at the footer"));
     }
-    let footer = crate::v5::Footer::decode(&footer_bytes)
-        .map_err(|_| DecodeError::BadData("v5 footer"))?;
-    if footer.block_count != header.block_count || footer.stat_size != total_stat {
+    if footer.stat_size != total_stat {
         return Err(DecodeError::BadData("v5 footer disagrees with the blocks"));
     }
-    let mut extra = [0u8; 1];
-    if input.read(&mut extra)? != 0 {
-        return Err(DecodeError::BadData("trailing bytes after the v5 footer"));
-    }
+    // A `-dup` archive keeps its `.dupref` payload between the blocks and the
+    // footer. This decoder deliberately does not read it: the dedup post-pass
+    // is the one that wants it, and it takes the payload out of the archive by
+    // the footer's offsets.
 
     Ok(FutureLzStats {
         decode: DecodeStats {

@@ -109,8 +109,8 @@ the input. Truncated archives must error, never panic.
 | **4b** | `MEMORY_MANAGER`, the VM spill manager and the Future/Index-LZ decoder (v3/v4): both are driven only by `decompress_FUTURE_LZ`, so they port together rather than standing alone. | **done** |
 | **4c** | The encoder: hash-table match finder, `compress` (-m3/-m4/-m5 + accelerator), CDC (-m1/-m2), in-memory REP (-m0) and the Future/Index-LZ second pass. Gate: byte-identical archives across the whole matrix. | **done** — every mode (`-m0`…`-m5`) and every suffix (`o`/`f`/default) is byte-identical to the C++: 174/174 in `tests/encode_conformance.sh` |
 | **5a** | v5 format design: container, record codec, rejection rules, verification strategy. | **done** — `docs/format-spec-v5.md` |
-| **5b** | v5 writer, v5 decoder and the equivalence/round-trip gate. | **mostly** — both directions work: `tests/format_v5_conformance.sh` (36/36) checks the stream against the byte-verified Future-LZ path *and* round-trips through the real decoder. Still missing: `--format=v4`, and the CLI/dedup wrapper that would build the `.dupref` payload the writer now embeds |
-| **5c** | CLI, release assets, retire the C++. | not started |
+| **5b** | v5 writer, v5 decoder, the `-dup` wrapper and the equivalence/round-trip gate. | **done** — `tests/format_v5_conformance.sh` (50/50) checks the stream against the byte-verified Future-LZ path *and* round-trips through the real decoder, `-dup` included; `tests/dup_v5_conformance.sh` (10/10) diffs the wrapper against the C++ oracle. |
+| **5c** | CLI (`--format=v4` is only argv at this point), release assets, retire the C++. | not started |
 
 ### Phase 4c notes worth keeping
 
@@ -259,6 +259,52 @@ earlier block can be re-read. A write-only file is not enough and fails with
 policy the C++ wraps around it — spooling to a tempfile when the real output is
 stdout and the format needs read-back (`srep.cpp:1124-1136`) — which belongs
 with the binary in phase 5.
+
+### Phase 5b notes worth keeping
+
+* **The v5 `-dup` meta is the `.dupref` payload, not a wrapper around it.** The
+  blob the footer points at is that payload verbatim plus a trailing CRC-32C
+  (`docs/format-spec-v5.md` §2), so `meta_size` is `payload.len() + 4` and the
+  blob still starts with `DUPR`. Writing a second `DUPR` header in front of a
+  payload that already carries one is invisible to a test that feeds the writer
+  arbitrary bytes -- the round-trip works either way -- so `v5::meta_tests`
+  builds a real `.dupref` blob and asserts the bytes on disk are it plus the
+  CRC. The reader is likewise the *same* payload the v4 ODUP trailer carries,
+  which is what lets `tests/dup_v5_conformance.sh` diff the two.
+* **`decode_v5` reads the footer before the blocks.** With a meta blob between
+  them it is the only thing that says where the block list ends; the reader
+  tracks how many bytes it has consumed and checks that against
+  `len - FOOTER_SIZE - meta_size` rather than trusting the stream position,
+  which a buffered caller would have already run past.
+* **A disabled hash has no digest field at all in v5** (`hash_size = 0`), where
+  v1-v4 always reserve the descriptor's 16 bytes. Sizing the per-block header
+  from the descriptor writes those 16 bytes anyway, and every block behind the
+  first one desynchronizes. This was latent until the `-dup` matrix reached
+  `-hash-`: it needs a block that actually has records to show up, so
+  `tests/format_v5_conformance.sh` now covers `-hash-` and SipHash's 8 bytes
+  (the size the v4 `-16` bias used to wrap to 248) in the plain matrix too.
+* **The v5 record rebuild is anchored at the source.** `at` in
+  `second_pass.rs` tracks `src`, which is the anchor v5 writes down
+  (`docs/format-spec-v5.md` §3). Decoding the words with the *destination*
+  anchor instead still yields the right `distance` -- the subtraction wraps back
+  to the same value -- but it drives `src` below zero on any match whose offset
+  exceeds its source position, which is a debug-build panic and a
+  silently-kept-correct answer in release. Matching offsets are common (the
+  first far-away reference in a small block), so this is not a corner.
+* **The `-dup` wrapper reproduces the C++ archive byte for byte in v4.** The
+  dedup body and the `.dupref` meta are each verified against the C++ on their
+  own, and the wrapper only decides where the meta goes -- so `DupMode::V4`
+  (write the body as Index-LZ, append `meta || u64_le(meta_size) || "ODUP"`) is
+  a whole-archive oracle for the orchestration, tempfile and all. v5 swaps the
+  trailer for the footer's `meta_offset`/`meta_size`, which is the only
+  difference the format makes.
+* **`--format=v4` is already exercised**; what is left of it is argv. The
+  container is chosen by `Mode`, which the encoder has written and diffed since
+  phase 4c, and `dup::encode`'s `DupMode` picks the trailer accordingly.
+* **The wrapper's tempfiles are `Drop`-scoped.** The C++ unlinks its
+  temporaries on every path it remembers to and leaks them on the rest (its
+  signal handler never calls `removeTemporaryFiles`); the port cannot forget,
+  which is the one place it deliberately does better than the oracle.
 
 ## Open questions
 

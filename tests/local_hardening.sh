@@ -127,6 +127,7 @@ run_core_suite() {
     bash tests/mode_suffix_hash_matrix.sh
     bash tests/encode_conformance.sh
     bash tests/format_v5_conformance.sh
+    bash tests/dup_v5_conformance.sh
 }
 
 # ---------------------------------------------------------------- #

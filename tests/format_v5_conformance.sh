@@ -66,6 +66,11 @@ for input in "$TMP/mixed.bin" "$TMP/dup5m.bin" "$ROOT/tests/corpus/mixed.bin"; d
     v5enc "$input" m4v -c1024
     v5enc "$input" m1v -l2048
     v5enc "$input" m0v -d16mb
+    # Digest shapes: v5 states `hash_size` explicitly, so the disabled case
+    # (`0`, the field is absent) and SipHash's 8 bytes -- the size the v4
+    # `-16` bias used to wrap to 248 -- both have to round-trip.
+    v5enc "$input" m4v -hash-
+    v5enc "$input" m4v -hash=siphash
 done
 
 say "degenerate inputs"
@@ -74,6 +79,19 @@ printf 'x' >"$TMP/tiny.bin"
 v5enc "$TMP/empty.bin" m3v
 v5enc "$TMP/tiny.bin" m3v
 v5enc "$ROOT/tests/corpus/tiny.bin" m5v
+
+# `-dup`: the dedup pre-pass runs, its `.dupref` payload rides inside the
+# container, and the archive comes back through the post-pass. The conformance
+# binary does the round-trip (including reading the payload out by the footer's
+# offsets) and exits non-zero on any mismatch.
+say "-dup: the dedup payload rides in the container and comes back"
+for m in m3 m4 m5; do
+    for input in "$TMP/dup5m.bin" "$TMP/mixed.bin"; do
+        v5enc "$input" "${m}v" --dup
+    done
+done
+v5enc "$TMP/dup5m.bin" m4v --dup -hash=sha1
+v5enc "$TMP/dup5m.bin" m4v --dup -hash-
 
 say "rejection rules live in the unit tests"
 # Header/footer/meta CRC mismatches, bad magic, bad version, undefined flags,

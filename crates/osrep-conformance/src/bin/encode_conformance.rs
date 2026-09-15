@@ -70,7 +70,7 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
         eprintln!(
-            "usage: {} <mode> [--seed=N] [-dN] [-bN] [-lN] [-cN] [-hash=NAME] <in> <out>",
+            "usage: {} <mode> [--seed=N] [--dup] [-dN] [-bN] [-lN] [-cN] [-hash=NAME] <in> <out>",
             args[0]
         );
         return ExitCode::from(2);
@@ -79,6 +79,9 @@ fn main() -> ExitCode {
 
     let mut opts = EncodeOptions::default();
     let mut files: Vec<String> = Vec::new();
+    // `-dup`: run the dedup pre-pass and let its meta travel with the archive.
+    // Checked before the `-d` prefix below, which would otherwise swallow it.
+    let mut dup = false;
     for a in &args[2..] {
         if let Some(v) = a.strip_prefix("--seed=") {
             match v.parse::<u64>() {
@@ -88,6 +91,8 @@ fn main() -> ExitCode {
                     return ExitCode::from(2);
                 }
             }
+        } else if a == "--dup" {
+            dup = true;
         } else if let Some(v) = a.strip_prefix("-dh") {
             opts.dict_hashsize = parse_mem(v);
         } else if let Some(v) = a.strip_prefix("-dl") {
@@ -149,6 +154,39 @@ fn main() -> ExitCode {
         }
     };
 
+    if dup {
+        // The handles above are for the plain path; `dup::encode` opens its
+        // own, and on Windows the output cannot be held open twice.
+        drop(input);
+        drop(output);
+        let dup_mode = match parsed.container {
+            encoder::Container::V5 => osrep_core::dup::DupMode::V5,
+            // The ODUP trailer is defined against the default Index-LZ archive
+            // and nothing else.
+            encoder::Container::IndexLz => osrep_core::dup::DupMode::V4,
+            _ => {
+                eprintln!("{mode}: -dup needs the v5 (`v`) or the default (no suffix) container");
+                return ExitCode::from(NOT_PORTED);
+            }
+        };
+        if let Err(e) = osrep_core::dup::encode(
+            std::path::Path::new(&files[0]),
+            std::path::Path::new(&files[1]),
+            &opts,
+            parsed,
+            osrep_core::dup::DupParams::default(),
+            dup_mode,
+        ) {
+            eprintln!("ERROR! {e:?}");
+            return ExitCode::from(1);
+        }
+        if let Err(e) = dup_round_trip(&files[0], &files[1]) {
+            eprintln!("ERROR! -dup round-trip: {e}");
+            return ExitCode::from(1);
+        }
+        return ExitCode::SUCCESS;
+    }
+
     let result = encoder::encode(&mut input, &mut output, &opts, parsed).map(|_| ());
 
     if result.is_ok() && parsed.container == encoder::Container::V5 {
@@ -174,6 +212,34 @@ fn main() -> ExitCode {
             ExitCode::from(1)
         }
     }
+}
+
+/// `encode -> decode == input` for a `-dup` archive, through the same wrapper
+/// the CLI would call: the dedup post-pass included, which is the part that
+/// reads the meta blob back out.
+fn dup_round_trip(input: &str, archive: &str) -> Result<(), String> {
+    let original = std::fs::read(input).map_err(|e| e.to_string())?;
+    let out = format!("{archive}.dec");
+    let opts = osrep_core::future_lz::FutureLzOptions::default();
+    let ran = osrep_core::dup::decode(
+        std::path::Path::new(archive),
+        std::path::Path::new(&out),
+        &opts,
+    )
+    .map_err(|e| format!("{e:?}"))?;
+    if !ran {
+        return Err("the archive was not recognised as a -dup one".into());
+    }
+    let decoded = std::fs::read(&out).map_err(|e| e.to_string())?;
+    let _ = std::fs::remove_file(&out);
+    if decoded != original {
+        return Err(format!(
+            "decoded {} bytes, expected {}",
+            decoded.len(),
+            original.len()
+        ));
+    }
+    Ok(())
 }
 
 /// `encode -> decode == input`, through the real v5 decoder: the one that
