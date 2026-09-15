@@ -107,7 +107,7 @@ the input. Truncated archives must error, never panic.
 | **3a** | Container framing: archive header, hash-descriptor table, version predicates, block header, v4 index footer + block-size table, ODUP trailer — read v1–v4 and write v4, byte-exact in both directions. | **done** |
 | **4a** | The I/O-LZ decoder (format v1/v2): record decoding, the literal/match interleaving, both match sources (read back from the output sink, and LZ77 replication within the block, which is `memcpy_lz_match`'s forward byte copy and NOT memmove), and per-block digest verification through the already-ported hashes. | **done** |
 | **4b** | `MEMORY_MANAGER`, the VM spill manager and the Future/Index-LZ decoder (v3/v4): both are driven only by `decompress_FUTURE_LZ`, so they port together rather than standing alone. | **done** |
-| **4c** | The encoder: hash-table match finder, `compress` (-m3/-m4/-m5 + accelerator), CDC (-m1/-m2), in-memory REP (-m0) and the Future/Index-LZ second pass. Gate: byte-identical v4 archives across the whole matrix. | **in progress** — 4c-0/1/2 done: rolling hashes, `-m0o` byte-identical (45/45 in `tests/encode_conformance.sh`) |
+| **4c** | The encoder: hash-table match finder, `compress` (-m3/-m4/-m5 + accelerator), CDC (-m1/-m2), in-memory REP (-m0) and the Future/Index-LZ second pass. Gate: byte-identical v4 archives across the whole matrix. | **in progress** — 4c-0..3 done: rolling hashes, `-m0o`, `-m4o`/`-m5o` byte-identical (95/95 in `tests/encode_conformance.sh`) |
 | **5** | v5 format, CLI, retire the C++. | not started |
 
 ### Phase 4c notes worth keeping
@@ -125,6 +125,27 @@ the input. Truncated archives must error, never panic.
   `LowBound`/`DataStart` bounds exist precisely for that — so the port's
   zeroed `Vec` agrees, and `--seed=N` reproducibility on the C++ side is what
   proves those regions are never read.
+* **Every non-`-m0` mode gets a fence match in `aux_statbuf`**
+  (`srep.cpp:723-724`, `if (!INMEM_COMPRESSION)`): `lit_len = len+1`,
+  `offset = BASE_LEN`, `match_len = BASE_LEN`. Its match starts one byte past
+  the block, so `compress`'s walk (`i >= match_start`) never reaches it — it
+  only terminates the list. With `-d` the in-memory pass's matches come first
+  and the fence follows, which is how `-m0` combines with `-m4`/`-m5`.
+* **`match_len`'s `goto stop` lands *after* the final in-block compare**
+  (`hash_table.cpp:393`), so every early exit — a short read from the input,
+  or the match running into `last_p` — skips that compare. A `break` out of
+  the reread block is not equivalent: with a short read, `old_offset` is still
+  below the block start and the tail's index wraps.
+* **`SliceHash::check` reads `h[chunk + 1]` one entry past the array** for the
+  last chunk of the file: the scanner's per-batch advance of four can
+  overshoot `next_chunk` by up to three positions, which shifts the
+  `add_hash` chunk index. In the C++ that read lands in the allocation's page
+  padding (zero); the port allocates the extra entry explicitly.
+* **The port reads blocks at explicit offsets.** The C++ re-reads the input
+  for `match_len` through a *second* handle (`ftemp`, `srep.cpp:638`); the
+  port has one handle, and `match_len` seeks it freely, so the sequential
+  block reads must re-anchor to their known offset or they silently continue
+  from wherever the last reread left the position.
 
 ### Phase 4c pre-port experiments (run before writing any Rust)
 

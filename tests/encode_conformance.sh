@@ -63,8 +63,12 @@ pass=0
 enc() {
     local input="$1" cm="$2" rm="$3"
     shift 3
-    ./bin/osrep "$cm" "$@" --seed=7 "$input" "$TMP/cpp.osr" >/dev/null 2>&1
-    "$RS" "$rm" "$@" --seed=7 "$input" "$TMP/rs.osr" >/dev/null 2>&1
+    if ! ./bin/osrep "$cm" "$@" --seed=7 "$input" "$TMP/cpp.osr" >/dev/null 2>"$TMP/cpp.err"; then
+        fail "cpp $cm $* on $input failed: $(tail -1 "$TMP/cpp.err")"
+    fi
+    if ! "$RS" "$rm" "$@" --seed=7 "$input" "$TMP/rs.osr" >/dev/null 2>"$TMP/rs.err"; then
+        fail "rust $rm $* on $input failed: $(tail -1 "$TMP/rs.err")"
+    fi
     if cmp -s "$TMP/cpp.osr" "$TMP/rs.osr"; then
         pass=$((pass+1))
     else
@@ -84,6 +88,24 @@ for input in tests/corpus/mixed.bin tests/corpus/text.bin tests/corpus/zeros.bin
     enc "$input" -m0o m0o -d16mb -hash-    # checksums disabled: digest bytes stay zero
     enc "$input" -m0o m0o -d16mb -hash=md5
     enc "$input" -m0o m0o -d16mb -hash=siphash
+done
+
+say "-m4o/-m5o (hash-table match finder, format v2) vs the C++ encoder"
+# The big inputs cross block boundaries (and so exercise the read-ahead slot
+# the scanner reads a few bytes past the block end through), and the -d cases
+# run the in-memory pass on top of the match finder, the way `-m0 -m4` combines.
+for input in tests/corpus/mixed.bin tests/corpus/text.bin tests/corpus/random.bin \
+             "$TMP/dup4m.bin" "$TMP/dup20m.bin"; do
+    enc "$input" -m4o m4o
+    enc "$input" -m4o m4o -b1mb
+    enc "$input" -m4o m4o -d16mb           # in-memory pass + match finder
+    enc "$input" -m4o m4o -d16mb -b1mb
+    enc "$input" -m4o m4o -l1024
+    enc "$input" -m5o m5o
+    enc "$input" -m5o m5o -b1mb
+    enc "$input" -m5o m5o -d16mb
+    enc "$input" -m5o m5o -l1024
+    enc "$input" -m5o m5o -l256
 done
 
 # Degenerate inputs and the C++'s own 512 MiB dictionary default.

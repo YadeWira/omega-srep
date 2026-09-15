@@ -6,11 +6,13 @@
 //! ported module.
 
 pub mod aes;
+pub mod compress;
 pub mod container;
 pub mod decompress;
 pub mod dedup;
 pub mod encoder;
 pub mod future_lz;
+pub mod hash_table;
 pub mod hashes;
 pub mod hashes_keyed;
 pub mod inmem;

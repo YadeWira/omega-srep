@@ -9,14 +9,24 @@
 //! (`io.cpp:282-307`): block header, digest, match list, then the literal runs
 //! the records interleave with.
 //!
-//! Only the single-pass I/O-LZ path is driven today (format v2 through
-//! `-m0o`); the Future/Index-LZ second pass lands with phase 4c-5.
+//! The read-ahead below is not only a speed choice: `compress` reads a few
+//! bytes past the block end (the batch of four can overshoot `next_chunk`,
+//! compress.cpp:178-183), and in the C++ those bytes are the next ring slot --
+//! which the background thread has usually already filled with the following
+//! block. Reading one block ahead reproduces that deterministically.
+//!
+//! Only the single-pass I/O-LZ path is driven (format v2 through the `o`
+//! suffix); the Future/Index-LZ second pass lands with phase 4c-5 and the
+//! digest-verified `-m3` with 4c-4.
 
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 
+use crate::compress as lz_compress;
 use crate::container::{self, ArchiveHeader, BlockHeader, HashInfo, Version};
+use crate::hash_table::HashTable;
 use crate::inmem::DictionaryCompressor;
 use crate::lz;
+use crate::util::rounddown_to_power_of_two;
 use crate::{hashes, hashes_keyed, vmac};
 
 /// `-b` default (`srep.cpp:288`).
@@ -25,6 +35,18 @@ pub const DEFAULT_BUFSIZE: usize = 8 * 1024 * 1024;
 pub const DEFAULT_DICTSIZE: u64 = 512 * 1024 * 1024;
 /// `BUFFERS` (`io.cpp:90`): the ring carries two extra blocks of headroom.
 const BUFFERS: usize = 2;
+
+/// Which per-block compressor runs. These are the ones the single-pass I/O-LZ
+/// path can drive; `-m3` and `-m1`/`-m2` land with 4c-4/4c-6.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    /// `-m0`: the in-memory REP pass, no hash table.
+    Inmem,
+    /// `-m4`: fixed-size chunks, matches verified by rereading the input.
+    Fixed,
+    /// `-m5`: `-m4` with exhaustive search and the slice filter.
+    FixedExhaustive,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EncodeError {
@@ -53,6 +75,7 @@ impl From<lz::EncodeError> for EncodeError {
             lz::EncodeError::MatchTooSmall { match_len, base_len } => {
                 EncodeError::MatchTooSmall { match_len, base_len }
             }
+            lz::EncodeError::BadInputMatch => EncodeError::BadBlockRecord,
         }
     }
 }
@@ -169,28 +192,39 @@ pub fn fill_seed_from(out: &mut [u8], seed64: u64) {
     }
 }
 
-/// `-m0o`: the in-memory REP match finder through the single-pass I/O-LZ path
-/// (`srep.cpp:693` with `INDEX_LZ=false, FUTURE_LZ=false`, so `ROUND_MATCHES`
-/// is false and the format is v2).
+/// The single-pass I/O-LZ driver: `-m0o`, `-m4o` and `-m5o` today, all of
+/// which store format v2 (`INDEX_LZ=false, FUTURE_LZ=false`, `ROUND_MATCHES`
+/// false because `-m3` is not wired yet).
 ///
 /// Returns the compressed size. `opts.dictsize` is the `-d` value (0 = no
 /// in-memory pass); the caller applies the `-m0` default itself if it wants
 /// one.
-pub fn encode_inmem_io_lz<R: Read, W: Write>(
+pub fn encode_io_lz<R: Read + Seek, W: Write>(
     input: &mut R,
     output: &mut W,
     opts: &EncodeOptions,
+    mode: Mode,
 ) -> Result<u64, EncodeError> {
     let hash = match container::hash_by_name(&opts.hash) {
         Some(h) => h,
         None => return Err(EncodeError::UnknownHash(opts.hash.clone())),
     };
 
-    // Option defaults (`srep.cpp:448-457`): -m0 is neither
-    // CONTENT_DEFINED_CHUNKING nor EXHAUSTIVE_SEARCH, so `min_match` defaults
-    // to 512, and `BASE_LEN` is the smaller of it and the dictionary's own
-    // minimum match.
+    // Option defaults (`srep.cpp:448-457`). `-m0` is neither
+    // CONTENT_DEFINED_CHUNKING nor EXHAUSTIVE_SEARCH, so its `min_match`
+    // defaults to 512 and `L` to it; `-m5` searches exhaustively from half the
+    // window, so its `L` is the power of two below `min_match`, divided by two.
     let min_match = if opts.min_match != 0 { opts.min_match } else { 512 };
+    let l = if opts.l != 0 {
+        opts.l
+    } else {
+        match mode {
+            Mode::Inmem | Mode::Fixed => min_match,
+            Mode::FixedExhaustive => {
+                (rounddown_to_power_of_two(min_match as u64 + 1) / 2) as usize
+            }
+        }
+    };
     let dict_min_match = if opts.dict_min_match != 0 {
         opts.dict_min_match
     } else {
@@ -217,24 +251,30 @@ pub fn encode_inmem_io_lz<R: Read, W: Write>(
     let mut hasher = BlockHasher::new(hash, &seed);
 
     let header_size = container::BLOCK_HEADER_SIZE + hash.hash_size as usize;
-    let mut compsize = 0u64;
     output.write_all(&ArchiveHeader::new(Version::V2, hash, base_len as u32).encode())?;
     output.write_all(&seed)?;
-    compsize += container::ARCHIVE_HEADER_SIZE as u64 + seed_size as u64;
+
+    // The match finder, for the modes that have one. `-m4` leaves the slice
+    // filter empty (its `check_slices` is <= 0), `-m5` fills it.
+    let mut table = match mode {
+        Mode::Inmem => None,
+        Mode::Fixed | Mode::FixedExhaustive => {
+            let filesize = input.seek(SeekFrom::End(0))?;
+            input.seek(SeekFrom::Start(0))?;
+            // `io_accelerator` defaults to 1 (srep.cpp:291).
+            Some(HashTable::new(false, false, l, min_match, 1, filesize))
+        }
+    };
 
     // The dictionary ring (`io.cpp:127`): the dictionary rounded up to whole
-    // blocks, plus two blocks of headroom for the background reads. `MAX_DIST`
-    // stays the *unrounded* `-d` value.
+    // blocks, plus two blocks of headroom for the background reads. It exists
+    // even with `-d0` (then it is just the two headroom blocks); `MAX_DIST`
+    // stays the *unrounded* `-d` value, and the in-memory pass runs only when
+    // it is non-zero.
+    let ring_size =
+        (round_up(opts.dictsize, bufsize as u64) + (BUFFERS as u64) * bufsize as u64) as usize;
     let use_dict = opts.dictsize != 0;
-    let ring_size = if use_dict {
-        (round_up(opts.dictsize, bufsize as u64) + (BUFFERS as u64) * bufsize as u64) as usize
-    } else {
-        0
-    };
     let mut dict = vec![0u8; ring_size];
-    let mut block = vec![0u8; bufsize];
-    // `srep.cpp:663`: the compressor takes the *dictionary* minimum match and
-    // the dictionary chunk, not `-l`/`-c`.
     let mut inmem = DictionaryCompressor::new(
         opts.dictsize,
         opts.dict_hashsize,
@@ -243,17 +283,24 @@ pub fn encode_inmem_io_lz<R: Read, W: Write>(
         base_len,
     );
 
+    let mut compsize = container::ARCHIVE_HEADER_SIZE as u64 + seed_size as u64;
+
+    // Read the first block, then keep one block of read-ahead in the ring.
+    // `buf_offset` is a BYTE offset into the ring, cycling by `bufsize` exactly
+    // like the C++'s `buf_offset = (buf_offset + bufsize) % dictsize`
+    // (io.cpp:250).
     let mut buf_offset = 0usize;
-    loop {
-        // Read the next block into the ring (`io.cpp:253-256`).
-        let filled = if use_dict {
-            read_block(input, &mut dict[buf_offset..buf_offset + bufsize])?
-        } else {
-            read_block(input, &mut block)?
-        };
-        if filled == 0 {
-            break;
-        }
+    let mut next_pos: u64 = 0;
+    let mut filled = read_block_at(input, next_pos, &mut dict[buf_offset..buf_offset + bufsize])?;
+    next_pos += filled as u64;
+    let mut block_start: u64 = 0;
+
+    while filled > 0 {
+        // Read-ahead: fill the next ring slot, so the few bytes `compress` may
+        // read past this block are the following block's, like the C++'s ring
+        // (and, at EOF, whatever stale bytes that slot holds -- also the same).
+        let next_offset = (buf_offset + bufsize) % ring_size;
+        let next_filled = read_block_at(input, next_pos, &mut dict[next_offset..next_offset + bufsize])?;
 
         // Per-block header: `calloc`'d, then the digest at word 3
         // (`io.cpp:262`), then the three `STAT`s filled in below.
@@ -263,22 +310,75 @@ pub fn encode_inmem_io_lz<R: Read, W: Write>(
                 .copy_from_slice(&digest);
         }
 
-        // `io.cpp:264` then `srep.cpp:722`.
-        let mut hashptr = Vec::new();
-        inmem.prepare_buffer(&mut hashptr, &dict[buf_offset..buf_offset + filled]);
+        if let Some(t) = table.as_mut() {
+            t.prepare_buffer(&dict, buf_offset, filled, block_start);
+        }
+
         let mut stat: Vec<u32> = Vec::new();
         let mut literal_bytes = 0u32;
-        inmem.compress(
-            &dict,
-            ring_size,
-            buf_offset,
-            filled,
-            &hashptr,
-            &mut literal_bytes,
-            &mut stat,
-        )?;
+        match mode {
+            Mode::Inmem => {
+                // `-m0`: the in-memory pass *is* the compressor; no fence and
+                // no second compressor (srep.cpp:726-727).
+                let mut hashptr = Vec::new();
+                inmem.prepare_buffer(&mut hashptr, &dict[buf_offset..buf_offset + filled]);
+                inmem.compress(
+                    &dict,
+                    ring_size,
+                    buf_offset,
+                    filled,
+                    &hashptr,
+                    &mut literal_bytes,
+                    &mut stat,
+                )?;
+            }
+            Mode::Fixed | Mode::FixedExhaustive => {
+                // `srep.cpp:722-724`: the in-memory pass (only with `-d`)
+                // writes into the aux list, then the fence `len+1 / BASE_LEN /
+                // BASE_LEN` is appended; its match starts past the block, so
+                // `compress` never reaches it -- it only stops the walk.
+                let mut in_stat: Vec<u32> = Vec::new();
+                if use_dict {
+                    let mut hashptr = Vec::new();
+                    inmem.prepare_buffer(&mut hashptr, &dict[buf_offset..buf_offset + filled]);
+                    inmem.compress(
+                        &dict,
+                        ring_size,
+                        buf_offset,
+                        filled,
+                        &hashptr,
+                        &mut literal_bytes,
+                        &mut in_stat,
+                    )?;
+                }
+                lz::encode_lz_match(
+                    &mut in_stat,
+                    false,
+                    base_len as u32,
+                    (filled + 1) as u32,
+                    base_len as u64,
+                    base_len as u32,
+                )?;
+                let t = table.as_mut().unwrap();
+                lz_compress::compress(
+                    t,
+                    &dict,
+                    buf_offset,
+                    filled,
+                    false,
+                    l,
+                    min_match,
+                    base_len as u32,
+                    block_start,
+                    &in_stat,
+                    &mut stat,
+                    &mut literal_bytes,
+                    input,
+                )?;
+            }
+        }
 
-        // `srep.cpp:719-721`: literal bytes, block size, match-list bytes
+        // `srep.cpp:743-747`: literal bytes, block size, match-list bytes
         // (zero for Index-LZ, which keeps them in the footer instead).
         let bh = BlockHeader {
             literal_bytes,
@@ -313,9 +413,12 @@ pub fn encode_inmem_io_lz<R: Read, W: Write>(
         output.write_all(&dict[buf_offset + in_pos..buf_offset + filled])?;
         compsize += (filled - in_pos) as u64;
 
-        if use_dict {
-            buf_offset = (buf_offset + bufsize) % ring_size;
-        }
+        // Advance; a zero read (EOF) ends the loop, like the background
+        // thread's step 4.
+        block_start += filled as u64;
+        next_pos += next_filled as u64;
+        buf_offset = next_offset;
+        filled = next_filled;
     }
     Ok(compsize)
 }
@@ -329,8 +432,16 @@ fn round_up(a: u64, b: u64) -> u64 {
     }
 }
 
-/// One `fread`: fill `buf` as far as the input allows, stopping only at EOF.
-fn read_block<R: Read>(input: &mut R, buf: &mut [u8]) -> Result<usize, EncodeError> {
+/// One `fread` at an explicit offset. The offset is not redundant: the
+/// match finder's `match_len` re-reads the *same* handle at arbitrary
+/// positions (the C++ uses a second handle on the input file for that,
+/// `srep.cpp:638`), so the sequential reads must re-anchor every time.
+fn read_block_at<R: Read + Seek>(
+    input: &mut R,
+    off: u64,
+    buf: &mut [u8],
+) -> Result<usize, EncodeError> {
+    input.seek(SeekFrom::Start(off))?;
     let mut filled = 0usize;
     while filled < buf.len() {
         match input.read(&mut buf[filled..]) {
