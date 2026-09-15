@@ -85,7 +85,7 @@ fn main() -> ExitCode {
     for a in &args[2..] {
         if let Some(v) = a.strip_prefix("--seed=") {
             match v.parse::<u64>() {
-                Ok(n) => opts.seed = Some(n),
+                Ok(n) => opts.seed = osrep_core::encoder::Seed::Value(n),
                 Err(_) => {
                     eprintln!("bad --seed value: {v}");
                     return ExitCode::from(2);
@@ -176,6 +176,7 @@ fn main() -> ExitCode {
             parsed,
             osrep_core::dup::DupParams::default(),
             dup_mode,
+            None,
         ) {
             eprintln!("ERROR! {e:?}");
             return ExitCode::from(1);
@@ -187,7 +188,7 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    let result = encoder::encode(&mut input, &mut output, &opts, parsed).map(|_| ());
+    let result = encoder::encode(&mut input, &mut output, &opts, parsed, None).map(|_| ());
 
     if result.is_ok() && parsed.container == encoder::Container::V5 {
         // v5 has no byte-for-byte oracle (the C++ cannot emit it), so every v5
@@ -278,7 +279,7 @@ fn v5_stream_equivalence(
             kind: mode.kind,
             container: encoder::Container::FutureLz,
         };
-        encoder::encode(&mut fin, &mut fout, opts, f_mode).map_err(|e| format!("{e:?}"))?;
+        encoder::encode(&mut fin, &mut fout, opts, f_mode, None).map_err(|e| format!("{e:?}"))?;
     }
 
     // 2. Both archives' per-block triples.

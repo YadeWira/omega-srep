@@ -16,17 +16,16 @@
 //! input filename substituted. This does the same, minus the subprocess: the
 //! encoder reads the body as the `Read + Seek` it already takes.
 
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::path::Path;
 
-use crate::container::{self, ArchiveHeader};
+use crate::archive;
 use crate::dedup::{self, Params};
-use crate::decompress::{decode_io_lz, DecodeError};
+use crate::decompress::DecodeError;
 use crate::encoder::{self, Container, EncodeError, EncodeOptions, Kind, Mode};
 use crate::future_lz::{self, FutureLzOptions};
+use crate::util::TempFile;
 use crate::v5;
 
 /// `"ODUP"`: the magic v4 closes a `-dup` archive with.
@@ -89,52 +88,6 @@ impl From<EncodeError> for DupError {
     }
 }
 
-// ------------------------------------------------------------- tempfile --
-
-/// A scratch file, removed when it goes out of scope.
-///
-/// The C++ wrapper unlinks its temporaries on every path it remembers to, and
-/// leaks them on the ones it does not (`signal` handling, early returns). A
-/// `Drop` cannot forget, which is the point.
-struct TempFile {
-    path: PathBuf,
-}
-
-impl TempFile {
-    fn new(tag: &str) -> Result<TempFile, DupError> {
-        static COUNTER: AtomicU64 = AtomicU64::new(0);
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        let name = format!(
-            "osrep-dup-{tag}-{}-{nanos}-{}",
-            std::process::id(),
-            COUNTER.fetch_add(1, Ordering::Relaxed)
-        );
-        let path = std::env::temp_dir().join(name);
-        // `create_new` so two concurrent runs can never land on the same path,
-        // and so a leftover file is an error rather than something silently
-        // appended to.
-        OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-            .map_err(|_| DupError::Io)?;
-        Ok(TempFile { path })
-    }
-
-    fn path(&self) -> &Path {
-        &self.path
-    }
-}
-
-impl Drop for TempFile {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
-    }
-}
-
 // --------------------------------------------------------------- encode --
 
 /// Compress `input` with the dedup pre-pass, the way `-dup` does. Returns the
@@ -151,6 +104,7 @@ pub fn encode(
     mode: Mode,
     dup: DupParams,
     container: DupMode,
+    progress: Option<&mut dyn FnMut(u64, u64)>,
 ) -> Result<u64, DupError> {
     if mode.kind == Kind::Inmem {
         return Err(DupError::IncompatibleMethod);
@@ -161,7 +115,7 @@ pub fn encode(
 
     // The dedup pass: the body is the only piece worth feeding to the encoder,
     // and the meta is the only piece that never goes through it.
-    let body = TempFile::new("body")?;
+    let body = TempFile::new("osrep-dup-body")?;
     let meta = dedup::encode_streaming(input, body.path(), dup.chunking, dup.paranoid)
         .map_err(DupError::Dedup)?;
 
@@ -176,7 +130,11 @@ pub fn encode(
     let body_file = File::open(body.path())?;
     let mut body_file = std::io::BufReader::new(body_file);
     let mut out = File::create(output)?;
-    encoder::encode(&mut body_file, &mut out, &enc, mode)?;
+    // The progress the caller sees is the encoder's, against the *body*: the
+    // dedup pass has already run by the time there is anything to report, and
+    // the C++ has the same shape (its `-bar` lives in srep_main, which only
+    // ever sees the body).
+    encoder::encode(&mut body_file, &mut out, &enc, mode, progress)?;
 
     if container == DupMode::V4 {
         // `dup_wrapper.cpp:254-262`: meta || u64_le(meta_size) || "ODUP".
@@ -206,10 +164,10 @@ pub fn decode(input: &Path, output: &Path, opts: &FutureLzOptions) -> Result<boo
     // The dedup post-pass needs the body on disk: it seeks back into it to
     // expand the references, so the two halves cannot share a file.
     if let Some(meta) = v5_meta(&mut archive, len)? {
-        let body = TempFile::new("body")?;
+        let body = TempFile::new("osrep-dup-body")?;
         let mut sink = File::create(body.path())?;
         archive.seek(SeekFrom::Start(0))?;
-        future_lz::decode_v5(&mut archive, &mut sink, opts).map_err(DupError::Decode)?;
+        future_lz::decode_v5(&mut archive, &mut sink, opts, None).map_err(DupError::Decode)?;
         sink.flush()?;
         drop(sink);
         dedup::decode_streaming(&meta, body.path(), output).map_err(DupError::Dedup)?;
@@ -220,15 +178,19 @@ pub fn decode(input: &Path, output: &Path, opts: &FutureLzOptions) -> Result<boo
         // v4 keeps the body in the archive but hidden behind the trailer; the
         // C++ carves it out to a tempfile before handing it to srep_main, and
         // so does this.
-        let body = TempFile::new("body-osr")?;
+        let body = TempFile::new("osrep-dup-body-osr")?;
         let body_len = len - ODUP_TRAILER_SIZE - meta.len() as u64;
         {
             let mut trimmed = File::create(body.path())?;
             archive.seek(SeekFrom::Start(0))?;
             std::io::copy(&mut (&mut archive).take(body_len), &mut trimmed)?;
         }
-        let decoded = TempFile::new("body-dec")?;
-        decode_body(body.path(), decoded.path(), opts)?;
+        let decoded = TempFile::new("osrep-dup-body-dec")?;
+        let mut body_file = File::open(body.path())?;
+        let mut sink = File::create(decoded.path())?;
+        archive::decode(&mut body_file, &mut sink, opts, None).map_err(DupError::Decode)?;
+        sink.flush()?;
+        drop(sink);
         dedup::decode_streaming(&meta, decoded.path(), output).map_err(DupError::Dedup)?;
         return Ok(true);
     }
@@ -295,25 +257,6 @@ fn odup_meta(archive: &mut File, len: u64) -> Result<Option<Vec<u8>>, DupError> 
     Ok(Some(meta))
 }
 
-/// Reconstruct the body of a v1-v4 archive, picking the decoder the version
-/// calls for the way the C++'s own front end does.
-fn decode_body(body: &Path, output: &Path, opts: &FutureLzOptions) -> Result<(), DupError> {
-    let mut input = std::io::BufReader::new(File::open(body)?);
-    let mut head = [0u8; container::ARCHIVE_HEADER_SIZE];
-    input.read_exact(&mut head).map_err(|_| DupError::Truncated)?;
-    let header = ArchiveHeader::decode(&head).map_err(|_| DupError::BadDup)?;
-    input.seek(SeekFrom::Start(0))?;
-
-    let mut sink = File::create(output)?;
-    if header.version.io_lz() {
-        decode_io_lz(&mut input, &mut sink).map_err(DupError::Decode)?;
-    } else {
-        future_lz::decode_future_lz(&mut input, &mut sink, opts).map_err(DupError::Decode)?;
-    }
-    sink.flush()?;
-    Ok(())
-}
-
 /// One `read` at an explicit offset, into a buffer the caller sized.
 fn read_exact_at<R: Read + Seek>(r: &mut R, off: u64, buf: &mut [u8]) -> Result<(), DupError> {
     r.seek(SeekFrom::Start(off))?;
@@ -323,6 +266,7 @@ fn read_exact_at<R: Read + Seek>(r: &mut R, off: u64, buf: &mut [u8]) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::encoder::Seed;
 
     /// 5 MiB of a repeated 512 KiB pseudo-random block. CDC only finds
     /// duplicates where there is real repetition and `tests/corpus` has none
@@ -345,7 +289,7 @@ mod tests {
     }
 
     fn scratch(data: Option<&[u8]>) -> TempFile {
-        let f = TempFile::new("test").unwrap();
+        let f = TempFile::new("osrep-dup-test").unwrap();
         if let Some(d) = data {
             std::fs::write(f.path(), d).unwrap();
         }
@@ -361,9 +305,21 @@ mod tests {
 
     fn options() -> EncodeOptions {
         EncodeOptions {
-            seed: Some(7),
+            seed: Seed::Value(7),
             ..EncodeOptions::default()
         }
+    }
+
+    /// `encode` without progress reporting, which is all the tests want.
+    fn encode_dup(
+        input: &Path,
+        output: &Path,
+        enc: &EncodeOptions,
+        mode: Mode,
+        dup: DupParams,
+        container: DupMode,
+    ) -> Result<u64, DupError> {
+        encode(input, output, enc, mode, dup, container, None)
     }
 
     #[test]
@@ -373,7 +329,7 @@ mod tests {
         let archive = scratch(None);
         let restored = scratch(None);
 
-        let written = encode(
+        let written = encode_dup(
             input.path(),
             archive.path(),
             &options(),
@@ -409,7 +365,7 @@ mod tests {
         let archive = scratch(None);
         let restored = scratch(None);
 
-        let written = encode(
+        let written = encode_dup(
             input.path(),
             archive.path(),
             &options(),
@@ -443,7 +399,7 @@ mod tests {
 
         let mut file = File::open(input.path()).unwrap();
         let mut out = File::create(archive.path()).unwrap();
-        encoder::encode(&mut file, &mut out, &options(), v5_mode()).unwrap();
+        encoder::encode(&mut file, &mut out, &options(), v5_mode(), None).unwrap();
         drop(out);
 
         // No payload, so the post-pass does not run -- and says so.
@@ -455,7 +411,7 @@ mod tests {
         let input = scratch(Some(b"x"));
         let archive = scratch(None);
         assert!(matches!(
-            encode(
+            encode_dup(
                 input.path(),
                 archive.path(),
                 &options(),
@@ -469,7 +425,7 @@ mod tests {
             Err(DupError::IncompatibleMethod)
         ));
         assert!(matches!(
-            encode(
+            encode_dup(
                 input.path(),
                 archive.path(),
                 &options(),
@@ -488,7 +444,7 @@ mod tests {
     fn a_corrupt_v5_payload_is_refused() {
         let input = scratch(Some(&dup_friendly()));
         let archive = scratch(None);
-        encode(
+        encode_dup(
             input.path(),
             archive.path(),
             &options(),

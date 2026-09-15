@@ -94,6 +94,9 @@ pub enum EncodeError {
     /// `EncodeOptions::dup_meta` is not a `.dupref` payload, so it cannot be
     /// embedded as a v5 `-dup` meta blob.
     BadDupMeta,
+    /// `Seed::Bytes` does not carry exactly the archive's key length, which is
+    /// what `OSREP_SEED_HEX` being a fixed-length hex string means.
+    BadSeed { want: usize, got: usize },
 }
 
 impl From<std::io::Error> for EncodeError {
@@ -142,9 +145,13 @@ pub struct EncodeOptions {
     pub dict_chunk: usize,
     /// `-c` (hash window); 0 = derive from `min_match`.
     pub l: usize,
-    /// `--seed=N`: derive the per-archive hash key instead of drawing it from
-    /// the PRNG.
-    pub seed: Option<u64>,
+    /// Where the per-archive hash key comes from.
+    pub seed: Seed,
+    /// `-sBYTES`: the length to compress *as*. The C++ only needs it to read
+    /// from stdin; the port spools stdin, so it can always measure, but an
+    /// explicit declaration still wins because it decides the block count and
+    /// what the hash table is sized for.
+    pub declared_size: Option<u64>,
     /// `-hash=` name; empty selects disabled checksums (`-hash-`).
     pub hash: String,
     /// The `-dup` `.dupref` payload to embed. The dedup pass builds it; the v5
@@ -163,10 +170,30 @@ impl Default for EncodeOptions {
             dict_min_match: 0,
             dict_chunk: 0,
             l: 0,
-            seed: None,
+            seed: Seed::Random,
+            declared_size: None,
             hash: container::DEFAULT_HASH_NAME.to_string(),
             dup_meta: None,
         }
+    }
+}
+
+/// Where the archive's hash key comes from (`srep.cpp:643-653`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Seed {
+    /// Nothing given: the C++ draws the key from Fortuna, which no port can
+    /// reproduce, so a keyed hash is refused rather than guessed.
+    Random,
+    /// `--seed=N`: xorshift64 expands N into the key (`srep.cpp:251-261`).
+    Value(u64),
+    /// `OSREP_SEED_HEX`: the key bytes verbatim, a debug hook that replays the
+    /// seed an existing archive recorded.
+    Bytes(Vec<u8>),
+}
+
+impl Default for Seed {
+    fn default() -> Self {
+        Seed::Random
     }
 }
 
@@ -243,7 +270,9 @@ pub fn encode<R: Read + Seek, W: Write>(
     output: &mut W,
     opts: &EncodeOptions,
     mode: Mode,
+    progress: Option<&mut dyn FnMut(u64, u64)>,
 ) -> Result<u64, EncodeError> {
+    let mut progress = progress;
     let kind = mode.kind;
     let cdc = matches!(kind, Kind::Cdc | Kind::CdcZpaq);
     let io_lz = mode.container == Container::IoLz;
@@ -301,9 +330,18 @@ pub fn encode<R: Read + Seek, W: Write>(
     let seed_size = hash.seed_size as usize;
     let mut seed = vec![0u8; seed_size];
     if seed_size > 0 {
-        match opts.seed {
-            Some(n) => fill_seed_from(&mut seed, n),
-            None => return Err(EncodeError::NeedsSeed),
+        match &opts.seed {
+            Seed::Random => return Err(EncodeError::NeedsSeed),
+            Seed::Value(n) => fill_seed_from(&mut seed, *n),
+            Seed::Bytes(bytes) => {
+                if bytes.len() != seed_size {
+                    return Err(EncodeError::BadSeed {
+                        want: seed_size,
+                        got: bytes.len(),
+                    });
+                }
+                seed.copy_from_slice(bytes);
+            }
         }
     }
     let mut hasher = BlockHasher::new(hash, &seed);
@@ -332,11 +370,22 @@ pub fn encode<R: Read + Seek, W: Write>(
     // the v3/v4 decoder reads its match-length base from here, and 0 is what
     // makes those records carry raw lengths.
     let futurelz_base_len = if io_lz { base_len as u32 } else { 0 };
+
+    // The input length. `-sBYTES` overrides the measurement, because it is what
+    // the C++ uses when the input is stdin and it is what decides the block
+    // count and the match finder's sizing.
+    let filesize = match opts.declared_size {
+        Some(n) => n,
+        None => {
+            let n = input.seek(SeekFrom::End(0))?;
+            input.seek(SeekFrom::Start(0))?;
+            n
+        }
+    };
+
     if v5 {
         // `docs/format-spec-v5.md` §2: one magic, the hash pair un-biased, and
         // the block count and input size written down instead of inferred.
-        let filesize = input.seek(SeekFrom::End(0))?;
-        input.seek(SeekFrom::Start(0))?;
         let block_count = filesize.div_ceil(bufsize as u64) as u32;
         output.write_all(
             &v5::Header {
@@ -368,8 +417,6 @@ pub fn encode<R: Read + Seek, W: Write>(
     let mut table = match kind {
         Kind::Inmem => None,
         Kind::Cdc | Kind::CdcZpaq | Kind::Fixed | Kind::FixedExhaustive | Kind::Digest => {
-            let filesize = input.seek(SeekFrom::End(0))?;
-            input.seek(SeekFrom::Start(0))?;
             // `io_accelerator` defaults to 1 (srep.cpp:291). `-m3` is the one
             // mode that precomputes and compares per-chunk digests.
             // `COMPARE_DIGESTS = (method <= -m3)` and
@@ -584,6 +631,17 @@ pub fn encode<R: Read + Seek, W: Write>(
         next_pos += next_filled as u64;
         buf_offset = next_offset;
         filled = next_filled;
+
+        // `-bar` counts the input consumed against the size it is being
+        // compressed as (`srep.cpp:808`).
+        if let Some(p) = progress.as_deref_mut() {
+            p(block_start, filesize);
+        }
+    }
+
+    // A guaranteed final tick, so a consumer always sees `done == total`.
+    if let Some(p) = progress.as_deref_mut() {
+        p(filesize, filesize);
     }
 
     // Future-LZ and Index-LZ re-emit every block's match list (`srep.cpp:820`).

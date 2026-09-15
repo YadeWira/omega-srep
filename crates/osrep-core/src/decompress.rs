@@ -279,7 +279,20 @@ pub(crate) fn read_exact_or_eof<R: Read>(r: &mut R, buf: &mut [u8]) -> Result<bo
 pub fn decode_io_lz<R: Read + Seek, S: Read + Write + Seek>(
     input: &mut R,
     sink: &mut S,
+    progress: Option<&mut dyn FnMut(u64, u64)>,
 ) -> Result<DecodeStats, DecodeError> {
+    // `-bar` counts the archive, so the total is the file itself. Measured
+    // before anything is read: seeking back to the start afterwards would
+    // rewind past the header this function is about to parse.
+    let (mut progress, total) = match progress {
+        Some(p) => {
+            let n = input.seek(SeekFrom::End(0))?;
+            input.seek(SeekFrom::Start(0))?;
+            (Some(p), n)
+        }
+        None => (None, 0),
+    };
+
     let mut header_bytes = [0u8; crate::container::ARCHIVE_HEADER_SIZE];
     if !read_exact_or_eof(input, &mut header_bytes)? {
         return Err(ContainerError::Truncated.into());
@@ -300,6 +313,9 @@ pub fn decode_io_lz<R: Read + Seek, S: Read + Write + Seek>(
     let mut block_buf = vec![0u8; header_size];
     let mut block_start = 0u64;
     let mut blocks = 0usize;
+
+    let mut consumed =
+        (crate::container::ARCHIVE_HEADER_SIZE + header.hash_seed_size as usize) as u64;
 
     loop {
         if !read_exact_or_eof(input, &mut block_buf)? {
@@ -356,6 +372,16 @@ pub fn decode_io_lz<R: Read + Seek, S: Read + Write + Seek>(
 
         block_start += u64::from(bh.origsize);
         blocks += 1;
+
+        consumed += header_size as u64 + u64::from(bh.statsize) + u64::from(bh.literal_bytes);
+        if let Some(p) = progress.as_deref_mut() {
+            p(consumed, total);
+        }
+    }
+
+    // A guaranteed final tick, so a consumer always sees `done == total`.
+    if let Some(p) = progress.as_deref_mut() {
+        p(total, total);
     }
 
     Ok(DecodeStats {
@@ -369,7 +395,7 @@ pub fn decode_io_lz<R: Read + Seek, S: Read + Write + Seek>(
 pub fn decode_io_lz_to_vec(bytes: &[u8]) -> Result<Vec<u8>, DecodeError> {
     let mut input = io::Cursor::new(bytes);
     let mut sink = io::Cursor::new(Vec::new());
-    decode_io_lz(&mut input, &mut sink)?;
+    decode_io_lz(&mut input, &mut sink, None)?;
     Ok(sink.into_inner())
 }
 

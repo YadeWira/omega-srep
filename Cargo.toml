@@ -18,8 +18,11 @@ members = [
     "crates/osrep-conformance",
 ]
 
+# Kept in step with `program_version` in Compression/SREP/srep.cpp: the Rust
+# `osrep` is meant to be interchangeable with the C++ one, so both report the
+# same version line. A release bumps this and srep.cpp together.
 [workspace.package]
-version = "0.0.0"
+version = "1.0.7"
 edition = "2021"
 rust-version = "1.77"
 publish = false

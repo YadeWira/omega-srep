@@ -45,9 +45,7 @@ fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 SEED=e765312fbb692a185e92603b4a1cbd9de481629f894d2212c69a6c1e254df35f
 RUNS=${FUTURELZ_RACE_RUNS:-150}
 
-say "building the C++ encoder (bin/osrep)"
-make bin/osrep >/dev/null 2>&1 || fail "make bin/osrep"
-OSREP=bin/osrep
+source "$(dirname "$0")/_osrep_bin.sh"
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT

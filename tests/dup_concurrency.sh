@@ -14,7 +14,7 @@ set -eu
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-[[ -x bin/osrep ]] || make bin/osrep
+source "$(dirname "$0")/_osrep_bin.sh"
 
 N="${OSREP_CONCURRENCY_N:-8}"
 SIZE_BYTES="${OSREP_CONCURRENCY_SIZE:-$((4 * 1024 * 1024))}"
@@ -41,7 +41,7 @@ done
 echo "launching $N concurrent compresses (size=$SIZE_BYTES)..."
 pids=()
 for i in $(seq 1 "$N"); do
-    ./bin/osrep -dup -m4 "$WORK/in_$i.bin" "$WORK/out_$i.osr" >/dev/null 2>&1 &
+    "$OSREP" -dup -m4 "$WORK/in_$i.bin" "$WORK/out_$i.osr" >/dev/null 2>&1 &
     pids+=("$!")
 done
 
@@ -63,7 +63,7 @@ fi
 echo "launching $N concurrent decompresses..."
 pids=()
 for i in $(seq 1 "$N"); do
-    ./bin/osrep -d "$WORK/out_$i.osr" "$WORK/dec_$i.bin" >/dev/null 2>&1 &
+    "$OSREP" -d "$WORK/out_$i.osr" "$WORK/dec_$i.bin" >/dev/null 2>&1 &
     pids+=("$!")
 done
 for i in $(seq 0 $((N - 1))); do

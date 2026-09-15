@@ -597,7 +597,18 @@ pub fn decode_future_lz<R: Read + Seek, S: Read + Write + Seek>(
     input: &mut R,
     sink: &mut S,
     opts: &FutureLzOptions,
+    progress: Option<&mut dyn FnMut(u64, u64)>,
 ) -> Result<FutureLzStats, DecodeError> {
+    // `-bar` counts the archive; only measured when someone is listening.
+    let (mut progress, total) = match progress {
+        Some(p) => {
+            let n = input.seek(SeekFrom::End(0))?;
+            input.seek(SeekFrom::Start(0))?;
+            (Some(p), n)
+        }
+        None => (None, 0),
+    };
+
     let mut header_bytes = [0u8; ARCHIVE_HEADER_SIZE];
     if !read_exact_or_eof(input, &mut header_bytes)? {
         return Err(ContainerError::Truncated.into());
@@ -628,6 +639,7 @@ pub fn decode_future_lz<R: Read + Seek, S: Read + Write + Seek>(
     let block_header_size = BLOCK_HEADER_SIZE + header.hash_size as usize;
     let full_archive_header_size =
         (ARCHIVE_HEADER_SIZE + header.hash_seed_size as usize) as u64;
+    let mut consumed = full_archive_header_size;
 
     // v4 stores the whole match list out of line, before the footer, and sizes
     // each block's share with a per-block table (`srep.cpp:1052-1094`).
@@ -752,6 +764,19 @@ pub fn decode_future_lz<R: Read + Seek, S: Read + Write + Seek>(
 
         block_start = block_end;
         blocks += 1;
+
+        // v4 keeps the match list out of line, so `bh.statsize` is zero there
+        // and only the literals count; the forced tick below closes the gap
+        // either way.
+        consumed += block_header_size as u64 + u64::from(bh.statsize) + u64::from(bh.literal_bytes);
+        if let Some(p) = progress.as_deref_mut() {
+            p(consumed, total);
+        }
+    }
+
+    // A guaranteed final tick, so a consumer always sees `done == total`.
+    if let Some(p) = progress.as_deref_mut() {
+        p(total, total);
     }
 
     Ok(FutureLzStats {
@@ -772,7 +797,7 @@ pub fn decode_future_lz_to_vec(
 ) -> Result<Vec<u8>, DecodeError> {
     let mut input = io::Cursor::new(bytes);
     let mut sink = io::Cursor::new(Vec::new());
-    decode_future_lz(&mut input, &mut sink, opts)?;
+    decode_future_lz(&mut input, &mut sink, opts, None)?;
     Ok(sink.into_inner())
 }
 
@@ -950,6 +975,7 @@ pub fn decode_v5<R: Read + Seek, S: Read + Write + Seek>(
     input: &mut R,
     sink: &mut S,
     opts: &FutureLzOptions,
+    progress: Option<&mut dyn FnMut(u64, u64)>,
 ) -> Result<FutureLzStats, DecodeError> {
     // The footer is always the last thing in the file, and when the archive
     // carries a `-dup` meta blob it is the only thing that says how big that
@@ -981,6 +1007,7 @@ pub fn decode_v5<R: Read + Seek, S: Read + Write + Seek>(
     if (header.flags & crate::v5::FLAG_HAS_DUP != 0) != (footer.meta_size != 0) {
         return Err(DecodeError::BadData("v5 -dup meta disagrees with the flags"));
     }
+    let mut progress = progress;
     let hash = header
         .hash()
         .map_err(|_| DecodeError::BadData("v5 hash descriptor"))?;
@@ -1065,6 +1092,14 @@ pub fn decode_v5<R: Read + Seek, S: Read + Write + Seek>(
             + hash_size as u64
             + u64::from(bh.statsize)
             + u64::from(bh.literal_bytes);
+        if let Some(p) = progress.as_deref_mut() {
+            p(consumed, file_len);
+        }
+    }
+
+    // A guaranteed final tick, so a consumer always sees `done == total`.
+    if let Some(p) = progress.as_deref_mut() {
+        p(file_len, file_len);
     }
 
     // The blocks stop exactly where the meta blob starts -- or where the footer
@@ -1101,6 +1136,6 @@ pub fn decode_v5<R: Read + Seek, S: Read + Write + Seek>(
 pub fn decode_v5_to_vec(bytes: &[u8], opts: &FutureLzOptions) -> Result<Vec<u8>, DecodeError> {
     let mut input = io::Cursor::new(bytes);
     let mut sink = io::Cursor::new(Vec::new());
-    decode_v5(&mut input, &mut sink, opts)?;
+    decode_v5(&mut input, &mut sink, opts, None)?;
     Ok(sink.into_inner())
 }

@@ -29,7 +29,7 @@ cd "$ROOT"
 # integration (F5.3b); -m3/-m4/-m5 are the recommended pairings.
 METHODS=(${OSREP_DUP_METHODS:-"-m1 -m2 -m3 -m4 -m5"})
 
-[[ -x bin/osrep      ]] || make bin/osrep
+source "$(dirname "$0")/_osrep_bin.sh"
 [[ -x bin/dedup_test ]] || make bin/dedup_test
 
 TMP="$(mktemp -d)"
@@ -101,13 +101,13 @@ for method in $METHODS; do
     in_size=$(stat -c%s "$in")
 
     ./bin/dedup_test split-encode "$in" "$meta" "$body" >/dev/null
-    ./bin/osrep "$method" "$body" "$body_osr" >/dev/null
+    "$OSREP" "$method" "$body" "$body_osr" >/dev/null
 
     pack_archive "$body_osr" "$meta" "$archive"
     arch_size=$(stat -c%s "$archive")
 
     unpack_archive "$archive" "$body_osr_dec" "$meta_dec"
-    ./bin/osrep -d "$body_osr_dec" "$body_dec" >/dev/null
+    "$OSREP" -d "$body_osr_dec" "$body_dec" >/dev/null
     ./bin/dedup_test split-decode "$meta_dec" "$body_dec" "$out" >/dev/null
 
     if cmp -s "$in" "$out"; then

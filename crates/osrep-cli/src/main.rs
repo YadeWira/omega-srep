@@ -1,52 +1,59 @@
 //! Omega SREP command line -- Rust port.
 //!
-//! Only the pieces that exist are wired up; everything else exits with a
-//! clear message instead of pretending to work. The C++ binary remains
-//! the shipping implementation while modules are ported, and
-//! `osrep-conformance` diffs the two.
+//! Interchangeable with the C++ binary: same flags, same archive bytes, same
+//! exit codes. `docs/rust-port.md` describes the port; `args.rs` mirrors the
+//! two C++ parsers, `modes.rs` the front end that drives them, and `report.rs`
+//! everything written to stderr.
+
+mod args;
+mod help;
+mod modes;
+mod report;
 
 use std::process::ExitCode;
 
-const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// Kept in step with `program_version` (`srep.cpp:6`) through
+/// `workspace.package.version`.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let argv: Vec<String> = std::env::args().skip(1).collect();
 
-    if args.is_empty() {
-        print_help();
-        return ExitCode::from(2);
+    // `--version` / `--help` are answered before either parser runs
+    // (`dup_wrapper.cpp:477-488`), because the main parser rejects anything
+    // starting with `--`.
+    for a in &argv {
+        match a.as_str() {
+            "--version" | "-V" => {
+                println!("{}", help::version());
+                return ExitCode::SUCCESS;
+            }
+            "--help" | "-h" | "-?" => {
+                print!("{}", help::help());
+                return ExitCode::SUCCESS;
+            }
+            _ => {}
+        }
     }
 
-    match args[0].as_str() {
-        "--version" | "-V" => {
-            println!("osrep (Rust) {VERSION} -- port in progress");
-            ExitCode::SUCCESS
-        }
-        "--help" | "-h" | "-?" => {
-            print_help();
-            ExitCode::SUCCESS
-        }
-        other => {
-            eprintln!(
-                "osrep (Rust): '{other}' is not ported yet.\n\
-                 The C++ build in bin/osrep is still the shipping binary; \
-                 see docs/rust-port.md for the porting plan."
-            );
-            ExitCode::from(2)
-        }
+    let opts = match args::parse(&argv) {
+        Ok(o) => o,
+        Err(e) => return fail(modes::ERROR_CMDLINE, &e.0),
+    };
+
+    if modes::wants_help(&opts) {
+        print!("{}", help::help());
+        return ExitCode::from(modes::NO_ERRORS as u8);
+    }
+
+    match modes::run(&opts) {
+        Ok(code) => ExitCode::from(code as u8),
+        Err(e) => fail(e.code, &e.msg),
     }
 }
 
-fn print_help() {
-    println!(
-        "Omega SREP (Rust port, incomplete)\n\
-         \n\
-         Usage: osrep [options] <input> <output>\n\
-         \n\
-         Ported so far:\n\
-         \x20 --version, --help\n\
-         \n\
-         Not yet ported: compression, decompression, -dup.\n\
-         The C++ bin/osrep remains the shipping implementation."
-    );
+/// `error()` (`io.cpp:9-19`).
+fn fail(code: i32, msg: &str) -> ExitCode {
+    eprintln!("\n  ERROR! {msg}");
+    ExitCode::from(code as u8)
 }

@@ -4,7 +4,8 @@
 # decompress(compress(x)) == x. Fails CI on any mismatch.
 set -euo pipefail
 
-BIN="${OSREP_BIN:-bin/osrep}"
+source "$(dirname "$0")/_osrep_bin.sh"
+BIN="$OSREP"
 CORPUS="${OSREP_CORPUS:-tests/corpus}"
 WORK="$(mktemp -d -t osrep-roundtrip-XXXX)"
 

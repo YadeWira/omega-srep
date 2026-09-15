@@ -44,10 +44,16 @@ inspecting the PE import table; a real Win7 VM run is still on the checklist.)
 
 ```
 crates/osrep-core/         library; modules are ported here
-crates/osrep-cli/          the `osrep` binary
-crates/osrep-conformance/  differential harness; mirrors tests/dedup_test.cpp's CLI
+crates/osrep-cli/          the `osrep` binary: args.rs (both parsers), modes.rs
+                           (compress/decompress/-i), report.rs (stderr),
+                           help.rs (--version/--help)
+crates/osrep-conformance/  differential harnesses; mirror the C++ test tools' CLIs
 tests/rust_conformance.sh       runs both implementations and diffs the output
 tests/container_conformance.sh  validates the container framing against real archives
+tests/rust_cli_conformance.sh   runs the CLI against the C++ binary, then runs the
+                                CLI shell suite with OSREP_BIN pointed at the port
+tests/_osrep_bin.sh             how that redirection works: every CLI-level script
+                                resolves its binary through OSREP_BIN
 ```
 
 `crates/osrep-conformance` deliberately reproduces the C++ test tool's command
@@ -110,7 +116,8 @@ the input. Truncated archives must error, never panic.
 | **4c** | The encoder: hash-table match finder, `compress` (-m3/-m4/-m5 + accelerator), CDC (-m1/-m2), in-memory REP (-m0) and the Future/Index-LZ second pass. Gate: byte-identical archives across the whole matrix. | **done** — every mode (`-m0`…`-m5`) and every suffix (`o`/`f`/default) is byte-identical to the C++: 174/174 in `tests/encode_conformance.sh` |
 | **5a** | v5 format design: container, record codec, rejection rules, verification strategy. | **done** — `docs/format-spec-v5.md` |
 | **5b** | v5 writer, v5 decoder, the `-dup` wrapper and the equivalence/round-trip gate. | **done** — `tests/format_v5_conformance.sh` (50/50) checks the stream against the byte-verified Future-LZ path *and* round-trips through the real decoder, `-dup` included; `tests/dup_v5_conformance.sh` (10/10) diffs the wrapper against the C++ oracle. |
-| **5c** | CLI (`--format=v4` is only argv at this point), release assets, retire the C++. | not started |
+| **5c-1** | The CLI: the full option surface, the three modes, stdin/stdout with the tempfile spooling, `-i`, `-bar`, `-delete`, and the suite wired to run over it. | **done** — `tests/rust_cli_conformance.sh` (186) diffs the Rust binary against the C++ on identical argv and then runs the ten CLI-level shell scripts with `OSREP_BIN` pointed at the port |
+| **5c-2** | `--format=v5` as the default, release assets, tag, `gh release`, retire the C++. | not started |
 
 ### Phase 4c notes worth keeping
 
@@ -305,6 +312,62 @@ with the binary in phase 5.
   temporaries on every path it remembers to and leaks them on the rest (its
   signal handler never calls `removeTemporaryFiles`); the port cannot forget,
   which is the one place it deliberately does better than the oracle.
+
+### Phase 5c notes worth keeping
+
+* **The Rust CLI writes v4 by default, and `--format=v5` opts in.** That is the
+  reversal of the phase 5a plan (which had v5 default) and it is deliberate for
+  now: v4 is what the 1.0.x binaries read, and defaulting to it means the whole
+  existing CLI suite passes against the port **without a single assertion
+  changed** -- which is the only way to argue the port is drop-in. Flipping the
+  default is a separate step with two visible consequences: the hash seed moves
+  from archive bytes `[16:48]` (v4's 16-byte header) to `[28:60]`, and `-dup`'s
+  meta moves out of the ODUP trailer and into the container
+  (`tests/futurelz_race_regression.sh` and `tests/dup_native_roundtrip.sh` are
+  the two scripts that assert those layouts).
+* **`OSREP_SEED_HEX` and `--seed=N` are two different mechanisms, and the C++
+  order matters.** The hex hook replays the key bytes a specific archive
+  recorded (it is how the Future-LZ race was pinned), `--seed=N` expands a
+  number through xorshift64, and the env var wins (`srep.cpp:646-650`). Without
+  either, the C++ draws from Fortuna -- which is why the *core* refuses a keyed
+  hash with no seed at all (`EncodeError::NeedsSeed`) but the *CLI* still has to
+  work: it draws its own key from the OS. That gap is invisible in the library
+  harnesses (they always pass `--seed`) and shows up the moment the shell suite
+  runs `osrep -m4 in out`, which is how the first round of porting this found it.
+* **The progress callback reports per block; the cadence is the CLI's.** The
+  C++ prints from inside its block loops, throttled by a timer
+  (`srep.cpp:800-810`, `:1260-1268`). The port splits it: the core calls back
+  once per block with `(done, total)`, and `report::Bar` decides which of those
+  become `PROGRESS` lines. That is the only reason `-bar` needed the encoder and
+  the three decoders to grow a parameter. The one place it does not reach is the
+  `-dup` post-pass on decompression: the C++ sees the body go through srep_main
+  and reports it, the port decodes the body and hands it to
+  `dedup::decode_streaming`, which has no progress hook, so a `-dup` decode under
+  `-bar` prints nothing.
+* **`decode_io_lz`'s `-bar` measurement has to happen before anything is read.**
+  Seeking to the end to learn the file length and then back to the start is fine
+  at the top of the function and silently fatal in the middle: it rewinds past
+  the archive header the caller has already parsed, and the next read sees the
+  header as a block. The harnesses pass `None`, so nothing but the CLI could
+  have caught it.
+* **What the CLI accepts and does not act on**: `-t` (the port is single-threaded
+  per block), `-a`/`-ia`/`-slp`/`-pc`/`-mmap`/`-nommap`/`-rem` -- all proven
+  output-neutral by the phase 4c pre-port experiments. `-mem` and `-vmblock=`
+  map onto the spill budget. `-vmfile=` is accepted but never written, because
+  the port models the VM spill in memory; that is why
+  `tests/vm_tempfile_leak_regression.sh` finds an empty `$TMPDIR` by
+  construction rather than by cleanup. `-index=` is refused outright: silently
+  ignoring it would leave a user with an archive they believe has an index.
+* **`-i` needs no match walk.** The C++ derives the original size for Index-LZ
+  from the footer arithmetic plus a walk of every match; the port reads the
+  per-block `origsize` out of the framing, which is the same number and does not
+  have to reconstruct anything. The one field that is *not* real is the
+  "Decompression memory" figure, which the C++ computes as the peak RAM its
+  spill would need and the port has no equivalent measurement for.
+* **`--help` and `--version` are reproduced from `dup_wrapper.cpp`, not from
+  `srep.cpp`.** The wrapper answers both flags before `srep_main` runs, so its
+  text is the one users see -- and a drop-in that prints a different synopsis is
+  a worse drop-in.
 
 ## Open questions
 

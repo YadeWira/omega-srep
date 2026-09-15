@@ -12,7 +12,7 @@ set -eu
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-[[ -x bin/osrep ]] || make bin/osrep
+source "$(dirname "$0")/_osrep_bin.sh"
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -32,10 +32,10 @@ for suffix in "" f o; do
         if [ "$h" = "-" ]; then hopts="-hash-"; else hopts="-hash=$h"; fi
         for m in $METHODS; do
             tag="$m${suffix:+$suffix}"
-            if ! ./bin/osrep -$m$suffix $hopts "$TMP/in.bin" "$TMP/c.osr" >/dev/null 2>&1; then
+            if ! "$OSREP" -$m$suffix $hopts "$TMP/in.bin" "$TMP/c.osr" >/dev/null 2>&1; then
                 echo "FAIL compress $tag $hopts"; fail=$((fail+1)); continue
             fi
-            if ./bin/osrep -d "$TMP/c.osr" "$TMP/c.out" >/dev/null 2>&1 && cmp -s "$TMP/in.bin" "$TMP/c.out"; then
+            if "$OSREP" -d "$TMP/c.osr" "$TMP/c.out" >/dev/null 2>&1 && cmp -s "$TMP/in.bin" "$TMP/c.out"; then
                 pass=$((pass+1))
             else
                 echo "FAIL round-trip $tag $hopts"; fail=$((fail+1))

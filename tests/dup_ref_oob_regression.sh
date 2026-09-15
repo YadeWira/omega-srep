@@ -18,8 +18,8 @@ set -eu
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
+source "$(dirname "$0")/_osrep_bin.sh"
 [[ -x bin/dedup_test ]] || make bin/dedup_test
-[[ -x bin/osrep ]]      || make bin/osrep
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -68,7 +68,7 @@ unit = b'trailer splice payload. ' * 100
 body = (b'X' * 4096 + b'Y' * 4096) * 16
 sys.stdout.buffer.write(unit + body + body + unit)
 PY
-./bin/osrep -dup -m4 "$TMP/orig.bin" "$TMP/good.osr" >/dev/null 2>&1
+"$OSREP" -dup -m4 "$TMP/orig.bin" "$TMP/good.osr" >/dev/null 2>&1
 
 python3 - "$TMP/good.osr" "$TMP/meta.bin" "$TMP/bad.osr" <<'PY'
 import struct, sys
@@ -82,7 +82,7 @@ open(out, 'wb').write(body_osr + meta + struct.pack('<Q', len(meta)) + b'ODUP')
 PY
 
 set +e
-./bin/osrep -d "$TMP/bad.osr" "$TMP/bad.out" >"$TMP/e2e.out" 2>"$TMP/e2e.err"
+"$OSREP" -d "$TMP/bad.osr" "$TMP/bad.out" >"$TMP/e2e.out" 2>"$TMP/e2e.err"
 rc=$?
 set -e
 if [ "$rc" -eq 0 ]; then

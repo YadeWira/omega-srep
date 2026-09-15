@@ -22,9 +22,7 @@ cd "$ROOT"
 say()  { printf '  %s\n' "$*"; }
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 
-say "building the C++ encoder (bin/osrep)"
-make bin/osrep >/dev/null 2>&1 || fail "make bin/osrep"
-OSREP=bin/osrep
+source "$(dirname "$0")/_osrep_bin.sh"
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT

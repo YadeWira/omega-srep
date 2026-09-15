@@ -615,7 +615,7 @@ mod tests {
 #[cfg(test)]
 mod meta_tests {
     use super::*;
-    use crate::encoder::{self, Container, EncodeOptions, Kind, Mode};
+    use crate::encoder::{self, Container, EncodeOptions, Kind, Mode, Seed};
     use std::io::Cursor;
 
     /// Encode with a `-dup` payload and read it back through the footer.
@@ -634,7 +634,7 @@ mod meta_tests {
 
         let opts = EncodeOptions {
             dup_meta: Some(payload.clone()),
-            seed: Some(7),
+            seed: Seed::Value(7),
             ..EncodeOptions::default()
         };
         let mut input = Cursor::new(data.clone());
@@ -647,6 +647,7 @@ mod meta_tests {
                 kind: Kind::Digest,
                 container: Container::V5,
             },
+            None,
         )
         .unwrap();
 
@@ -700,7 +701,7 @@ mod meta_tests {
     fn no_dup_meta_leaves_the_footer_clean() {
         let data = vec![7u8; 100_000];
         let mut opts = EncodeOptions::default();
-        opts.seed = Some(7);
+        opts.seed = Seed::Value(7);
         let mut input = Cursor::new(data);
         let mut out = Vec::new();
         encoder::encode(
@@ -711,6 +712,7 @@ mod meta_tests {
                 kind: Kind::Digest,
                 container: Container::V5,
             },
+            None,
         )
         .unwrap();
         let parsed = parse(&out).unwrap();

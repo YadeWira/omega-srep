@@ -152,6 +152,8 @@ stage1_baseline() {
     bash tests/container_conformance.sh
     echo "  -> Rust conformance (I/O-LZ decoder vs C++ archives)"
     bash tests/decode_conformance.sh
+    echo "  -> Rust conformance (the CLI against the C++, and the suite run over the port)"
+    bash tests/rust_cli_conformance.sh
     # The Future-LZ/Index-LZ encoder race fix: needs many runs to be a
     # meaningful check, so it lives here rather than in the shared core
     # suite (which stage 2 also runs, under a slower sanitizer build).

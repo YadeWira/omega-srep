@@ -20,8 +20,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 source "$(dirname "$0")/_winpath.sh"
-
-[[ -x bin/osrep ]] || make bin/osrep
+source "$(dirname "$0")/_osrep_bin.sh"
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -34,7 +33,7 @@ body = (b'A' * 4096 + b'B' * 4096) * 32
 sys.stdout.buffer.write(unit + body + body + unit + body)
 " > "$TMP/in.bin"
 
-./bin/osrep -dup -m4 "$TMP/in.bin" "$TMP/good.osr" >/dev/null 2>&1
+"$OSREP" -dup -m4 "$TMP/in.bin" "$TMP/good.osr" >/dev/null 2>&1
 GOOD_SIZE=$(stat -c%s "$TMP/good.osr")
 echo "baseline archive: $GOOD_SIZE bytes"
 
@@ -68,7 +67,7 @@ classify_outcome() {
     local out="$TMP/dec.bin"
     rm -f "$out"
     set +e
-    timeout --foreground 10 ./bin/osrep -d "$TMP/corrupt.osr" "$out" >/dev/null 2>&1
+    timeout --foreground 10 "$OSREP" -d "$TMP/corrupt.osr" "$out" >/dev/null 2>&1
     local rc=$?
     set -e
     case "$rc" in
