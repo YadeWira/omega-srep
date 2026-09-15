@@ -161,6 +161,10 @@ fn main() -> ExitCode {
             eprintln!("ERROR! v5 stream equivalence: {e}");
             return ExitCode::from(1);
         }
+        if let Err(e) = v5_round_trip(&files[0], &files[1]) {
+            eprintln!("ERROR! v5 round-trip: {e}");
+            return ExitCode::from(1);
+        }
     }
 
     match result {
@@ -170,6 +174,24 @@ fn main() -> ExitCode {
             ExitCode::from(1)
         }
     }
+}
+
+/// `encode -> decode == input`, through the real v5 decoder: the one that
+/// resolves source-anchored matches with the VM, like v3/v4.
+fn v5_round_trip(input: &str, archive: &str) -> Result<(), String> {
+    let original = std::fs::read(input).map_err(|e| e.to_string())?;
+    let bytes = std::fs::read(archive).map_err(|e| e.to_string())?;
+    let opts = osrep_core::future_lz::FutureLzOptions::default();
+    let decoded =
+        osrep_core::future_lz::decode_v5_to_vec(&bytes, &opts).map_err(|e| e.to_string())?;
+    if decoded != original {
+        return Err(format!(
+            "decoded {} bytes, expected {}",
+            decoded.len(),
+            original.len()
+        ));
+    }
+    Ok(())
 }
 
 /// Compare a v5 archive's matches against the same encoding written as

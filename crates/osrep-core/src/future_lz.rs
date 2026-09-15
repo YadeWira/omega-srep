@@ -913,3 +913,160 @@ mod tests {
         assert_eq!(stats_from_bytes(&[1, 0, 0, 0]).unwrap(), vec![1]);
     }
 }
+
+/// Turn a v5 block's LEB128 triples back into the four-word `STAT` records
+/// `decompress_block` consumes. v5 stores raw lengths, so the words carry base
+/// 0 and no rounding -- the same shape the v4 `f` path writes
+/// (`srep.cpp:458`), which is why one decoder body serves both.
+fn v5_words(list: &[u8]) -> Result<Vec<u32>, DecodeError> {
+    let mut words: Vec<u32> = Vec::new();
+    let mut pos = 0usize;
+    while pos < list.len() {
+        let lit = crate::v5::get_varint(list, &mut pos)
+            .map_err(|_| DecodeError::BadData("v5 record"))?;
+        let len = crate::v5::get_varint(list, &mut pos)
+            .map_err(|_| DecodeError::BadData("v5 record"))?;
+        let distance = crate::v5::get_varint(list, &mut pos)
+            .map_err(|_| DecodeError::BadData("v5 record"))?;
+        if lit > u64::from(u32::MAX) || len > u64::from(u32::MAX) {
+            return Err(DecodeError::BadData("v5 record too large"));
+        }
+        words.push(lit as u32);
+        words.push(distance as u32);
+        words.push((distance >> 32) as u32);
+        words.push(len as u32);
+    }
+    Ok(words)
+}
+
+/// Decode a v5 archive (`docs/format-spec-v5.md`).
+///
+/// It shares everything below the container with v3/v4: a v5 block's records
+/// are anchored at their **source**, so a match's destination can lie ahead of
+/// the block carrying it, and the `MemoryManager`/`VirtualMemory` pair is what
+/// resolves those. The differences are only framing -- the v5 header and
+/// footer, self-contained blocks, and the record codec.
+pub fn decode_v5<R: Read + Seek, S: Read + Write + Seek>(
+    input: &mut R,
+    sink: &mut S,
+    opts: &FutureLzOptions,
+) -> Result<FutureLzStats, DecodeError> {
+    let mut header_bytes = [0u8; crate::v5::HEADER_SIZE];
+    if !read_exact_or_eof(input, &mut header_bytes)? {
+        return Err(ContainerError::Truncated.into());
+    }
+    let header =
+        crate::v5::Header::decode(&header_bytes).map_err(|_| DecodeError::BadData("v5 header"))?;
+    let hash = header
+        .hash()
+        .map_err(|_| DecodeError::BadData("v5 hash descriptor"))?;
+
+    let mut seed = vec![0u8; hash.seed_size as usize];
+    if !read_exact_or_eof(input, &mut seed)? {
+        return Err(ContainerError::Truncated.into());
+    }
+    let digest = Digest::for_hash(hash, &seed);
+    let verified = digest.enabled();
+    let hash_size = header.hash_size as usize;
+
+    // Same clamp the encoder applies, and the same reason: every stored match
+    // must fit one VM block. v5 records it, but the spill's own bound still
+    // comes from `-vmblock`.
+    let maximum_save = if opts.vm_block > 24 {
+        opts.maximum_save.min((opts.vm_block - 24) as u32)
+    } else {
+        opts.maximum_save
+    };
+
+    let mut mm = MemoryManager::new(opts.mem_limit);
+    let mut vm = VirtualMemory::new(opts.vm_block);
+    let mut heap = MatchHeap::new();
+
+    let mut block_start = 0u64;
+    let mut total_stat: u64 = 0;
+
+    for blocks in 0..header.block_count as usize {
+        let mut bh_bytes = [0u8; BLOCK_HEADER_SIZE];
+        if !read_exact_or_eof(input, &mut bh_bytes)? {
+            return Err(ContainerError::Truncated.into());
+        }
+        let bh = BlockHeader::decode(&bh_bytes)?;
+
+        let mut stored_digest = vec![0u8; hash_size];
+        if !read_exact_or_eof(input, &mut stored_digest)? {
+            return Err(ContainerError::Truncated.into());
+        }
+
+        let mut stat_bytes = vec![0u8; bh.statsize as usize];
+        if !read_exact_or_eof(input, &mut stat_bytes)? {
+            return Err(ContainerError::Truncated.into());
+        }
+        let block_stats = v5_words(&stat_bytes)?;
+
+        let mut literals = vec![0u8; bh.literal_bytes as usize];
+        if !read_exact_or_eof(input, &mut literals)? {
+            return Err(ContainerError::Truncated.into());
+        }
+
+        let mut outbuf = vec![0u8; bh.origsize as usize];
+        decompress_block(
+            0,
+            sink,
+            block_start,
+            &block_stats,
+            &literals,
+            &mut outbuf,
+            &mut mm,
+            &mut vm,
+            &mut heap,
+            maximum_save,
+        )?;
+
+        if verified {
+            let want = digest.compute(&outbuf);
+            if stored_digest != want {
+                return Err(DecodeError::DigestMismatch { block: blocks });
+            }
+        }
+
+        sink.seek(SeekFrom::Start(block_start))?;
+        sink.write_all(&outbuf)?;
+
+        block_start += u64::from(bh.origsize);
+        total_stat += u64::from(bh.statsize);
+    }
+
+    // The footer closes the file: nothing may follow it, and its counts must
+    // agree with what was actually decoded.
+    let mut footer_bytes = [0u8; crate::v5::FOOTER_SIZE];
+    if !read_exact_or_eof(input, &mut footer_bytes)? {
+        return Err(ContainerError::Truncated.into());
+    }
+    let footer = crate::v5::Footer::decode(&footer_bytes)
+        .map_err(|_| DecodeError::BadData("v5 footer"))?;
+    if footer.block_count != header.block_count || footer.stat_size != total_stat {
+        return Err(DecodeError::BadData("v5 footer disagrees with the blocks"));
+    }
+    let mut extra = [0u8; 1];
+    if input.read(&mut extra)? != 0 {
+        return Err(DecodeError::BadData("trailing bytes after the v5 footer"));
+    }
+
+    Ok(FutureLzStats {
+        decode: DecodeStats {
+            blocks: header.block_count as usize,
+            origsize: block_start,
+            verified,
+        },
+        vm_bytes_written: vm.total_write,
+        vm_bytes_read: vm.total_read,
+    })
+}
+
+/// Convenience wrapper for a whole in-memory v5 archive.
+pub fn decode_v5_to_vec(bytes: &[u8], opts: &FutureLzOptions) -> Result<Vec<u8>, DecodeError> {
+    let mut input = io::Cursor::new(bytes);
+    let mut sink = io::Cursor::new(Vec::new());
+    decode_v5(&mut input, &mut sink, opts)?;
+    Ok(sink.into_inner())
+}

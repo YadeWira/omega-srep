@@ -109,7 +109,7 @@ the input. Truncated archives must error, never panic.
 | **4b** | `MEMORY_MANAGER`, the VM spill manager and the Future/Index-LZ decoder (v3/v4): both are driven only by `decompress_FUTURE_LZ`, so they port together rather than standing alone. | **done** |
 | **4c** | The encoder: hash-table match finder, `compress` (-m3/-m4/-m5 + accelerator), CDC (-m1/-m2), in-memory REP (-m0) and the Future/Index-LZ second pass. Gate: byte-identical archives across the whole matrix. | **done** — every mode (`-m0`…`-m5`) and every suffix (`o`/`f`/default) is byte-identical to the C++: 174/174 in `tests/encode_conformance.sh` |
 | **5a** | v5 format design: container, record codec, rejection rules, verification strategy. | **done** — `docs/format-spec-v5.md` |
-| **5b** | v5 writer and the stream-equivalence gate. | **mostly** — writer + `tests/format_v5_conformance.sh` (36/36) are in; still missing the v5 *decoder* (it needs `future_lz.rs`'s VM machinery behind a v5 front-end, since a v5 record is anchored at its source), the `-dup` meta in the footer (the writer emits `flags = 0`), and `--format=v4` |
+| **5b** | v5 writer, v5 decoder and the equivalence/round-trip gate. | **mostly** — both directions work: `tests/format_v5_conformance.sh` (36/36) checks the stream against the byte-verified Future-LZ path *and* round-trips through the real decoder. Still missing: the `-dup` meta in the footer (the writer emits `flags = 0`) and `--format=v4` |
 | **5c** | CLI, release assets, retire the C++. | not started |
 
 ### Phase 4c notes worth keeping

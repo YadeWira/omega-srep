@@ -15,7 +15,7 @@
 
 use std::io::{self, Read, Seek, SeekFrom, Write};
 
-use crate::container::{ArchiveHeader, BlockHeader, ContainerError, Version};
+use crate::container::{ArchiveHeader, BlockHeader, ContainerError, HashInfo, Version};
 use crate::hashes;
 use crate::hashes_keyed;
 use crate::vmac;
@@ -211,6 +211,12 @@ impl Digest {
         if header.hash_seed_size > info.seed_size || header.hash_size > info.hash_size {
             return Digest::None;
         }
+        Digest::for_hash(info, seed)
+    }
+
+    /// The same choice for a v5 archive, which names its hash by descriptor and
+    /// declares the digest size itself instead of packing both into a word.
+    pub(crate) fn for_hash(info: &HashInfo, seed: &[u8]) -> Digest {
         match info.name {
             "md5" => Digest::Md5,
             "sha1" => Digest::Sha1,
