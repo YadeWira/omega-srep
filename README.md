@@ -20,8 +20,9 @@ platforms.
   only selects what `osrep` *writes*.
 
   This is the breaking change in 2.0.0, and it breaks loudly rather than
-  quietly: a 1.0.x binary handed a v5 archive exits 4 with *"not an omega srep
-  compressed file"* and writes no output. It cannot mistake one for the other.
+  quietly: a 1.0.x binary handed a v5 archive exits 4 with *"Not an Omega SREP
+  compressed file (.osr)"* and writes no output. It cannot mistake one for the
+  other.
 - **Supported platforms:** Windows 10/11 x64 and Linux x64 (primary,
   tested target). 32-bit x86 (i686) is also supported as an **opt-in**
   build — see `docs/32bit-support.md` for the cross-compile command

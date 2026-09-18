@@ -20,11 +20,10 @@ what happened in 2.0.0.
   which is what makes this a major bump rather than a 1.1.
 
   **It breaks loudly, not quietly.** A 1.0.x binary handed a v5 archive exits
-  4 with *"not an omega srep compressed file"* and writes no output, for both
-  `-d` and `-i`. It cannot mistake a v5 archive for a truncated or corrupt v4
-  one and produce wrong bytes; `tests/rust_cli_conformance.sh` asserts exactly
-  that against the shipped 1.0.7 C++ binary, so the guarantee is tested rather
-  than assumed.
+  4 with *"Not an Omega SREP compressed file (.osr)"* and writes no output, for
+  both `-d` and `-i`. It cannot mistake a v5 archive for a truncated or corrupt
+  v4 one and produce wrong bytes; `tests/rust_cli_conformance.sh` asserts exactly
+  that against the shipped 1.0.7 C++ binary, so it is tested, not assumed.
 
   **`--format=v4` is the escape hatch and is supported permanently**, not
   deprecated. Use it when the archive has to be read by an older `osrep` or by
