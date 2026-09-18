@@ -6,6 +6,14 @@ Upstream SREP froze at **3.93a beta (October 11, 2014)**; Omega SREP picks up
 the lineage with a clean break — new file format, new identity, modern target
 platforms.
 
+**Since 2.0.0 the released binaries are the Rust implementation** in `crates/`.
+The original C++ in `Compression/` has not been deleted and is not dead code:
+it is the oracle the Rust port is tested against. Every ported module is diffed
+byte-for-byte against the C++ binary rather than merely round-tripped through
+itself, which is why it stays buildable and in-tree. It is simply no longer
+released, and stays at its last shipped version, **1.0.7**. See
+`docs/rust-port.md`.
+
 ## What is different from upstream SREP
 
 - **New file extension:** `.osr` (replaces `.srep`).
@@ -23,11 +31,13 @@ platforms.
   quietly: a 1.0.x binary handed a v5 archive exits 4 with *"Not an Omega SREP
   compressed file (.osr)"* and writes no output. It cannot mistake one for the
   other.
-- **Supported platforms:** Windows 10/11 x64 and Linux x64 (primary,
-  tested target). 32-bit x86 (i686) is also supported as an **opt-in**
-  build — see `docs/32bit-support.md` for the cross-compile command
-  and what's confirmed working. The historical big-endian, FreeBSD, and
-  macOS branches are gone.
+- **Supported platforms:** Linux x64 and Windows x64/x86. The Rust builds
+  target **Windows 7 and later** — the toolchain is pinned to Rust 1.77.2,
+  the last release supporting Win7 for `*-pc-windows-gnu`, and both Windows
+  binaries are verified on a real Windows 7 SP1 machine each release, not
+  only cross-compiled. (The C++ build needs Windows 10/11, or the KB2999226
+  Universal C Runtime on an older target.) The historical big-endian,
+  FreeBSD, and macOS branches are gone.
 - **Binary name:** `osrep` (replaces `srep`).
 - **Version line:** Omega SREP starts a new lineage at `1.0a beta`.
   First stable release: `1.0.0`.
@@ -96,8 +106,29 @@ produce archives within 0.000005% of each other at `-m3`. See
 
 ## Build
 
+The released binary — the Rust implementation:
+
 ```bash
-  $ make
+  $ cargo build --release
+  # install -m755 target/release/osrep /usr/local/bin/
+```
+
+The toolchain is pinned in `rust-toolchain.toml` to **1.77.2**, deliberately:
+it is the last Rust release that supports Windows 7 for `*-pc-windows-gnu`
+(1.78 raised the floor to Windows 10). The Windows binaries cross-compile
+from Linux with the same MinGW-w64 toolchain the C++ uses — `.cargo/config.toml`
+wires up the linkers, so no Visual Studio is required:
+
+```bash
+  $ cargo build --release --target x86_64-pc-windows-gnu
+  $ cargo build --release --target i686-pc-windows-gnu
+```
+
+The C++ oracle — needed only to run the differential tests, not to use
+`osrep`:
+
+```bash
+  $ make            # produces bin/osrep
   # make install
 ```
 
@@ -106,6 +137,16 @@ with `g++`/`clang++`. On non-x86 targets the build fails by design at
 the preprocessor. For Windows, see `docs/windows-build.md` (FOSS
 MinGW-w64 toolchain, no Visual Studio needed) and `docs/32bit-support.md`
 for the opt-in 32-bit (i686) cross-compile path.
+
+Point the CLI-level test scripts at either build with `OSREP_BIN`; that is
+how the Rust port is run through the suite the C++ was developed against.
+
+One thing that surprises people: `cargo build --release` lands a ~760 KB
+binary in `target/release/`, while the released assets, built with an explicit
+`--target`, are ~2.4 MB. The code is identical — cargo defaults
+`split-debuginfo` differently in the two cases, so the explicit-target build
+embeds debug info the plain one leaves in separate files. The releases are
+shipped unstripped on purpose, so a backtrace from a user is symbolicated.
 
 ## Description
 

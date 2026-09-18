@@ -56,6 +56,37 @@ covered:
   header seed differs per run, which separately confirms the `bcrypt` entropy
   draw works on Win7 rather than silently falling back.
 
+## Retiring the C++ — decided (2026-09-18): keep it, stop shipping it
+
+Phase 5c-2 originally read "retire the C++". It is not being deleted.
+
+The reason is narrow and worth stating plainly, because the phrase "retire"
+invites the opposite reading: **the C++ is the oracle this entire port is
+verified against.** Every ported module is diffed byte-for-byte against the
+shipped C++ binary rather than merely round-tripped through the Rust code.
+Deleting it would not remove dead code; it would remove the measuring
+instrument. After that, "the port is correct" could only ever mean "the port
+agrees with itself", which is a much weaker claim than the one this project
+has been making all along.
+
+So what actually changed at 2.0.0:
+
+- The released assets are Rust only. The C++ is not published any more.
+- `Compression/` stays in the tree and stays buildable with `make`. The
+  differential suites keep running against it via `OSREP_BIN`.
+- `srep.cpp` stays at **1.0.7**, the last version the C++ actually shipped in.
+  `--version` therefore no longer matches between the two binaries, which is
+  correct: since the v5 default they are not interchangeable, and reporting a
+  shared version line would assert otherwise.
+- The README no longer presents the C++ as the product. Before 2.0.0 it never
+  mentioned Rust at all and sent readers straight to `make` — which builds the
+  implementation that is no longer released, reports 1.0.7, and writes v4.
+
+This is reversible in one direction only, which is the other half of the
+argument: the C++ can be dropped at any later point, but it cannot be
+meaningfully recovered as an oracle once the Rust code has drifted past it.
+There is no deadline on making that call, and no cost to deferring it.
+
 ## Layout
 
 ```
@@ -133,7 +164,7 @@ the input. Truncated archives must error, never panic.
 | **5a** | v5 format design: container, record codec, rejection rules, verification strategy. | **done** — `docs/format-spec-v5.md` |
 | **5b** | v5 writer, v5 decoder, the `-dup` wrapper and the equivalence/round-trip gate. | **done** — `tests/format_v5_conformance.sh` (50/50) checks the stream against the byte-verified Future-LZ path *and* round-trips through the real decoder, `-dup` included; `tests/dup_v5_conformance.sh` (10/10) diffs the wrapper against the C++ oracle. |
 | **5c-1** | The CLI: the full option surface, the three modes, stdin/stdout with the tempfile spooling, `-i`, `-bar`, `-delete`, and the suite wired to run over it. | **done** — `tests/rust_cli_conformance.sh` (186) diffs the Rust binary against the C++ on identical argv and then runs the ten CLI-level shell scripts with `OSREP_BIN` pointed at the port |
-| **5c-2** | `--format=v5` as the default, release assets, tag, `gh release`, retire the C++. | **in progress** — the default is flipped and the whole suite is green over it (`tests/rust_cli_conformance.sh` 187 + the ten CLI scripts, `format_v5_conformance` 50, `dup_v5_conformance` 10, `encode_conformance` 174, `rust_conformance` 519/0). The three release binaries are built and the two Windows ones are verified on a real Win7 SP1 VM (see the Windows 7 note above). Tag, `gh release` and retiring the C++ are still to do. |
+| **5c-2** | `--format=v5` as the default, release assets, tag, `gh release`, retire the C++. | **in progress** — the default is flipped and the whole suite is green over it (`tests/rust_cli_conformance.sh` 187 + the ten CLI scripts, `format_v5_conformance` 50, `dup_v5_conformance` 10, `encode_conformance` 174, `rust_conformance` 519/0). The three release binaries are built at 2.0.0 and the two Windows ones are verified on a real Win7 SP1 VM (see the Windows 7 note above). Retiring the C++ is **decided and done, in the form described below**: it stays as the oracle and stops being released. Only the tag and `gh release` are left. |
 
 ### Phase 4c notes worth keeping
 
