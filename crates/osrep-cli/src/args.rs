@@ -25,8 +25,9 @@ pub enum CmdMode {
     Info,
 }
 
-/// `--format=`, the one option the C++ does not have: v5 is what the port can
-/// write and the C++ cannot, so it stays opt-in until the transition is done.
+/// `--format=`, the one option the C++ does not have. v5 is the default since
+/// phase 5c-2; `--format=v4` writes the container the 1.0.x C++ binaries read,
+/// and stays supported permanently as the interoperability escape hatch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
     V4,
@@ -86,7 +87,7 @@ impl Default for Options {
     fn default() -> Self {
         Options {
             cmdmode: CmdMode::Compress,
-            format: Format::V4,
+            format: Format::V5,
             method: 3,
             lz: Lz::Index,
             dictsize: 0,

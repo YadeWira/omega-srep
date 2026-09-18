@@ -110,9 +110,15 @@ fi
 
 # 4. Inverse: native -dup compress -> dedup_test post-process can read it
 #    (the F5.3a tooling consumes ODUP archives produced by either path).
+#
+#    This one reads the ODUP trailer by hand, so it is a *v4* assertion: v5
+#    carries the same meta but the footer locates it instead (phase 5c-2 moved
+#    the default). $OSREP_V4 keeps it pointed at the container it is parsing;
+#    tests/dup_v5_conformance.sh covers the v5 placement.
 xb_in="$TMP/xb_in.bin"
 gen_input "$xb_in"
-"$OSREP" -dup -m4 "$xb_in" "$TMP/xb.archive" >/dev/null 2>&1
+# shellcheck disable=SC2086
+"$OSREP" -dup -m4 $OSREP_V4 "$xb_in" "$TMP/xb.archive" >/dev/null 2>&1
 
 total=$(stat -c%s "$TMP/xb.archive")
 trailer_magic=$(tail -c 4 "$TMP/xb.archive")

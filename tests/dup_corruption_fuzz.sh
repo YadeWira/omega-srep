@@ -3,7 +3,10 @@
 #
 # Takes a known-good `-dup` archive and deliberately corrupts each
 # region (ODUP magic, meta_size, DUPR magic, chunk-table bytes, body
-# bytes, truncation). For every corruption variant, asserts that
+# bytes, truncation). Every offset here is measured from the end of the
+# ODUP trailer, so this is a v4 test by construction and asks for that
+# container explicitly ($OSREP_V4) now that the port defaults to v5.
+# For every corruption variant, asserts that
 # `osrep -d`:
 #   - exits non-zero (refuses the archive), OR
 #   - exits 0 only if output cmp's clean against original (corruption
@@ -33,7 +36,8 @@ body = (b'A' * 4096 + b'B' * 4096) * 32
 sys.stdout.buffer.write(unit + body + body + unit + body)
 " > "$TMP/in.bin"
 
-"$OSREP" -dup -m4 "$TMP/in.bin" "$TMP/good.osr" >/dev/null 2>&1
+# shellcheck disable=SC2086
+"$OSREP" -dup -m4 $OSREP_V4 "$TMP/in.bin" "$TMP/good.osr" >/dev/null 2>&1
 GOOD_SIZE=$(stat -c%s "$TMP/good.osr")
 echo "baseline archive: $GOOD_SIZE bytes"
 

@@ -7,8 +7,15 @@
 #      binary and `target/release/osrep` are run with identical arguments and
 #      the archives must compare byte for byte. The algorithm is already pinned
 #      by tests/encode_conformance.sh; what this adds is the *front end* -- the
-#      option parsing, the defaults, the v4 container choice -- and cross-decoding
+#      option parsing, the defaults, the container choice -- and cross-decoding
 #      in both directions.
+#
+#      Since phase 5c-2 the port's default container is v5, which the C++ cannot
+#      write, so this layer pins `--format=v4` on the Rust side: what it is
+#      asking is "can the port still reproduce the oracle exactly when asked
+#      for the oracle's format", and that question outlives the default flip.
+#      The v5 default is covered by tests/format_v5_conformance.sh and by
+#      layer 2, which runs the whole CLI suite over it.
 #
 #   2. **The CLI test suite, run against the Rust binary.** tests/_osrep_bin.sh
 #      lets `OSREP_BIN` point every CLI-level script at a different build, so the
@@ -67,7 +74,7 @@ diff_case() {
     if ! ./bin/osrep "$@" --seed=7 "$input" "$TMP/cpp.osr" >/dev/null 2>"$TMP/cpp.err"; then
         fail "cpp $* on $(basename "$input") failed: $(tail -1 "$TMP/cpp.err")"
     fi
-    if ! "$RS" "$@" --seed=7 "$input" "$TMP/rs.osr" >/dev/null 2>"$TMP/rs.err"; then
+    if ! "$RS" "$@" --format=v4 --seed=7 "$input" "$TMP/rs.osr" >/dev/null 2>"$TMP/rs.err"; then
         fail "rust $* on $(basename "$input") failed: $(tail -1 "$TMP/rs.err")"
     fi
     cmp -s "$TMP/cpp.osr" "$TMP/rs.osr" \
@@ -115,7 +122,7 @@ for m in m0 m3 m4 m4f m5o; do
     if ! ./bin/osrep -$m --seed=7 - - <tests/corpus/text.bin >"$TMP/cpp.pipe" 2>"$TMP/cpp.err"; then
         fail "cpp -$m through a pipe failed: $(tail -1 "$TMP/cpp.err")"
     fi
-    if ! "$RS" -$m --seed=7 - - <tests/corpus/text.bin >"$TMP/rs.pipe" 2>"$TMP/rs.err"; then
+    if ! "$RS" -$m --format=v4 --seed=7 - - <tests/corpus/text.bin >"$TMP/rs.pipe" 2>"$TMP/rs.err"; then
         fail "rust -$m through a pipe failed: $(tail -1 "$TMP/rs.err")"
     fi
     cmp -s "$TMP/cpp.pipe" "$TMP/rs.pipe" || fail "-$m: the two piped archives differ"
@@ -141,16 +148,16 @@ say "-dup: an archive the C++ can read, and the same payload inside v5"
 for m in m3 m4 m5; do
     ./bin/osrep -dup -$m --seed=7 "$TMP/dup1m.bin" "$TMP/cpp.osr" >/dev/null 2>&1 \
         || fail "cpp -dup -$m failed"
-    "$RS" -dup -$m --seed=7 "$TMP/dup1m.bin" "$TMP/rs.osr" >/dev/null 2>&1 \
+    "$RS" -dup -$m --format=v4 --seed=7 "$TMP/dup1m.bin" "$TMP/rs.osr" >/dev/null 2>&1 \
         || fail "rust -dup -$m failed"
     cmp -s "$TMP/cpp.osr" "$TMP/rs.osr" || fail "-dup -$m: archives differ"
     # The C++ auto-detects the trailer of the Rust archive, and vice versa.
     ./bin/osrep -d "$TMP/rs.osr" "$TMP/cpp.dec" >/dev/null 2>&1 || fail "-dup -$m: C++ cannot decode the Rust archive"
     cmp -s "$TMP/dup1m.bin" "$TMP/cpp.dec" || fail "-dup -$m: cross-decode differs"
-    # v5 is opt-in until the transition; the C++ cannot read it, so only the
-    # port's own round-trip is checked (tests/dup_v5_conformance.sh does the
-    # payload comparison).
-    "$RS" --format=v5 -dup -$m --seed=7 "$TMP/dup1m.bin" "$TMP/rs5.osr" >/dev/null 2>&1 \
+    # And the default container, v5 since phase 5c-2: the C++ cannot read it,
+    # so only the port's own round-trip is checked here
+    # (tests/dup_v5_conformance.sh does the payload comparison).
+    "$RS" -dup -$m --seed=7 "$TMP/dup1m.bin" "$TMP/rs5.osr" >/dev/null 2>&1 \
         || fail "rust --format=v5 -dup -$m failed"
     "$RS" -d "$TMP/rs5.osr" "$TMP/rs5.dec" >/dev/null 2>&1 || fail "-dup -$m v5: will not decode"
     cmp -s "$TMP/dup1m.bin" "$TMP/rs5.dec" || fail "-dup -$m v5: round-trip differs"
@@ -164,7 +171,7 @@ for c in "-dup --dup-paranoid -m4" "-dup -m4 --chunk-avg=8192" "-dup -m4 --chunk
     ./bin/osrep $c --seed=7 "$TMP/dup1m.bin" "$TMP/cpp.osr" >/dev/null 2>&1 \
         || fail "cpp $c failed"
     # shellcheck disable=SC2086
-    "$RS" $c --seed=7 "$TMP/dup1m.bin" "$TMP/rs.osr" >/dev/null 2>&1 \
+    "$RS" $c --format=v4 --seed=7 "$TMP/dup1m.bin" "$TMP/rs.osr" >/dev/null 2>&1 \
         || fail "rust $c failed"
     cmp -s "$TMP/cpp.osr" "$TMP/rs.osr" || fail "$c: archives differ"
     pass=$((pass + 1))
@@ -187,13 +194,44 @@ cmp -s "$TMP/s1.osr" "$TMP/s3.osr" && fail "different seeds produced the same ar
 "$RS" -m4 "$TMP/dup1m.bin" "$TMP/n1.osr" >/dev/null 2>&1
 "$RS" -m4 "$TMP/dup1m.bin" "$TMP/n2.osr" >/dev/null 2>&1
 cmp -s "$TMP/n1.osr" "$TMP/n2.osr" && fail "two unseeded runs produced the same archive"
-# OSREP_SEED_HEX pins the key, and must beat --seed.
+# OSREP_SEED_HEX pins the key, and must beat --seed. The key lands at a
+# different offset in each container -- v4's header is 16 bytes, v5's is 28 --
+# so both are checked rather than just the default: this is the one assertion
+# the 5c-2 default flip was predicted to move, and pinning both offsets is what
+# keeps it from silently drifting again.
 SEED=00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff
-OSREP_SEED_HEX=$SEED "$RS" -m4 --seed=1 "$TMP/dup1m.bin" "$TMP/hex.osr" >/dev/null 2>&1
-stored=$(python3 -c "print(open('$TMP/hex.osr','rb').read()[16:48].hex())")
-[[ "$stored" == "$SEED" ]] || fail "OSREP_SEED_HEX did not take effect (stored $stored)"
+for fmt_off in "v4 16 48" "v5 28 60"; do
+    set -- $fmt_off
+    OSREP_SEED_HEX=$SEED "$RS" -m4 --format="$1" --seed=1 "$TMP/dup1m.bin" "$TMP/hex.$1.osr" >/dev/null 2>&1
+    stored=$(python3 -c "print(open('$TMP/hex.$1.osr','rb').read()[$2:$3].hex())")
+    [[ "$stored" == "$SEED" ]] \
+        || fail "OSREP_SEED_HEX did not take effect in $1 at [$2:$3] (stored $stored)"
+done
+# The oracle only writes v4, so that is the archive it is compared against.
 OSREP_SEED_HEX=$SEED ./bin/osrep -m4 --seed=1 "$TMP/dup1m.bin" "$TMP/hexcpp.osr" >/dev/null 2>&1
-cmp -s "$TMP/hex.osr" "$TMP/hexcpp.osr" || fail "OSREP_SEED_HEX archive differs from the C++"
+cmp -s "$TMP/hex.v4.osr" "$TMP/hexcpp.osr" || fail "OSREP_SEED_HEX archive differs from the C++"
+pass=$((pass + 1))
+
+say "the C++ refuses a v5 archive cleanly, and says why"
+# Since phase 5c-2 the port writes v5 by default, so this is what a user still
+# on a 1.0.x binary hits. It must be a clean refusal -- the archive is not
+# corrupt, it is newer -- and never a crash or a partial file, which is the
+# failure mode that would silently hand someone wrong bytes.
+"$RS" -m4 --seed=7 tests/corpus/text.bin "$TMP/v5.osr" >/dev/null 2>&1 \
+    || fail "the port could not write its own default container"
+[ "$(head -c 4 "$TMP/v5.osr")" = "OSR5" ] || fail "the default container is not v5"
+rm -f "$TMP/v5.out"
+# `set -e` is on and these are expected to fail, so the status is captured.
+rc=0; ./bin/osrep -d "$TMP/v5.osr" "$TMP/v5.out" >"$TMP/v5.err" 2>&1 || rc=$?
+[ "$rc" -eq 4 ] || fail "the C++ -d on a v5 archive exited $rc, expected 4 (bad data)"
+grep -qi "not an omega srep compressed file" "$TMP/v5.err" \
+    || fail "the C++ -d on a v5 archive did not say the file is not an .osr"
+[ ! -s "$TMP/v5.out" ] \
+    || fail "the C++ -d on a v5 archive produced $(stat -c%s "$TMP/v5.out") bytes of output"
+rc=0; ./bin/osrep -i "$TMP/v5.osr" >"$TMP/v5i.err" 2>&1 || rc=$?
+[ "$rc" -eq 4 ] || fail "the C++ -i on a v5 archive exited $rc, expected 4 (bad data)"
+grep -qi "not an omega srep compressed file" "$TMP/v5i.err" \
+    || fail "the C++ -i on a v5 archive did not say the file is not an .osr"
 pass=$((pass + 1))
 
 say "-i agrees with the C++ on mode, hash and size"

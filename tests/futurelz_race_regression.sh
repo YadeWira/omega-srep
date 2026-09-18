@@ -76,9 +76,18 @@ for case in "${CASES[@]}"; do
         OSREP_SEED_HEX="$SEED" $OSREP $flags -b64k -t16 "$SRC" "$arc" >/dev/null 2>&1 \
             || fail "[$label] compress failed on run $i"
 
-        # The hook must have applied: the stored seed is the pinned one.
+        # The hook must have applied: the stored seed is the pinned one. Its
+        # offset depends on the container -- v4's header is 16 bytes, v5's is
+        # 28 -- so it is derived from the magic rather than hardcoded, which
+        # lets this regression keep running against whatever the binary writes
+        # by default (v5 since phase 5c-2) instead of being pinned to v4.
         if [[ -z "$first_hash" ]]; then
-            stored=$(python3 -c "print(open('$arc','rb').read()[16:48].hex())")
+            stored=$(python3 -c "
+import sys
+d = open(sys.argv[1],'rb').read()
+off = 28 if d[:4] == b'OSR5' else 16
+print(d[off:off+32].hex())
+" "$arc")
             [[ "$stored" == "$SEED" ]] \
                 || fail "[$label] OSREP_SEED_HEX did not take effect (stored $stored)"
         fi

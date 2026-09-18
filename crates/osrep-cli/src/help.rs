@@ -46,6 +46,9 @@ pub fn help() -> String {
          \x20 -hash=NAME        select hash (vmac, sha1, ...)\n\
          \x20 -mmap, -nommap    enable/disable POSIX mmap reads\n\
          \x20 -temp=PATH        tempfile path override\n\
+         \x20 --format=v4|v5    container to write (default v5). v4 is the\n\
+         \x20                   container the 1.0.x releases read, kept for\n\
+         \x20                   interoperability; both are always readable.\n\
          \x20 --seed=N          deterministic hash seed (uint64; default is\n\
          \x20                   random per-run). Same seed + same input ->\n\
          \x20                   byte-identical archive. Useful for content-\n\

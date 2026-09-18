@@ -68,7 +68,9 @@ unit = b'trailer splice payload. ' * 100
 body = (b'X' * 4096 + b'Y' * 4096) * 16
 sys.stdout.buffer.write(unit + body + body + unit)
 PY
-"$OSREP" -dup -m4 "$TMP/orig.bin" "$TMP/good.osr" >/dev/null 2>&1
+# The meta is rebuilt from the ODUP trailer below, so this is a v4 assertion.
+# shellcheck disable=SC2086
+"$OSREP" -dup -m4 $OSREP_V4 "$TMP/orig.bin" "$TMP/good.osr" >/dev/null 2>&1
 
 python3 - "$TMP/good.osr" "$TMP/meta.bin" "$TMP/bad.osr" <<'PY'
 import struct, sys

@@ -117,7 +117,7 @@ the input. Truncated archives must error, never panic.
 | **5a** | v5 format design: container, record codec, rejection rules, verification strategy. | **done** — `docs/format-spec-v5.md` |
 | **5b** | v5 writer, v5 decoder, the `-dup` wrapper and the equivalence/round-trip gate. | **done** — `tests/format_v5_conformance.sh` (50/50) checks the stream against the byte-verified Future-LZ path *and* round-trips through the real decoder, `-dup` included; `tests/dup_v5_conformance.sh` (10/10) diffs the wrapper against the C++ oracle. |
 | **5c-1** | The CLI: the full option surface, the three modes, stdin/stdout with the tempfile spooling, `-i`, `-bar`, `-delete`, and the suite wired to run over it. | **done** — `tests/rust_cli_conformance.sh` (186) diffs the Rust binary against the C++ on identical argv and then runs the ten CLI-level shell scripts with `OSREP_BIN` pointed at the port |
-| **5c-2** | `--format=v5` as the default, release assets, tag, `gh release`, retire the C++. | not started |
+| **5c-2** | `--format=v5` as the default, release assets, tag, `gh release`, retire the C++. | **in progress** — the default is flipped and the whole suite is green over it (`tests/rust_cli_conformance.sh` 187 + the ten CLI scripts, `format_v5_conformance` 50, `dup_v5_conformance` 10, `encode_conformance` 174, `rust_conformance` 519/0). Release assets, tag and retiring the C++ are still to do. |
 
 ### Phase 4c notes worth keeping
 
@@ -324,16 +324,41 @@ with the binary in phase 5.
 
 ### Phase 5c notes worth keeping
 
-* **The Rust CLI writes v4 by default, and `--format=v5` opts in.** That is the
-  reversal of the phase 5a plan (which had v5 default) and it is deliberate for
-  now: v4 is what the 1.0.x binaries read, and defaulting to it means the whole
-  existing CLI suite passes against the port **without a single assertion
-  changed** -- which is the only way to argue the port is drop-in. Flipping the
-  default is a separate step with two visible consequences: the hash seed moves
-  from archive bytes `[16:48]` (v4's 16-byte header) to `[28:60]`, and `-dup`'s
-  meta moves out of the ODUP trailer and into the container
-  (`tests/futurelz_race_regression.sh` and `tests/dup_native_roundtrip.sh` are
-  the two scripts that assert those layouts).
+* **The Rust CLI wrote v4 by default until phase 5c-2, and now writes v5.**
+  Defaulting to v4 first was deliberate: it meant the whole existing CLI suite
+  passed against the port **without a single assertion changed**, which is the
+  only way to argue the port is drop-in. That argument has been made, so the
+  default flipped. Both predicted consequences showed up exactly as written --
+  the hash seed moved from archive bytes `[16:48]` (v4's 16-byte header) to
+  `[28:60]`, and `-dup`'s meta left the ODUP trailer for the container -- and
+  they are now handled rather than merely predicted:
+  * `tests/rust_cli_conformance.sh`'s layer 1 pins `--format=v4` on the Rust
+    side. The oracle only writes v4, so the question that layer asks is "can
+    the port still reproduce the oracle exactly when asked for the oracle's
+    format", which outlives the flip. Layer 2 runs the suite over the v5
+    default.
+  * `tests/_osrep_bin.sh` exports **`$OSREP_V4`**: `--format=v4` when the binary
+    under test has the option, empty otherwise. The scripts that parse a
+    *v4-specific* layout by hand -- `dup_native_roundtrip.sh` (test 4 walks the
+    ODUP trailer), `dup_corruption_fuzz.sh` (every offset is measured from that
+    trailer) and `dup_ref_oob_regression.sh` (rebuilds the meta from it) -- use
+    it, so they keep testing the layout they are written for against either
+    build. The probe must be a real compression: `--version`/`--help` are
+    answered before the option parser runs, so `--format=v4 --version` exits 0
+    on the C++ too and reports support that is not there.
+  * `tests/futurelz_race_regression.sh` derives the seed offset from the magic
+    (`OSR5` -> 28, else 16) instead of pinning a container, so a determinism
+    regression keeps being tested against whatever the default is.
+* **The C++ refuses a v5 archive cleanly** -- `rc=4`, "Not an Omega SREP
+  compressed file", no output written -- which is what a user still on a 1.0.x
+  binary now hits. That is a contract, not an accident, so
+  `rust_cli_conformance.sh` asserts it for both `-d` and `-i`: the failure mode
+  worth guarding against is not the refusal but a crash or a partial file.
+* **`--format` is documented in `--help` as of 5c-2.** It was deliberately
+  absent while it was a transitional opt-in, but once v5 became the default,
+  `--format=v4` turned into the only way back to a container the released
+  binaries read -- an escape hatch nobody can find is not one. No gate diffs the
+  help text against the C++, so this costs nothing.
 * **`OSREP_SEED_HEX` and `--seed=N` are two different mechanisms, and the C++
   order matters.** The hex hook replays the key bytes a specific archive
   recorded (it is how the Future-LZ race was pinned), `--seed=N` expands a
