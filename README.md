@@ -12,6 +12,16 @@ platforms.
 - **No backward compatibility** with `.srep` files. The on-disk magic bytes
   changed from `"SREP"` to `"OSRP"` — old archives must be decompressed with
   the upstream tool first.
+- **Container v5 is the default since 2.0.0**, written with a single `OSR5`
+  magic: varint records, CRC-32C integrity, and `-dup` metadata located
+  through a footer rather than an appended trailer. `--format=v4` writes the
+  `OSRP` container the 1.0.x releases read and stays supported permanently as
+  the interoperability escape hatch; both are always readable, so the option
+  only selects what `osrep` *writes*.
+
+  This is the breaking change in 2.0.0, and it breaks loudly rather than
+  quietly: a 1.0.x binary handed a v5 archive exits 4 with *"not an omega srep
+  compressed file"* and writes no output. It cannot mistake one for the other.
 - **Supported platforms:** Windows 10/11 x64 and Linux x64 (primary,
   tested target). 32-bit x86 (i686) is also supported as an **opt-in**
   build — see `docs/32bit-support.md` for the cross-compile command

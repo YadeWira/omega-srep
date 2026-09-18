@@ -38,6 +38,11 @@ _osrep() {
         COMPREPLY=( "${COMPREPLY[@]/#/--seed=}" )
         return 0
     fi
+    if [[ "$cur" == --format=* ]]; then
+        COMPREPLY=( $(compgen -W "v4 v5" -- "${cur#--format=}") )
+        COMPREPLY=( "${COMPREPLY[@]/#/--format=}" )
+        return 0
+    fi
     if [[ "$cur" == -hash=* ]]; then
         COMPREPLY=( $(compgen -W "vmac siphash md5 sha1 sha512" -- "${cur#-hash=}") )
         COMPREPLY=( "${COMPREPLY[@]/#/-hash=}" )
@@ -55,7 +60,7 @@ _osrep() {
                 -mmap -nommap -hash- -slp -slp+ -slp-
                 -dup --dup-paranoid
                 --chunk-avg= --chunk-min= --chunk-max= --chunk-buf=
-                --seed= --version --help
+                --seed= --format= --version --help
                 -V -h
                 -hash=
             "

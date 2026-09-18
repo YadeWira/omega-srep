@@ -28,6 +28,7 @@ _osrep() {
         '--chunk-max=[CDC maximum chunk size in bytes]:bytes:(8192 16384 32768 65536)'
         '--chunk-buf=[CDC buffer size in bytes]:bytes:(1048576 8388608 67108864)'
         '--seed=[deterministic hash seed (uint64)]:seed:(0 1 42 0xCAFEBABE)'
+        '--format=[container to write (default v5; v4 for 1.0.x readers)]:container:(v4 v5)'
         '-hash=[per-block hash function]:hash:(vmac siphash md5 sha1 sha512)'
         '--version[print version line and exit]'
         '-V[alias for --version]'

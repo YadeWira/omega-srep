@@ -20,11 +20,14 @@ members = [
     "crates/osrep-conformance",
 ]
 
-# Kept in step with `program_version` in Compression/SREP/srep.cpp: the Rust
-# `osrep` is meant to be interchangeable with the C++ one, so both report the
-# same version line. A release bumps this and srep.cpp together.
+# Was kept in step with `program_version` in Compression/SREP/srep.cpp, back
+# when the two binaries were meant to report the same version line. From 2.0.0
+# they diverge on purpose: the Rust `osrep` writes the v5 container by default,
+# which the C++ cannot read, so they are no longer interchangeable and pretending
+# otherwise in `--version` would be a lie. srep.cpp stays at 1.0.7 -- the last
+# release the C++ actually shipped in.
 [workspace.package]
-version = "1.0.7"
+version = "2.0.0"
 edition = "2021"
 rust-version = "1.77"
 publish = false

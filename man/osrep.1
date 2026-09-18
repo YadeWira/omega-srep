@@ -1,6 +1,6 @@
 .\" Manpage for osrep — Omega SREP
 .\" View locally with:  man -l man/osrep.1
-.TH OSREP 1 "April 2026" "Omega SREP 1.0a-beta.4" "User Commands"
+.TH OSREP 1 "September 2026" "Omega SREP 2.0.0" "User Commands"
 
 .SH NAME
 osrep \- huge-dictionary LZ77 preprocessor (Omega lineage)
@@ -214,6 +214,35 @@ Deterministic hash seed (uint64; decimal or
 hex). Same seed + same input produces a byte-identical archive across
 runs. Default behavior is random per-run (matches upstream SREP
 exactly). Useful for content-addressed storage and reproducible builds.
+.TP
+\fB--format=\fR\fBv4\fR|\fBv5\fR
+Container to write. Default
+.BR v5 .
+Both are always readable regardless of this option; it only selects what
+.B osrep
+.I writes\fR.
+.IP
+.B v5
+is the current container: a single
+.B OSR5
+magic, varint records, CRC-32C integrity, and
+.B -dup
+metadata located through a footer instead of a trailer.
+.B v4
+is the container the 1.0.x releases read, kept permanently as the
+interoperability escape hatch \(em use it when the archive has to be opened
+by an older
+.B osrep
+or by upstream SREP.
+.IP
+Changing the default from
+.B v4
+to
+.B v5
+is the breaking change in 2.0.0. A 1.0.x binary handed a v5 archive does not
+misread it: it exits 4 with
+.RB \(lq "not an omega srep compressed file" \(rq
+and writes nothing.
 
 .SS Help / version
 

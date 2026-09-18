@@ -4,10 +4,57 @@ All notable changes to Omega SREP since the fork point from upstream
 SREP 3.93a beta (Bulat Ziganshin, October 2014).
 
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com).
-Versions follow `1.<minor>.<patch>` for stable releases and
-`1.0a-beta.N` for pre-1.0 betas.
+Versions follow `<major>.<minor>.<patch>` for stable releases and
+`1.0a-beta.N` for the pre-1.0 betas. The major is bumped when an archive
+written by the new default cannot be read by the previous release, which is
+what happened in 2.0.0.
 
 ## [Unreleased]
+
+## [2.0.0] — 2026-09-18
+
+### Changed
+
+- **BREAKING: `--format=v5` is now the default container.** `osrep` writes
+  `OSR5` archives unless told otherwise. The 1.0.x releases cannot read them,
+  which is what makes this a major bump rather than a 1.1.
+
+  **It breaks loudly, not quietly.** A 1.0.x binary handed a v5 archive exits
+  4 with *"not an omega srep compressed file"* and writes no output, for both
+  `-d` and `-i`. It cannot mistake a v5 archive for a truncated or corrupt v4
+  one and produce wrong bytes; `tests/rust_cli_conformance.sh` asserts exactly
+  that against the shipped 1.0.7 C++ binary, so the guarantee is tested rather
+  than assumed.
+
+  **`--format=v4` is the escape hatch and is supported permanently**, not
+  deprecated. Use it when the archive has to be read by an older `osrep` or by
+  upstream SREP. Reading is unaffected in both directions: 2.0.0 reads v4 and
+  v5 alike, and always has — the option only selects what is *written*.
+
+  What v5 changes on disk: a single `OSR5` magic instead of the v1-v4 family,
+  LEB128 varint records, CRC-32C integrity, and `-dup` metadata located via a
+  footer (`meta_offset`/`meta_size`) instead of the appended `ODUP` trailer.
+  Two consequences worth knowing if you parse archives by hand: the hash seed
+  moves from `[16:48]` to `[28:60]`, and the trailer no longer exists.
+
+- **The Rust implementation is what ships.** The three release binaries
+  (Linux x64, Windows x64, Windows x86) are built from `crates/`. The C++ in
+  `Compression/` stays in the tree as the differential-testing oracle and can
+  still be built with `make`, but it is no longer released and stays at
+  **1.0.7** — the last version it actually shipped in. `--version` no longer
+  matches between the two, on purpose: they are no longer interchangeable, and
+  reporting the same version line would say otherwise.
+
+  Verified on a real Windows 7 SP1 x64 VM, not only by cross-compiling:
+  both Windows binaries compress and decompress, `-m1`/`-m3`/`-m5`/`-dup`
+  round-trip byte-for-byte, and the x86 build reads what the x64 build wrote.
+  With `OSREP_SEED_HEX` pinned, Windows x64, Windows x86 and Linux x64 produce
+  byte-identical archives in every one of those modes.
+
+### Added
+
+- **`--format=v4|v5`** — documented in `--help`, the man page, the README and
+  both shell completions. It is the one option upstream SREP does not have.
 
 ## [1.0.7] — 2026-09-14
 
