@@ -34,11 +34,27 @@ Windows builds cross-compile from Linux with the same mingw-w64 toolchain the
 C++ build uses (`.cargo/config.toml` wires up the linkers), so no Visual Studio
 is required.
 
-**Windows 7 comes out ahead:** the Rust binaries import only `KERNEL32.dll`,
-`msvcrt.dll` and `ntdll.dll`, all present on an unpatched Windows 7. The
-current C++ build uses MinGW-w64's UCRT runtime and needs the
-`KB2999226` Universal C Runtime installed on the target machine. (Verified by
-inspecting the PE import table; a real Win7 VM run is still on the checklist.)
+**Windows 7 comes out ahead:** the Rust binaries import `ADVAPI32.dll`,
+`bcrypt.dll`, `KERNEL32.dll`, `msvcrt.dll` and `ntdll.dll` -- all five present
+on an unpatched Windows 7 (`bcrypt.dll` ships with Vista and later; it is where
+the CLI draws its hash key from). The current C++ build uses MinGW-w64's UCRT
+runtime and needs the `KB2999226` Universal C Runtime installed on the target
+machine.
+
+Verified on a real Windows 7 SP1 x64 VM (2026-09-18, the 1.0.7 release
+binaries), not just by reading the import table -- an earlier revision of this
+paragraph claimed three imports because it was written from a partial `objdump`
+read, which is exactly the kind of claim a VM run exists to catch. What the run
+covered:
+
+- both `osrep.exe` builds (x64 and x86) start and compress/decompress;
+- `-m1`, `-m3`, `-m5` and `-dup` all round-trip byte-for-byte (`fc /b`);
+- the x86 build decompresses an archive the x64 build wrote;
+- `-i` reports `v5:`, so it is the phase 5c-2 default being exercised;
+- with `OSREP_SEED_HEX` pinned, archives written on Win7 x64, Win7 x86 and
+  Linux x64 are **byte-identical** at `-m1`/`-m3`/`-m5`/`-dup`. Unpinned, the
+  header seed differs per run, which separately confirms the `bcrypt` entropy
+  draw works on Win7 rather than silently falling back.
 
 ## Layout
 
@@ -117,7 +133,7 @@ the input. Truncated archives must error, never panic.
 | **5a** | v5 format design: container, record codec, rejection rules, verification strategy. | **done** — `docs/format-spec-v5.md` |
 | **5b** | v5 writer, v5 decoder, the `-dup` wrapper and the equivalence/round-trip gate. | **done** — `tests/format_v5_conformance.sh` (50/50) checks the stream against the byte-verified Future-LZ path *and* round-trips through the real decoder, `-dup` included; `tests/dup_v5_conformance.sh` (10/10) diffs the wrapper against the C++ oracle. |
 | **5c-1** | The CLI: the full option surface, the three modes, stdin/stdout with the tempfile spooling, `-i`, `-bar`, `-delete`, and the suite wired to run over it. | **done** — `tests/rust_cli_conformance.sh` (186) diffs the Rust binary against the C++ on identical argv and then runs the ten CLI-level shell scripts with `OSREP_BIN` pointed at the port |
-| **5c-2** | `--format=v5` as the default, release assets, tag, `gh release`, retire the C++. | **in progress** — the default is flipped and the whole suite is green over it (`tests/rust_cli_conformance.sh` 187 + the ten CLI scripts, `format_v5_conformance` 50, `dup_v5_conformance` 10, `encode_conformance` 174, `rust_conformance` 519/0). Release assets, tag and retiring the C++ are still to do. |
+| **5c-2** | `--format=v5` as the default, release assets, tag, `gh release`, retire the C++. | **in progress** — the default is flipped and the whole suite is green over it (`tests/rust_cli_conformance.sh` 187 + the ten CLI scripts, `format_v5_conformance` 50, `dup_v5_conformance` 10, `encode_conformance` 174, `rust_conformance` 519/0). The three release binaries are built and the two Windows ones are verified on a real Win7 SP1 VM (see the Windows 7 note above). Tag, `gh release` and retiring the C++ are still to do. |
 
 ### Phase 4c notes worth keeping
 
