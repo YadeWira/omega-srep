@@ -376,16 +376,67 @@ with the binary in phase 5.
   text is the one users see -- and a drop-in that prints a different synopsis is
   a worse drop-in.
 
+## Licence — decided (2026-09-18): proceed, and keep declaring none
+
+The owner's call, made with the situation below on the table: **finish the port
+and publish it, on the same footing as the C++ has been published since 1.0.0.**
+No licence field, no `LICENSE` file, attribution left intact. This is not a
+question to re-open on the next session; it is a risk accepted knowingly.
+
+**What the sources actually say** (verified by reading the headers):
+
+| component | licence |
+|---|---|
+| `srep.cpp`, `hashes.cpp`, the core | "Copyright (C) 2009-2014 Bulat Ziganshin. **All rights reserved**", plus an offer to sell a commercial licence |
+| `hashes/vmac/vmac.c` | explicitly placed in the **public domain** by Krovetz and Wei Dai |
+| `ciphers/aes/aes.c` | LibTomCrypt, "free for all purposes" |
+| `hashes/siphash/siphash.c` | **no licence header at all** — worth tracing upstream, the reference implementations are usually CC0 |
+
+**Why this port cannot claim clean-room**: the method is a faithful translation
+by design — "Nothing is rewritten from a re-reading of a spec" is the first
+paragraph of this document, the gate is a byte-for-byte diff against the C++,
+and the phase notes cite `srep.cpp:663`, `hash_table.cpp:393` and reproduce
+quirks (the `-16` digest bias, the fence match, where `goto stop` lands) that
+exist only because of how the original is written. Copyright covers
+translations, so treat the port as a derivative work of an "all rights
+reserved" original.
+
+**The basis for proceeding is practical, not legal.** Recording this explicitly
+so nobody later repeats a premise that does not hold: source being *public* is
+not a licence; *non-commercial* use is not an exemption (it weighs in a
+fair-use analysis and limits damages, nothing more); *abandonment* does not
+extinguish copyright — there is no such legal category as abandonware, and the
+term runs for the author's life plus 70 years in most jurisdictions, so 2009-2014
+code is nowhere near expiry; and losing a domain cedes nothing. What actually
+makes the risk low is that this is a non-commercial fork of a hobby project
+frozen in 2014, by an author who has moved to other work, with no revenue to
+claw back, full attribution kept, and a history of him *offering* to license
+rather than of hostility.
+
+**Facts as of 2026-09-18, so the calculus can be re-checked rather than
+re-argued:**
+
+* `freearc.org` resolves and returns 200, but the project site is gone — the
+  domain was lost and now serves an unrelated Indonesian WordPress blog.
+* Bulat Ziganshin is **active**, not absent: he pushed to
+  `Bulat-Ziganshin/EasyProtoBuf` on 2026-09-18 and has 47 public repos. It is
+  his *compression* line that is dormant — `Bulat-Ziganshin/FA` (FreeArc'Next)
+  last pushed 2023-12-25, `MT-LZ` and `Compression-Research` in 2016.
+* He has starred `YadeWira/nanozip-re` — so he is aware of this owner's GitHub
+  presence and has raised no objection. (He has **not** starred `omega-srep`;
+  do not overstate this as awareness of, or consent to, this project.)
+* The C++ side already carries the same exposure: the repo is public, has no
+  licence, and has shipped binaries in eight releases since 1.0.0. The port
+  adds visibility, not a new category of risk.
+
+**What would change this**: a message from Bulat (the owner will relay it), or
+wanting to do something the current footing cannot support — putting a real
+licence on the tree, letting third parties redistribute with confidence, or
+anything commercial. Any of those needs his explicit permission, which is one
+email to the address in the source headers; the passage of time will not supply
+it.
+
 ## Open questions
 
-* **Licence.** The C++ core is Bulat Ziganshin's ("All rights reserved", with a
-  commercial-licence offer); `_Encryption/hashes/siphash/siphash.c` carries no
-  licence header at all. Two of the ported modules are clearer: `vmac/vmac.c`
-  is explicitly placed in the public domain by its authors, and
-  `ciphers/aes/aes.c` is LibTomCrypt's "free for all purposes" notice. Whether
-  the Rust port is a faithful translation (a derivative work) or a clean-room
-  implementation from the format spec is still not decided, so the workspace
-  deliberately declares no licence. Settle this before publishing anything from
-  the Rust tree.
 * **MSRV.** The 1.77.2 pin caps dependency choice at 2024-era crates. Keep the
   dependency set small; `osrep-core` currently has none.

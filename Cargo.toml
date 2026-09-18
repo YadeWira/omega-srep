@@ -5,10 +5,12 @@
 # results, so every ported module is checked against the shipped binary
 # rather than against a second reading of the spec.
 #
-# `license` is deliberately unset: the C++ core is Bulat Ziganshin's
-# ("All rights reserved", with a commercial-licence offer) and whether the
-# Rust port is a translation or a clean-room reimplementation is an open
-# decision. Do not add a licence field until that is settled.
+# `license` is deliberately unset, and that is a settled decision rather than
+# a pending one: the C++ core is Bulat Ziganshin's ("All rights reserved", with
+# a commercial-licence offer), the port is a faithful translation of it, and the
+# owner's call (2026-09-18) is to ship on that footing without claiming a licence
+# the tree cannot grant. Adding one needs his permission first -- see
+# "Licence -- decided" in docs/rust-port.md before touching this.
 
 [workspace]
 resolver = "2"
