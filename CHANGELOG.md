@@ -11,40 +11,51 @@ what happened in 2.0.0.
 
 ## [Unreleased]
 
-### Added
-
-- **`-index=` is ported.** It was the one option the Rust CLI still refused
-  (`"-index= is not ported yet"`). It moves the per-block match lists out of
-  the archive into a second file; the archive keeps its block headers,
-  literals, block-size table and footer, so it stays self-describing and only
-  the lists move. Verified against the C++ the way everything else here is:
-  for `-m1f`/`-m3f`/`-m5f` and `-m1o`/`-m3o`/`-m5o`, **both** the archive and
-  the index file are byte-identical to the oracle's, and each implementation
-  decodes the other's archive+index pair.
+## [2.0.1] — 2026-09-22
 
 ### Fixed
 
-- **`-index=` with the default container no longer writes an archive that
-  cannot be read.** Index-LZ — the no-suffix default — finds its match lists
-  by seeking inside the archive and never consults the index, so
+- **`-index=` works again.** This is a regression 2.0.0 introduced and not a
+  new feature: the C++ 1.0.7 supported the option, 2.0.0 made the Rust port
+  the released binary, and the port refused it outright
+  (`"-index= is not ported yet"`). Anyone using `-index=` on 1.0.7 lost it by
+  upgrading, which is why this is a patch release rather than a minor one.
+
+  It moves the per-block match lists out of the archive into a second file;
+  the archive keeps its block headers, literals, block-size table and footer,
+  so it stays self-describing and only the lists move. Verified the way
+  everything here is: for `-m1f`/`-m3f`/`-m5f` and `-m1o`/`-m3o`/`-m5o`
+  **both** the archive and the index file are byte-identical to the C++'s, and
+  each implementation decodes the other's archive+index pair.
+
+- **`-index=` with the default container no longer writes an unreadable
+  archive.** Index-LZ — the no-suffix default — finds its match lists by
+  seeking inside the archive and never consults the index, so
   `osrep -m3 -index=x in out` exited 0 and the result then failed with
-  *"broken compressed data"*. Silent data loss. Both binaries now refuse the
-  combination with exit 2 and say which methods do support it. `-mNf` and
-  `-mNo` were always correct and are unaffected.
+  *"broken compressed data"*. Silent data loss, in the mode anyone would have
+  reached for first. Both binaries now refuse the combination with exit 2 and
+  name the methods that do support it. `-mNf` and `-mNo` were always correct
+  and are unaffected.
 
 - **`-c1` through `-c7` no longer crash.** `SliceHash` computes
   `slice_size = L/8` and then divides by it (`hash_table.cpp:32-34`), so any
   chunk length below the slice width was a division by zero: **SIGFPE
-  (exit 136) in the C++ and a panic (exit 101) in the Rust port**, both with
-  no message and no output. They are now a plain command-line error (exit 2).
-  `-c0` still means "not given" and takes the default; `-c8` and above are
-  unchanged.
+  (exit 136) in the C++ and a panic (exit 101) in the port**, both with no
+  message and no output file. They are now a plain command-line error
+  (exit 2). `-c0` still means "not given" and takes the default; `-c8` and
+  above are unchanged. The boundary was measured, not reasoned about.
 
-  Both fixes land in the C++ as well as the port. The C++ is the oracle the
-  differential tests measure against, so leaving a crash or a silent-corruption
-  path in it would mean either reproducing the bug in Rust or diverging from
-  the thing that defines correct.
+  The last two land in the C++ as well as the port. The C++ is the oracle the
+  differential tests measure against, so leaving a crash or a
+  silent-corruption path in it would mean either reproducing the bug in Rust
+  to stay faithful or diverging from the thing that defines correct. It stays
+  at 1.0.7 as a version string; the fixes are in its source.
 
+### Added
+
+- `tests/rust_cli_conformance.sh` grows 12 checks (187 → 199): both files
+  byte-for-byte across six modes, both cross-decodes, both refusals, and the
+  `-c` boundary on either side of it.
 
 ## [2.0.0] — 2026-09-18
 

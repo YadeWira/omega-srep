@@ -4,18 +4,18 @@ version = 3
 
 [[package]]
 name = "osrep-cli"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "osrep-core",
 ]
 
 [[package]]
 name = "osrep-conformance"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "osrep-core",
 ]
 
 [[package]]
 name = "osrep-core"
-version = "2.0.0"
+version = "2.0.1"

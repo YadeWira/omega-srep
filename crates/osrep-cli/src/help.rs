@@ -12,7 +12,7 @@ pub const DESCRIPTION: &str =
 pub const HOMEPAGE: &str = "https://github.com/YadeWira/omega-srep";
 /// Release date. No longer `srep.cpp:6`'s `program_date`: the C++ is frozen at
 /// 1.0.7 and its date with it (see the note in the workspace `Cargo.toml`).
-pub const DATE: &str = "September 18, 2026";
+pub const DATE: &str = "September 22, 2026";
 
 /// `print_version` (`dup_wrapper.cpp:406-409`).
 pub fn version() -> String {
