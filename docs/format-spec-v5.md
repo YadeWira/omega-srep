@@ -30,6 +30,43 @@ como herramienta de interoperabilidad.
 | el footer se valida con dos firmas invertidas | CRC-32C del header y del footer |
 | el meta de `-dup` es un **trailer** que se detecta olfateando `"ODUP"` en los últimos 4 bytes, y **no tiene integridad** | el footer lo **localiza** y lleva su **CRC-32C**: sin olfateo, sin misidentificación |
 
+## 1.1. La consecuencia del meta sin integridad, medida
+
+La fila anterior dice que el meta de `-dup` en v4 «no tiene integridad». Eso
+es una propiedad del layout; lo que sigue es lo que produce en la práctica,
+medido y no deducido, porque es el único argumento concreto a favor de v5 para
+quien esté eligiendo con `--format=`.
+
+Barrido de flips de un byte sobre toda la región de meta del mismo archivo
+`-dup` escrito en los dos contenedores (mismo input, misma semilla):
+
+| contenedor | flips | error limpio | **salida silenciosa mala** |
+|---|---|---|---|
+| v4 | 2.328 | 2.326 | **2** (a `len-16` y `len-1913`) |
+| v5 | 2.311 | 2.311 | **0** |
+
+«Salida silenciosa mala» = `rc=0`, sin ningún mensaje, y archivo distinto del
+original. En el caso de `len-16` la salida sale 101 bytes corta.
+
+Lo que **no** es vulnerable, probado campo por campo: corromper `meta_size`
+(el `u64` en `[-12:-4]`), el magic `ODUP` o el inicio del meta da `rc=4`
+limpio en todos los casos. El modo silencioso está únicamente en el
+**contenido** del meta, que es exactamente lo que ningún checksum cubre en v4.
+En v5 el `meta_crc` lo cubre y las 2.311 corrupciones se detectan.
+
+**Es dependiente de la entrada.** El mismo barrido sobre otro archivo (4 MiB
+de datos deterministas) dio **0 silenciosas en v4**. Así que la lectura
+correcta no es «1 de cada 1.164», sino: *existen* posiciones silenciosas en
+v4 y cuántas hay depende del contenido. Cualquier cifra concreta sólo vale
+para el archivo sobre el que se midió.
+
+**Esto no es una regresión del port.** El C++ 1.0.7 reproduce el caso de
+`len-16` byte por byte: mismo `rc=0`, mismos 101 bytes de menos. Es una
+propiedad del formato v4 que existe desde que existe el trailer, no algo que
+introdujera la reimplementación en Rust. Quien elige `--format=v4` por
+interoperabilidad no está asumiendo un riesgo nuevo — está quedándose donde
+ya estaba.
+
 ## 2. Layout
 
 ```

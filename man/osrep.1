@@ -235,6 +235,15 @@ by an older
 .B osrep
 or by upstream SREP.
 .IP
+One measured difference if you are choosing between them: with
+.BR -dup ,
+the v4 metadata carries no checksum, so a corruption inside it can pass the
+magic and size checks and yield a silently truncated file with exit status 0.
+v5 covers that metadata with a CRC-32C and rejects it. This is a property of
+the v4 layout, not a new risk \(em the 1.0.x releases behave identically. See
+.I docs/format-spec-v5.md
+for the measurement.
+.IP
 Changing the default from
 .B v4
 to
