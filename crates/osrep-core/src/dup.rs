@@ -105,6 +105,9 @@ pub fn encode(
     dup: DupParams,
     container: DupMode,
     progress: Option<&mut dyn FnMut(u64, u64)>,
+    // `-index=`: the body is what `srep_main` compresses, so the index the
+    // wrapper produces is the body's, exactly as in the C++.
+    index: Option<&mut dyn std::io::Write>,
 ) -> Result<u64, DupError> {
     if mode.kind == Kind::Inmem {
         return Err(DupError::IncompatibleMethod);
@@ -134,7 +137,7 @@ pub fn encode(
     // dedup pass has already run by the time there is anything to report, and
     // the C++ has the same shape (its `-bar` lives in srep_main, which only
     // ever sees the body).
-    encoder::encode(&mut body_file, &mut out, &enc, mode, progress)?;
+    encoder::encode(&mut body_file, &mut out, &enc, mode, progress, index)?;
 
     if container == DupMode::V4 {
         // `dup_wrapper.cpp:254-262`: meta || u64_le(meta_size) || "ODUP".
@@ -188,7 +191,10 @@ pub fn decode(input: &Path, output: &Path, opts: &FutureLzOptions) -> Result<boo
         let decoded = TempFile::new("osrep-dup-body-dec")?;
         let mut body_file = File::open(body.path())?;
         let mut sink = File::create(decoded.path())?;
-        archive::decode(&mut body_file, &mut sink, opts, None).map_err(DupError::Decode)?;
+        // The wrapper decodes the body it just carved out; `-index=` on the
+        // decompress side is handled by the CLI, which opens the index and
+        // hands it to `archive::decode` directly.
+        archive::decode(&mut body_file, &mut sink, opts, None, None).map_err(DupError::Decode)?;
         sink.flush()?;
         drop(sink);
         dedup::decode_streaming(&meta, decoded.path(), output).map_err(DupError::Dedup)?;
@@ -319,7 +325,7 @@ mod tests {
         dup: DupParams,
         container: DupMode,
     ) -> Result<u64, DupError> {
-        encode(input, output, enc, mode, dup, container, None)
+        encode(input, output, enc, mode, dup, container, None, None)
     }
 
     #[test]
@@ -399,7 +405,7 @@ mod tests {
 
         let mut file = File::open(input.path()).unwrap();
         let mut out = File::create(archive.path()).unwrap();
-        encoder::encode(&mut file, &mut out, &options(), v5_mode(), None).unwrap();
+        encoder::encode(&mut file, &mut out, &options(), v5_mode(), None, None).unwrap();
         drop(out);
 
         // No payload, so the post-pass does not run -- and says so.

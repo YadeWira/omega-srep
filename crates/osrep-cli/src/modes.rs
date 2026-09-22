@@ -45,11 +45,37 @@ pub fn wants_help(o: &Options) -> bool {
 }
 
 pub fn run(o: &Options) -> Result<i32, RunError> {
-    // `-index=` writes the footer and block table to a second file. Ignoring it
-    // would leave the user with an archive they believe is accompanied by an
-    // index, so this refuses rather than half-supports it.
-    if !o.index_file.is_empty() {
-        return Err(err(ERROR_CMDLINE, "-index= is not ported yet"));
+    // `-index=` moves the per-block match lists out of the archive into a
+    // second file (`fstat`, `srep.cpp:606`); the block headers, literals,
+    // block-size table and footer stay in the archive. Only the two containers
+    // that emit their lists from the second pass can do that.
+    //
+    // The C++ accepts the option for the other containers too and then writes
+    // an archive that it cannot read back -- `-m3 -index=x` exits 0 and the
+    // resulting file fails with "broken compressed data". That is silent data
+    // loss, so this refuses the combination instead of reproducing it.
+    if !o.index_file.is_empty() && o.cmdmode == CmdMode::Compress {
+        if o.format == Format::V5 {
+            return Err(err(
+                ERROR_CMDLINE,
+                "-index= is a v4 feature: the v5 footer locates everything by \
+                 offset, so the lists cannot move out. Use --format=v4",
+            ));
+        }
+        // Measured against the 1.0.7 C++, not assumed: with Index-LZ -- which
+        // is the *default*, the no-suffix mode -- `-index=` compresses with
+        // exit 0 and the archive then fails to decompress, because that
+        // container's decoder reads the lists by seeking in the archive and
+        // never consults the index. Future-LZ (`f`) and I/O-LZ (`o`) both
+        // round-trip correctly.
+        if o.lz == Lz::Index {
+            return Err(err(
+                ERROR_CMDLINE,
+                "-index= needs -mNf or -mNo: the default (Index-LZ) container \
+                 reads its match lists from the archive, so an archive written \
+                 with an index could not be decompressed",
+            ));
+        }
     }
     if o.dup && o.seed_invalid {
         return Err(err(
@@ -320,11 +346,25 @@ fn compress(o: &Options, finame: &str, foutname: &str) -> Result<i32, RunError> 
         declared.unwrap_or_else(|| file_size(&input_path))
     };
 
+    // `srep.cpp:606`: the index is opened before the run, so a bad path fails
+    // before any work is done rather than after the archive is written.
+    let mut index_file = if o.index_file.is_empty() {
+        None
+    } else {
+        Some(File::create(&o.index_file).map_err(|_| {
+            err(
+                ERROR_IO,
+                format!("Can't open index file {} for write", o.index_file),
+            )
+        })?)
+    };
+
     let written = {
         let mut progress = |done: u64, total: u64| {
             bar.tick(done, total);
             stats.tick(done, total);
         };
+        let index = index_file.as_mut().map(|f| f as &mut dyn Write);
         if o.dup {
             let dup_mode = if o.format == Format::V5 {
                 DupMode::V5
@@ -343,6 +383,7 @@ fn compress(o: &Options, finame: &str, foutname: &str) -> Result<i32, RunError> 
                 params,
                 dup_mode,
                 Some(&mut progress),
+                index,
             )
             .map_err(dup_error)?
         } else {
@@ -352,15 +393,29 @@ fn compress(o: &Options, finame: &str, foutname: &str) -> Result<i32, RunError> 
             if foutname == "-" {
                 let stdout = std::io::stdout();
                 let mut out = CountWriter::new(stdout.lock());
-                osrep_core::encoder::encode(&mut input, &mut out, &enc, mode, Some(&mut progress))
-                    .map_err(|e| err(ERROR_COMPRESSION, format!("{e:?}")))?;
+                osrep_core::encoder::encode(
+                    &mut input,
+                    &mut out,
+                    &enc,
+                    mode,
+                    Some(&mut progress),
+                    index,
+                )
+                .map_err(|e| err(ERROR_COMPRESSION, format!("{e:?}")))?;
                 out.flush().map_err(|_| err(ERROR_IO, "Can't write to stdout"))?;
                 out.written()
             } else {
                 let mut out = File::create(foutname)
                     .map_err(|_| err(ERROR_IO, format!("Can't open {foutname} for write")))?;
-                osrep_core::encoder::encode(&mut input, &mut out, &enc, mode, Some(&mut progress))
-                    .map_err(|e| err(ERROR_COMPRESSION, format!("{e:?}")))?;
+                osrep_core::encoder::encode(
+                    &mut input,
+                    &mut out,
+                    &enc,
+                    mode,
+                    Some(&mut progress),
+                    index,
+                )
+                .map_err(|e| err(ERROR_COMPRESSION, format!("{e:?}")))?;
                 out.seek(SeekFrom::End(0))
                     .map_err(|_| err(ERROR_IO, "Can't write the archive"))?
             }
@@ -515,14 +570,28 @@ fn decompress(o: &Options, finame: &str, foutname: &str) -> Result<i32, RunError
         .open(&sink_path)
         .map_err(|_| err(ERROR_IO, format!("Can't open {foutname} for write")))?;
 
+    // `-index=` on the way back: the match lists come from the named file
+    // instead of the archive (`srep.cpp:606` opens it "rb" for decompression).
+    let mut index_file = if o.index_file.is_empty() {
+        None
+    } else {
+        Some(File::open(&o.index_file).map_err(|_| {
+            err(
+                ERROR_IO,
+                format!("Can't open index file {} for read", o.index_file),
+            )
+        })?)
+    };
+
     {
         let mut progress = |done: u64, total: u64| {
             bar.tick(done, total);
             stats.tick(done, total);
         };
+        let index = index_file.as_mut().map(|f| f as &mut dyn Read);
         // A rejection is a clean non-zero exit -- never a crash, never a hang,
         // which is what the corruption tests assert.
-        if let Err(e) = archive::decode(&mut input, &mut sink, &opts, Some(&mut progress)) {
+        if let Err(e) = archive::decode(&mut input, &mut sink, &opts, Some(&mut progress), index) {
             return Err(err(ERROR_COMPRESSION, format!("{e:?}: {finame}")));
         }
     }

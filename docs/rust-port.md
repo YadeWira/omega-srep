@@ -434,9 +434,19 @@ with the binary in phase 5.
 * **What the CLI accepts and does not act on**: `-t` (the port is single-threaded
   per block), `-a`/`-ia`/`-slp`/`-pc`/`-mmap`/`-nommap`/`-rem` -- all proven
   output-neutral by the phase 4c pre-port experiments. `-mem` and `-vmblock=`
-  map onto the spill budget, and `-vmfile=` names the spill file. `-index=` is
-  refused outright: silently ignoring it would leave a user with an archive they
-  believe has an index.
+  map onto the spill budget, and `-vmfile=` names the spill file.
+* **`-index=` is implemented** (it was the last refusal to go). It routes the
+  per-block match lists to a second file: I/O-LZ writes them in the first
+  pass, Future-LZ re-emits them in the second, so the sink is threaded through
+  both, and the decoder reads them from there instead of the archive. Archive
+  *and* index are byte-identical to the C++ for every `f` and `o` mode, and
+  each implementation reads the other's pair.
+
+  It is refused for the default container, and that refusal was added to the
+  C++ too. Index-LZ's decoder locates its match lists by seeking inside the
+  archive and never opens the index, so `-m3 -index=x` exited 0 and produced
+  an archive that failed with "broken compressed data" -- the port would
+  otherwise have had to reproduce silent data loss to stay faithful.
 * **`-i` needs no match walk.** The C++ derives the original size for Index-LZ
   from the footer arithmetic plus a walk of every match; the port reads the
   per-block `origsize` out of the framing, which is the same number and does not

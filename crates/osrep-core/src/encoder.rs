@@ -271,6 +271,10 @@ pub fn encode<R: Read + Seek, W: Write>(
     opts: &EncodeOptions,
     mode: Mode,
     progress: Option<&mut dyn FnMut(u64, u64)>,
+    // `-index=`. Both passes can own the match lists -- I/O-LZ writes them
+    // inline in this loop, Future-LZ re-emits them in the second pass -- so
+    // the sink is threaded through both.
+    mut index: Option<&mut dyn Write>,
 ) -> Result<u64, EncodeError> {
     let mut progress = progress;
     let kind = mode.kind;
@@ -600,10 +604,15 @@ pub fn encode<R: Read + Seek, W: Write>(
             output.write_all(&header)?;
             compsize += header.len() as u64;
             if !index_lz {
+                let mut list_bytes = Vec::with_capacity(stat.len() * 4);
                 for word in &stat {
-                    output.write_all(&word.to_le_bytes())?;
+                    list_bytes.extend_from_slice(&word.to_le_bytes());
                 }
-                compsize += stat.len() as u64 * 4;
+                match index.as_deref_mut() {
+                    Some(ix) => ix.write_all(&list_bytes).map_err(|_| EncodeError::Io)?,
+                    None => output.write_all(&list_bytes)?,
+                }
+                compsize += list_bytes.len() as u64;
             }
             compsize += write_literals(
                 &dict,
@@ -650,6 +659,7 @@ pub fn encode<R: Read + Seek, W: Write>(
             &blocks,
             input,
             output,
+            index,
             round_matches,
             base_len as u32,
             futurelz_base_len,

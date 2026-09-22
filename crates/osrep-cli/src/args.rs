@@ -16,6 +16,10 @@ pub const MB: u64 = 1024 * 1024;
 pub const GB: u64 = 1024 * 1024 * 1024;
 
 /// `srep.cpp:284`: what compression from stdin assumes when `-s` is silent.
+/// `slices_in_block` (`hash_table.cpp:32`): `sizeof(entry)*CHAR_BIT/BITS`.
+/// The smallest `-c` that leaves `SliceHash` a non-zero slice.
+pub const SLICES_IN_BLOCK: usize = 8;
+
 pub const DEFAULT_STDIN_FILESIZE: u64 = 25 * GB;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -388,6 +392,18 @@ pub fn parse(args: &[String]) -> Result<Options, CmdLineError> {
                 parse_mem(v, Unit::B).ok_or_else(|| bad(format!("Invalid option: {a}")))? as usize;
         } else if let Some(v) = a.strip_prefix("-c") {
             o.l = parse_mem(v, Unit::B).ok_or_else(|| bad(format!("Invalid option: {a}")))? as usize;
+            // `SliceHash` divides by `slice_size = L / slices_in_block`, and
+            // `slices_in_block` is 8 (`hash_table.cpp:32`), so any L from 1 to
+            // 7 makes that zero and the next line divides by it. The C++ dies
+            // with SIGFPE there and this used to panic; both are now a plain
+            // command-line error, since no such L can ever describe a slice.
+            // 0 means "not given" and keeps the default.
+            if o.l > 0 && o.l < SLICES_IN_BLOCK {
+                return Err(bad(format!(
+                    "Invalid option: {a} -- the chunk length must be 0 (default) \
+                     or at least {SLICES_IN_BLOCK} bytes"
+                )));
+            }
         } else if let Some(v) = a.strip_prefix("-s") {
             o.declared_size =
                 Some(parse_mem(v, Unit::B).ok_or_else(|| bad(format!("Invalid option: {a}")))?);

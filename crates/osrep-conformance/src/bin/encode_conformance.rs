@@ -177,6 +177,7 @@ fn main() -> ExitCode {
             osrep_core::dup::DupParams::default(),
             dup_mode,
             None,
+            None,
         ) {
             eprintln!("ERROR! {e:?}");
             return ExitCode::from(1);
@@ -188,7 +189,7 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    let result = encoder::encode(&mut input, &mut output, &opts, parsed, None).map(|_| ());
+    let result = encoder::encode(&mut input, &mut output, &opts, parsed, None, None).map(|_| ());
 
     if result.is_ok() && parsed.container == encoder::Container::V5 {
         // v5 has no byte-for-byte oracle (the C++ cannot emit it), so every v5
@@ -279,7 +280,7 @@ fn v5_stream_equivalence(
             kind: mode.kind,
             container: encoder::Container::FutureLz,
         };
-        encoder::encode(&mut fin, &mut fout, opts, f_mode, None).map_err(|e| format!("{e:?}"))?;
+        encoder::encode(&mut fin, &mut fout, opts, f_mode, None, None).map_err(|e| format!("{e:?}"))?;
     }
 
     // 2. Both archives' per-block triples.

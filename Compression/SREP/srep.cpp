@@ -189,6 +189,10 @@ void print_info (const char *prefix_str, Offset max_ram, unsigned maximum_save, 
                    show3(stat_size/(sizeof(STAT)*STATS_PER_MATCH(ROUND_MATCHES)),temp1), show3(stat_size,temp2), double(stat_size)*100/filesize );
 }
 
+// Smallest -c that leaves SliceHash a non-zero slice: slices_in_block
+// (hash_table.cpp:32) is sizeof(entry)*CHAR_BIT/BITS == 8.
+#define SREP_MIN_L 8
+
 // Parse -mem option, examples are: -mem100mb, -mem75%, -mem75p, -mem75%-600mb
 int64 parse_mem_option (char *option, int *errcode, char spec)
 {
@@ -445,6 +449,19 @@ int srep_main (int argc, char **argv)
   if (INMEM_COMPRESSION && dictsize==0)   dictsize = DEFAULT_DICTSIZE;
   if (CONTENT_DEFINED_CHUNKING && dictsize)                           // CDC isn't yet compatible with in-memory compression
     error (ERROR_CMDLINE, "Incompatible options: -m%d -d%s", method, showMem64(dictsize,temp1));
+  // SliceHash computes slice_size = L/slices_in_block with slices_in_block==8
+  // (hash_table.cpp:32) and then divides by it, so any L in 1..7 makes that a
+  // division by zero -- SIGFPE, with no message and no output file. 0 means
+  // "not given" and keeps the default, so only the 1..7 window is refused.
+  if (L > 0 && L < SREP_MIN_L)
+    error (ERROR_CMDLINE, "Invalid option: -c%d -- the chunk length must be 0 (default) or at least %d bytes", int(L), SREP_MIN_L);
+  // -index= moves the per-block match lists to a second file (fstat, below).
+  // The INDEX_LZ decoder finds its lists by seeking in the archive and never
+  // reads fstat, so an INDEX_LZ archive written with -index= compressed with
+  // exit 0 and then failed to decompress -- silent data loss. Future-LZ (-mNf)
+  // and I/O-LZ (-mNo) both read fstat and round-trip correctly.
+  if (*index_file && cmdmode==COMPRESSION && INDEX_LZ)
+    error (ERROR_CMDLINE, "Invalid option: -index= needs -mNf or -mNo -- the default (Index-LZ) container reads its match lists from the archive, so an archive written with an index could not be decompressed");
   if (!L && !min_match)
     min_match  =  (CONTENT_DEFINED_CHUNKING? 4096 : 512);             // Default -l value
   if (!L) {

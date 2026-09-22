@@ -81,7 +81,11 @@ I/O LZ output: output file is used as the decompression dictionary
 Minimum LZ match length in bytes.
 .TP
 \fB-c\fIN\fR
-Hash chunk size in bytes.
+Hash chunk size in bytes. Must be 0 (the default) or at least 8: the slice
+hash divides by
+.IR N /8,
+so 1 to 7 would be a division by zero. Those values are refused with exit
+status 2 rather than crashing, which is what they used to do.
 .TP
 \fB-a\fIX\fR[\fB/\fIY\fR]
 Compression accelerator: allocate
@@ -145,7 +149,20 @@ Virtual-memory tempfile path.
 Block size of the VM tempfile. Default 8 MB.
 .TP
 \fB-index=\fIFILE\fR
-Read/write the match index in a separate file.
+Read/write the per-block match lists in a separate file instead of inside the
+archive. The archive keeps its block headers, literals, block-size table and
+footer, so it stays self-describing \(em only the lists move. The same
+.I FILE
+must be given again to decompress.
+.IP
+Requires
+.BI -m N f
+or
+.BI -m N o\fR.
+The default container (Index-LZ) finds its match lists by seeking inside the
+archive and never reads the index, so writing one that way produced an archive
+that could not be decompressed; the combination is now refused with exit
+status 2 instead.
 .TP
 \fB-s\fIBYTES\fR
 Explicitly specify input size (for stdin input). Default 25 GB.

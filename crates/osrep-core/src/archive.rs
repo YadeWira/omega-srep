@@ -23,6 +23,9 @@ pub fn decode<R: Read + Seek, S: Read + Write + Seek>(
     sink: &mut S,
     opts: &FutureLzOptions,
     progress: Option<&mut dyn FnMut(u64, u64)>,
+    // `-index=`: the match lists live in a separate file, so the two
+    // containers that read them sequentially take their bytes from here.
+    index: crate::decompress::IndexSource,
 ) -> Result<FutureLzStats, DecodeError> {
     let file_len = input.seek(SeekFrom::End(0))?;
     input.seek(SeekFrom::Start(0))?;
@@ -46,14 +49,14 @@ pub fn decode<R: Read + Seek, S: Read + Write + Seek>(
     if header.version.io_lz() {
         // I/O-LZ carries no match lists across blocks, so nothing spills and
         // the VM counters stay zero.
-        let stats = decode_io_lz(input, sink, progress)?;
+        let stats = decode_io_lz(input, sink, progress, index)?;
         Ok(FutureLzStats {
             decode: stats,
             vm_bytes_written: 0,
             vm_bytes_read: 0,
         })
     } else {
-        future_lz::decode_future_lz(input, sink, opts, progress)
+        future_lz::decode_future_lz(input, sink, opts, progress, index)
     }
 }
 

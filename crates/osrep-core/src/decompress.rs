@@ -257,7 +257,10 @@ impl Digest {
 }
 
 /// Read exactly `n` bytes, mapping a short read to `Truncated`.
-pub(crate) fn read_exact_or_eof<R: Read>(r: &mut R, buf: &mut [u8]) -> Result<bool, DecodeError> {
+pub(crate) fn read_exact_or_eof<R: Read + ?Sized>(
+    r: &mut R,
+    buf: &mut [u8],
+) -> Result<bool, DecodeError> {
     let mut filled = 0;
     while filled < buf.len() {
         match r.read(&mut buf[filled..])? {
@@ -276,10 +279,15 @@ pub(crate) fn read_exact_or_eof<R: Read>(r: &mut R, buf: &mut [u8]) -> Result<bo
 /// Decode a v1/v2 archive. `sink` receives the decompressed bytes at their
 /// final offsets and must allow reading them back, exactly like the C++'s
 /// single read/write `FILE*`.
+/// `-index=`: where the match lists come from when they are not in the archive
+/// (`fstat`, `srep.cpp:606`). `None` reads them from the archive, as always.
+pub type IndexSource<'a> = Option<&'a mut dyn Read>;
+
 pub fn decode_io_lz<R: Read + Seek, S: Read + Write + Seek>(
     input: &mut R,
     sink: &mut S,
     progress: Option<&mut dyn FnMut(u64, u64)>,
+    mut index: IndexSource,
 ) -> Result<DecodeStats, DecodeError> {
     // `-bar` counts the archive, so the total is the file itself. Measured
     // before anything is read: seeking back to the start afterwards would
@@ -329,7 +337,11 @@ pub fn decode_io_lz<R: Read + Seek, S: Read + Write + Seek>(
         }
 
         let mut stat_bytes = vec![0u8; bh.statsize as usize];
-        if !read_exact_or_eof(input, &mut stat_bytes)? {
+        let got = match index.as_deref_mut() {
+            Some(ix) => read_exact_or_eof(ix, &mut stat_bytes)?,
+            None => read_exact_or_eof(input, &mut stat_bytes)?,
+        };
+        if !got {
             return Err(ContainerError::Truncated.into());
         }
         if stat_bytes.len() % 4 != 0 {
@@ -395,7 +407,7 @@ pub fn decode_io_lz<R: Read + Seek, S: Read + Write + Seek>(
 pub fn decode_io_lz_to_vec(bytes: &[u8]) -> Result<Vec<u8>, DecodeError> {
     let mut input = io::Cursor::new(bytes);
     let mut sink = io::Cursor::new(Vec::new());
-    decode_io_lz(&mut input, &mut sink, None)?;
+    decode_io_lz(&mut input, &mut sink, None, None)?;
     Ok(sink.into_inner())
 }
 

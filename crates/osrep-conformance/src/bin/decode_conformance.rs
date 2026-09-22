@@ -57,7 +57,7 @@ fn main() -> ExitCode {
                 }
             };
             // I/O-LZ has no memory manager, so its spill counters stay zero.
-            decode_io_lz(&mut BufReader::new(input), &mut sink, None).map(|decode| FutureLzStats {
+            decode_io_lz(&mut BufReader::new(input), &mut sink, None, None).map(|decode| FutureLzStats {
                 decode,
                 vm_bytes_written: 0,
                 vm_bytes_read: 0,
@@ -97,7 +97,7 @@ fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
-            decode_future_lz(&mut BufReader::new(input), &mut sink, &opts, None)
+            decode_future_lz(&mut BufReader::new(input), &mut sink, &opts, None, None)
         }
         other => {
             eprintln!("unknown mode: {other}");

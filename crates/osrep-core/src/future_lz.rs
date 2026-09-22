@@ -676,6 +676,7 @@ pub fn decode_future_lz<R: Read + Seek, S: Read + Write + Seek>(
     sink: &mut S,
     opts: &FutureLzOptions,
     progress: Option<&mut dyn FnMut(u64, u64)>,
+    mut index: crate::decompress::IndexSource,
 ) -> Result<FutureLzStats, DecodeError> {
     // `-bar` counts the archive; only measured when someone is listening.
     let (mut progress, total) = match progress {
@@ -804,7 +805,11 @@ pub fn decode_future_lz<R: Read + Seek, S: Read + Write + Seek>(
             s
         } else {
             let mut stat_bytes = vec![0u8; bh.statsize as usize];
-            if !read_exact_or_eof(input, &mut stat_bytes)? {
+            let got = match index.as_deref_mut() {
+                Some(ix) => read_exact_or_eof(ix, &mut stat_bytes)?,
+                None => read_exact_or_eof(input, &mut stat_bytes)?,
+            };
+            if !got {
                 return Err(ContainerError::Truncated.into());
             }
             stats_from_bytes(&stat_bytes)?
@@ -875,7 +880,7 @@ pub fn decode_future_lz_to_vec(
 ) -> Result<Vec<u8>, DecodeError> {
     let mut input = io::Cursor::new(bytes);
     let mut sink = io::Cursor::new(Vec::new());
-    decode_future_lz(&mut input, &mut sink, opts, None)?;
+    decode_future_lz(&mut input, &mut sink, opts, None, None)?;
     Ok(sink.into_inner())
 }
 

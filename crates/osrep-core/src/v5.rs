@@ -648,6 +648,7 @@ mod meta_tests {
                 container: Container::V5,
             },
             None,
+            None,
         )
         .unwrap();
 
@@ -712,6 +713,7 @@ mod meta_tests {
                 kind: Kind::Digest,
                 container: Container::V5,
             },
+            None,
             None,
         )
         .unwrap();

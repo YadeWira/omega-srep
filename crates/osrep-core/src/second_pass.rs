@@ -44,6 +44,11 @@ pub fn second_pass<R: Read + Seek, W: Write>(
     blocks: &[CompressedBlock],
     input: &mut R,
     output: &mut W,
+    // `-index=`: where the match lists go when they are not kept in the
+    // archive (`fstat`, `srep.cpp:606`). Only the lists move -- the block
+    // headers, the literals, the block-size table and the footer stay in
+    // `output`, which is why the archive still decodes its own structure.
+    mut index: Option<&mut dyn Write>,
     round_matches: bool,
     base_len: u32,
     futurelz_base_len: u32,
@@ -156,15 +161,24 @@ pub fn second_pass<R: Read + Seek, W: Write>(
             compsize += header.len() as u64;
         }
 
-        if v5 {
-            output.write_all(&stat_bytes)?;
-            compsize += stat_bytes.len() as u64;
+        // The list is built once and then sent to whichever sink owns it, so
+        // the two destinations cannot drift apart.
+        let list_bytes: Vec<u8> = if v5 {
+            stat_bytes.clone()
         } else {
+            let mut v = Vec::with_capacity(stat.len() * 4);
             for word in &stat {
-                output.write_all(&word.to_le_bytes())?;
+                v.extend_from_slice(&word.to_le_bytes());
             }
-            compsize += stat.len() as u64 * 4;
+            v
+        };
+        match index.as_deref_mut() {
+            Some(ix) => ix.write_all(&list_bytes).map_err(|_| EncodeError::Io)?,
+            None => output.write_all(&list_bytes)?,
         }
+        // `compsize` counts the list either way: the C++ reports the archive
+        // and its index as one total (`srep.cpp:939` feeds the same counter).
+        compsize += list_bytes.len() as u64;
 
         statsize_table.push(stat_size);
         total_stat_size += stat_size as u64;

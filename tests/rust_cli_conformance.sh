@@ -250,6 +250,64 @@ say "the CLI suite, with OSREP_BIN pointed at the Rust binary"
 # `futurelz_race_regression.sh` repeats 150x per case in the C++ gate; here the
 # point is that the CLI plumbing is right, not the race (which is a C++ bug the
 # Rust port cannot have).
+say "-index=: the match lists in a second file, byte for byte against the C++"
+# `-index=` moves the per-block match lists out of the archive (`fstat`,
+# srep.cpp:606). Both files have to match the oracle, not just the archive:
+# an index that differs is an archive that cannot be decoded by the other
+# implementation, which is exactly what the cross-checks below catch.
+for m in m1f m3f m5f m1o m3o m5o; do
+    rm -f "$TMP/ix_c.osr" "$TMP/ix_c.ix" "$TMP/ix_r.osr" "$TMP/ix_r.ix"
+    ./bin/osrep --seed=7 "-$m" -index="$TMP/ix_c.ix" tests/corpus/text.bin "$TMP/ix_c.osr" >/dev/null 2>&1 \
+        || fail "the C++ could not write an index for -$m"
+    "$RS" --format=v4 --seed=7 "-$m" -index="$TMP/ix_r.ix" tests/corpus/text.bin "$TMP/ix_r.osr" >/dev/null 2>&1 \
+        || fail "the port could not write an index for -$m"
+    cmp -s "$TMP/ix_c.osr" "$TMP/ix_r.osr" || fail "-$m -index=: archives differ"
+    cmp -s "$TMP/ix_c.ix"  "$TMP/ix_r.ix"  || fail "-$m -index=: index files differ"
+
+    # Each implementation must read the other's pair, or the split format is
+    # only self-consistent.
+    "$RS" -d -index="$TMP/ix_c.ix" "$TMP/ix_c.osr" "$TMP/ix_a.out" >/dev/null 2>&1 \
+        || fail "-$m -index=: the port could not decode the C++'s archive"
+    cmp -s tests/corpus/text.bin "$TMP/ix_a.out" || fail "-$m -index=: port decoded the C++ archive wrongly"
+    ./bin/osrep -d -index="$TMP/ix_r.ix" "$TMP/ix_r.osr" "$TMP/ix_b.out" >/dev/null 2>&1 \
+        || fail "-$m -index=: the C++ could not decode the port's archive"
+    cmp -s tests/corpus/text.bin "$TMP/ix_b.out" || fail "-$m -index=: C++ decoded the port archive wrongly"
+    pass=$((pass + 1))
+done
+
+say "-index= is refused for the container that cannot read it back"
+# The default (Index-LZ) decoder finds its match lists by seeking in the
+# archive and never consults the index, so an archive written this way used to
+# compress with exit 0 and then fail to decompress -- silent data loss. Both
+# binaries now refuse it up front.
+for bin in ./bin/osrep "$RS"; do
+    rc=0; "$bin" -m3 -index="$TMP/ix_no.ix" tests/corpus/text.bin "$TMP/ix_no.osr" >"$TMP/ix_no.err" 2>&1 || rc=$?
+    [ "$rc" -eq 2 ] || fail "$bin -m3 -index= exited $rc, expected 2 (cmdline)"
+    grep -qi "index" "$TMP/ix_no.err" || fail "$bin -m3 -index= did not explain itself"
+    [ ! -s "$TMP/ix_no.osr" ] || fail "$bin -m3 -index= left an archive behind"
+done
+pass=$((pass + 1))
+
+say "a chunk length below the slice width is a command-line error, not SIGFPE"
+# `SliceHash` computes `slice_size = L/8` and then divides by it
+# (hash_table.cpp:32-34), so -c1..-c7 used to be a division by zero: SIGFPE
+# (exit 136) in the C++ and a panic (exit 101) in the port, both with no
+# message. -c0 means "not given" and must still take the default.
+for n in 1 4 7; do
+    for bin in ./bin/osrep "$RS"; do
+        rc=0; "$bin" "-c$n" -m3 tests/corpus/text.bin "$TMP/c.osr" >"$TMP/c.err" 2>&1 || rc=$?
+        [ "$rc" -eq 2 ] || fail "$bin -c$n exited $rc, expected 2 (cmdline)"
+    done
+    pass=$((pass + 1))
+done
+for n in 0 8; do
+    for bin in ./bin/osrep "$RS"; do
+        rc=0; "$bin" "-c$n" -m3 tests/corpus/text.bin "$TMP/c.osr" >/dev/null 2>&1 || rc=$?
+        [ "$rc" -eq 0 ] || fail "$bin -c$n exited $rc, expected 0"
+    done
+    pass=$((pass + 1))
+done
+
 for s in roundtrip mode_suffix_hash_matrix dup_roundtrip dup_native_roundtrip \
          dup_corruption_fuzz dup_concurrency dup_ref_oob_regression \
          vm_options_regression vm_tempfile_leak_regression futurelz_race_regression; do
