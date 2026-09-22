@@ -5,7 +5,25 @@
 //! guaranteed final line), so it is reproduced exactly. The human progress and
 //! summary lines are reproduced in shape with the port's own numbers: the C++
 //! reports CPU vs real time and resident memory, which this port does not
-//! measure, and nothing — no test, no wrapper — reads those.
+//! measure.
+//!
+//! This used to add "and nothing — no test, no wrapper — reads those", which
+//! was false. ytool scraped the literal `"Decompression memory is "` out of
+//! the C++'s stderr to fill a field it shows its users; the port emits no such
+//! line in the compression path, so the scrape would have silently found
+//! nothing. Worse, that literal had already stopped matching at 1.0.6 without
+//! anyone editing the text: `print_info` (`srep.cpp:185`) appends
+//! `" with -m<N>"` only when `maximum_save` is set, and the 1.0.6 fix that
+//! made `-vmblock=` reachable is what started setting it. An interface moved
+//! because a bug three layers away was fixed.
+//!
+//! The conclusion kept here is not that these lines must now match — they were
+//! never meant to, and the consumer agreed the format was never an interface
+//! and removed its scrape. It is that *what gets reported* is observable, and
+//! observable output is contract whether or not anyone declared it. So
+//! `tests/stderr_conformance.sh` records which facts each binary mentions and
+//! fails when that changes, making a gain or loss a visible decision instead
+//! of something a consumer discovers years later.
 
 use std::io::Write;
 use std::time::{Duration, Instant};

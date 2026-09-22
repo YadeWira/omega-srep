@@ -11,6 +11,21 @@ what happened in 2.0.0.
 
 ## [Unreleased]
 
+### Added
+
+- **`tests/stderr_conformance.sh`** — the suites diffed archives and exit
+  codes and never the binaries' text, which is how a line the C++ prints in
+  the compression path and the port does not (`"Decompression memory ..."`)
+  went unnoticed until a downstream consumer turned out to be parsing it. The
+  new script asserts the `-bar` contract on both binaries (plain-digit
+  `PROGRESS <done> <total>`, non-decreasing, final line at `done == total ==
+  the input size`, archive unchanged by `-bar`) and records which facts each
+  binary reports in `tests/stderr_inventory.expected`, failing when that
+  changes. It does not require the two stderrs to match — they were never
+  meant to — only that gaining or losing a reported fact be a visible
+  decision. Wired into `rust_cli_conformance.sh` (199 → 200).
+
+
 ## [2.0.1] — 2026-09-22
 
 ### Fixed

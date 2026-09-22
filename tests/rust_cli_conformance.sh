@@ -308,6 +308,18 @@ for n in 0 8; do
     pass=$((pass + 1))
 done
 
+say "what each binary reports on stderr"
+# Its own script because it compares the two binaries' *text*, which nothing
+# else here does -- the rest diff archives and exit codes. That gap is how a
+# line the C++ prints and the port does not went unnoticed until a downstream
+# consumer turned out to be parsing it.
+if ! out=$(OSREP_BIN="$RS" bash tests/stderr_conformance.sh 2>&1); then
+    printf '%s\n' "$out" >&2
+    fail "tests/stderr_conformance.sh failed"
+fi
+say "stderr_conformance: $(printf '%s' "$out" | tail -1)"
+pass=$((pass + 1))
+
 for s in roundtrip mode_suffix_hash_matrix dup_roundtrip dup_native_roundtrip \
          dup_corruption_fuzz dup_concurrency dup_ref_oob_regression \
          vm_options_regression vm_tempfile_leak_regression futurelz_race_regression; do

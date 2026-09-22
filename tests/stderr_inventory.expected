@@ -1,0 +1,33 @@
+compress -m3
+  input size             cpp=yes port=no
+  memory used            cpp=yes port=no
+  hash=                  cpp=yes port=no
+  Sorting matches        cpp=yes port=no
+  Decompression memory   cpp=yes port=no
+  matches =              cpp=yes port=no
+  % of file              cpp=yes port=no
+  Cpu                    cpp=yes port=no
+  Remains                cpp=yes port=no
+  ->                     cpp=yes port=yes
+decompress
+  input size             cpp=no  port=no
+  memory used            cpp=no  port=no
+  hash=                  cpp=no  port=no
+  Sorting matches        cpp=no  port=no
+  Decompression memory   cpp=no  port=no
+  matches =              cpp=no  port=no
+  % of file              cpp=no  port=no
+  Cpu                    cpp=yes port=no
+  Remains                cpp=yes port=no
+  ->                     cpp=yes port=yes
+-i
+  input size             cpp=no  port=no
+  memory used            cpp=no  port=no
+  hash=                  cpp=yes port=yes
+  Sorting matches        cpp=no  port=no
+  Decompression memory   cpp=yes port=yes
+  matches =              cpp=yes port=yes
+  % of file              cpp=yes port=yes
+  Cpu                    cpp=no  port=no
+  Remains                cpp=no  port=no
+  ->                     cpp=yes port=yes

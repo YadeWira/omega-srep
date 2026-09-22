@@ -56,6 +56,52 @@ covered:
   header seed differs per run, which separately confirms the `bcrypt` entropy
   draw works on Win7 rather than silently falling back.
 
+## stderr is observable output, and observable output is contract
+
+`report.rs` split stderr deliberately: `-bar` is machine-parseable and
+reproduced exactly; the human progress and summary lines are reproduced "in
+shape" only, because the C++ reports CPU time and resident memory the port
+does not measure. The justification written next to that decision was "nothing
+— no test, no wrapper — reads those".
+
+That was false, and finding out took an outside report. ytool — a real
+downstream consumer that runs `osrep` as a child process — was scraping the
+literal `"Decompression memory is "` out of the C++'s stderr to fill a field
+it displays. The port emits no such line in the compression path at all, so on
+upgrade the scrape would have silently found nothing.
+
+Two things make this worth a section rather than a footnote:
+
+* **The line had already changed once, and nobody edited it.** The literal
+  stopped matching at **1.0.6**, not at the port. `print_info`
+  (`srep.cpp:185`) appends `" with -m<N>"` only when `maximum_save` is set,
+  and the 1.0.6 fix that made `-vmblock=`/`-vmfile=` reachable is what started
+  setting it. A correct fix moved an interface three layers away, and no diff
+  review could have flagged it, because in the diff it is not text.
+* **None of the suites could see it.** They diff archives and exit codes.
+  Nothing compared the two binaries' text, so the gap was invisible from
+  inside.
+
+`tests/stderr_conformance.sh` closes it, and deliberately does **not** demand
+the two stderrs match:
+
+1. **The `-bar` contract is asserted** on both binaries — every line
+   `PROGRESS <done> <total>` in plain digits, `done` non-decreasing and never
+   past `total`, a final line at `done == total == the input size`, and the
+   archive unchanged by `-bar`. The cadence is time-based, so the *number* of
+   lines is not part of the contract and is not compared.
+2. **An inventory is recorded** in `tests/stderr_inventory.expected`: for a
+   list of facts, which binary mentions each. It does not require agreement;
+   it requires any change in who reports what to appear as a diff, so gaining
+   or losing a reported fact is a deliberate act. Re-record with
+   `OSREP_BLESS_STDERR=1` and say so in the commit.
+
+The consumer's own conclusion is worth keeping: they removed the scrape rather
+than ask for the format to be frozen, on the grounds that asking a project to
+preserve a progress message is asking it to freeze something that was never an
+interface. That is right, and it is *why* the test records rather than
+enforces.
+
 ## Retiring the C++ — decided (2026-09-18): keep it, stop shipping it
 
 Phase 5c-2 originally read "retire the C++". It is not being deleted.
