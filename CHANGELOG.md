@@ -11,6 +11,8 @@ what happened in 2.0.0.
 
 ## [Unreleased]
 
+## [2.1.0] — 2026-09-22
+
 ### Added
 
 - **`--verify`: check a v5 archive without reconstructing it.** This is the
