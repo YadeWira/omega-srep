@@ -94,6 +94,7 @@ pub fn run(o: &Options) -> Result<i32, RunError> {
 
     match o.cmdmode {
         CmdMode::Info => info(o, &finame),
+        CmdMode::Verify => verify(o, &finame),
         // `resolve_names` always derives an output for these two.
         CmdMode::Compress => compress(o, &finame, foutname.as_deref().unwrap_or("-")),
         CmdMode::Decompress => decompress(o, &finame, foutname.as_deref().unwrap_or("-")),
@@ -111,7 +112,7 @@ fn resolve_names(o: &Options) -> Result<(String, Option<String>), RunError> {
         files = vec!["-".to_string(), "-".to_string()];
     }
 
-    if o.cmdmode == CmdMode::Info && files.len() > 1 {
+    if matches!(o.cmdmode, CmdMode::Info | CmdMode::Verify) && files.len() > 1 {
         return Err(err(
             ERROR_CMDLINE,
             format!("Too much filenames: {} {}", files[0], files[1]),
@@ -129,7 +130,7 @@ fn resolve_names(o: &Options) -> Result<(String, Option<String>), RunError> {
 
     let finame = files[0].clone();
     let mut foutname = files.get(1).cloned();
-    if o.cmdmode == CmdMode::Info {
+    if matches!(o.cmdmode, CmdMode::Info | CmdMode::Verify) {
         foutname = None;
     }
     if foutname.is_none() {
@@ -617,6 +618,85 @@ fn decompress(o: &Options, finame: &str, foutname: &str) -> Result<i32, RunError
 }
 
 // ------------------------------------------------------------------ info --
+
+/// `--verify`: say whether an archive is sound **without reconstructing it**.
+///
+/// This exists because v5 can answer the question and v4 cannot. v4 carries no
+/// checksum anywhere, so the only way to know a v4 archive is intact is to
+/// decompress the whole thing and let the per-block digests speak. v5 has
+/// CRC-32C over its header, footer and `-dup` meta, self-describing framing,
+/// and records that can be walked arithmetically -- enough to catch truncation,
+/// trailing junk, framing damage and incoherent records in the time it takes to
+/// read the file.
+///
+/// The output says what was not checked, deliberately. Nothing in v5
+/// checksums the stored block bytes, so a bit flipped inside a literal run
+/// survives this and is only caught by decoding. A verify that let someone
+/// believe otherwise would be worse than not having one.
+fn verify(_o: &Options, finame: &str) -> Result<i32, RunError> {
+    let bytes = if finame == "-" {
+        let mut buf = Vec::new();
+        std::io::stdin()
+            .lock()
+            .read_to_end(&mut buf)
+            .map_err(|_| err(ERROR_IO, "Can't read from stdin"))?;
+        buf
+    } else {
+        std::fs::read(finame)
+            .map_err(|_| err(ERROR_IO, format!("Can't open {finame} for read")))?
+    };
+
+    let is_v5 = bytes.len() >= 4
+        && u32::from_le_bytes(bytes[..4].try_into().unwrap()) == osrep_core::v5::MAGIC;
+    if !is_v5 {
+        // Distinguish "a container that cannot be verified" from "not an
+        // archive at all", because the advice differs.
+        return match archive::inspect(&bytes) {
+            Ok(_) => Err(err(
+                ERROR_CMDLINE,
+                format!(
+                    "{finame} is a v1-v4 archive, which carries no checksum anywhere, \
+                     so it cannot be verified without reconstructing it. Decompress it \
+                     to check it (the per-block digests are verified on the way), or \
+                     re-create it with --format=v5"
+                ),
+            )),
+            Err(_) => Err(err(
+                ERROR_COMPRESSION,
+                format!("Not an Omega SREP compressed file (.osr): {finame}"),
+            )),
+        };
+    }
+
+    let report = osrep_core::v5::verify(&bytes).map_err(|e| {
+        err(
+            ERROR_COMPRESSION,
+            format!("{finame} is damaged: {e:?}"),
+        )
+    })?;
+
+    let mut out = std::io::stderr();
+    let _ = writeln!(
+        out,
+        "{finame}: v5 archive intact. {} blocks, {} records, {} bytes of original data{}.",
+        report.blocks,
+        report.records,
+        report.original_size,
+        if report.has_dup_meta { ", -dup meta checksummed" } else { "" }
+    );
+    let _ = writeln!(
+        out,
+        "  Checked without decompressing: header, footer and meta CRC-32C, framing, \
+block count, every record, and that the file ends where the footer says."
+    );
+    let _ = writeln!(
+        out,
+        "  Not checked: the stored block bytes carry no checksum, so damage inside a \
+literal run needs a decompress{}.",
+        if report.has_block_digests { " (where the per-block digests catch it)" } else { "" }
+    );
+    Ok(0)
+}
 
 fn info(o: &Options, finame: &str) -> Result<i32, RunError> {
     let opts = decode_options(o);

@@ -30,6 +30,7 @@ pub fn help() -> String {
          \x20 osrep [options] -mN  input  output       compress\n\
          \x20 osrep [options] -d   archive output      decompress\n\
          \x20 osrep -i archive                         show archive info\n\
+         \x20 osrep --verify archive                   check it without unpacking\n\
          \n\
          Compression methods:\n\
          \x20 -m0       REP only (in-memory; works with -dBYTES)\n\
@@ -73,6 +74,15 @@ pub fn help() -> String {
          \x20                   chunking); finds non-buffer-aligned duplicates\n\
          \x20                   that fnv's unwindowed rolling hash misses.\n\
          \x20                   Opt-in; does not change the .dupref format.\n\
+         \n\
+         Checking:\n\
+         \x20 --verify          v5 only: check an archive's framing, CRCs and\n\
+         \x20                   records without decompressing it. Catches\n\
+         \x20                   truncation and framing damage in the time it\n\
+         \x20                   takes to read the file. It does NOT cover the\n\
+         \x20                   stored block bytes -- damage inside a literal\n\
+         \x20                   run still needs a -d. v1-v4 carry no checksum\n\
+         \x20                   at all and are refused.\n\
          \n\
          Help:\n\
          \x20 --help, -h, -?    this synopsis\n\

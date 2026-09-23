@@ -27,6 +27,24 @@ released, and stays at its last shipped version, **1.0.7**. See
   the interoperability escape hatch; both are always readable, so the option
   only selects what `osrep` *writes*.
 
+  **What the v5 container buys you is `--verify`:** checking an archive is
+  sound without reconstructing it. v1-v4 carry no checksum anywhere, so the
+  only way to check one of those is to decompress the whole thing. `--verify`
+  validates the CRC-32Cs, the framing, the block counts and every match record
+  in one read of the archive, and says plainly what it does not cover (the
+  stored block bytes carry no checksum, so damage inside a literal run still
+  needs a `-d`). The cost scales with the *archive* while a decompress scales
+  with the *original*, so the gap grows with the compression ratio: measured
+  5x on a barely-compressible 733 MiB archive, 180x on one the same size
+  holding 5.75 GiB of deduplicated backup.
+
+  Be honest about the rest of the ledger: on real data a v5 archive is only
+  about **0.1%** smaller than a v4 one, and both containers are equally
+  protected against payload corruption, because the per-block digest does that
+  work in v4 too. v5's integrity edge over v4 is narrow and specific -- the
+  `-dup` metadata, which v4 leaves unchecksummed (see
+  `docs/format-spec-v5.md` §1.1).
+
   This is the breaking change in 2.0.0, and it breaks loudly rather than
   quietly: a 1.0.x binary handed a v5 archive exits 4 with *"Not an Omega SREP
   compressed file (.osr)"* and writes no output. It cannot mistake one for the

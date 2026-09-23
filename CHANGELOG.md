@@ -13,6 +13,34 @@ what happened in 2.0.0.
 
 ### Added
 
+- **`--verify`: check a v5 archive without reconstructing it.** This is the
+  feature the v5 container was for, and until now the break it cost had bought
+  almost nothing measurable — on real data a v5 archive is only ~0.1% smaller
+  than a v4 one, and both are equally protected against payload corruption
+  because the per-block digest does that work in v4 too.
+
+  `--verify` validates the header, footer and `-dup` metadata CRC-32Cs, the
+  magic numbers and flag bits, the two block counts agreeing, every match
+  record against the same range rules the decoder applies, and that the file
+  ends exactly where the footer says. One read of the archive. Measured: 148
+  of 200 single-byte flips caught, 5 of 5 truncations, trailing junk and an
+  empty file rejected.
+
+  **It says what it does not cover**, which is the other half of being useful:
+  nothing in v5 checksums the stored block bytes, so a bit flipped inside a
+  literal run survives `--verify` and is only caught by `-d`. That is the
+  remaining 52 of those 200 flips. A check that let someone believe otherwise
+  would be worse than none, so the limit is in the output, the help text, the
+  man page and a test that pins it.
+
+  The gap grows with the compression ratio, because `--verify` scales with the
+  *archive* and a decompress scales with the *original*: **5x** faster on a
+  barely-compressible 733 MiB archive, **180x** on one the same size holding
+  5.75 GiB of deduplicated backup.
+
+  v1–v4 are refused with exit 2. Those containers carry no checksum anywhere,
+  so claiming to verify one would be a lie.
+
 - **`tests/stderr_conformance.sh`** — the suites diffed archives and exit
   codes and never the binaries' text, which is how a line the C++ prints in
   the compression path and the port does not (`"Decompression memory ..."`)

@@ -363,6 +363,100 @@ pub fn parse(bytes: &[u8]) -> Result<Parsed<'_>, V5Error> {
     })
 }
 
+/// What `--verify` checked, so the caller can say it rather than imply it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VerifyReport {
+    pub blocks: u32,
+    pub original_size: u64,
+    pub records: u64,
+    /// Whether the archive carries a `-dup` meta blob (covered by `meta_crc`).
+    pub has_dup_meta: bool,
+    /// True when the archive stores per-block digests. They are digests of the
+    /// *decoded* bytes, so verification cannot use them -- their presence is
+    /// what a later full check would rely on.
+    pub has_block_digests: bool,
+}
+
+/// Check everything a v5 archive can be checked for **without reconstructing
+/// it**, which is the thing v4 cannot offer at all: v4 has no checksum
+/// anywhere, so the only way to know a v4 archive is sound is to decompress it.
+///
+/// What this covers, all of it structural or checksummed:
+///
+/// * `header_crc`, `footer_crc` and `meta_crc` (via [`parse`]);
+/// * the magic numbers, the `flags` bits, and that `hash_id`/`hash_size`
+///   describe a real function;
+/// * the two block counts agreeing, `stat_size` matching the blocks walked,
+///   and the file ending exactly where the footer says -- so truncation and
+///   trailing junk are both caught;
+/// * every varint decoding, and every record passing the same range rules the
+///   decoder applies: its match source inside its block, its length fitting,
+///   and its destination ahead of the source and inside the stream;
+/// * the blocks' `origsize` summing to the header's `original_size`.
+///
+/// What it **cannot** cover: a bit flipped inside a literal run, or inside a
+/// varint in a way that keeps it well-formed and keeps the arithmetic
+/// consistent. Nothing in a v5 archive checksums the stored block bytes, so
+/// that damage is only found by decoding, where the per-block digest catches
+/// it. Saying so is the point -- a verify that implied more than it checked
+/// would be worse than none.
+pub fn verify(bytes: &[u8]) -> Result<VerifyReport, V5Error> {
+    let parsed = parse(bytes)?;
+
+    let mut block_start: u64 = 0;
+    let mut records: u64 = 0;
+    for b in &parsed.blocks {
+        let block_end = block_start
+            .checked_add(u64::from(b.origsize))
+            .ok_or(V5Error::BadBlock)?;
+
+        // The same range rules `decompress_block` (`future_lz.rs:544-551`)
+        // applies as it walks a block, checked here without applying them.
+        // Future-LZ records are not "literal run then match": `lit_len` is the
+        // gap to the next match *source*, the match is copied *forward* to
+        // `src + distance`, and the cursor advances to `src` -- not past the
+        // match. Assuming the usual LZ arithmetic here is wrong, and a check
+        // built on it rejects healthy archives.
+        let mut pos = block_start;
+        for r in &b.records {
+            let src = pos.checked_add(r.lit_len).ok_or(V5Error::BadBlock)?;
+            if src >= block_end {
+                return Err(V5Error::BadBlock);
+            }
+            if r.match_len > block_end - src {
+                return Err(V5Error::BadBlock);
+            }
+            // `dest <= src` is rejected by the decoder: a Future-LZ match
+            // always points ahead.
+            if r.distance == 0 {
+                return Err(V5Error::BadBlock);
+            }
+            let dest = src.checked_add(r.distance).ok_or(V5Error::BadBlock)?;
+            // And it has to land inside the stream it is describing.
+            if dest.checked_add(r.match_len).ok_or(V5Error::BadBlock)?
+                > parsed.header.original_size
+            {
+                return Err(V5Error::BadBlock);
+            }
+            pos = src;
+        }
+        records += b.records.len() as u64;
+        block_start = block_end;
+    }
+    // The blocks have to describe exactly the stream the header claims.
+    if block_start != parsed.header.original_size {
+        return Err(V5Error::BadBlock);
+    }
+
+    Ok(VerifyReport {
+        blocks: parsed.header.block_count,
+        original_size: parsed.header.original_size,
+        records,
+        has_dup_meta: parsed.footer.meta_size > 0,
+        has_block_digests: parsed.header.hash_size > 0,
+    })
+}
+
 /// `hash_func(hash_obj, buf, size, out)` over one block. The reconstruction
 /// step (CLI) verifies each block with it.
 #[allow(dead_code)]

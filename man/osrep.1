@@ -14,6 +14,9 @@ osrep \- huge-dictionary LZ77 preprocessor (Omega lineage)
 .br
 .B osrep
 \fB-i\fR \fIARCHIVE\fR
+.br
+.B osrep
+\fB--verify\fR \fIARCHIVE\fR
 
 .SH DESCRIPTION
 .B osrep
@@ -269,6 +272,36 @@ is the breaking change in 2.0.0. A 1.0.x binary handed a v5 archive does not
 misread it: it exits 4 with
 .RB \(lq "Not an Omega SREP compressed file (.osr)" \(rq
 and writes nothing.
+
+.SS Checking
+
+.TP
+.B --verify
+Check an archive without reconstructing it, and exit 0 if it is sound.
+.IP
+This is the one thing the v5 container can do that v1\(en4 cannot. It
+validates the header, footer and
+.B -dup
+metadata CRC\-32Cs, the magic numbers and flag bits, the two block counts
+agreeing, every match record against the same range rules the decoder applies,
+and that the file ends exactly where the footer says. Truncation, trailing
+junk and framing damage are all caught, and it costs one read of the archive.
+.IP
+It does \fBnot\fR cover the stored block bytes: nothing in v5 checksums a
+literal run, so a bit flipped there survives
+.B --verify
+and is only caught by
+.BR -d ,
+where the per-block digests verify the reconstruction. The output says so
+rather than implying otherwise.
+.IP
+Because the cost scales with the \fIarchive\fR and a decompress scales with
+the \fIoriginal\fR, the gap grows with the compression ratio: measured 5x
+faster on a barely-compressible 733 MiB archive, and 180x on one of the same
+size holding 5.75 GiB of deduplicated backup.
+.IP
+A v1\(en4 archive is refused with exit status 2: those containers carry no
+checksum anywhere, so the only way to check one is to decompress it.
 
 .SS Help / version
 

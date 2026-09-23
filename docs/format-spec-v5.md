@@ -22,7 +22,7 @@ como herramienta de interoperabilidad.
 | `header[2]` empaqueta `version(8) \| hash_num(8) \| seed_size(8) \| (hash_size-16)(8)`: el digest se guarda **sesgado -16** y los 8 bytes de SipHash se envuelven a 248 | `hash_id` + `hash_size` **explícitos y sin sesgo** |
 | `header[3]` es `BASE_LEN` (0 en v3/v4), un valor escondido en un word de header | **desaparece**: las longitudes se guardan crudas |
 | `ROUND_MATCHES` parte el formato en dos formas de record (3 vs 4 STATs) y multiplica por `L` | **una sola forma**: varints, sin multiplicar, sin redondear |
-| el offset de match se parte en dos words (tope de 2³²) | un varint **sin tope artificial** |
+| `lit_len` y la longitud de match son `u32`: topes de 4 GiB (`decode_record`, `future_lz.rs:513`). El offset **no** está capado: se guarda en dos words y se recompone a 64 bits | varints `u64`, **sin topes** |
 | `maximum_save` **no se guarda**: encoder y decoder tienen que coincidir por el default compartido de `-vmblock` | `max_match` explícito |
 | el número de bloques es implícito (`(footer_size-24)/4`) y el fin de stream se deduce | `block_count` explícito en header y footer, que deben coincidir |
 | `statsize` es 0 en el header de bloque de v4 y el tamaño real vive en la tabla | el header de bloque lleva **su propio** `statsize`; la tabla queda para ubicar las listas sin recorrer los literales, y el decoder **cruza** ambos |
@@ -131,7 +131,18 @@ siempre.
 
 Qué se gana: un solo códec en lugar de dos formas; sin `L` que multiplicar ni
 `BASE_LEN` que compartir por fuera del archivo (era un default implícito que
-tenía que coincidir entre encoder y decoder); y sin el tope de 2³² en el offset.
+tenía que coincidir entre encoder y decoder).
+
+> **Corrección (2026-09-22).** Las dos frases anteriores afirmaban que v4 capa
+> el offset de match en 2³². Es falso: `decode_record` (`future_lz.rs:513`) lo
+> recompone como `stat[1] | (stat[2] << 32)`, o sea 64 bits. Los topes reales de
+> v4 son `lit_len` y la longitud de match, ambos `u32`. De esos dos, `lit_len`
+> está además acotado por el tamaño de bloque (8 MB por defecto), así que el
+> único tope de v4 potencialmente alcanzable es una longitud de match mayor a
+> 4 GiB — lo que exige más de 4 GiB duplicados contiguos, y **no está
+> verificado que se alcance**. El argumento del offset era el más vistoso a
+> favor de v5 y no existía; se escribió leyendo «dos words» como «dos mitades
+> independientes» en vez de mirar la recomposición.
 Lo que se paga: records más lentos de leer que 4 lecturas alineadas, y un
 `statsize` que ya no es múltiplo de nada.
 

@@ -308,6 +308,87 @@ for n in 0 8; do
     pass=$((pass + 1))
 done
 
+say "--verify: what it accepts, what it catches, and what it admits it misses"
+# The one thing v5 can do that v4 cannot: answer "is this archive sound?"
+# without reconstructing it. v4 carries no checksum anywhere, so the only
+# answer there is a full decompress.
+"$RS" --seed=7 -m3 tests/corpus/text.bin "$TMP/vf.osr" >/dev/null 2>&1 \
+    || fail "could not write a v5 archive to verify"
+"$RS" --verify "$TMP/vf.osr" >/dev/null 2>&1 || fail "--verify rejected a healthy v5 archive"
+# Every mode, and -dup, which adds the meta blob and its CRC.
+for m in m1 m3 m5; do
+    for extra in "" "-dup"; do
+        "$RS" --seed=7 $extra "-$m" tests/corpus/text.bin "$TMP/vh.osr" >/dev/null 2>&1 || continue
+        "$RS" --verify "$TMP/vh.osr" >/dev/null 2>&1 \
+            || fail "--verify rejected a healthy -$m $extra archive"
+    done
+done
+pass=$((pass + 1))
+
+# Truncation at any point, trailing junk, and an empty file must all be caught.
+SZ=$(stat -c%s "$TMP/vf.osr")
+for frac in 10 50 90 99; do
+    head -c $((SZ * frac / 100)) "$TMP/vf.osr" > "$TMP/vt.osr"
+    rc=0; "$RS" --verify "$TMP/vt.osr" >/dev/null 2>&1 || rc=$?
+    [ "$rc" -ne 0 ] || fail "--verify passed an archive truncated to ${frac}%"
+done
+cat "$TMP/vf.osr" > "$TMP/vj.osr"; printf 'XXXXXXXX' >> "$TMP/vj.osr"
+rc=0; "$RS" --verify "$TMP/vj.osr" >/dev/null 2>&1 || rc=$?
+[ "$rc" -ne 0 ] || fail "--verify passed an archive with trailing junk"
+: > "$TMP/ve.osr"
+rc=0; "$RS" --verify "$TMP/ve.osr" >/dev/null 2>&1 || rc=$?
+[ "$rc" -ne 0 ] || fail "--verify passed an empty file"
+pass=$((pass + 1))
+
+# Corruption in the framing -- the header, the footer, the block headers -- is
+# what the CRCs and the structural walk exist for.
+for off in 4 8 12 20 24; do
+    python3 - "$TMP/vf.osr" "$TMP/vc.osr" "$off" <<'PY'
+import sys
+d = bytearray(open(sys.argv[1], 'rb').read())
+d[int(sys.argv[3])] ^= 0xFF
+open(sys.argv[2], 'wb').write(d)
+PY
+    rc=0; "$RS" --verify "$TMP/vc.osr" >/dev/null 2>&1 || rc=$?
+    [ "$rc" -ne 0 ] || fail "--verify passed a header corrupted at byte $off"
+done
+pass=$((pass + 1))
+
+say "--verify says no to the containers it cannot answer for"
+# v4 has no checksum anywhere, so claiming to verify it would be a lie. It is
+# refused with a cmdline status and an explanation, not a false "intact".
+"$RS" --format=v4 --seed=7 -m3 tests/corpus/text.bin "$TMP/v4.osr" >/dev/null 2>&1
+rc=0; "$RS" --verify "$TMP/v4.osr" >"$TMP/v4.err" 2>&1 || rc=$?
+[ "$rc" -eq 2 ] || fail "--verify on a v4 archive exited $rc, expected 2 (cmdline)"
+grep -qi "v1-v4" "$TMP/v4.err" || fail "--verify on v4 did not explain why"
+# And something that is not an archive at all is bad data, not a usage error.
+rc=0; "$RS" --verify tests/corpus/text.bin >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 4 ] || fail "--verify on a non-archive exited $rc, expected 4 (bad data)"
+pass=$((pass + 1))
+
+say "--verify does not claim to cover the stored block bytes"
+# Pinning the documented limitation: nothing in v5 checksums a literal run, so
+# a flip there survives --verify and is only caught by decoding. If this ever
+# starts failing, the coverage changed and the docs and help text must follow.
+LITOFF=$((SZ - 64))
+python3 - "$TMP/vf.osr" "$TMP/vl.osr" "$LITOFF" <<'PY'
+import sys
+d = bytearray(open(sys.argv[1], 'rb').read())
+d[int(sys.argv[3])] ^= 0xFF
+open(sys.argv[2], 'wb').write(d)
+PY
+if "$RS" --verify "$TMP/vl.osr" >/dev/null 2>&1; then
+    # Expected today: --verify passes, and the decoder is what catches it.
+    rc=0; "$RS" -d "$TMP/vl.osr" "$TMP/vl.out" >/dev/null 2>&1 || rc=$?
+    [ "$rc" -ne 0 ] \
+        || fail "a flipped literal byte passed BOTH --verify and -d: nothing caught it"
+else
+    fail "--verify caught a flipped literal byte. That is an improvement, not a
+      failure -- but the help text and docs say it cannot, so update them and
+      this test together."
+fi
+pass=$((pass + 1))
+
 say "what each binary reports on stderr"
 # Its own script because it compares the two binaries' *text*, which nothing
 # else here does -- the rest diff archives and exit codes. That gap is how a

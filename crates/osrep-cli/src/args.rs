@@ -27,6 +27,9 @@ pub enum CmdMode {
     Compress,
     Decompress,
     Info,
+    /// `--verify`: check an archive's integrity without reconstructing it.
+    /// Only v5 can answer this -- v4 carries no checksum anywhere.
+    Verify,
 }
 
 /// `--format=`, the one option the C++ does not have. v5 is the default since
@@ -301,6 +304,8 @@ pub fn parse(args: &[String]) -> Result<Options, CmdLineError> {
             o.cmdmode = CmdMode::Decompress;
         } else if a == "-i" {
             o.cmdmode = CmdMode::Info;
+        } else if a == "--verify" {
+            o.cmdmode = CmdMode::Verify;
         } else if a == "-delete" {
             o.delete_input = true;
         } else if a == "-mmap" {
