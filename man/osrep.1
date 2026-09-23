@@ -102,10 +102,11 @@ of which are set. Use
 for slowest / least memory.
 .TP
 \fB-t\fIN\fR
-Worker thread count for
-.B -m1
-/
-.BR -m2 .
+Accepted and \fBnot acted on\fR. The shipped implementation is single-threaded
+per block, so there is no worker count to set; the value is parsed and
+validated, then discarded. See
+.B ACCEPTED AND NOT ACTED ON
+below.
 .TP
 \fB-d\fIBYTES\fR
 Dictionary size for
@@ -311,6 +312,46 @@ Print synopsis and exit.
 .TP
 .BR --version ", " -V
 Print version line and exit.
+
+.SH ACCEPTED AND NOT ACTED ON
+
+These options are parsed and validated, and then have no effect. They exist so
+that a command line written against the 1.0.x C++ binary keeps working
+unchanged against the Rust implementation that has shipped since 2.0.0.
+
+.TP
+\fB-t\fIN\fR
+Worker thread count in the C++. The Rust implementation is single-threaded per
+block. This is worth knowing beyond the bookkeeping: it is the option most
+people reach for when compression feels slow, and here it will not help.
+.TP
+\fB-a\fIX\fR[\fB/\fIY\fR]
+Accelerator sizing. The C++ allocates \fIX\fR bytes per \fIL\fR input bytes
+for its bit-array; the Rust implementation allocates nothing for it.
+.TP
+.BR -mmap ", " -nommap
+Memory-mapped reads.
+.TP
+.BR -ia- ", " -ia+
+I/O acceleration.
+.TP
+.BR -slp ", " -slp- ", " -slp+
+Large-page mode.
+.TP
+\fB-pc\fR[\fIN\fR]
+Progress counters, a diagnostic.
+.PP
+None of these changes the bytes of an archive, and that is measured rather
+than assumed: the phase 4c pre-port experiments compared output across
+\fB-t1\fR/\fB-t8\fR/default and across \fB-a0\fR/\fB-a16\fR and found it
+byte-identical (see \fIdocs/rust-port.md\fR). What they can change in the C++
+is speed and memory, which is why they are documented here as inert rather
+than removed: silently dropping them would break scripts, and silently
+honouring the syntax while implying an effect would be worse.
+
+.B -rem
+is different and is listed with the ordinary options: it is a comment, ignored
+by both implementations by design.
 
 .SH EXIT STATUS
 .TP

@@ -308,6 +308,28 @@ for n in 0 8; do
     pass=$((pass + 1))
 done
 
+say "the options the port accepts and does not act on really are inert"
+# The man page and --help now say outright that -tN, -aN, -mmap/-nommap,
+# -ia-/-ia+, -slp and -pc have no effect here. That claim has to be checked,
+# not asserted: each one must be accepted AND leave the archive byte-identical
+# to the same run without it. If one ever starts mattering, this fails and the
+# prose has to be corrected with the code.
+"$RS" --seed=7 -m3 tests/corpus/text.bin "$TMP/inert_base.osr" >/dev/null 2>&1 \
+    || fail "could not write the baseline archive"
+for opt in -t1 -t8 -a2 -a4/4 -mmap -nommap -ia- -ia+ -slp -slp- -slp+ -pc -pc16; do
+    rc=0
+    "$RS" --seed=7 -m3 "$opt" tests/corpus/text.bin "$TMP/inert.osr" >/dev/null 2>&1 || rc=$?
+    [ "$rc" -eq 0 ] || fail "$opt was rejected (exit $rc); the docs say it is accepted"
+    cmp -s "$TMP/inert_base.osr" "$TMP/inert.osr" \
+        || fail "$opt changed the archive. The docs say it has no effect -- fix whichever is wrong."
+    pass=$((pass + 1))
+done
+# -rem is a comment in both implementations, and takes a value.
+"$RS" --seed=7 -m3 -rem=anything tests/corpus/text.bin "$TMP/inert.osr" >/dev/null 2>&1 \
+    || fail "-rem was rejected"
+cmp -s "$TMP/inert_base.osr" "$TMP/inert.osr" || fail "-rem changed the archive"
+pass=$((pass + 1))
+
 say "--verify: what it accepts, what it catches, and what it admits it misses"
 # The one thing v5 can do that v4 cannot: answer "is this archive sound?"
 # without reconstructing it. v4 carries no checksum anywhere, so the only

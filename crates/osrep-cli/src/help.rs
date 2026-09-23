@@ -42,8 +42,6 @@ pub fn help() -> String {
          Common options:\n\
          \x20 -lN, -cN          minimum-match / chunk-size tuning\n\
          \x20 -bN               buffer size (default 8mb)\n\
-         \x20 -tN               worker thread count (-m1/-m2's CDC, and -m3/-m5's\n\
-         \x20                    prepare_buffer stripe pool, capped at 16 internally)\n\
          \x20 -dBYTES           dictionary size for -m0\n\
          \x20 -hash=NAME        select hash (vmac, sha1, ...)\n\
          \x20 -mmap, -nommap    enable/disable POSIX mmap reads\n\
@@ -74,6 +72,18 @@ pub fn help() -> String {
          \x20                   chunking); finds non-buffer-aligned duplicates\n\
          \x20                   that fnv's unwindowed rolling hash misses.\n\
          \x20                   Opt-in; does not change the .dupref format.\n\
+         \n\
+         Accepted and not acted on:\n\
+         \x20 -tN               the implementation is single-threaded per block,\n\
+         \x20                   so there is no worker count to set\n\
+         \x20 -aN[/M]           accelerator sizing; allocates nothing here\n\
+         \x20 -mmap, -nommap    mmap reads\n\
+         \x20 -ia-, -ia+        I/O acceleration\n\
+         \x20 -slp, -slp-       large-page mode\n\
+         \x20 -pc[N]            progress counters\n\
+         \x20 These are parsed and validated so scripts written against the\n\
+         \x20 1.0.x C++ keep working unchanged. None of them changes the\n\
+         \x20 archive: that was measured before the port, not assumed.\n\
          \n\
          Checking:\n\
          \x20 --verify          v5 only: check an archive's framing, CRCs and\n\
