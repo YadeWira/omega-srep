@@ -1,6 +1,7 @@
 # Port a Pascal (FPC) — plan
 
-> **Estado**: plan, sin código todavía. La decisión se tomó el 2026-09-25.
+> **Estado**: en curso. La decisión se tomó el 2026-09-25; las fases 0 a 4b
+> están hechas (decoders I/O-LZ y Future/Index-LZ). Ver la tabla de fases.
 
 ## Por qué, y qué cambió respecto del port a Rust
 
@@ -123,16 +124,45 @@ ignorando.
 ## Layout
 
     pascal/
-      osrep.lpr          el programa
-      build.sh           los tres targets, con el cross propio
+      osrep.lpr            el programa (hoy: --version y --help)
+      hashtool.lpr         herramientas de prueba: cada una expone una capa
+      containertool.lpr    para diffearla contra el oraculo antes de que
+      decodetool.lpr       exista la CLI completa
+      build.sh             todo lo anterior, en los tres targets
       src/
-        widths.pas       guardas de ancho en tiempo de compilacion
-        outraw.pas       escritura cruda a stdout/stderr
-        help.pas         --version y --help, byte a byte
+        widths.pas         guardas de ancho en tiempo de compilacion
+        outraw.pas         escritura cruda a stdout/stderr
+        help.pas           --version y --help, byte a byte
+        hashes.pas         md5, sha1, sha512
+        hasheskeyed.pas    siphash
+        aes.pas, vmac.pas  vmac y el AES que usa
+        digest.pas         que digest verifica un archivo (Digest::for_archive)
+        container.pas      header, bloques, footer v4 y v5, CRC-32C
+        decompress.pas     decoder I/O-LZ (v1/v2), LzCopy, GrowOut
+        futurelz.pas       decoder Future/Index-LZ (v3/v4): memory manager,
+                           heap de matches, spill a disco
+        spillfile.pas      el temporal del spill, creado como el Rust (lo
+                           unico que depende de la plataforma)
     tests/
-      pascal_cli_conformance.sh   diffea el Pascal contra el binario Rust
+      pascal_cli_conformance.sh        --version/--help contra el binario Rust
+      pascal_hash_conformance.sh       los cinco digests y AES
+      pascal_container_conformance.sh  leer y reescribir el armazon
+      pascal_decode_conformance.sh     I/O-LZ, errores de decodetool, y que v5
+                                       diga "no portado"
+      pascal_futurelz_conformance.sh   v3/v4, con la linea de estadisticas entera
 
-`pascal/bin/` es salida de build y está en `.gitignore`.
+`pascal/bin/` es salida de build y está en `.gitignore`. `build.sh` construye
+el programa y las tres herramientas para Linux x86-64, Win64 y Win32 (las
+herramientas salen como `decodetool`, `decodetool64.exe`, `decodetool32.exe`,
+etc.), y si el compilador falla muestra por qué. `OSREP_PASCAL_OUT=<dir>`
+construye en otro lado, para no pisar binarios que algo está ejecutando. El
+build es **reproducible**: dos corridas dan los mismos bytes, así que un `cmp`
+alcanza para saber si un binario en uso es el del árbol actual.
+
+Los harnesses toman el binario de `OSREP_PASCAL_DECODETOOL` (y equivalentes).
+Para los targets Windows se apuntan a un wrapper que lo corre bajo wine
+—`exec env WINEDEBUG=-all wine .../decodetool32.exe "$@"`—, que tiene que
+**dejar pasar stderr**: el harness de Future-LZ compara el mensaje de error.
 
 ## Fases
 
@@ -147,7 +177,7 @@ round-trip**.
 | **2** | Digests: vmac, siphash, md5, sha1, sha512, más AES | **hecha** (2026-09-25): 300 comprobaciones contra el oráculo, y los cinco idénticos también en i386-win32 y x86_64-win64 sobre Win7 real |
 | **3** | Container: header, seed, bloques, footer v4 y v5 | **hecha** (2026-09-25): 84 comprobaciones, 80 archivos leídos igual que el oráculo y **reescritos byte a byte**; idéntico en i386 y x64 |
 | **4a** | Decoder I/O-LZ (v1/v2, sufijo `o`) | **hecha** (2026-09-25): 231 comprobaciones, 225 combinaciones byte a byte, verificado en i386 y x64 |
-| **4b** | Decoder Future/Index-LZ (v3/v4) + memory manager + spill | pendiente |
+| **4b** | Decoder Future/Index-LZ (v3/v4) + memory manager + spill | **hecha** (2026-09-26): 80 comprobaciones (79 bajo wine) con la línea de estadísticas entera —incluidos los bytes del spill— y los bytes reconstruidos; decode sube a 248. Revisión adversarial de cinco enfoques, ~80.000 comparaciones diferenciales: cero divergencias en el decoder, 17 hallazgos en los bordes que se reducen a 4 causas, todas arregladas con su regresión (verificado que cada una falla con el bug reintroducido). Win7 real: 73/73 en i386 y en x64 |
 | **4c** | Decoder v5 | pendiente |
 | **5** | Encoder: los 17 modos | `encode_conformance`, byte-idéntico en todos |
 | **6** | `-dup` y `--verify` | `dup_v5_conformance`, `format_v5_conformance` |
@@ -226,7 +256,83 @@ round-trip**.
   que no menciona el tipo tapado.
 * **Un identificador no puede llamarse igual que una unidad importada.**
   Pascal no distingue mayúsculas, así que una constante `HASHES` choca con la
-  unidad `Hashes`.
+  unidad `Hashes`. Por lo mismo, una variable local `n` choca con un
+  parámetro `N` («Duplicate identifier»), y un `on E: Exception do` **tapa** a
+  una variable local `e` —ahí no hay error de duplicado, hay uno de tipos
+  incompatibles que no menciona la sombra—. Pasó dos veces el mismo día.
+* **`SetLength` llena de ceros todo lo que reserva, así que reservar lo que
+  declara el archivo ocupa RAM real.** Rust hace `vec![0u8; n]` con el tamaño
+  del bloque y no le cuesta nada: pide páginas en cero que el sistema no
+  entrega hasta que se escriben. El mismo patrón en Pascal hacía que un
+  archivo roto de **109 bytes** que declaraba un bloque de 3 GiB ocupara
+  **3 GiB** antes de fallar (Rust: 11 MiB). Los tests de salida no lo ven —los
+  dos fallan con el mismo error—; lo vio el kernel el 2026-09-26, cuando un
+  fuzzer con decenas de esos en paralelo dejó la máquina sin memoria. En i386
+  además cambiaba el error: el largo no entra en un `SizeInt`, `SetLength` lo
+  recibe negativo y falla con *«Range check error»* en vez de *«truncated
+  structure»*. La regla: **nada se reserva por lo que diga el archivo**. Las
+  lecturas crecen a medida que llegan los datos (`ReadExactOrEof`), y el
+  buffer de salida a medida que se escribe (`GrowOut`). Esto último funciona
+  porque en los dos decoders las escrituras en la salida son estrictamente
+  secuenciales y el relleno final llega exacto al largo declarado: un bloque
+  sano termina del tamaño justo y el digest no cambia. El harness de
+  Future-LZ lo prueba con el espacio de direcciones limitado a 256 MiB, y se
+  verificó que falla con el bug reintroducido, en nativo y en i386.
+* **Lo mismo vale para lo que declara una opción.** El slot del spill se
+  reservaba entero con `SetLength(buf, VmBlock)` en cada derrame, aunque no
+  hubiera nada que desalojar: con `--vmblock` de 256 MiB el Pascal ocupaba
+  258 MiB y el Rust 10. En i386 era corrupción de memoria: un `--vmblock` de
+  2³² o más llega truncado a `SetLength` (el `QWord` pasa a `SizeInt` de 32
+  bits), el buffer queda de 0 o 1 byte, y el empaquetado escribe fuera de él.
+  Terminaba en *access violation* y una cascada de excepciones hasta *stack
+  overflow*, con la salida a medias. Ahora el slot se arma a medida y se
+  completa con ceros al escribirlo (el archivo queda byte a byte como el del
+  Rust), y la restauración lee registro por registro: i386 decodifica bien con
+  `--vmblock` de 2³¹, 2³² y 2³²+1, igual que Rust.
+* **Los conteos de `TStream.Read`/`Write`/`ReadBuffer`/`WriteBuffer` son
+  `LongInt`.** `LongInt(n)` con n ≥ 2 GiB da negativo, y con los range checks
+  apagados no avisa nada. Rust acepta bloques de hasta 4 GiB, así que eso se
+  rompía **también en x64**. Todo largo que llega a un stream va por tramos de
+  1 GiB (`SinkRead`, `SinkWrite`).
+* **`THandleStream.Seek` no lanza excepciones.** Con un offset que no entra en
+  un `Int64` (o que el sistema de archivos rechaza) devuelve -1 y **deja la
+  posición donde estaba**: la lectura que sigue lee de otro lado, sin error.
+  Rust falla ahí con EINVAL. Todo seek que llega a un archivo se hace con
+  `SeekExact`, que verifica la posición que devuelve.
+* **El directorio temporal de FPC no es el de Rust.** En Unix, `GetTempDir`
+  mira `TEMP`, después `TMP` y recién después `TMPDIR`. `std::env::temp_dir()`
+  mira **solo** `TMPDIR` (o `/tmp`). Con `TEMP` apuntando a otro lado, el spill
+  del Pascal iba a otro disco o fallaba donde el Rust andaba. En Windows los dos
+  usan `GetTempPath`. Y el temporal se crea **en exclusiva** (`O_EXCL` /
+  `CREATE_NEW`) con nombre `<pid>-<nanos>-<contador>`, como el Rust. Con
+  `fmCreate` y un nombre predecible, un symlink plantado se seguía y el
+  contenido descomprimido quedaba fuera del temporal. Todo eso vive en
+  `spillfile.pas`, con la cadena de `$IF` terminada en `$FATAL`.
+* **El oráculo también tiene bugs, y el port no los copia.** En la revisión de
+  la 4b, el Rust publicado hizo **panic** (exit 101) donde el Pascal falla
+  limpio: en una sola de las campañas, 933 archivos corruptos dieron `capacity
+  overflow` al reservar lo que declara el footer (`future_lz.rs:839`, `:373`);
+  aparte, el slice de un digest más corto que el descriptor, y la división por
+  cero de un v1 con `base_len = 0` (`decompress.rs:155`; el C++ muere con
+  SIGFPE). El criterio del harness es «los dos fallan», así que eso no es una
+  divergencia. Pero son bugs del binario que se publica hoy, y hay que
+  arreglarlos en Rust también (el mismo criterio que el port a Rust aplicó al
+  C++).
+* **El orden de los chequeos es observable.** Un archivo truncado cuya lista
+  de STATs además no es múltiplo de 4 da *truncated* en Rust porque lee antes
+  de validar; validar primero da *bad data*. Lo mismo con cualquier par de
+  chequeos: portar la condición no alcanza, hay que portar el orden.
+* **En Future-LZ, la clase de matches se saca del heap ANTES de restaurar un
+  slot del spill.** Al revés, la restauración reinserta matches con ese mismo
+  destino y el `take` siguiente se los lleva: cada decode que derrama pierde
+  datos. Y `TAVLTree.FindKey` llama al comparador como `Compare(clave, dato)`,
+  en ese orden, con comparaciones sin signo escritas a mano (el comparador por
+  defecto compara punteros).
+* **Un caso de spill puede mover cero bytes y estar bien.** Con 512 KiB y
+  vmblock 64 KiB el Rust da `vmw=0`: el recorte `maximum_save = vm_block - 24`
+  deja a los matches de 64 KiB fuera del memory manager, así que no hay nada
+  que derramar. Parece un spill roto y no lo es; el harness exige el número
+  exacto por eso, y aparte exige `vmw>0` en el caso que sí tiene que derramar.
 * **Con un solo bloque, medio decoder no se ejecuta.** Los matches que
   apuntan antes del bloque actual se traen del archivo de salida ya escrito,
   no del buffer en memoria — y esa rama no corre nunca si el archivo de prueba
@@ -235,3 +341,21 @@ round-trip**.
 * **El scratchpad de `/tmp` es tmpfs en RAM.** Las pruebas grandes van a
   `/mnt/IA_LAB/agentes/osrep/`. Un round-trip de 5,75 GiB «falló» y casi se
   reporta como pérdida de datos: era ENOSPC.
+* **Una corrida pesada en paralelo va dentro de una jaula de memoria.** Cada
+  pane de tmux es un scope de systemd con `OOMPolicy=stop`: si el kernel mata
+  por OOM un solo subproceso, systemd mata el pane entero, sesión incluida.
+  Así se cortó dos veces la revisión de la fase 4b, y la segunda se llevó
+  también la sesión de otra IA en la misma máquina. Las campañas van en
+  `systemd-run --user --scope --slice=osrep-review.slice -p MemoryMax=4G
+  -p MemorySwapMax=0 -p OOMPolicy=continue -- <cmd>`, con el slice limitado a
+  24 GiB en total: si algo se pasa, muere un proceso adentro, nunca afuera.
+  Si una sesión se corta sin motivo, mirar `journalctl --user | grep -i oom`
+  antes de relanzar lo mismo.
+* **En `cmd.exe`, `echo rc=%ERRORLEVEL%>> archivo` no escribe el código.** Se
+  expande a `echo rc=4>> archivo`, y cmd lee `4>>` como redirección del handle
+  4: la línea sale por consola y el archivo queda sin el número. La
+  redirección va adelante: `>>archivo echo rc=%ERRORLEVEL%`. (Win7 tampoco trae
+  `tar`: los resultados se traen con `scp -r`.)
+* **Bajo wine, lo que va a un stdout apuntado a `/dev/null` sale por
+  stderr.** Un harness que descarta stdout y lee stderr ve la línea `ok ...`
+  mezclada con los errores; filtrar por el prefijo (`ERROR!`).

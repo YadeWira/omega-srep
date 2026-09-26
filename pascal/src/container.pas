@@ -236,7 +236,9 @@ begin
   if QWord(Length(B)) < At + INDEX_LZ_FOOTER_SIZE then Exit(ceTruncated);
   F.TotalStatSize := QWord(LE32(B, At)) or (QWord(LE32(B, At + 4)) shl 32);
   F.FooterSize    := LE32(B, At + 8);
-  F.FooterVersion := LE32(B, At + 12);
+  { Solo el byte bajo, como el Rust (`& 255`). Comparar la palabra entera
+    rechaza un footer que el Rust acepta. }
+  F.FooterVersion := LE32(B, At + 12) and 255;
   { El footer v4 se valida con las dos firmas INVERTIDAS. }
   if (LE32(B, At + 16) <> SREP_SIGNATURE_INV) or
      (LE32(B, At + 20) <> BULAT_SIGNATURE_INV) then Exit(ceNoFooter);

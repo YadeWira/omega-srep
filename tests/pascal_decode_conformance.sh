@@ -91,15 +91,56 @@ rc=0; "$DT" "$TMP/c2.osr" "$TMP/bad2" >/dev/null 2>&1 || rc=$?
 [ ! -e "$TMP/bad2" ] || fail "el decoder dejo una salida a medias tras truncamiento"
 pass=$((pass + 1))
 
+say "decodetool no revienta: todo error sale con codigo, sin runtime error ni salida a medias"
+# Hasta el 2026-09-26, no poder abrir el archivo o crear la salida terminaba en
+# el runtime error 217 de FPC (una excepcion sin capturar).
+rc=0; "$DT" "$TMP/no-existe.osr" "$TMP/o1" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 4 ] || fail "un archivo que no existe salio $rc, esperado 4"
+[ ! -e "$TMP/o1" ] || fail "un archivo que no existe dejo una salida creada"
+rc=0; "$DT" "$TMP/base.osr" "$TMP/no-existe/o2" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 4 ] || fail "una salida imposible de crear salio $rc, esperado 4"
+echo previa > "$TMP/o3"
+rc=0; "$DT" "$TMP/no-existe.osr" "$TMP/o3" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 4 ] && [ "$(cat "$TMP/o3")" = previa ] \
+    || fail "un error de lectura borro o piso una salida que ya existia (rc=$rc)"
+pass=$((pass + 3))
+
+# Un v1 con base_len = 0 divide por cero al primer record. El Rust hace panic
+# (101) justo ahi y el C++ muere con SIGFPE; el Pascal tiene que fallar limpio
+# y sin dejar la salida, que antes quedaba creada. (Un v3 con el byte de
+# version cambiado a 1: su header trae base_len = 0.)
+"$RS" --format=v4 -m3f -b64k -t1 -hash- "$TMP/dup.bin" "$TMP/v1l0.osr" >/dev/null 2>&1
+printf '\001' | dd of="$TMP/v1l0.osr" bs=1 seek=8 conv=notrunc 2>/dev/null
+rc=0; "$DT" "$TMP/v1l0.osr" "$TMP/o4" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 4 ] || fail "un v1 con base_len = 0 salio $rc, esperado 4"
+[ ! -e "$TMP/o4" ] || fail "un v1 con base_len = 0 dejo la salida"
+pass=$((pass + 1))
+
+# Los numeros de las opciones, como `str::parse::<u64>` del harness Rust: un
+# '+' opcional y digitos. TryStrToQWord aceptaba hex, octal, binario y
+# espacios al principio.
+DC=target/release/decode_conformance
+if [ -x "$DC" ]; then
+    "$RS" --format=v4 -m3 -b64k -t1 "$TMP/dup.bin" "$TMP/flz.osr" >/dev/null 2>&1
+    for v in 1048576 +1048576 0x100000 '$100000' '%101' '&17' ' 1048576' '1048576 ' \
+             18446744073709551615 18446744073709551616 '' + -1 1_000; do
+        r=0; "$DC" future-lz "$TMP/flz.osr" "$TMP/r.out" "--mem=$v" >/dev/null 2>&1 || r=$?
+        p=0; "$DT" "$TMP/flz.osr" "$TMP/p.out" "--mem=$v" >/dev/null 2>&1 || p=$?
+        if { [ "$r" -eq 0 ] && [ "$p" -eq 0 ]; } || { [ "$r" -eq 2 ] && [ "$p" -eq 2 ]; }; then
+            pass=$((pass + 1))
+        else
+            fail "--mem='$v': el Rust salio $r y el Pascal $p"
+        fi
+    done
+fi
+
 say "lo que todavia no esta portado lo dice, en vez de intentarlo"
-# v4 (Index-LZ, el default) y v5 son las fases 4b y 4c.
-for fmt_mode in "v4 -m3" "v5 -m3"; do
-    set -- $fmt_mode
-    "$RS" --format=$1 --seed=7 "$2" "$TMP/dup.bin" "$TMP/np.osr" >/dev/null 2>&1
-    rc=0; "$DT" "$TMP/np.osr" "$TMP/np.out" >/dev/null 2>&1 || rc=$?
-    [ "$rc" -eq 3 ] || fail "$1 $2 salio $rc, esperado 3 (no portado)"
-    [ ! -e "$TMP/np.out" ] || fail "$1 $2 dejo un archivo detras"
-    pass=$((pass + 1))
-done
+# v5 es la fase 4c. (v3/v4 ya estan, y los cubre
+# tests/pascal_futurelz_conformance.sh con mucho mas detalle.)
+"$RS" --format=v5 --seed=7 -m3 "$TMP/dup.bin" "$TMP/np.osr" >/dev/null 2>&1
+rc=0; "$DT" "$TMP/np.osr" "$TMP/np.out" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 3 ] || fail "v5 salio $rc, esperado 3 (no portado)"
+[ ! -e "$TMP/np.out" ] || fail "v5 dejo un archivo detras"
+pass=$((pass + 1))
 
 echo "  pascal_decode_conformance: passed=$pass mismatches=0"
