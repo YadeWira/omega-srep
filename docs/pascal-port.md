@@ -145,7 +145,7 @@ round-trip**.
 | **0** | Toolchain: FPC para i386-win32 y x86-64 | **hecha** (2026-09-25): los tres targets verificados, i386 corriendo en Win7 real |
 | **1** | Andamiaje: layout, CLI que responde `--version`/`--help` | **hecha** (2026-09-25): byte a byte en los tres targets, verificado en Win7 real |
 | **2** | Digests: vmac, siphash, md5, sha1, sha512, más AES | **hecha** (2026-09-25): 300 comprobaciones contra el oráculo, y los cinco idénticos también en i386-win32 y x86_64-win64 sobre Win7 real |
-| **3** | Container: header, seed, bloques, footer v4 y v5 | leer v1–v5 y escribir v4/v5 byte-exacto |
+| **3** | Container: header, seed, bloques, footer v4 y v5 | **hecha** (2026-09-25): 84 comprobaciones, 80 archivos leídos igual que el oráculo y **reescritos byte a byte**; idéntico en i386 y x64 |
 | **4** | Decoders: I/O-LZ, luego Future/Index-LZ + memory manager + spill | `decode_conformance` completo |
 | **5** | Encoder: los 17 modos | `encode_conformance`, byte-idéntico en todos |
 | **6** | `-dup` y `--verify` | `dup_v5_conformance`, `format_v5_conformance` |
@@ -208,6 +208,23 @@ round-trip**.
   `l3hash` exacto — y devuelve el digest equivocado para *toda* entrada. La
   encontró leer el nombre de la constante, después de descartar por medición
   AES, las claves NH, las poly, las L3 y `l3hash` uno por uno.
+* **El CRC-32C de este proyecto NO es el canónico.** Arranca en **0** y **no
+  hace el XOR final** (`rolling.rs:286`, `crc32c_of`); la tabla sí es la
+  estándar. Usar la variante de libro —init `0xFFFFFFFF`, xor final
+  `0xFFFFFFFF`— compila, corre, y rechaza como corrupto *todo* archivo v5
+  sano. Sobre un header de prueba da `2b5ff9a1` donde el archivo guarda
+  `afa4154f`.
+* **`not` sobre una constante en FPC se evalúa con más ancho que un `DWord`.**
+  Las firmas invertidas del footer v4 (`~SREP_SIGNATURE`) nunca coinciden con
+  lo leído del archivo aunque los 32 bits bajos sean iguales. Se declaran
+  explícitas: `$AFADACB0` y `$D9CAE7E8`.
+* **`SysUtils` define su propio `TBytes`.** Importarlo en la sección de
+  implementación tapa el `TBytes` del interface y las firmas dejan de
+  coincidir; el compilador lo reporta como *«Forward declaration not solved»*,
+  que no menciona el tipo tapado.
+* **Un identificador no puede llamarse igual que una unidad importada.**
+  Pascal no distingue mayúsculas, así que una constante `HASHES` choca con la
+  unidad `Hashes`.
 * **El scratchpad de `/tmp` es tmpfs en RAM.** Las pruebas grandes van a
   `/mnt/IA_LAB/agentes/osrep/`. Un round-trip de 5,75 GiB «falló» y casi se
   reporta como pérdida de datos: era ENOSPC.
