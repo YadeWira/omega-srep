@@ -102,12 +102,23 @@ Verificado de punta a punta el 2026-09-25, los tres targets que shipeamos:
 Es decir que el cross-compile desde Linux funciona para los tres, igual que
 con Rust y MinGW, y el flujo de release no cambia de forma.
 
-Queda una pregunta abierta para ytool, que ya les fue hecha: si ellos
-cross-compilan o compilan nativo en Windows. No bloquea —lo de arriba ya
-anda— pero conviene saber por qué eligieron lo que eligieron antes de
-apoyarnos en un cross que mantiene otro proyecto. **Ese es el riesgo real de
-esta fase: el toolchain vive en `compartido/` y no es nuestro.** Si el port
-avanza, hay que decidir si nos hacemos una copia propia.
+**El toolchain es nuestro**, en `/mnt/IA_LAB/agentes/osrep/fpc-cross`, con su
+`PROCEDENCIA.md`. Vivía en `compartido/` y funcionaba, pero no era nuestro: si
+PArc o PA-Lab lo actualizan o lo mueven, nuestra build cambia sin que toquemos
+nada — el problema de una dependencia sin pin. La copia cuesta 680 MB y lo
+convierte en nuestro. (La sugerencia es de ytool.)
+
+Detalle que cuesta diez minutos si no está escrito: **el cross no trae
+`fpc.cfg`**, así que las unidades van explícitas con `-Fu`, y el directorio de
+`-FU` tiene que existir de antes porque el compilador no lo crea.
+
+Respondió ytool sobre cómo compilan ellos: **nativo en Windows dentro de la
+VM** —win64 con el FPC de Lazarus, i386-win32 con un FPC standalone bajo
+WOW64— y desde Linux sólo cross-compilan el C. Y aclararon algo que importa:
+**no evaluaron este cross y lo descartaron, es que no existía** cuando
+decidieron (su primer `winbuild-x86` es del 2026-07-10, el cross es del
+2026-09-24). O sea que no hay un criterio técnico en contra que estemos
+ignorando.
 
 ## Fases
 
@@ -147,6 +158,29 @@ round-trip**.
   match. Escribir la aritmética clásica de LZ ahí rechaza archivos sanos: pasó
   al implementar `--verify` en Rust. Ver `decompress_block`
   (`future_lz.rs:544-551`).
+* **Nunca usar `SizeInt`, `PtrUInt` ni `NativeUInt` en aritmética que llegue al
+  archivo.** Miden **4 bytes en i386 y 8 en x86-64** (medido el 2026-09-25 en
+  Win7 real con los dos binarios). Esta es *exactamente* la forma del bug que
+  ya mordió a este proyecto en C++: `PolynomialRollingHash<size_t>` tenía un
+  módulo que dependía del ancho de `size_t`, así que `-m1`/`-m2` producían
+  fronteras de chunk distintas en 32 y 64 bits y corrompían en silencio
+  cualquier archivo comprimido en un ancho y descomprimido en el otro (ver
+  `docs/32bit-support.md`). En Pascal se reproduce igual de fácil. **Usar
+  siempre tipos de ancho explícito** —`QWord`, `Int64`, `DWord`, `Cardinal`—
+  en todo lo que toque el formato.
+* **La aritmética de 64 bits en Pascal puro SÍ es portable**, y eso está
+  medido, no supuesto: `div`, `mod` y los shifts sobre `QWord` dan resultados
+  idénticos en i386-win32 y x86_64-win64. El problema de los helpers que falta
+  (`__udivdi3` y compañía) es de **objetos C enlazados desde Pascal**, no de
+  Pascal. Si el port se mantiene puro, no aparece.
+* **Tres trampas más, si alguna vez enlazamos C** (reportadas por ytool, que
+  las sufrió): FPC le antepone un guion bajo a todo `external cdecl` en
+  i386-win32 aunque pongas cláusula `name`, y si los bindings ya lo traen
+  estilo Delphi queda doble y el símbolo no resuelve (~120 declaraciones en su
+  caso); un `external` **sin** `cdecl` no da error, compila con otra
+  convención y revienta en runtime; y enlazar objetos C en i386 pide helpers
+  que la RTL de FPC no trae ahí (`memset`, `memcpy`, aritmética de 64 bits).
+  En x86-64 ninguna de las tres aparece.
 * **El scratchpad de `/tmp` es tmpfs en RAM.** Las pruebas grandes van a
   `/mnt/IA_LAB/agentes/osrep/`. Un round-trip de 5,75 GiB «falló» y casi se
   reporta como pérdida de datos: era ENOSPC.
