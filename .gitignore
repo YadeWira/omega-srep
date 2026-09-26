@@ -24,3 +24,4 @@ SREP_Technical_Documentation.zip
 # notes that get exchanged with other sessions working alongside this one.
 .commandcode/
 message-from-*.md
+pascal/bin/

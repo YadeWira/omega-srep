@@ -120,6 +120,20 @@ decidieron (su primer `winbuild-x86` es del 2026-07-10, el cross es del
 2026-09-24). O sea que no hay un criterio técnico en contra que estemos
 ignorando.
 
+## Layout
+
+    pascal/
+      osrep.lpr          el programa
+      build.sh           los tres targets, con el cross propio
+      src/
+        widths.pas       guardas de ancho en tiempo de compilacion
+        outraw.pas       escritura cruda a stdout/stderr
+        help.pas         --version y --help, byte a byte
+    tests/
+      pascal_cli_conformance.sh   diffea el Pascal contra el binario Rust
+
+`pascal/bin/` es salida de build y está en `.gitignore`.
+
 ## Fases
 
 Mismo esqueleto que `docs/rust-port.md`, que ya demostró funcionar, y con el
@@ -129,7 +143,7 @@ round-trip**.
 | Fase | Qué | Puerta |
 |---|---|---|
 | **0** | Toolchain: FPC para i386-win32 y x86-64 | **hecha** (2026-09-25): los tres targets verificados, i386 corriendo en Win7 real |
-| **1** | Andamiaje: layout del proyecto, CLI vacía que responde `--version`/`--help` | idénticos byte a byte a los del Rust |
+| **1** | Andamiaje: layout, CLI que responde `--version`/`--help` | **hecha** (2026-09-25): byte a byte en los tres targets, verificado en Win7 real |
 | **2** | Digests: vmac, siphash, md5, sha1, sha512 | `tests/hash_test` como oráculo, vector por vector |
 | **3** | Container: header, seed, bloques, footer v4 y v5 | leer v1–v5 y escribir v4/v5 byte-exacto |
 | **4** | Decoders: I/O-LZ, luego Future/Index-LZ + memory manager + spill | `decode_conformance` completo |
