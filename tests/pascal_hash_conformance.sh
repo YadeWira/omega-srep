@@ -34,32 +34,53 @@ fi
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 pass=0
 
-# Bordes de bloque de los dos tamanos (64 para md5/sha1, 128 para sha512),
-# mas tamanos sueltos y algo grande.
-SIZES="0 1 2 3 55 56 57 63 64 65 111 112 113 119 120 127 128 129 255 256 1000 65536 100000"
+# Bordes de bloque de los tres tamanos que importan: 64 (md5/sha1), 128
+# (sha512) y 4096 (el VMAC_NHBYTES de vmac, donde recien entra el lazo
+# polinomico). Mas 16 y sus alrededores, que es el paso de nh_16, y algo
+# grande que cruza varios bloques de 4096.
+SIZES="0 1 2 3 15 16 17 31 32 33 55 56 57 63 64 65 111 112 113 119 120 127 128 129 255 256 1000 4095 4096 4097 4111 4112 8191 8192 8193 65536 100000"
 for n in $SIZES; do
     head -c "$n" /dev/urandom > "$TMP/in-$n" 2>/dev/null || : > "$TMP/in-$n"
 done
 
-for algo in md5 sha1 sha512; do
-    n_ok=0
+# Semillas de prueba. No son arbitrarias: se prueban varias porque las claves
+# de vmac se derivan cifrando contadores bajo la semilla, y su lazo de rechazo
+# (descarta las L3 que no caen bajo el primo) solo se ejercita con algunas.
+SEED16_A=$(printf 'ab%.0s' $(seq 16))
+SEED16_B=$(printf '00%.0s' $(seq 16))
+SEED32_A=$(printf 'ab%.0s' $(seq 32))
+SEED32_B=$(printf 'ff%.0s' $(seq 32))
+SEED32_C=$(printf '00%.0s' $(seq 32))
+
+check() {  # $1=algo $2=seed
+    local algo="$1" seed="$2" n c p n_ok=0
     for n in $SIZES; do
-        c=$(./bin/hash_test "$algo" none "$TMP/in-$n") \
+        c=$(./bin/hash_test "$algo" "$seed" "$TMP/in-$n") \
             || fail "$algo: el oraculo fallo con $n bytes"
-        p=$("$PA" "$algo" none "$TMP/in-$n") \
+        p=$("$PA" "$algo" "$seed" "$TMP/in-$n") \
             || fail "$algo: el Pascal fallo con $n bytes"
         [ "$c" = "$p" ] || fail "$algo con $n bytes: oraculo $c, Pascal $p"
         n_ok=$((n_ok + 1))
     done
-    say "$algo: $n_ok tamanos, todos identicos al oraculo"
+    say "$algo: $n_ok tamanos identicos al oraculo"
     pass=$((pass + n_ok))
-done
+}
 
-say "lo no portado se rechaza en vez de inventar un digest"
-for algo in siphash vmac; do
-    rc=0; "$PA" "$algo" 00 "$TMP/in-1" >"$TMP/o" 2>/dev/null || rc=$?
-    [ "$rc" -ne 0 ] || fail "$algo devolvio exito y todavia no esta portado"
-    [ ! -s "$TMP/o" ] || fail "$algo imprimio algo en stdout sin estar portado"
+for algo in md5 sha1 sha512; do check "$algo" none; done
+check siphash "$SEED16_A"
+check siphash "$SEED16_B"
+check vmac "$SEED32_A"
+check vmac "$SEED32_B"
+check vmac "$SEED32_C"
+
+say "aes, contra el LibTomCrypt vendorizado y no solo contra FIPS-197"
+# hash_test expone el cifrado de bloque suelto, asi que la primitiva sobre la
+# que se apoya vmac se verifica por separado en vez de solo a traves de el.
+for n in 16 32 64 4096; do
+    head -c "$n" /dev/urandom > "$TMP/blk-$n"
+    c=$(./bin/hash_test aes "$SEED32_A" "$TMP/blk-$n")
+    p=$("${PA%hashtool}aesblk" "$SEED32_A" "$TMP/blk-$n" 2>/dev/null) || continue
+    [ "$c" = "$p" ] || fail "aes con $n bytes: oraculo $c, Pascal $p"
     pass=$((pass + 1))
 done
 

@@ -25,6 +25,7 @@ function MD5(const Data: TBytes): TBytes;
 function SHA1(const Data: TBytes): TBytes;
 function SHA512(const Data: TBytes): TBytes;
 function ToHex(const B: TBytes): AnsiString;
+function FromHex(const S: AnsiString): TBytes;
 
 implementation
 
@@ -37,6 +38,29 @@ begin
   begin
     Result[i * 2 + 1] := HEX[B[i] shr 4];
     Result[i * 2 + 2] := HEX[B[i] and $0F];
+  end;
+end;
+
+function FromHex(const S: AnsiString): TBytes;
+var i, n: LongInt; hi, lo: Byte;
+  function Nib(c: Char): Byte;
+  begin
+    case c of
+      '0'..'9': Nib := Byte(Ord(c) - Ord('0'));
+      'a'..'f': Nib := Byte(Ord(c) - Ord('a') + 10);
+      'A'..'F': Nib := Byte(Ord(c) - Ord('A') + 10);
+    else Nib := 255;
+    end;
+  end;
+begin
+  if (S = 'none') or (S = '') then begin SetLength(Result, 0); Exit; end;
+  n := Length(S) div 2;
+  SetLength(Result, n);
+  for i := 0 to n - 1 do
+  begin
+    hi := Nib(S[i * 2 + 1]); lo := Nib(S[i * 2 + 2]);
+    if (hi = 255) or (lo = 255) then begin SetLength(Result, 0); Exit; end;
+    Result[i] := Byte(hi shl 4) or lo;
   end;
 end;
 
@@ -69,6 +93,7 @@ var
   msg: TBytes;
   bitlen: QWord;
   i, chunk: QWord;
+  bi: LongInt;
   m: array[0..15] of DWord;
   a, b, c, d, f, tmp: DWord;
   g, j: LongInt;
@@ -87,8 +112,11 @@ begin
   SetLength(msg, QWord(Length(Data)) + 1 + padlen + 8);
   if Length(Data) > 0 then Move(Data[0], msg[0], Length(Data));
   msg[Length(Data)] := $80;
-  for i := QWord(Length(Data)) + 1 to QWord(Length(msg)) - 9 do msg[i] := 0;
-  for i := 0 to 7 do msg[QWord(Length(msg)) - 8 + i] := Byte((bitlen shr (8 * i)) and $FF);
+  { FillChar en vez de un `for`: los limites son QWord y en i386 FPC no acepta
+    un QWord como variable de control. Ademas dice mejor lo que hace. }
+  if QWord(Length(msg)) > QWord(Length(Data)) + 9 then
+    FillChar(msg[QWord(Length(Data)) + 1], QWord(Length(msg)) - QWord(Length(Data)) - 9, 0);
+  for bi := 0 to 7 do msg[QWord(Length(msg)) - 8 + QWord(bi)] := Byte((bitlen shr (8 * bi)) and $FF);
 
   chunk := 0;
   while chunk < QWord(Length(msg)) do
@@ -135,6 +163,7 @@ var
   msg: TBytes;
   bitlen: QWord;
   i, chunk, padlen: QWord;
+  bi: LongInt;
   w: array[0..79] of DWord;
   a, b, c, d, e, f, k, tmp: DWord;
   j: LongInt;
@@ -147,9 +176,12 @@ begin
   SetLength(msg, QWord(Length(Data)) + 1 + padlen + 8);
   if Length(Data) > 0 then Move(Data[0], msg[0], Length(Data));
   msg[Length(Data)] := $80;
-  for i := QWord(Length(Data)) + 1 to QWord(Length(msg)) - 9 do msg[i] := 0;
-  for i := 0 to 7 do
-    msg[QWord(Length(msg)) - 1 - i] := Byte((bitlen shr (8 * i)) and $FF);
+  { FillChar en vez de un `for`: los limites son QWord y en i386 FPC no acepta
+    un QWord como variable de control. Ademas dice mejor lo que hace. }
+  if QWord(Length(msg)) > QWord(Length(Data)) + 9 then
+    FillChar(msg[QWord(Length(Data)) + 1], QWord(Length(msg)) - QWord(Length(Data)) - 9, 0);
+  for bi := 0 to 7 do
+    msg[QWord(Length(msg)) - 1 - QWord(bi)] := Byte((bitlen shr (8 * bi)) and $FF);
 
   chunk := 0;
   while chunk < QWord(Length(msg)) do
@@ -224,6 +256,9 @@ var
   msg: TBytes;
   bitlen: QWord;
   i, chunk, padlen: QWord;
+  { Indices chicos aparte: en i386 FPC no acepta un QWord como variable de
+    control de un `for`, y ademas no hace falta -- ninguno pasa de 79. }
+  bi: LongInt;
   w: array[0..79] of QWord;
   a, b, c, d, e, f, g, hh, s0, s1, ch, maj, t1, t2: QWord;
   j: LongInt;
@@ -238,10 +273,11 @@ begin
   SetLength(msg, QWord(Length(Data)) + 1 + padlen + 16);
   if Length(Data) > 0 then Move(Data[0], msg[0], Length(Data));
   msg[Length(Data)] := $80;
-  for i := QWord(Length(Data)) + 1 to QWord(Length(msg)) - 17 do msg[i] := 0;
-  for i := 0 to 15 do msg[QWord(Length(msg)) - 16 + i] := 0;
-  for i := 0 to 7 do
-    msg[QWord(Length(msg)) - 1 - i] := Byte((bitlen shr (8 * i)) and $FF);
+  if QWord(Length(msg)) > QWord(Length(Data)) + 17 then
+    FillChar(msg[QWord(Length(Data)) + 1], QWord(Length(msg)) - QWord(Length(Data)) - 17, 0);
+  for bi := 0 to 15 do msg[QWord(Length(msg)) - 16 + QWord(bi)] := 0;
+  for bi := 0 to 7 do
+    msg[QWord(Length(msg)) - 1 - QWord(bi)] := Byte((bitlen shr (8 * bi)) and $FF);
 
   chunk := 0;
   while chunk < QWord(Length(msg)) do
@@ -249,8 +285,8 @@ begin
     for j := 0 to 15 do
     begin
       w[j] := 0;
-      for i := 0 to 7 do
-        w[j] := (w[j] shl 8) or QWord(msg[chunk + QWord(j) * 8 + i]);
+      for bi := 0 to 7 do
+        w[j] := (w[j] shl 8) or QWord(msg[chunk + QWord(j) * 8 + QWord(bi)]);
     end;
     for j := 16 to 79 do
     begin
@@ -278,8 +314,8 @@ begin
 
   SetLength(Result, 64);
   for j := 0 to 7 do
-    for i := 0 to 7 do
-      Result[j * 8 + i] := Byte((h[j] shr (8 * (7 - i))) and $FF);
+    for bi := 0 to 7 do
+      Result[j * 8 + bi] := Byte((h[j] shr (8 * (7 - bi))) and $FF);
 end;
 
 end.

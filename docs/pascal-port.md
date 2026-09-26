@@ -144,7 +144,7 @@ round-trip**.
 |---|---|---|
 | **0** | Toolchain: FPC para i386-win32 y x86-64 | **hecha** (2026-09-25): los tres targets verificados, i386 corriendo en Win7 real |
 | **1** | Andamiaje: layout, CLI que responde `--version`/`--help` | **hecha** (2026-09-25): byte a byte en los tres targets, verificado en Win7 real |
-| **2** | Digests: vmac, siphash, md5, sha1, sha512 | **en curso**: md5/sha1/sha512 hechos (23 tamaños × 3, idénticos al oráculo). Faltan los con clave: siphash y vmac (vmac necesita AES) |
+| **2** | Digests: vmac, siphash, md5, sha1, sha512, más AES | **hecha** (2026-09-25): 300 comprobaciones contra el oráculo, y los cinco idénticos también en i386-win32 y x86_64-win64 sobre Win7 real |
 | **3** | Container: header, seed, bloques, footer v4 y v5 | leer v1–v5 y escribir v4/v5 byte-exacto |
 | **4** | Decoders: I/O-LZ, luego Future/Index-LZ + memory manager + spill | `decode_conformance` completo |
 | **5** | Encoder: los 17 modos | `encode_conformance`, byte-idéntico en todos |
@@ -195,6 +195,19 @@ round-trip**.
   convención y revienta en runtime; y enlazar objetos C en i386 pide helpers
   que la RTL de FPC no trae ahí (`memset`, `memcpy`, aritmética de 64 bits).
   En x86-64 ninguna de las tres aparece.
+* **En i386, FPC no acepta un `QWord` como variable de control de un `for`.**
+  «Ordinal expression expected», y **sólo en la build de 32 bits**: el mismo
+  código compila limpio para x86-64. Es la mejor clase de diferencia entre
+  arquitecturas, porque falla ruidoso, pero si uno sólo compila para 64 bits
+  no se entera. Se arregla con un índice `LongInt` aparte para lo que nunca
+  pasa de unos pocos bytes, o con `FillChar` donde el `for` sólo llenaba ceros.
+* **Los nombres de las constantes importan más que los comentarios.** En
+  `vmac.c` la máscara de las claves poly es `mpoly = 0x1fffffff1fffffff`, y a
+  tres líneas vive `m62 = 0x3fffffffffffffff`. Usar la segunda da un vmac que
+  deriva bien todas las claves, pasa AES contra el C vendorizado, transcribe
+  `l3hash` exacto — y devuelve el digest equivocado para *toda* entrada. La
+  encontró leer el nombre de la constante, después de descartar por medición
+  AES, las claves NH, las poly, las L3 y `l3hash` uno por uno.
 * **El scratchpad de `/tmp` es tmpfs en RAM.** Las pruebas grandes van a
   `/mnt/IA_LAB/agentes/osrep/`. Un round-trip de 5,75 GiB «falló» y casi se
   reporta como pérdida de datos: era ENOSPC.
