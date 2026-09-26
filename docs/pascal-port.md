@@ -144,7 +144,7 @@ round-trip**.
 |---|---|---|
 | **0** | Toolchain: FPC para i386-win32 y x86-64 | **hecha** (2026-09-25): los tres targets verificados, i386 corriendo en Win7 real |
 | **1** | Andamiaje: layout, CLI que responde `--version`/`--help` | **hecha** (2026-09-25): byte a byte en los tres targets, verificado en Win7 real |
-| **2** | Digests: vmac, siphash, md5, sha1, sha512 | `tests/hash_test` como oráculo, vector por vector |
+| **2** | Digests: vmac, siphash, md5, sha1, sha512 | **en curso**: md5/sha1/sha512 hechos (23 tamaños × 3, idénticos al oráculo). Faltan los con clave: siphash y vmac (vmac necesita AES) |
 | **3** | Container: header, seed, bloques, footer v4 y v5 | leer v1–v5 y escribir v4/v5 byte-exacto |
 | **4** | Decoders: I/O-LZ, luego Future/Index-LZ + memory manager + spill | `decode_conformance` completo |
 | **5** | Encoder: los 17 modos | `encode_conformance`, byte-idéntico en todos |
