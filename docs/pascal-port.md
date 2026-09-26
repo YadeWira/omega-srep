@@ -69,20 +69,45 @@ uno solo es ambigua (¿quién tiene razón?), pero contra dos que coinciden entr
 sí, el que está mal es el nuevo. **Por lo tanto el Rust se queda en el árbol,
 igual que el C++, y por el mismo motivo.**
 
-## Fase 0 — la precondición, que hoy NO está
+## Fase 0 — toolchain: **CUMPLIDA** (2026-09-25)
 
-`fpc 3.2.2` está instalado, pero **sólo el compilador x86-64** (`ppcx64`): sus
-targets son Linux/FreeBSD/Win64 para x86-64. No hay `ppc386` ni unidades i386,
-así que **hoy no podemos compilar i386-win32 desde esta máquina**.
+El `fpc 3.2.2` del sistema trae **sólo el compilador x86-64** (`ppcx64`), con
+targets Linux/FreeBSD/Win64. No sirve para i386-win32.
 
-Antes de escribir una línea de Pascal hay que resolver eso, y la vía rápida es
-preguntarle a ytool: ya lo tienen andando (`contrib/winbuild-x86.ps1`,
-`contrib/build-native-windows-x86.sh`, y una página de wiki «Build System
-Internals»). Hay que averiguar si cross-compilan desde Linux o compilan en
-Windows, porque de eso depende todo el flujo de release.
+**No hay que instalar nada, y sobre todo no hay que instalar el paquete
+i386 de Debian.** `apt-get install fp-compiler-3.2.2:i386` quiere **eliminar
+30 paquetes**, entre ellos `build-essential`, `gcc-14`, `g++`, `binutils` y
+`clang` — o sea el toolchain con el que se compila el oráculo C++, en una
+máquina compartida con otros agentes. Simulado antes de ejecutarlo; no
+ejecutar.
 
-**Criterio de salida de la fase 0:** un «hola mundo» en Pascal compilado a
-i386-win32 y ejecutado en la VM Win7, más la misma prueba para x86-64.
+Lo que sí funciona: **ya existe un cross de FPC en el área compartida**, hecho
+por PArc/PA-Lab:
+
+```
+/mnt/IA_LAB/compartido/parc/fpc-cross/lib/fpc/3.2.2/
+    ppcross386     -> Win32 for i386, Linux for i386, Go32v2, OS/2, FreeBSD
+    ppcrossx64     -> Win64 for x64
+    units/i386-win32/  units/x86_64-win64/
+```
+
+Verificado de punta a punta el 2026-09-25, los tres targets que shipeamos:
+
+| target | compilador | resultado |
+|---|---|---|
+| `i386-win32` | `ppcross386 -Twin32 -Pi386` | PE32 i386, **corre en Windows 7 SP1 real** |
+| `x86_64-win64` | `ppcrossx64 -Twin64 -Px86_64` | PE32+ x86-64, **corre en Windows 7 SP1 real** |
+| `x86_64-linux` | `fpc` del sistema | corre local |
+
+Es decir que el cross-compile desde Linux funciona para los tres, igual que
+con Rust y MinGW, y el flujo de release no cambia de forma.
+
+Queda una pregunta abierta para ytool, que ya les fue hecha: si ellos
+cross-compilan o compilan nativo en Windows. No bloquea —lo de arriba ya
+anda— pero conviene saber por qué eligieron lo que eligieron antes de
+apoyarnos en un cross que mantiene otro proyecto. **Ese es el riesgo real de
+esta fase: el toolchain vive en `compartido/` y no es nuestro.** Si el port
+avanza, hay que decidir si nos hacemos una copia propia.
 
 ## Fases
 
@@ -92,7 +117,7 @@ round-trip**.
 
 | Fase | Qué | Puerta |
 |---|---|---|
-| **0** | Toolchain: FPC para i386-win32 y x86-64, cross o nativo | binario trivial corriendo en Win7 x86 |
+| **0** | Toolchain: FPC para i386-win32 y x86-64 | **hecha** (2026-09-25): los tres targets verificados, i386 corriendo en Win7 real |
 | **1** | Andamiaje: layout del proyecto, CLI vacía que responde `--version`/`--help` | idénticos byte a byte a los del Rust |
 | **2** | Digests: vmac, siphash, md5, sha1, sha512 | `tests/hash_test` como oráculo, vector por vector |
 | **3** | Container: header, seed, bloques, footer v4 y v5 | leer v1–v5 y escribir v4/v5 byte-exacto |
