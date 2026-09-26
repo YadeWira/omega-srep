@@ -146,7 +146,9 @@ round-trip**.
 | **1** | Andamiaje: layout, CLI que responde `--version`/`--help` | **hecha** (2026-09-25): byte a byte en los tres targets, verificado en Win7 real |
 | **2** | Digests: vmac, siphash, md5, sha1, sha512, más AES | **hecha** (2026-09-25): 300 comprobaciones contra el oráculo, y los cinco idénticos también en i386-win32 y x86_64-win64 sobre Win7 real |
 | **3** | Container: header, seed, bloques, footer v4 y v5 | **hecha** (2026-09-25): 84 comprobaciones, 80 archivos leídos igual que el oráculo y **reescritos byte a byte**; idéntico en i386 y x64 |
-| **4** | Decoders: I/O-LZ, luego Future/Index-LZ + memory manager + spill | `decode_conformance` completo |
+| **4a** | Decoder I/O-LZ (v1/v2, sufijo `o`) | **hecha** (2026-09-25): 231 comprobaciones, 225 combinaciones byte a byte, verificado en i386 y x64 |
+| **4b** | Decoder Future/Index-LZ (v3/v4) + memory manager + spill | pendiente |
+| **4c** | Decoder v5 | pendiente |
 | **5** | Encoder: los 17 modos | `encode_conformance`, byte-idéntico en todos |
 | **6** | `-dup` y `--verify` | `dup_v5_conformance`, `format_v5_conformance` |
 | **7** | CLI completa | las 219 de `rust_cli_conformance` con `OSREP_BIN` |
@@ -225,6 +227,11 @@ round-trip**.
 * **Un identificador no puede llamarse igual que una unidad importada.**
   Pascal no distingue mayúsculas, así que una constante `HASHES` choca con la
   unidad `Hashes`.
+* **Con un solo bloque, medio decoder no se ejecuta.** Los matches que
+  apuntan antes del bloque actual se traen del archivo de salida ya escrito,
+  no del buffer en memoria — y esa rama no corre nunca si el archivo de prueba
+  entra en un bloque. `-b512kb` sobre 12 MiB da 24 bloques y ahí esa rama es
+  la mayoría del trabajo. La matriz del harness los incluye por eso.
 * **El scratchpad de `/tmp` es tmpfs en RAM.** Las pruebas grandes van a
   `/mnt/IA_LAB/agentes/osrep/`. Un round-trip de 5,75 GiB «falló» y casi se
   reporta como pérdida de datos: era ENOSPC.
