@@ -168,11 +168,10 @@ end;
 
 procedure VDigestCompute(const V: TVmac; const B: TBytes; At, Len: QWord; var Out_: TBytes;
                          OutAt: QWord);
-var m, t: TBytes; i: LongInt;
+var t: TVmacTag; p: PByte; i: LongInt;
 begin
-  SetLength(m, Len);
-  if Len > 0 then Move(B[At], m[0], Len);
-  t := VmacCompute(V, m);
+  if Len > 0 then p := @B[At] else p := nil;   { sin copia }
+  VmacTagOf(V, p, Len, t);
   for i := 0 to 3 do Out_[OutAt + QWord(i)] := t[i];
   for i := 0 to 15 do Out_[OutAt + 4 + QWord(i)] := t[i];
 end;

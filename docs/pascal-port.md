@@ -328,6 +328,24 @@ round-trip**.
   detección de SSE4.2: `cpufeat.pas` hace el CPUID a mano, en asm para
   x86-64 y para i386, y que i386 bajo wine dé los archivos de la ruta CRC es
   lo que prueba que esa rama corre.
+* **El asm de x86-64 tiene que servir a las DOS ABI, y la pila no es
+  tuya.** `NhPair` (vmac.pas, el NH de los dos carriles con `MUL` de 64x64)
+  es un bloque `asm` dentro de un procedimiento Pascal, no una funcion
+  `assembler`: asi los parametros los acomoda FPC y no hace falta un IFDEF
+  por ABI. Pero rsi/rdi son preservados en Win64 y no en SysV, y rbx/r12/r13
+  en las dos: se guardan y restauran **en un record local**, no con `push`,
+  porque en SysV una hoja puede tener sus locales en la red zone debajo de
+  rsp y un `push` los pisaria. Los locales se leen una sola vez al entrar,
+  por puntero. i386 usa el Pascal, con cada producto parcial escrito
+  `QWord(DWord) * QWord(DWord)`: asi ppcross386 emite un `MUL` de 32x32 -> 64
+  (verificado en el `.s`); con operandos `QWord` llama a `fpc_mul_qword`, y
+  eso hacia al hash 3 veces mas lento. `hashtool vmac-impl` dice que rama
+  quedo compilada y `pascal_hash_conformance.sh` lo comprueba.
+* **Los llamadores por chunk no deben copiar el bloque para hashearlo.**
+  `VmacCompute(TBytes)` obligaba a `SetLength`+`Move` del chunk entero en cada
+  digest (llenando de ceros antes de copiar). `VmacTagOf(P, Len)` hashea en el
+  lugar y devuelve el tag en un array fijo de pila: sin dynarray, sin el marco
+  try/finally implicito que FPC arma para los locales manejados.
 * **En bash, `VAR=x funcion` no llega seguro a los procesos que la función
   lanza.** Para correr un caso con `OSREP_CDC_POLY=1` el harness usa `export`
   y `unset` explícitos.

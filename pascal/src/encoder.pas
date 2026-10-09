@@ -129,10 +129,19 @@ end;
   C++ -- la cabecera es calloc, asi que el digest queda en ceros. }
 function HasherCompute(const H: TBlockHasher; const B: TBytes; At, Len: QWord;
                        out D: TBytes): Boolean;
-var m: TBytes;
+var m: TBytes; t: TVmacTag; p: PByte;
 begin
   Result := H.Name <> '';
   if not Result then Exit;
+  if H.Name = 'vmac' then
+  begin
+    { el hash por defecto, sin copiar el bloque }
+    if Len > 0 then p := @B[At] else p := nil;
+    VmacTagOf(H.VmacKey, p, Len, t);
+    SetLength(D, VMAC_TAG_LEN_BYTES);
+    Move(t[0], D[0], VMAC_TAG_LEN_BYTES);
+    Exit;
+  end;
   SetLength(m, Len);
   if Len > 0 then Move(B[At], m[0], Len);
   if H.Name = 'md5' then D := MD5(m)

@@ -66,6 +66,21 @@ check() {  # $1=algo $2=seed
     pass=$((pass + n_ok))
 }
 
+# Que rama de NH quedo compilada en vmac.pas (asm en x86_64, Pascal en el
+# resto). Un IFDEF mal escrito toma la otra rama en silencio, y las dos dan el
+# mismo digest: solo esto lo delata. OSREP_PASCAL_VMAC_IMPL fija la esperada
+# (p. ej. 'pascal' para un hashtool32 bajo wine).
+impl=$("$PA" vmac-impl 2>/dev/null | tr -d '\r') || impl=""
+want="${OSREP_PASCAL_VMAC_IMPL:-}"
+if [ -z "$want" ] && [ -z "${OSREP_PASCAL_HASHTOOL:-}" ] && [ "$(uname -m)" = x86_64 ]; then
+    want=x86_64-asm
+fi
+if [ -n "$want" ]; then
+    [ "$impl" = "$want" ] || fail "vmac NH compilado como '$impl', se esperaba '$want'"
+    pass=$((pass + 1))
+fi
+say "vmac NH: ${impl:-?}"
+
 for algo in md5 sha1 sha512; do check "$algo" none; done
 check siphash "$SEED16_A"
 check siphash "$SEED16_B"

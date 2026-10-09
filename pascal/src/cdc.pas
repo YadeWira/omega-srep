@@ -234,11 +234,10 @@ end;
   los mismos 32 bytes. Las dos claves son cero: los dos tags son iguales. }
 procedure ChunkHashes(const K: TVmac; const B: TBytes; At, Len: QWord; var Out_: TBytes;
                       OutAt: QWord);
-var m, t: TBytes; i: LongInt;
+var t: TVmacTag; p: PByte; i: LongInt;
 begin
-  SetLength(m, Len);
-  if Len > 0 then Move(B[At], m[0], Len);
-  t := VmacCompute(K, m);
+  if Len > 0 then p := @B[At] else p := nil;   { sin copia }
+  VmacTagOf(K, p, Len, t);
   for i := 0 to VMAC_TAG_LEN_BYTES - 1 do
   begin
     Out_[OutAt + QWord(i)] := t[i];

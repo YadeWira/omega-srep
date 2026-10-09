@@ -19,6 +19,13 @@ end;
 
 var algo, seed, path: AnsiString; data, k: TBytes; vk: TVmac;
 begin
+  { Sin archivo: que implementacion de NH quedo compilada. Es la prueba de que
+    el IFDEF de vmac.pas tomo la rama que se cree en cada target. }
+  if (ParamCount = 1) and (ParamStr(1) = 'vmac-impl') then
+  begin
+    WriteOut(VmacNhImpl + #10);
+    Halt(0);
+  end;
   if ParamCount < 3 then
   begin
     WriteErr('usage: hashtool <algo> <seed-hex|none> <input-file>' + #10);
