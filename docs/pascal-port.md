@@ -492,3 +492,18 @@ round-trip**.
   locales administrados; el caso raro que los necesita va en su propia
   función. Para encontrarlos: `callgrind_annotate --tree=caller` y buscar
   quién llama a `fpc_pushexceptaddr`.
+* **Leer fuera de un `TBytes` no se nota, y el archivo puede salir igual.**
+  Con `{$RANGECHECKS OFF}` y el acceso por `PByte` de los lazos calientes,
+  nada avisa; un offset "negativo" es un `QWord` cerca de 2⁶⁴ y lee *antes*
+  del arreglo. Tres lecturas así vivían en el match finder con `-l` raros:
+  el chequeo de slices de `-m5 -l1000` (22 slices, no 8: decenas de bytes
+  antes o después del anillo), el `hasharr[TotalChunks]` y los 3 bytes de más
+  del lote con un `L` que no es potencia de dos. El Rust entraba en pánico en
+  las tres (exit 101); el Pascal salía 0, y **con el mismo archivo que da el
+  arreglo**, porque lo que había ahí (la cola de páginas del mapeo, montón
+  recién pedido) hasheaba como un no-coincide o leía cero. Ninguna prueba de
+  salida podía verlo: lo mostró una build con una guarda en `SliceHashOf`
+  (`Off + Size > Length(B)` → `Halt(77)`), que saltaba en la versión vieja y
+  no en la nueva. Cuando el Rust entra en pánico por un índice, buscar el
+  mismo acceso en el Pascal aunque el Pascal "pase": es la misma lectura,
+  sólo que muda. Ver `SliceCheck` y `RING_TAIL` en `hashtable.pas`.

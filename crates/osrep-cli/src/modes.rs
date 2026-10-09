@@ -279,6 +279,31 @@ fn copy_stdin(f: &mut File) -> Result<(), RunError> {
     f.flush().map_err(|_| err(ERROR_IO, "Can't write to tempfile"))
 }
 
+/// Without `-c`, `-l` also sets the match finder's chunk `L`
+/// (`srep.cpp:466-470`): `L = MIN_MATCH` for `-m1`..`-m4`, and for `-m5` the
+/// power of two below `MIN_MATCH + 1`, halved. `SliceHash` then divides by
+/// `L / 8`, so an L of 1 to 7 is the same division by zero that `-c1`..`-c7`
+/// is refused for in `args.rs`: the C++ dies with SIGFPE and the port used to
+/// panic. That makes `-l1`..`-l7` invalid with `-m1`..`-m4` and `-l1`..`-l14`
+/// with `-m5`; `-m0` never builds the table, and works with any `-l`.
+fn small_window(o: &Options) -> Option<String> {
+    if o.l != 0 || o.min_match == 0 || !(1..=5).contains(&o.method) {
+        return None;
+    }
+    let least = if o.method == 5 {
+        2 * args::SLICES_IN_BLOCK - 1
+    } else {
+        args::SLICES_IN_BLOCK
+    };
+    if o.min_match >= least {
+        return None;
+    }
+    Some(format!(
+        "Invalid option: -l{} -- with -m{} the match length must be 0 (default) or at least {} bytes",
+        o.min_match, o.method, least
+    ))
+}
+
 fn compress(o: &Options, finame: &str, foutname: &str) -> Result<i32, RunError> {
     if o.dup && (o.method == 1 || o.method == 2) {
         eprintln!(
@@ -300,6 +325,10 @@ fn compress(o: &Options, finame: &str, foutname: &str) -> Result<i32, RunError> 
                 report::show_mem(o.dictsize, true)
             ),
         ));
+    }
+
+    if let Some(msg) = small_window(o) {
+        return Err(err(ERROR_CMDLINE, msg));
     }
 
     // `srep.cpp:459-462`: the match window has to be a power of two or the

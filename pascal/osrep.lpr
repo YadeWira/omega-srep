@@ -407,6 +407,24 @@ begin
   Fail(ERROR_IO, 'Io');
 end;
 
+{ Sin -c, -l tambien fija el L del match finder (srep.cpp:466-470): L =
+  MIN_MATCH con -m1..-m4, y con -m5 la potencia de dos debajo de MIN_MATCH+1,
+  partida al medio. SliceHash divide despues por L div 8, asi que un L de 1 a
+  7 es la misma division por cero por la que cliargs rechaza -c1..-c7: el C++
+  muere con SIGFPE y aca salia "Division by zero" con codigo 4. Por eso -l1..-l7
+  no valen con -m1..-m4, ni -l1..-l14 con -m5; -m0 no arma la tabla y acepta
+  cualquier -l. Devuelve '' si el -l sirve (modes.rs, small_window). }
+function SmallWindow(const O: TOptions): AnsiString;
+var least: QWord;
+begin
+  Result := '';
+  if (O.L <> 0) or (O.MinMatch = 0) or (O.Method < 1) or (O.Method > 5) then Exit;
+  if O.Method = 5 then least := 2 * SLICES_IN_BLOCK - 1 else least := SLICES_IN_BLOCK;
+  if O.MinMatch >= least then Exit;
+  Result := 'Invalid option: -l' + IntToStr(O.MinMatch) + ' -- with -m' + IntToStr(O.Method) +
+            ' the match length must be 0 (default) or at least ' + IntToStr(least) + ' bytes';
+end;
+
 function Compress(const O: TOptions; const FiName, FoutName: AnsiString): LongInt;
 var
   warnings: LongInt;
@@ -429,6 +447,7 @@ begin
   { srep.cpp:446: el chunking por contenido y el diccionario en memoria no se mezclan }
   if ((O.Method = 1) or (O.Method = 2)) and (O.DictSize <> 0) then
     Fail(ERROR_CMDLINE, 'Incompatible options: -m' + IntToStr(O.Method) + ' -d' + ShowMem(O.DictSize, True));
+  if SmallWindow(O) <> '' then Fail(ERROR_CMDLINE, SmallWindow(O));
 
   { srep.cpp:459-462: la ventana tiene que ser potencia de dos. Es -c si se
     dio, -l si no; CDC y -m5 nunca pueden fallar la prueba. }

@@ -81,7 +81,20 @@ I/O LZ output: output file is used as the decompression dictionary
 
 .TP
 \fB-l\fIN\fR
-Minimum LZ match length in bytes.
+Minimum LZ match length in bytes. Without
+.BR -c ,
+it also sets the hash chunk size (the same value for
+.BR -m1 " to " -m4 ,
+half the power of two below
+.IR N +1
+for
+.BR -m5 ),
+so it must be 0 (the default) or at least 8 with
+.BR -m1 " to " -m4
+and at least 15 with
+.BR -m5 ;
+smaller values are refused with exit status 2, as for
+.BR -c .
 .TP
 \fB-c\fIN\fR
 Hash chunk size in bytes. Must be 0 (the default) or at least 8: the slice

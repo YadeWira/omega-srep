@@ -23,6 +23,14 @@ const
   MAX_HASH_CHAIN = DWord(12);
   NOT_FOUND      = DWord(0);     { el chunk 0 es "no hay match": nunca se guarda }
   DIGEST_SIZE    = 20;
+  { Bytes en cero detras del anillo del encoder, que nunca se escriben. El lote
+    de CompressFixed avanza de a 4 y, si 4 no divide a L (-l o -c que no son
+    potencia de dos), lee hasta 3 bytes despues del bloque: con un bloque
+    lleno en la ultima ranura eso es pasado el anillo. El C++ lee ahi fuera de
+    su reserva, el Rust lee cero (compress.rs) y aca tambien, pero sin
+    chequear byte por byte en el lazo mas caliente. SliceCheck no los cuenta
+    como parte del buffer. }
+  RING_TAIL      = 4;
 
 type
   TSliceHash = record
@@ -132,14 +140,21 @@ begin
   S.SlicesInBlock := 8;                  { sizeof(entry)*CHAR_BIT/BITS = 32/4 }
   S.L := L;
   S.SliceSize := L div S.SlicesInBlock;
-  S.CheckSlices := (Int64(MinMatch) - Int64(L)) div Int64(S.SliceSize) - Int64(IoAccelerator);
+  { Con L menor que 8 el slice queda vacio y el C++ divide por cero (SIGFPE).
+    La CLI rechaza todo L asi antes de llegar aca (SmallWindow en osrep.lpr);
+    esto solo evita la division si alguien llama directo: sin slice no hay
+    filtro. }
+  if S.SliceSize = 0 then S.CheckSlices := 0
+  else S.CheckSlices := (Int64(MinMatch) - Int64(L)) div Int64(S.SliceSize) - Int64(IoAccelerator);
   if (IoAccelerator < 0) or (S.CheckSlices <= 0) then memreq := 0
   else memreq := FileSize div L;
   S.Active := memreq <> 0;
   { Una entrada de mas: check lee h[chunk+1], y el escaneo puede llegar al
     ultimo chunk del archivo (el avance de a cuatro se pasa de next_chunk).
-    El C++ lee ahi el relleno de pagina de su BigAlloc, que es cero. }
-  ZNew(Pointer(S.H), TypeInfo(S.H), memreq + 1, SizeOf(DWord));
+    El C++ lee ahi el relleno de pagina de su BigAlloc, que es cero. Otra
+    mas para un -c que no es potencia de dos, donde el ultimo chunk guardado
+    puede ser FileSize div L justo (ver HtInit). }
+  ZNew(Pointer(S.H), TypeInfo(S.H), memreq + 2, SizeOf(DWord));
 end;
 
 procedure SlicePrepareRange(var S: TSliceHash; const Buf: TBytes; BufOff, ChunkStart,
@@ -166,17 +181,34 @@ end;
 
 function SliceCheck(const S: TSliceHash; Chunk: QWord; const Buf: TBytes; BufOff, I,
                     BlockSize: QWord): Boolean;
-var p, j, k, slice: QWord; checksum: DWord;
+{ CheckSlices es (MIN_MATCH - L) div slice - 1, y con -m5 llega a 22 cuando
+  MIN_MATCH queda justo debajo de una potencia de dos (-l1000, -l2000), no a
+  los 8 slices que entran en una entrada. El recorrido sale entonces de los
+  chunks vecinos: hasta 3,9*L adelante y 2,75*L atras, cuando la guarda solo
+  asegura 2*L y L. Dentro del anillo son otros bytes y da lo mismo que el C++;
+  cerca de sus bordes el C++ lee fuera de su reserva, el Rust entraba en
+  panico y aca se leia fuera del TBytes sin que nadie se enterara. Un slice
+  que no cae entero dentro del anillo (Buf sin su cola RING_TAIL) ahora es
+  un no-coincide, igual que en hash_table.rs. Los corrimientos de nibble pasados el octavo slice son los
+  del C++ en x86 (la cuenta se enmascara a 5 bits): se escriben con and 31
+  para no depender de como el compilador hace el shr con una cuenta QWord. }
+var p, j, k, ss, slice, back, len: QWord; checksum: DWord;
 begin
   if not S.Active then Exit(True);
   if (I < S.L) or (BlockSize - I < 2 * S.L) then Exit(True);
+  ss := S.SliceSize;
+  { el anillo sin su cola de ceros (RING_TAIL): lo que el Rust ve como buf }
+  len := QWord(Length(Buf));
+  if len >= RING_TAIL then len := len - RING_TAIL else len := 0;
   p := BufOff + I;
   checksum := S.H[Chunk + 1];
   j := 0;
   while True do
   begin
     if Int64(j) = S.CheckSlices then Exit(True);
-    if ((checksum shr (j * 4)) and $F) <> SliceHashOf(Buf, p + S.L + j * S.SliceSize, S.SliceSize) then
+    slice := p + S.L + j * ss;
+    if slice + ss > len then Break;
+    if ((checksum shr LongInt((j * 4) and 31)) and $F) <> SliceHashOf(Buf, slice, ss) then
       Break;
     Inc(j);
   end;
@@ -185,8 +217,10 @@ begin
   while True do
   begin
     if Int64(j + k) = S.CheckSlices then Exit(True);
-    slice := p - (k + 1) * S.SliceSize;
-    if ((checksum shr ((S.SlicesInBlock - (k + 1)) * 4)) and $F) <> SliceHashOf(Buf, slice, S.SliceSize) then
+    back := (k + 1) * ss;
+    if back > p then Break;
+    if ((checksum shr LongInt(((S.SlicesInBlock - (k + 1)) * 4) and 31)) and $F) <>
+       SliceHashOf(Buf, p - back, ss) then
       Break;
     Inc(k);
   end;
@@ -243,14 +277,23 @@ begin
     (zeropages.pas), como el calloc del Rust: con stdin sin -s se dimensionan
     para 25 GiB y la mayor parte nunca se toca. HtFree las libera. }
   ZNew(Pointer(T.ChunkArr), TypeInfo(T.ChunkArr), hashsize, SizeOf(DWord));
+  { HashArr y DigestArr llevan un lugar mas que los chunks enteros. Si L no
+    divide al bloque (-l o -c que no son potencia de dos: solo un warning),
+    los bloques despues del primero empiezan a mitad de chunk y el
+    (block_start + i) div L de add_hash llega a TotalChunks justo en el
+    ultimo chunk del archivo. El C++ escribe ahi fuera de su BigAlloc, el Rust
+    entraba en panico, y aca se escribia fuera del arreglo sin aviso. Mas alla
+    de ese no se guarda nada, y el lugar extra solo se lee despues de que
+    add_hash lo escribio (o, en DigestArr, como un digest cero que no coincide
+    con nada): los archivos que salian bien no cambian. }
   if Cdc then SetLength(T.HashArr, 0)
-  else ZNew(Pointer(T.HashArr), TypeInfo(T.HashArr), T.TotalChunks, SizeOf(DWord));
+  else ZNew(Pointer(T.HashArr), TypeInfo(T.HashArr), T.TotalChunks + 1, SizeOf(DWord));
   T.CurChunk := 0;
   if Cdc then ZNew(Pointer(T.StartArr), TypeInfo(T.StartArr), T.TotalChunks, SizeOf(QWord))
   else SetLength(T.StartArr, 0);
   SliceInit(T.Slice, fs, L, MinMatch, IoAccelerator);
   if CompareDigests then
-    ZNew(Pointer(T.DigestArr), TypeInfo(T.DigestArr), T.TotalChunks * DIGEST_SIZE, 1)
+    ZNew(Pointer(T.DigestArr), TypeInfo(T.DigestArr), (T.TotalChunks + 1) * DIGEST_SIZE, 1)
   else SetLength(T.DigestArr, 0);
   SetLength(key, VMAC_KEY_LEN_BYTES);                { clave cero: ver VDigestCompute }
   VmacSetKey(key, T.Digest);
