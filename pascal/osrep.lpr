@@ -22,6 +22,9 @@ program osrep;
 {$OVERFLOWCHECKS OFF}
 
 uses
+  { OsText primero: en Windows pone la RTL en UTF-8 al inicializarse, y
+    tiene que ser antes que cualquier otra unidad (src/ostext.pas) }
+  OsText,
   { Windows antes que SysUtils: trae su propio DeleteFile (con PChar) }
   {$IFDEF WINDOWS} Windows, {$ENDIF}
   {$IFDEF UNIX} termio, {$ENDIF}
@@ -349,7 +352,10 @@ begin
   if HashByName(E.Hash, h) then size := h.SeedSize else size := 0;
   { los hashes sin clave (md5/sha1/sha512, -hash-) no llevan semilla }
   if size = 0 then Exit;
-  hex := GetEnvironmentVariable('OSREP_SEED_HEX');
+  { env::var: en Windows leida en UTF-16; la de FPC iba por
+    GetEnvironmentStringsA, y la conversion "best fit" a ANSI puede hacer
+    hexadecimal lo que no lo es (U+FF41, la a de ancho completo, sale 'a') }
+  if not EnvUtf8('OSREP_SEED_HEX', hex) then hex := '';
   if (Length(hex) = size * 2) and DecodeHex(hex, b) then
   begin
     E.SeedBytes := b;
@@ -859,13 +865,18 @@ end;
 
 function Main: LongInt;
 var
-  argv: array of AnsiString;
+  argv: TArgv;
   i: LongInt;
-  a: AnsiString;
+  a, panic: AnsiString;
   o: TOptions;
 begin
-  SetLength(argv, ParamCount);
-  for i := 1 to ParamCount do argv[i - 1] := ParamStr(i);
+  { en Windows, de GetCommandLineW y en UTF-8, partida como la parte el
+    Rust; un argumento que no es UTF-16 valido es el panico de env::args() }
+  if not OsArgs(argv, panic) then
+  begin
+    WriteErr(panic);
+    Exit(PANIC_EXIT);
+  end;
 
   { --version y --help se contestan antes de que corra ningun parser
     (dup_wrapper.cpp:477-488), porque el parser principal rechaza todo lo

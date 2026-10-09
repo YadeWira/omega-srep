@@ -44,7 +44,7 @@ uses SysUtils
 {$IF DEFINED(UNIX)}
   , BaseUnix, Unix
 {$ELSEIF DEFINED(WINDOWS)}
-  , Windows
+  , Windows, OsText
 {$ELSE}
   {$FATAL spillfile.pas: no hay implementacion para esta plataforma}
 {$ENDIF}
@@ -86,8 +86,11 @@ end;
 {$ELSEIF DEFINED(WINDOWS)}
 function RustTempDir: AnsiString;
 begin
-  { GetTempPath, la misma llamada que hace el Rust }
-  Result := IncludeTrailingPathDelimiter(GetTempDir(False));
+  { GetTempPathW, la misma llamada que hace el Rust (TMP, TEMP, USERPROFILE,
+    el directorio de Windows), en UTF-8. El GetTempDir de FPC no la usa:
+    mira TEMP antes que TMP, con GetEnvironmentStringsA, y sin el resto. }
+  Result := WinTempPath;
+  if Result <> '' then Result := IncludeTrailingPathDelimiter(Result);
 end;
 
 function NowNanos: QWord;
@@ -101,7 +104,8 @@ end;
 
 function OpenExclusive(const Path: AnsiString): THandle;
 begin
-  { los flags de compartir son los que usa el OpenOptions del Rust }
+  { los flags de compartir son los que usa el OpenOptions del Rust. Path es
+    UTF-8 (ostext.pas), y UnicodeString() lo convierte con esa etiqueta }
   Result := CreateFileW(PWideChar(UnicodeString(Path)),
                         GENERIC_READ or GENERIC_WRITE,
                         FILE_SHARE_READ or FILE_SHARE_WRITE or FILE_SHARE_DELETE,

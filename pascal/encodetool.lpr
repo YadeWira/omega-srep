@@ -9,7 +9,7 @@ program encodetool;
   trailer ODUP del v4 por defecto. Salida: 0 ok; 1 error (con "ERROR! ..."
   como el Rust); 2 linea de comandos; 3 combinacion no soportada. }
 {$MODE OBJFPC}{$H+}
-uses SysUtils, Classes, Widths, OutRaw, Hashes, Encoder, FixedCompress, Dedup, DupWrap;
+uses OsText, SysUtils, Classes, Widths, OutRaw, Hashes, Encoder, FixedCompress, Dedup, DupWrap;
 
 { parseMem (Common.h), con los sufijos que usa el harness, igual que el Rust:
   digitos invalidos dan 0. }
@@ -77,17 +77,17 @@ var
   dm: TDupMode;
 begin
   dup := False;
-  if ParamCount < 1 then
+  if ArgCount < 1 then
   begin
     WriteErr('usage: encodetool <mode> [--seed=N] [-dN] [-bN] [-lN] [-cN] [-hash=NAME] <in> <out>' + #10);
     Halt(2);
   end;
-  mode := ParamStr(1);
+  mode := ArgStr(1);
   DefaultEncodeOptions(opts);
   SetLength(files, 0);
-  for i := 2 to ParamCount do
+  for i := 2 to ArgCount do
   begin
-    a := ParamStr(i);
+    a := ArgStr(i);
     if StartsWith(a, '--seed=') then
     begin
       if not ParseU64(Copy(a, 8, Length(a)), opts.Seed) then

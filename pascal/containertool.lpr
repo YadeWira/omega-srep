@@ -6,7 +6,7 @@ program containertool;
   reconstruye nada: solo lee el armazon, que es lo que la fase 3 tiene que
   hacer bien antes de que exista un decoder. }
 {$MODE OBJFPC}{$H+}
-uses Widths, OutRaw, Hashes, Container, SysUtils, Classes;
+uses OsText, Widths, OutRaw, Hashes, Container, SysUtils, Classes;
 
 function ReadAll(const Path: AnsiString): TBytes;
 var fs: TFileStream;
@@ -52,8 +52,8 @@ var
   h4: TArchiveHeader; h5: TV5Header; f5: TV5Footer; fh: TFooterHead;
   hi: THashInfo; n: QWord;
 begin
-  if ParamCount < 1 then begin WriteErr('usage: containertool <archivo>' + #10); Halt(2); end;
-  data := ReadAll(ParamStr(1));
+  if ArgCount < 1 then begin WriteErr('usage: containertool <archivo>' + #10); Halt(2); end;
+  data := ReadAll(ArgStr(1));
   n := QWord(Length(data));
 
   if IsV5(data) then

@@ -35,7 +35,7 @@ procedure CdcHasherInit(out K: TVmac);
 
 implementation
 
-uses Rolling, CpuFeat, FixedCompress;
+uses Rolling, CpuFeat, FixedCompress, OsText;
 
 type
   TMarks = record
@@ -58,7 +58,9 @@ function UseCrcRoute: Boolean;
 begin
   if not CrcRouteKnown then
   begin
-    CrcRoute := HasSse42 and (GetEnvironmentVariable('OSREP_CDC_POLY') = '');
+    { var_os().is_none(): definida y vacia TAMBIEN fuerza la polinomial; el
+      GetEnvironmentVariable de antes no distinguia vacia de no definida }
+    CrcRoute := HasSse42 and not EnvIsSet('OSREP_CDC_POLY');
     CrcRouteKnown := True;
   end;
   Result := CrcRoute;

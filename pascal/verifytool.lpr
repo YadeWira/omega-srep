@@ -7,7 +7,7 @@ program verifytool;
   0 intacto (tres lineas por stderr); 4 danado o no es un .osr; 2 un v1-v4,
   que no se puede verificar sin reconstruirlo. }
 {$MODE OBJFPC}{$H+}
-uses SysUtils, Classes, Widths, OutRaw, Hashes, Container, V5Verify;
+uses OsText, SysUtils, Classes, Widths, OutRaw, Hashes, Container, V5Verify;
 
 function ReadAll(const Path: AnsiString; out B: TBytes): Boolean;
 var fs: TFileStream;
@@ -38,12 +38,12 @@ var
   b: TBytes;
   r: TVerifyReport;
 begin
-  if ParamCount <> 1 then
+  if ArgCount <> 1 then
   begin
     WriteErr('usage: verifytool <archivo.osr>' + #10);
     Halt(2);
   end;
-  f := ParamStr(1);
+  f := ArgStr(1);
   if not ReadAll(f, b) then Die(3, 'Can''t open ' + f + ' for read');
 
   if not ((Length(b) >= 4) and IsV5(b)) then
