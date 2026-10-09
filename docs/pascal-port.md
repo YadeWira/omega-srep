@@ -444,3 +444,16 @@ round-trip**.
 * **`zsh` no parte `$args` en palabras.** Un bucle de humo con
   `for args in "-m5f --format=v4"` le pasó al binario un solo argumento y los
   dos binarios "fallaron igual". Los scripts de prueba van con `bash`.
+* **Un local administrado en una función caliente cuesta un marco de
+  excepciones en CADA llamada, se use o no.** Un `TBytes`, `AnsiString`,
+  interfaz o record que los contenga hace que FPC envuelva la función entera
+  en un try/finally implícito: `fpc_pushexceptaddr` + `fpc_setjmp` al entrar,
+  `fpc_popaddrstack` + `fpc_finalize` + `fpc_dynarray_clear` al salir. En
+  `HtFindMatch` (una llamada por posición candidata) el `dig: TBytes` del
+  chequeo de digest de `-m3` —que casi nunca se ejecuta— era ~29% de las
+  instrucciones de `-m3` (callgrind sobre 16 MiB). Sacarlo a una función
+  aparte (`DigestMatchesAt`) bajó `-m3` sobre 256 MiB de 12,1 s a 5,3 s con el
+  archivo idéntico. Regla: lo que corre por posición o por chunk no declara
+  locales administrados; el caso raro que los necesita va en su propia
+  función. Para encontrarlos: `callgrind_annotate --tree=caller` y buscar
+  quién llama a `fpc_pushexceptaddr`.

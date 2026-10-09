@@ -284,9 +284,22 @@ begin
   Result := True;
 end;
 
+{ El chequeo de digest de -m3, aparte de HtFindMatch a proposito: su TBytes
+  local obliga a FPC a armar un marco try/finally implicito (setjmp + push/pop
+  de la pila de excepciones + finalize) en CADA llamada de la funcion que lo
+  declara. HtFindMatch corre una vez por posicion candidata y casi nunca llega
+  aca; con el TBytes adentro, ese marco era ~29% del tiempo de -m3. }
+function DigestMatchesAt(const T: THashTableRec; const Buf: TBytes; At, Chunk: QWord): Boolean;
+var dig: TBytes;
+begin
+  SetLength(dig, DIGEST_SIZE);
+  VDigestCompute(T.Digest, Buf, At, T.L, dig, 0);
+  Result := DigestEq(T, dig, Chunk);
+end;
+
 function HtFindMatch(const T: THashTableRec; const Buf: TBytes; BufOff, I, BlockSize,
                      Index: QWord; StoredValue: DWord): DWord;
-var savedHash, value, chunk, limit: DWord; h: QWord; dig: TBytes;
+var savedHash, value, chunk, limit: DWord; h: QWord;
 begin
   savedHash := ChunkarrValue(T, Index, 0);
   h := Index;
@@ -305,9 +318,7 @@ begin
         if T.CompareDigests then
         begin
           { -m3: el digest de 20 bytes; un fallo NO corta el sondeo }
-          SetLength(dig, DIGEST_SIZE);
-          VDigestCompute(T.Digest, Buf, BufOff + I, T.L, dig, 0);
-          if DigestEq(T, dig, chunk) then Exit(chunk);
+          if DigestMatchesAt(T, Buf, BufOff + I, chunk) then Exit(chunk);
         end
         else if SliceCheck(T.Slice, chunk, Buf, BufOff, I, BlockSize) then
           Exit(chunk)
