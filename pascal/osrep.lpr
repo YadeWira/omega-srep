@@ -23,7 +23,7 @@ uses
   SysUtils, Classes, TypInfo,
   Widths, OutRaw, Hashes, Help, Container, Decompress, FutureLz, Encoder, FixedCompress,
   Dedup, DupWrap,
-  V5Verify, SpillFile, CliArgs, CliReport, RandBytes;
+  V5Verify, SpillFile, CliArgs, CliReport, RandBytes, StreamIO;
 
 const
   { srep.cpp:45-51 }
@@ -194,13 +194,16 @@ begin
 end;
 
 function ReadAllStdin: TBytes;
-var n, used: LongInt;
+var n: LongInt; used, room: SizeInt;
 begin
   SetLength(Result, 1 shl 20);
   used := 0;
   repeat
     if used = Length(Result) then SetLength(Result, Length(Result) * 2);
-    n := FileRead(InHandle, Result[used], Length(Result) - used);
+    { FileRead toma LongInt: pasado 2 GiB la cuenta truncada saldria negativa }
+    room := Length(Result) - used;
+    if room > SizeInt(IO_SLICE) then room := SizeInt(IO_SLICE);
+    n := FileRead(InHandle, Result[used], LongInt(room));
     if n < 0 then Fail(ERROR_IO, 'Can''t read from stdin');
     Inc(used, n);
   until n = 0;
@@ -214,7 +217,7 @@ begin
     fs := TFileStream.Create(Path, fmOpenRead or fmShareDenyNone);
     try
       SetLength(Result, fs.Size);
-      if fs.Size > 0 then fs.ReadBuffer(Result[0], fs.Size);
+      if fs.Size > 0 then ReadExact(fs, Result[0], QWord(fs.Size));
     finally
       fs.Free;
     end;

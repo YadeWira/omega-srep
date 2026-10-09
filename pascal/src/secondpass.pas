@@ -38,7 +38,7 @@ procedure RunSecondPass(const Blocks: TCompressedBlocks; NBlocks: QWord; Input, 
 
 implementation
 
-uses FixedCompress;
+uses FixedCompress, StreamIO;
 
 type
   TMatches = record
@@ -113,7 +113,7 @@ end;
 
 procedure WriteBytes(S: TStream; const B: TBytes; N: QWord);
 begin
-  if N > 0 then S.WriteBuffer(B[0], LongInt(N));
+  if N > 0 then WriteAll(S, B[0], N);
 end;
 
 procedure RunSecondPass(const Blocks: TCompressedBlocks; NBlocks: QWord; Input, Output: TStream;
@@ -240,7 +240,7 @@ begin
       got := 0;
       while got < Blocks[bi].Size do
       begin
-        lit := QWord(Input.Read(blockBuf[got], LongInt(Blocks[bi].Size - got)));
+        lit := ReadOnce(Input, blockBuf[got], Blocks[bi].Size - got);
         if lit = 0 then raise EEncode.Create('Io');
         got := got + lit;
       end;

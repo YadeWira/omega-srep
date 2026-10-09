@@ -33,7 +33,7 @@ function DupDecode(const InPath, OutPath: AnsiString; const Opts: TFutureLzOptio
 
 implementation
 
-uses Container, Decompress, SpillFile;
+uses Container, Decompress, SpillFile, StreamIO;
 
 const
   ODUP_TRAILER_SIZE = 12;          { meta_size u64 + "ODUP" }
@@ -98,7 +98,7 @@ begin
   SetLength(Result, N);
   S.Seek(Int64(Off), soBeginning);
   if N > 0 then
-    if QWord(S.Read(Result[0], LongInt(N))) <> N then raise EDup.Create('Truncated');
+    if ReadUpTo(S, Result[0], N) <> N then raise EDup.Create('Truncated');
 end;
 
 { la meta de un v5, o nil si no es v5 o no la trae }

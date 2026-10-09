@@ -91,7 +91,7 @@ procedure VDigestCompute(const V: TVmac; const B: TBytes; At, Len: QWord; var Ou
 
 implementation
 
-uses Rolling, ZeroPages;
+uses Rolling, ZeroPages, StreamIO;
 
 { ------------------------------------------------------------- slices --- }
 
@@ -462,16 +462,10 @@ end;
 
 { Un pread: N bytes en Off, devolviendo cuantos se leyeron. }
 function ReadAt(S: TStream; Off: QWord; var B: TBytes; N: QWord): QWord;
-var got: LongInt;
 begin
   Result := 0;
   if (Off > QWord(High(Int64))) or (S.Seek(Int64(Off), soBeginning) <> Int64(Off)) then Exit;
-  while Result < N do
-  begin
-    got := S.Read(B[Result], LongInt(N - Result));
-    if got <= 0 then Break;
-    Inc(Result, QWord(got));
-  end;
+  if N > 0 then Result := ReadUpTo(S, B[0], N);
 end;
 
 function HtMatchLen(const T: THashTableRec; StartChunk: QWord; const Dict: TBytes;

@@ -280,6 +280,24 @@ last=$(tail -1 "$TMP/bar")
 [ "$last" = "PROGRESS $(stat -c%s "$IN") $(stat -c%s "$IN")" ] || fail "-bar: la ultima linea es '$last'"
 pass=$((pass + 1))
 
+# TStream.Read toma la cuenta como LongInt: con un bloque de 2 GiB o mas la
+# cuenta truncada salia negativa, Read devolvia 0 y el Pascal escribia un
+# archivo SIN bloques con exit 0. Solo en el nativo: en i386 un anillo de
+# 2x2 GiB no entra, y el Rust de referencia es x86_64.
+case "$PA" in *linux*)
+    say "-b de 2 GiB o mas: el mismo archivo, y vuelve"
+    for b in 2g 3g 4g; do
+        "$RS" --seed=7 -b$b "$IN" "$TMP/rb.osr" >/dev/null 2>&1 || fail "-b$b: el Rust fallo"
+        "$PA" --seed=7 -b$b "$IN" "$TMP/pb.osr" >/dev/null 2>&1 || fail "-b$b: el Pascal fallo"
+        cmp -s "$TMP/rb.osr" "$TMP/pb.osr" || fail "-b$b: archivos distintos"
+        "$PA" -d "$TMP/pb.osr" "$TMP/pb.out" >/dev/null 2>&1 || fail "-b$b: -d fallo"
+        cmp -s "$IN" "$TMP/pb.out" || fail "-b$b: la vuelta no da la entrada"
+        rm -f "$TMP/pb.out"
+    done
+    pass=$((pass + 1))
+    ;;
+esac
+
 if [ "${OSREP_PASCAL_FULL:-0}" = "1" ]; then
     say "la puerta completa: rust_cli_conformance.sh sobre el Pascal"
     OSREP_PORT_BIN="$PA" bash tests/rust_cli_conformance.sh || fail "rust_cli_conformance.sh sobre el Pascal"

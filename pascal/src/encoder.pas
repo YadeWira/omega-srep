@@ -72,7 +72,7 @@ procedure Encode(Input, Output: TStream; const Opts: TEncodeOptions; Kind: TEncK
 
 implementation
 
-uses Rolling, HashesKeyed, Vmac, Inmem, Cdc, SecondPass, ZeroPages;
+uses Rolling, HashesKeyed, Vmac, Inmem, Cdc, SecondPass, ZeroPages, StreamIO;
 
 const
   BUFFERS = 2;           { io.cpp:90: el anillo lleva dos bloques de margen }
@@ -163,16 +163,10 @@ end;
   MISMO stream en cualquier posicion, asi que las lecturas secuenciales se
   re-anclan cada vez. }
 function ReadBlockAt(S: TStream; Off: QWord; var B: TBytes; At, Len: QWord): QWord;
-var got: LongInt;
 begin
   Result := 0;
   S.Seek(Int64(Off), soBeginning);
-  while Result < Len do
-  begin
-    got := S.Read(B[At + Result], LongInt(Len - Result));
-    if got <= 0 then Break;
-    Inc(Result, QWord(got));
-  end;
+  if Len > 0 then Result := ReadUpTo(S, B[At], Len);
 end;
 
 procedure PutLE32(var B: TBytes; At: QWord; V: DWord); inline;
@@ -203,7 +197,7 @@ begin
     PutLE32(b, i * 4, Stat.W[i]);
     Inc(i);
   end;
-  S.WriteBuffer(b[0], LongInt(Length(b)));
+  if Length(b) > 0 then WriteAll(S, b[0], QWord(Length(b)));
 end;
 
 { Los runs de literales que save_data escribe entre los records, en el orden
@@ -220,12 +214,12 @@ begin
       raise EEncode.Create('BadBlockRecord');
     lit := QWord(m.LitLen);
     if lit > Filled - inPos then raise EEncode.Create('BadBlockRecord');
-    if lit > 0 then Output.WriteBuffer(Dict[BufOffset + inPos], LongInt(lit));
+    if lit > 0 then WriteAll(Output, Dict[BufOffset + inPos], lit);
     inPos := inPos + lit + QWord(m.Len);
     if inPos > Filled then raise EEncode.Create('BadBlockRecord');
     at := at + used;
   end;
-  if Filled > inPos then Output.WriteBuffer(Dict[BufOffset + inPos], LongInt(Filled - inPos));
+  if Filled > inPos then WriteAll(Output, Dict[BufOffset + inPos], Filled - inPos);
 end;
 
 { ------------------------------------------------------------- driver --- }
