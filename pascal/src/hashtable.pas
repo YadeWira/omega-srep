@@ -60,6 +60,14 @@ function HtAddHash(var T: THashTableRec; Index: QWord; StoredValue: DWord;
 function HtFindMatch(const T: THashTableRec; const Buf: TBytes; BufOff, I, BlockSize,
                      Index: QWord; StoredValue: DWord): DWord;
 
+{ El filtro barato de HtFindMatch, para un lote de hashes: el primer indice
+  en [From, N) cuyo hash PH[idx] tiene en su cadena un candidato que pasa el
+  chequeo de hasharr -- el unico punto donde HtFindMatch puede devolver algo
+  distinto de NOT_FOUND --, o N. Recorre la cadena igual que HtFindMatch, asi
+  que saltear un indice que no pasa no cambia la salida; el que llama se
+  ahorra la llamada a HtFindMatch (y su marco) en casi todas las posiciones. }
+function HtNextCandidate(const T: THashTableRec; PH: PQWord; From, N: LongInt): LongInt;
+
 { find_match_CDC: registra el chunk que empieza en Offset con el par de hashes
   VHashes[VAt..VAt+32) (vhash1 ++ vhash2), y devuelve la distancia a un chunk
   anterior con el mismo digest Y el mismo tamano, o 0. }
@@ -84,13 +92,30 @@ uses Rolling;
 { ------------------------------------------------------------- slices --- }
 
 function SliceHashOf(const B: TBytes; Off, Size: QWord): DWord;
-var h: DWord; i: QWord;
+{ h = h*P + b, mod 2^32, byte a byte. De a cuatro se reescribe como
+  h*P^4 + (b0*P^3 + b1*P^2 + b2*P + b3), todo mod 2^32: el mismo valor, pero
+  la cadena de multiplicaciones dependientes es un cuarto de larga. }
+const
+  P1 = DWord(123456791);
+  P2 = DWord((QWord(P1) * P1) and $FFFFFFFF);
+  P3 = DWord((QWord(P2) * P1) and $FFFFFFFF);
+  P4 = DWord((QWord(P3) * P1) and $FFFFFFFF);
+var h: DWord; i, n4: QWord; pb: PByte;
 begin
   h := 111222341;
+  pb := PByte(@B[0]) + PtrUInt(Off);
   i := 0;
+  n4 := Size and not QWord(3);
+  while i < n4 do
+  begin
+    h := DWord(h * P4) +
+         DWord(DWord(pb[PtrUInt(i)]) * P3) + DWord(DWord(pb[PtrUInt(i) + 1]) * P2) +
+         DWord(DWord(pb[PtrUInt(i) + 2]) * P1) + DWord(pb[PtrUInt(i) + 3]);
+    Inc(i, 4);
+  end;
   while i < Size do
   begin
-    h := DWord(QWord(h) * 123456791 + QWord(B[Off + i]));
+    h := DWord(QWord(h) * 123456791 + QWord(pb[PtrUInt(i)]));
     Inc(i);
   end;
   h := DWord(QWord(h) * 123456791);
@@ -331,6 +356,35 @@ begin
   Result := NOT_FOUND;
 end;
 
+function HtNextCandidate(const T: THashTableRec; PH: PQWord; From, N: LongInt): LongInt;
+var savedHash, stored, value, limit, hmask, cmask: DWord; h, hs1: QWord; ca, ha: PDWord;
+begin
+  ca := PDWord(T.ChunkArr);
+  ha := PDWord(T.HashArr);
+  hmask := T.HashMask;
+  cmask := T.ChunknumMask;
+  hs1 := T.HashSize1;
+  Result := From;
+  while Result < N do
+  begin
+    h := PH[Result];
+    stored := DWord(h shr 32);
+    savedHash := DWord(h) and hmask;     { ChunkarrValue(T, Index, 0) }
+    limit := MAX_HASH_CHAIN;
+    while True do
+    begin
+      value := ca[PtrUInt(h and hs1)];
+      if value = NOT_FOUND then Break;
+      Dec(limit);
+      if limit = 0 then Break;
+      if ((value and hmask) = savedHash) and (ha[PtrUInt(value and cmask)] = stored) then Exit;
+      Inc(h);
+      if (limit and 3) = 0 then h := NextHashSlot(h);
+    end;
+    Inc(Result);
+  end;
+end;
+
 { add_hash0<CDC>: no escribe hasharr, acepta cualquier candidato con el mismo
   digest de 20 bytes (COMPARE_DIGESTS esta prendido en -m1/-m2) e inserta en
   el slot donde termino el recorrido. }
@@ -456,6 +510,14 @@ begin
       begin
         if ReadAt(Reread, oldOffset, oldbuf, BUFSIZE) <> BUFSIZE then begin stopped := True; Break; end;
         q := 0;
+        { de a 8 mientras los 8 bytes coinciden y ninguno es LastP; el lazo
+          de bytes de abajo encuentra el mismo primer byte distinto }
+        while (q + 8 <= BUFSIZE) and (p + 8 <= LastP) and
+              (PQWord(@Dict[p])^ = PQWord(@oldbuf[q])^) do
+        begin
+          Inc(p, 8);
+          Inc(q, 8);
+        end;
         while q < BUFSIZE do
         begin
           if (p = LastP) or (Dict[p] <> oldbuf[q]) then begin stopped := True; Break; end;
@@ -481,6 +543,11 @@ begin
   if not stopped then
   begin
     q := BufOff + (oldOffset - Offset);
+    while (p + 8 <= LastP) and (PQWord(@Dict[p])^ = PQWord(@Dict[q])^) do
+    begin
+      Inc(p, 8);
+      Inc(q, 8);
+    end;
     while (p < LastP) and (Dict[p] = Dict[q]) do
     begin
       Inc(p);
