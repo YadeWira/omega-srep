@@ -72,7 +72,7 @@ procedure Encode(Input, Output: TStream; const Opts: TEncodeOptions; Kind: TEncK
 
 implementation
 
-uses Rolling, HashesKeyed, Vmac, Inmem, Cdc, SecondPass;
+uses Rolling, HashesKeyed, Vmac, Inmem, Cdc, SecondPass, ZeroPages;
 
 const
   BUFFERS = 2;           { io.cpp:90: el anillo lleva dos bloques de margen }
@@ -361,6 +361,9 @@ begin
   SetLength(blocks, 0);
   nblocks := 0;
 
+  { Las tablas y el anillo viven en paginas propias (zeropages.pas) que la
+    finalizacion no libera: el finally del final las suelta. }
+  try
   { COMPARE_DIGESTS = metodo <= -m3; PRECOMPUTE_DIGESTS = -m3; io_accelerator 1.
     -m0 no tiene tabla. }
   if Kind <> ekInmem then
@@ -377,6 +380,12 @@ begin
     el Rust ve donde todavia no escribio. }
   ringSize := RoundUp(Opts.DictSize, bufsize) + BUFFERS * bufsize;
   SetLength(dict, 0);
+  { Mejor todavia: el anillo entero en paginas en cero que el sistema no
+    entrega hasta que se escriben, que es exactamente el vec! del Rust. Crecer
+    duplicando copiaba y tenia el viejo y el nuevo a la vez (1061 MB contra
+    407 en -m0 sobre 256 MiB). Si el mapeo no se puede, crece como antes:
+    RingEnsure no hace nada sobre un anillo que ya mide ringSize. }
+  ZTryNew(Pointer(dict), ringSize, 1);
   RingEnsure(dict, bufsize, ringSize);
 
   bufOffset := 0;
@@ -475,10 +484,20 @@ begin
   { un ultimo tick asegurado: el consumidor siempre ve done == total }
   if Assigned(Progress) then Progress(fileSize, fileSize);
 
+  { la segunda pasada re-lee la entrada: el anillo y las tablas ya no sirven }
+  ZFree(Pointer(dict));
+  DcFree(inmem);
+  HtFree(table);
+
   { Future-LZ, Index-LZ y v5 re-emiten la lista de cada bloque (srep.cpp:820) }
   if not ioLz then
     RunSecondPass(blocks, nblocks, Input, Output, roundMatches, DWord(baseLen),
                   DWord(futurelzBaseLen), futureLz, indexLz, v5, Opts.DupMeta, Opts.Index);
+  finally
+    ZFree(Pointer(dict));
+    DcFree(inmem);
+    HtFree(table);
+  end;
 end;
 
 end.

@@ -319,6 +319,23 @@ round-trip**.
   `SetLength` los ocuparía al arrancar aunque la entrada fuera de 5 bytes. El
   anillo se llena bloque a bloque y nunca se lee una zona sin escribir, así
   que crece a medida, en ceros, que es exactamente lo que ve Rust ahí.
+* **Crecer duplicando tampoco alcanza: el `realloc` tiene el viejo y el nuevo
+  a la vez, y `SetLength` llena de ceros la mitad nueva.** Con `-m0` sobre
+  256 MiB el anillo pasaba de 256 a 512 MiB, copia mediante, y el pico era
+  1061 MB contra 407 del Rust. Lo mismo las tablas del match finder: con
+  stdin sin `-s` se dimensionan para 25 GiB, `SetLength` las escribía
+  enteras (1,5 GB de pico para 4 MiB de entrada) y el Rust no. Desde la
+  fase 8 los arreglos grandes salen de `zeropages.pas`: un mapeo anónimo
+  (`fpmmap` / `VirtualAlloc`, los dos garantizan ceros sin tocar páginas) con
+  la cabecera de arreglo dinámico de la RTL delante, así que el acceso, el
+  `Length` y los parámetros no cambian. La cabecera lleva `refcount = -1`,
+  que en `dynarr.inc` es «arreglo constante»: la RTL nunca lo libera ni lo
+  cuenta, y un `SetLength` sobre él copia en vez de hacer `realloc`. Por eso
+  **lo libera `ZFree` a mano** (`HtFree`, `DcFree`, el `finally` de
+  `Encode`); olvidarlo no rompe nada, pero deja el mapeo hasta que termina el
+  proceso. Si el mapeo falla, cae a `SetLength` con el mismo argumento, y el
+  error por falta de memoria es el de siempre. Resultado: `-m0` 398 MB,
+  stdin `-m3` 10 MB (el Rust toca 975).
 * **Una prueba de CDC necesita una entrada que distinga las dos rutas.** El
   hash de frontera se elige por la CPU (SSE4.2: CRC32C; si no, polinomial) y
   las dos rutas dan archivos distintos, pero solo si hay fronteras que mover:
