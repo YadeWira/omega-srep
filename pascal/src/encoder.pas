@@ -315,11 +315,16 @@ begin
 
   { -sBYTES gana sobre la medicion: es lo que el C++ usa con stdin, y decide
     la cantidad de bloques y el tamano del match finder }
-  if Opts.HasDeclaredSize then fileSize := Opts.DeclaredSize
-  else
+  fileSize := QWord(Input.Seek(0, soEnd));
+  Input.Seek(0, soBeginning);
+  if Opts.HasDeclaredSize then
   begin
-    fileSize := QWord(Input.Seek(0, soEnd));
-    Input.Seek(0, soBeginning);
+    { el match finder se dimensiona con lo declarado: una entrada mas larga
+      lo desborda (el C++ se cuelga, el Rust hasta 2.1.1 hacia panic) }
+    if fileSize > Opts.DeclaredSize then
+      raise EEncode.Create('DeclaredSizeTooSmall { declared: ' + IntToStr(Opts.DeclaredSize) +
+                           ', actual: ' + IntToStr(fileSize) + ' }');
+    fileSize := Opts.DeclaredSize;
   end;
 
   if v5 then

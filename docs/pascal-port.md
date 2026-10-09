@@ -206,7 +206,7 @@ round-trip**.
 | 5c | segunda pasada: Index-LZ (v4) y Future-LZ (v3) | **hecha** junto con la 5d: la segunda pasada de Rust arma los tres contenedores |
 | 5d | writer v5 | **hecha** (2026-10-09): 376 archivos byte-idénticos en Linux, i386 y x64 — toda la matriz de `encode_conformance.sh` más v5 con `-hash-`, siphash, sha512, `-b1mb` y `-d`, contra el Rust (308) y contra el C++ directo en v1–v4 (68). Win7 real: 108/108 en i386 y en x64. Velocidad, sin gate (como en Rust): x64 nativo 2,7–2,9× más lento que Rust en `-m3`/`-m4`, igual en `-m5`, más rápido en `-m0`/`-m1`; i386 1,5–1,7× más lento que x64 |
 | **6** | `-dup` y `--verify` | **hecha** (2026-10-09): `tests/pascal_dup_conformance.sh`, 797 comprobaciones en Linux, i386 y x64 — archivos `-dup` byte-idénticos al Rust (v5, con la meta adentro) y al C++ (v4, con el trailer ODUP) que vuelven a la entrada por el decoder del Pascal, y `--verify` con **la misma salida y el mismo código** que `osrep --verify` en archivos sanos, v1–v4, lo que no es un `.osr` y ~710 mutaciones. Verificado que atrapa tres bugs inyectados. Win7 real: 18/18 y 8/8 en i386 y en x64, sin temporales. **Sin cubrir todavía**: el corte Gear y `--dup-paranoid`, que son opciones de la CLI (`--chunk-*`) y no tienen oráculo hasta la fase 7 |
-| **7** | CLI completa | las 219 de `rust_cli_conformance` con `OSREP_BIN` |
+| **7** | CLI completa | **hecha** (2026-10-09): `pascal/osrep.lpr` + `src/cliargs.pas` (args.rs), `src/clireport.pas` (report.rs) y `src/randbytes.pas`. La puerta del Rust entera, **`rust_cli_conformance.sh` con `OSREP_PORT_BIN` apuntando al Pascal: 225/225** — la capa byte a byte contra el C++ 1.0.7, pipes, `-index=`, `--verify`, `stderr_conformance` y las diez suites CLI. Además `tests/pascal_cli_conformance.sh`, 96 comprobaciones en Linux y bajo wine i386/x64: ~35 líneas de comandos con archivo e índice idénticos al Rust (incluye lo que la fase 6 no podía: Gear, `--dup-paranoid`, `--chunk-*`), pipes con y sin `-s`, ~37 errores con **el mismo código y el mismo stderr**, warnings, `OSREP_SEED_HEX`, nombres derivados, `-delete`, `-bar`. Verificado que atrapa siete bugs inyectados (después de agregar los casos para cinco que se escapaban). Win7 real: 170/170 en i386 y x64, sin temporales en `%TEMP%`. Encontró dos bugs que no eran del Pascal: el v5 por pipe del Rust (92b4a77) y el pánico de `-s` menor que la entrada (d267376). **Divergencia conocida**: los errores de los decoders llevan el mensaje (Display) y no el Debug del Rust; mismo código, otro texto |
 | **8** | Release: tres targets, verificación en Win7 real, tag | como 2.1.0 |
 
 ## Trampas conocidas, para no redescubrirlas
@@ -423,3 +423,24 @@ round-trip**.
 * **Bajo wine, lo que va a un stdout apuntado a `/dev/null` sale por
   stderr.** Un harness que descarta stdout y lee stderr ve la línea `ok ...`
   mezclada con los errores; filtrar por el prefijo (`ERROR!`).
+* **El `.exe` de 32 bits tiene que ser *large address aware*.** El i686 del
+  Rust lo es (lo pone el linker de mingw); FPC no, y sin el flag Windows le da
+  2 GB de direcciones. Comprimir desde stdin sin `-s` dimensiona el match
+  finder para 25 GiB (~1,5 GB tocados) y salía "Out of memory" solo en i386.
+  `{$SETPEFLAGS $20}` en `osrep.lpr`; `pascal_cli_conformance.sh` lo revisa con
+  `objdump`. Lo atrapó la suite bajo wine i386, no la nativa.
+* **La unit `Windows` trae su propio `DeleteFile` (con `PChar`).** Si va
+  después de `SysUtils` en el `uses`, lo tapa. Va antes.
+* **Escribir el archivo a stdout necesita un stream que sepa su posición.**
+  La segunda pasada pregunta `Output.Position` para el offset de la meta del
+  v5, y un `THandleStream` sobre un pipe no puede contestar. `TCountWriter`
+  (en `osrep.lpr`) cuenta lo escrito y contesta `Seek(0, soCurrent)` con eso;
+  cualquier otro seek es un error. Además bufferea: el encoder escribe de a
+  pedazos chicos.
+* **Comprimir desde stdin sin `-s` usa ~1,5× la memoria del Rust** (1,5 GB
+  contra 1,0 GB de pico, medido con `VmHWM`): `SetLength` pone a cero las
+  tablas dimensionadas para 25 GiB y eso las toca enteras, mientras que el
+  Rust las pide con calloc. No cambia la salida; queda anotado para la fase 8.
+* **`zsh` no parte `$args` en palabras.** Un bucle de humo con
+  `for args in "-m5f --format=v4"` le pasó al binario un solo argumento y los
+  dos binarios "fallaron igual". Los scripts de prueba van con `bash`.

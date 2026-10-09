@@ -25,7 +25,7 @@ type
 
 procedure DupEncode(const InPath, OutPath: AnsiString; const Opts: TEncodeOptions;
                     Kind: TEncKind; Cont: TEncContainer; const P: TDupParams;
-                    Paranoid: Boolean; Mode: TDupMode);
+                    Paranoid: Boolean; Mode: TDupMode; Progress: TEncodeProgress = nil);
 
 { True si el archivo era -dup y corrio el post-paso; False si es uno comun,
   lo que es un EXITO: el que llama lo decodifica el mismo. }
@@ -48,7 +48,7 @@ end;
 
 procedure DupEncode(const InPath, OutPath: AnsiString; const Opts: TEncodeOptions;
                     Kind: TEncKind; Cont: TEncContainer; const P: TDupParams;
-                    Paranoid: Boolean; Mode: TDupMode);
+                    Paranoid: Boolean; Mode: TDupMode; Progress: TEncodeProgress);
 var
   body: AnsiString;
   meta, t: TBytes;
@@ -74,7 +74,7 @@ begin
     try
       bs := TFileStream.Create(body, fmOpenRead or fmShareDenyNone);
       os := TFileStream.Create(OutPath, fmCreate);
-      Encode(bs, os, o, Kind, Cont);
+      Encode(bs, os, o, Kind, Cont, Progress);
       if Mode = dmV4 then
       begin
         { dup_wrapper.cpp:254-262: meta || u64_le(meta_size) || "ODUP" }

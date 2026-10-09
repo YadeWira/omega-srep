@@ -12,6 +12,9 @@ interface
 
 procedure WriteOut(const S: AnsiString);
 procedure WriteErr(const S: AnsiString);
+function InHandle: THandle;
+function OutHandle: THandle;
+function ErrHandle: THandle;
 
 implementation
 
@@ -20,6 +23,11 @@ uses SysUtils;   { FileWrite, THandle }
 { En Unix son los descriptores de siempre. En Windows la RTL expone los handles
   como VARIABLES, fijadas al arrancar, asi que no pueden ir en un `const`: hay
   que leerlas en tiempo de ejecucion. }
+function InHandle: THandle;
+begin
+  {$IFDEF UNIX}Result := 0;{$ELSE}Result := StdInputHandle;{$ENDIF}
+end;
+
 function OutHandle: THandle;
 begin
   {$IFDEF UNIX}Result := 1;{$ELSE}Result := StdOutputHandle;{$ENDIF}
