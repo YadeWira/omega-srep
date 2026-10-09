@@ -1,9 +1,10 @@
 # Port a Pascal (FPC) — plan
 
-> **Estado**: en curso. La decisión se tomó el 2026-09-25; las fases 0 a 5
-> están hechas: el port decodifica los cinco contenedores y comprime con los
-> seis compresores en los cuatro contenedores que se escriben, byte a byte
-> igual que el Rust y el C++. Falta `-dup`/`--verify`, la CLI y el release.
+> **Estado**: en curso. La decisión se tomó el 2026-09-25; las fases 0 a 6
+> están hechas: el port decodifica los cinco contenedores, comprime con los
+> seis compresores en los cuatro contenedores que se escriben, hace `-dup` y
+> `--verify`, todo byte a byte igual que el Rust y el C++. Falta la CLI y el
+> release.
 
 ## Por qué, y qué cambió respecto del port a Rust
 
@@ -131,6 +132,7 @@ ignorando.
       containertool.lpr    para diffearla contra el oraculo antes de que
       decodetool.lpr       exista la CLI completa
       encodetool.lpr
+      verifytool.lpr
       build.sh             todo lo anterior, en los tres targets
       src/
         widths.pas         guardas de ancho en tiempo de compilacion
@@ -152,6 +154,9 @@ ignorando.
         cdc.pas            chunking por contenido de -m1/-m2
         cpufeat.pas        si la CPU tiene SSE4.2 (elige la ruta de CDC)
         secondpass.pas     la segunda pasada: v3, v4 y v5
+        dedup.pas          el pre-paso -dup: CDC, dedup y la meta .dupref
+        dupwrap.pas        -dup pegado al encoder y al decoder
+        v5verify.pas       --verify de v5 e inspeccion de v1-v4
         encoder.pas        el driver de compresion
         spillfile.pas      el temporal del spill, creado como el Rust (lo
                            unico que depende de la plataforma)
@@ -163,6 +168,7 @@ ignorando.
                                        diga "no portado"
       pascal_futurelz_conformance.sh   v3/v4, con la linea de estadisticas entera
       pascal_encode_conformance.sh     el encoder, byte a byte contra el Rust
+      pascal_dup_conformance.sh        -dup byte a byte y --verify contra osrep --verify
       pascal_v5_conformance.sh         v5, y el mismo error que el Rust en ~1.700
                                        archivos danados
 
@@ -199,7 +205,7 @@ round-trip**.
 | 5b | REP en memoria (`-m0`, `-d`) y CDC (`-m1`/`-m2`) | **hecha** (2026-10-09): 171 archivos byte-idénticos en Linux, i386 y x64 — `-m0o` dando vueltas al anillo, `-d` sobre `-m3o`/`-m4o`/`-m5o`, y CDC por **las dos rutas** del hash de frontera (CRC32C con SSE4.2, polinomial con `OSREP_CDC_POLY=1`), sobre una entrada en la que las dos rutas dan archivos distintos |
 | 5c | segunda pasada: Index-LZ (v4) y Future-LZ (v3) | **hecha** junto con la 5d: la segunda pasada de Rust arma los tres contenedores |
 | 5d | writer v5 | **hecha** (2026-10-09): 376 archivos byte-idénticos en Linux, i386 y x64 — toda la matriz de `encode_conformance.sh` más v5 con `-hash-`, siphash, sha512, `-b1mb` y `-d`, contra el Rust (308) y contra el C++ directo en v1–v4 (68). Win7 real: 108/108 en i386 y en x64. Velocidad, sin gate (como en Rust): x64 nativo 2,7–2,9× más lento que Rust en `-m3`/`-m4`, igual en `-m5`, más rápido en `-m0`/`-m1`; i386 1,5–1,7× más lento que x64 |
-| **6** | `-dup` y `--verify` | `dup_v5_conformance`, `format_v5_conformance` |
+| **6** | `-dup` y `--verify` | **hecha** (2026-10-09): `tests/pascal_dup_conformance.sh`, 797 comprobaciones en Linux, i386 y x64 — archivos `-dup` byte-idénticos al Rust (v5, con la meta adentro) y al C++ (v4, con el trailer ODUP) que vuelven a la entrada por el decoder del Pascal, y `--verify` con **la misma salida y el mismo código** que `osrep --verify` en archivos sanos, v1–v4, lo que no es un `.osr` y ~710 mutaciones. Verificado que atrapa tres bugs inyectados. Win7 real: 18/18 y 8/8 en i386 y en x64, sin temporales. **Sin cubrir todavía**: el corte Gear y `--dup-paranoid`, que son opciones de la CLI (`--chunk-*`) y no tienen oráculo hasta la fase 7 |
 | **7** | CLI completa | las 219 de `rust_cli_conformance` con `OSREP_BIN` |
 | **8** | Release: tres targets, verificación en Win7 real, tag | como 2.1.0 |
 

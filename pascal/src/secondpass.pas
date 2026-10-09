@@ -33,7 +33,7 @@ type
   se re-emiten usan FuturelzBaseLen. Input se relee desde el principio. }
 procedure RunSecondPass(const Blocks: TCompressedBlocks; NBlocks: QWord; Input, Output: TStream;
                         RoundMatches: Boolean; BaseLen, FuturelzBaseLen: DWord;
-                        FutureLz, IndexLz, V5: Boolean);
+                        FutureLz, IndexLz, V5: Boolean; const DupMeta: TBytes);
 
 implementation
 
@@ -117,7 +117,7 @@ end;
 
 procedure RunSecondPass(const Blocks: TCompressedBlocks; NBlocks: QWord; Input, Output: TStream;
                         RoundMatches: Boolean; BaseLen, FuturelzBaseLen: DWord;
-                        FutureLz, IndexLz, V5: Boolean);
+                        FutureLz, IndexLz, V5: Boolean; const DupMeta: TBytes);
 var
   matches: TMatches;
   bi, at, used, blockPos, i, savedI, src, len, statSize, totalStat, inPos, lit, vn, got: QWord;
@@ -275,11 +275,25 @@ begin
   end;
   if V5 then
   begin
-    { sin -dup (fase 6) no hay meta: el footer va despues de los bloques }
     f.BlockCount := DWord(NBlocks);
     f.StatSize := totalStat;
     f.MetaOffset := 0;
     f.MetaSize := 0;
+    if Length(DupMeta) > 0 then
+    begin
+      { la meta de -dup va aca: despues de los bloques, antes del footer que
+        la ubica. Es el .dupref sin cambios mas un CRC-32C al final; uno que
+        no sea .dupref no se escribe (encode_meta). }
+      if (Length(DupMeta) < 24) or (DupMeta[0] <> Ord('D')) or (DupMeta[1] <> Ord('U')) or
+         (DupMeta[2] <> Ord('P')) or (DupMeta[3] <> Ord('R')) or (DupMeta[4] <> 1) then
+        raise EEncode.Create('BadDupMeta');
+      f.MetaOffset := QWord(Output.Position);
+      SetLength(foot, Length(DupMeta) + 4);
+      Move(DupMeta[0], foot[0], Length(DupMeta));
+      PutLE32(foot, Length(DupMeta), Crc32c(DupMeta, 0, Length(DupMeta)));
+      WriteBytes(Output, foot, Length(foot));
+      f.MetaSize := DWord(Length(foot));
+    end;
     foot := EncodeV5Footer(f);
     WriteBytes(Output, foot, Length(foot));
   end;

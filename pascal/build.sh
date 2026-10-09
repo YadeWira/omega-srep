@@ -39,6 +39,6 @@ build3() {
 
 echo "construyendo (bytes):   linux-x86_64 win-x86_64  win-x86"
 build3 osrep osrep-linux-x86_64 osrep-windows-x86_64.exe osrep-windows-x86.exe
-for tool in hashtool containertool decodetool encodetool; do
+for tool in hashtool containertool decodetool encodetool verifytool; do
     build3 "$tool" "$tool" "${tool}64.exe" "${tool}32.exe"
 done

@@ -16,7 +16,7 @@ program decodetool;
   y nunca se borra uno que ya estaba. Ninguna excepcion llega a ser un runtime
   error: antes, no poder abrir el archivo o crear la salida terminaba en 217. }
 {$MODE OBJFPC}{$H+}
-uses SysUtils, Classes, Widths, OutRaw, Hashes, Container, Decompress, FutureLz;
+uses SysUtils, Classes, Widths, OutRaw, Hashes, Container, Decompress, FutureLz, DupWrap;
 
 function ReadAll(const Path: AnsiString): TBytes;
 var fs: TFileStream;
@@ -85,7 +85,7 @@ var
   msg: AnsiString;
   inS, outS: TFileStream;
   n: QWord;
-  ok, created: Boolean;
+  ok, created, dupFlag: Boolean;
   arc: TBytes;
 begin
   if ParamCount < 2 then
@@ -96,9 +96,13 @@ begin
   arcPath := ParamStr(1);
   outPath := ParamStr(2);
   DefaultFutureLzOptions(opts);
+  dupFlag := False;
   for i := 3 to ParamCount do
   begin
     a := ParamStr(i);
+    { --dup: si el archivo es -dup, el post-paso (dup::decode); si no, sigue
+      por el camino de siempre, como la CLI }
+    if a = '--dup' then begin dupFlag := True; Continue; end;
     eq := Pos('=', a);
     if (Copy(a, 1, 2) <> '--') or (eq = 0) then
     begin
@@ -119,6 +123,25 @@ begin
     begin
       WriteErr('unknown option ' + key + #10);
       Halt(2);
+    end;
+  end;
+
+  if dupFlag then
+  begin
+    ok := False;
+    try
+      ok := DupDecode(arcPath, outPath, opts);
+    except
+      on X: Exception do
+      begin
+        DeleteFile(outPath);
+        Die(4, X.Message);
+      end;
+    end;
+    if ok then
+    begin
+      WriteOut('ok dup' + #10);
+      Halt(0);
     end;
   end;
 

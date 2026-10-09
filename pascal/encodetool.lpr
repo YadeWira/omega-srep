@@ -5,10 +5,11 @@ program encodetool;
                  [-hash=NOMBRE | -hash-] <entrada> <salida>
 
   modo es m<0..5> seguido de o (I/O-LZ), nada (Index-LZ), f (Future-LZ) o v
-  (v5). Salida: 0 ok; 1 error (con "ERROR! ..." como el Rust); 2 linea de
-  comandos; 3 modo todavia no portado a Pascal. }
+  (v5). --dup corre el pre-paso de dedup: la meta va adentro del v5, o como
+  trailer ODUP del v4 por defecto. Salida: 0 ok; 1 error (con "ERROR! ..."
+  como el Rust); 2 linea de comandos; 3 combinacion no soportada. }
 {$MODE OBJFPC}{$H+}
-uses SysUtils, Classes, Widths, OutRaw, Hashes, Encoder, FixedCompress;
+uses SysUtils, Classes, Widths, OutRaw, Hashes, Encoder, FixedCompress, Dedup, DupWrap;
 
 { parseMem (Common.h), con los sufijos que usa el harness, igual que el Rust:
   digitos invalidos dan 0. }
@@ -71,7 +72,11 @@ var
   okMode: Boolean;
   inS, outS: TFileStream;
   rc: LongInt;
+  dup: Boolean;
+  dp: TDupParams;
+  dm: TDupMode;
 begin
+  dup := False;
   if ParamCount < 1 then
   begin
     WriteErr('usage: encodetool <mode> [--seed=N] [-dN] [-bN] [-lN] [-cN] [-hash=NAME] <in> <out>' + #10);
@@ -92,11 +97,7 @@ begin
       end;
       opts.HasSeed := True;
     end
-    else if a = '--dup' then
-    begin
-      WriteErr(mode + ': --dup not ported to Pascal yet' + #10);
-      Halt(3);
-    end
+    else if a = '--dup' then dup := True
     else if StartsWith(a, '-dh') then opts.DictHashSize := ParseMem(Copy(a, 4, Length(a)))
     else if StartsWith(a, '-dl') then opts.DictMinMatch := ParseMem(Copy(a, 4, Length(a)))
     else if StartsWith(a, '-dc') then opts.DictChunk := ParseMem(Copy(a, 4, Length(a)))
@@ -147,6 +148,29 @@ begin
   end;
 
   rc := 0;
+  if dup and okMode then
+  begin
+    { el wrapper abre sus propios archivos: en Windows la salida no se puede
+      tener abierta dos veces }
+    if cont = ecV5 then dm := dmV5
+    else if cont = ecIndexLz then dm := dmV4
+    else
+    begin
+      WriteErr(mode + ': -dup needs the v5 (`v`) or the default (no suffix) container' + #10);
+      Halt(3);
+    end;
+    DefaultDupParams(dp);
+    try
+      DupEncode(inPath, outPath, opts, kind, cont, dp, False, dm);
+    except
+      on X: Exception do
+      begin
+        WriteErr('ERROR! ' + X.Message + #10);
+        rc := 1;
+      end;
+    end;
+    Halt(rc);
+  end;
   inS := nil; outS := nil;
   try
     try

@@ -42,6 +42,8 @@ type
     HasSeed: Boolean;
     Seed: QWord;             { --seed=N }
     Hash: AnsiString;        { -hash=; '' = -hash- }
+    { la meta .dupref de -dup que viaja adentro de un v5 (vacia = sin -dup) }
+    DupMeta: TBytes;
   end;
 
   { Lo que el modo todavia no tiene portado. }
@@ -76,6 +78,7 @@ begin
   O.HasSeed := False;
   O.Seed := 0;
   O.Hash := 'vmac';
+  O.DupMeta := nil;
 end;
 
 procedure FillSeedFrom(var Out_: TBytes; Seed64: QWord);
@@ -293,7 +296,7 @@ begin
     { format-spec-v5 seccion 2: una magia, el par de hash sin sesgo, y la
       cantidad de bloques y el tamano escritos en vez de inferidos }
     v5h.Version := 5;
-    v5h.Flags := 0;
+    if Length(Opts.DupMeta) > 0 then v5h.Flags := V5_FLAG_HAS_DUP else v5h.Flags := 0;
     v5h.HashId := info.Num;
     if info.Name = '' then v5h.HashSize := 0 else v5h.HashSize := info.HashSize;
     v5h.MaxMatch := DWord(8 * 1024 * 1024 - 24);
@@ -420,7 +423,7 @@ begin
   { Future-LZ, Index-LZ y v5 re-emiten la lista de cada bloque (srep.cpp:820) }
   if not ioLz then
     RunSecondPass(blocks, nblocks, Input, Output, roundMatches, DWord(baseLen),
-                  DWord(futurelzBaseLen), futureLz, indexLz, v5);
+                  DWord(futurelzBaseLen), futureLz, indexLz, v5, Opts.DupMeta);
 end;
 
 end.
