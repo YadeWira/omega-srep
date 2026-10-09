@@ -80,6 +80,39 @@ begin
   Result := False;
 end;
 
+{ El lote de CompressFixed (compress.cpp:28-35 y 180-185), en una funcion hoja
+  para que FPC tenga el hash y el cursor en registros: CompressFixed tiene un
+  procedimiento anidado y por eso todos sus locales viven en la pila. Corre el
+  hash de a X posiciones mientras I < LastI y guarda en PH/PP las posiciones
+  en [Lo, Hi). Misma aritmetica con wrap que PolyUpdate. }
+function HashBatch(Pb, PbL: PByte; var I: QWord; LastI, Lo, Hi: QWord; var HV: QWord;
+                   Prime, PrimeL: QWord; PH, PP: PQWord; CA: PDWord; HS1: QWord): LongInt;
+var ii, h: QWord; n, c: LongInt;
+begin
+  ii := I;
+  h := HV;
+  n := 0;
+  while ii < LastI do
+    for c := 1 to X do
+    begin
+      h := h * Prime + QWord(PbL[PtrUInt(ii)]) - PrimeL * QWord(Pb[PtrUInt(ii)]);
+      Inc(ii);
+      if (ii >= Lo) and (ii < Hi) then
+      begin
+        PH[n] := h;
+        PP[n] := ii;
+        Inc(n);
+        {$IFDEF CPUX86_64}
+        { el slot que va a mirar HtNextCandidate: la tabla no entra en cache }
+        prefetch(CA[PtrUInt(h and HS1)]);
+        {$ENDIF}
+      end;
+    end;
+  I := ii;
+  HV := h;
+  Result := n;
+end;
+
 procedure CompressFixed(var T: THashTableRec; const Dict: TBytes; BufOff, BlockSize: QWord;
                         RoundMatches: Boolean; L, MinMatch: QWord; BaseLen: DWord;
                         BlockStart: QWord; const InStat: TStatList; var Stat: TStatList;
@@ -95,6 +128,10 @@ var
   k: DWord;
   c: LongInt;
   hsh: QWord;
+  { el hash rodante en registros y el bloque por puntero: el lote es el lazo
+    mas caliente del compresor. Misma aritmetica con wrap que PolyUpdate. }
+  hv, prime, primeL: QWord;
+  pb, pbL: PByte;
 
   procedure DecodeNext(BasicPos: QWord);
   var m: TLzMatch; used: QWord;
@@ -116,6 +153,10 @@ begin
   if 2 * L > BlockSize then Exit;
 
   PolyInit(hash1, L, PRIME1);
+  prime := hash1.Prime;
+  primeL := hash1.PrimeL;
+  pb := PByte(@Dict[BufOff]);
+  pbL := pb + PtrUInt(L);
 
   { --- los primeros L bytes (compress.cpp:78-94) --- }
   PolyMoveTo(hash1, Dict, BufOff);
@@ -159,34 +200,31 @@ begin
         PolyMoveTo(hash1, Dict, BufOff + i);
       end
       else
+      begin
+        hv := hash1.Value;
         while i + X <= nextI do
           for c := 1 to X do
           begin
-            PolyUpdate(hash1, Dict[BufOff + i], Dict[BufOff + i + L]);
+            hv := hv * prime + QWord(pbL[PtrUInt(i)]) - primeL * QWord(pb[PtrUInt(i)]);
             Inc(i);
           end;
+        hash1.Value := hv;
+      end;
 
       lastI := i + LOOKAHEAD;
       if nextChunk < lastI then lastI := nextChunk;
 
       { el lote: cuatro posiciones mas, guardando las candidatas }
-      npairs := 0;
-      while i < lastI do
-        for c := 1 to X do
-        begin
-          PolyUpdate(hash1, Dict[BufOff + i], Dict[BufOff + i + L]);
-          Inc(i);
-          if (i >= lastMatchEnd) and (i < matchStart) then
-          begin
-            pairH[npairs] := hash1.Value;
-            pairP[npairs] := i;
-            Inc(npairs);
-          end;
-        end;
+      npairs := HashBatch(pb, pbL, i, lastI, lastMatchEnd, matchStart, hash1.Value, prime,
+                          primeL, @pairH[0], @pairP[0], PDWord(T.ChunkArr), T.HashSize1);
 
-      { chunkarr, buscando un match }
-      for pi_ := 0 to npairs - 1 do
+      { chunkarr, buscando un match. HtNextCandidate saltea los pares que
+        HtFindMatch daria por NOT_FOUND sin mirar el contenido. }
+      pi_ := 0;
+      while True do
       begin
+        pi_ := HtNextCandidate(T, @pairH[0], pi_, npairs);
+        if pi_ >= npairs then Break;
         hsh := pairH[pi_];
         k := HtFindMatch(T, Dict, BufOff, pairP[pi_], BlockSize, hsh, DWord(hsh shr 32));
         if k <> NOT_FOUND then
@@ -197,6 +235,7 @@ begin
             lastMatchEnd := matchEnd;
             Break;                     { goto match_found2 }
           end;
+        Inc(pi_);
       end;
     end;
 
