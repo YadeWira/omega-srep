@@ -32,6 +32,16 @@ type
 
 procedure DigestForArchive(HashNum, HashSeedSize, HashSize: Byte;
                            const Seed: TBytes; out D: TDigestSel);
+
+{ `Digest::for_hash`: la eleccion para un descriptor ya validado. v5 la usa
+  directo -- su header nombra el hash por id y la validacion del tamano la
+  hace el que llama (`Header::hash`) -- y v1-v4 despues de sus chequeos. }
+procedure DigestForHash(const Info: THashInfo; const Seed: TBytes; out D: TDigestSel);
+
+{ `Header::hash` de v5: el descriptor del id, con hash_size igual al que
+  declara (0 para el descriptor '' de -hash-). False si no hay o no coincide. }
+function V5HashInfo(HashId, HashSize: Byte; out Info: THashInfo): Boolean;
+
 function DigestEnabled(const D: TDigestSel): Boolean;
 function DigestCompute(const D: TDigestSel; const Data: TBytes): TBytes;
 
@@ -41,14 +51,30 @@ procedure DigestForArchive(HashNum, HashSeedSize, HashSize: Byte;
                            const Seed: TBytes; out D: TDigestSel);
 var
   info: THashInfo;
-  key: TBytes;
-  i: LongInt;
 begin
   D.Kind := dkNone;
   SetLength(D.SipKey, 0);
   if not HashByNum(HashNum, info) then Exit;
   if (HashSeedSize > info.SeedSize) or (HashSize > info.HashSize) then Exit;
+  DigestForHash(info, Seed, D);
+end;
 
+function V5HashInfo(HashId, HashSize: Byte; out Info: THashInfo): Boolean;
+var expected: Byte;
+begin
+  Result := False;
+  if not HashByNum(HashId, Info) then Exit;
+  if Info.Name = '' then expected := 0 else expected := Info.HashSize;
+  Result := HashSize = expected;
+end;
+
+procedure DigestForHash(const Info: THashInfo; const Seed: TBytes; out D: TDigestSel);
+var
+  key: TBytes;
+  i: LongInt;
+begin
+  D.Kind := dkNone;
+  SetLength(D.SipKey, 0);
   if info.Name = 'md5' then D.Kind := dkMD5
   else if info.Name = 'sha1' then D.Kind := dkSHA1
   else if info.Name = 'sha512' then D.Kind := dkSHA512

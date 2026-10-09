@@ -74,6 +74,12 @@ function DecodeFutureLz(Input, Sink: TStream; const Opts: TFutureLzOptions;
                         out St: TFutureLzStats; out ErrMsg: AnsiString;
                         Progress: TFlzProgress = nil): TDecodeError;
 
+{ `decode_v5` (future_lz.rs): el contenedor v5 sobre el mismo decoder de
+  bloques. Mismas opciones y estadisticas que v3/v4. }
+function DecodeV5(Input, Sink: TStream; const Opts: TFutureLzOptions;
+                  out St: TFutureLzStats; out ErrMsg: AnsiString;
+                  Progress: TFlzProgress = nil): TDecodeError;
+
 implementation
 
 const
@@ -260,6 +266,7 @@ type
   end;
   TFlzMatchArray = array of TFlzMatch;
   TQWordArray = array of QWord;
+  TDWordArray = array of DWord;
 
   { Una "clase": todos los matches con el mismo destino, en orden de insercion. }
   PMatchClass = ^TMatchClass;
@@ -1063,6 +1070,194 @@ begin
       on E: Exception do
       begin
         { errores de stream: seek fuera de rango, lectura corta, escritura }
+        Result := deIo;
+        ErrMsg := E.Message;
+      end;
+    end;
+  finally
+    if heapReady then HeapDone(heap);
+    if vmReady then VmDone(vm);
+  end;
+end;
+
+{ ------------------------------------------------------------------ v5 --- }
+
+{ `get_varint` (v5.rs): LEB128 sin signo de hasta 64 bits. Falla si se acaba
+  la lista, o si el decimo byte aporta mas que el bit 63. }
+function GetVarint(const B: TBytes; var Pos: QWord; out V: QWord): Boolean;
+var shift: LongInt; c: Byte;
+begin
+  Result := False;
+  V := 0;
+  shift := 0;
+  while True do
+  begin
+    if Pos >= QWord(Length(B)) then Exit;
+    c := B[Pos];
+    Inc(Pos);
+    if (shift > 63) or ((shift = 63) and ((c and $7F) > 1)) then Exit;
+    V := V or (QWord(c and $7F) shl shift);
+    if (c and $80) = 0 then Exit(True);
+    Inc(shift, 7);
+  end;
+end;
+
+{ `v5_words`: cada record (lit, len, distance) en LEB128 pasa a los cuatro
+  STATs que consume DecompressBlockFlz, con base 0 y sin redondeo -- la misma
+  forma que escribe el camino `f` de v4, por eso un solo decoder sirve para
+  los dos. }
+procedure V5Words(const List: TBytes; out W: TDWordArray);
+var pos, lit, len, dist: QWord; n: QWord;
+begin
+  SetLength(W, 0);
+  n := 0;
+  pos := 0;
+  while pos < QWord(Length(List)) do
+  begin
+    if not (GetVarint(List, pos, lit) and GetVarint(List, pos, len) and
+            GetVarint(List, pos, dist)) then
+      Fail(deBadData, 'v5 record');
+    if (lit > QWord(High(DWord))) or (len > QWord(High(DWord))) then
+      Fail(deBadData, 'v5 record too large');
+    if n + 4 > QWord(Length(W)) then
+    begin
+      if Length(W) = 0 then SetLength(W, 64) else SetLength(W, Length(W) * 2);
+    end;
+    W[n] := DWord(lit);
+    W[n + 1] := DWord(dist);
+    W[n + 2] := DWord(dist shr 32);
+    W[n + 3] := DWord(len);
+    Inc(n, 4);
+  end;
+  SetLength(W, n);
+end;
+
+function DecodeV5(Input, Sink: TStream; const Opts: TFutureLzOptions;
+                  out St: TFutureLzStats; out ErrMsg: AnsiString;
+                  Progress: TFlzProgress = nil): TDecodeError;
+var
+  fb, hb, seed, bhb, stored, statBytes, literals, outbuf, want: TBytes;
+  h: TV5Header;
+  f: TV5Footer;
+  bh: TBlockHeader;
+  info: THashInfo;
+  dig: TDigestSel;
+  words: TDWordArray;
+  verified, mmReady, vmReady, heapReady, same: Boolean;
+  maxSave: DWord;
+  fileLen, consumed, blockStart, totalStat, blocks, metaAt: QWord;
+  mm: TMemoryManager;
+  vm: TVirtualMemory;
+  heap: TMatchHeap;
+  i: LongInt;
+begin
+  St.Blocks := 0; St.OrigSize := 0; St.Verified := False;
+  St.VmBytesWritten := 0; St.VmBytesRead := 0;
+  ErrMsg := '';
+  Result := deOK;
+  mmReady := False; vmReady := False; heapReady := False;
+  heap.Tree := nil;
+  outbuf := nil;
+  try
+    try
+      { El footer es lo ultimo del archivo, y con meta de -dup es lo unico que
+        dice donde terminan los bloques: se lee primero. }
+      fileLen := QWord(Input.Seek(0, soEnd));
+      if fileLen < QWord(V5_HEADER_SIZE + V5_FOOTER_SIZE) then
+        Fail(deContainer, 'truncated structure');
+      SeekExact(Input, fileLen - QWord(V5_FOOTER_SIZE));
+      ReadOrTruncated(Input, fb, V5_FOOTER_SIZE);
+      if DecodeV5Footer(fb, 0, f) <> ceOK then Fail(deBadData, 'v5 footer');
+      SeekExact(Input, 0);
+
+      ReadOrTruncated(Input, hb, V5_HEADER_SIZE);
+      if DecodeV5Header(hb, h) <> ceOK then Fail(deBadData, 'v5 header');
+      if f.BlockCount <> h.BlockCount then
+        Fail(deBadData, 'v5 footer disagrees with the blocks');
+      { flags.bit0 y un meta_size distinto de cero dicen lo mismo dos veces }
+      if ((h.Flags and V5_FLAG_HAS_DUP) <> 0) <> (f.MetaSize <> 0) then
+        Fail(deBadData, 'v5 -dup meta disagrees with the flags');
+      if not V5HashInfo(h.HashId, h.HashSize, info) then
+        Fail(deBadData, 'v5 hash descriptor');
+
+      ReadOrTruncated(Input, seed, QWord(info.SeedSize));
+      DigestForHash(info, seed, dig);
+      verified := DigestEnabled(dig);
+
+      { el mismo recorte que v3/v4: el slot de -vmblock manda }
+      maxSave := Opts.MaximumSave;
+      if Opts.VmBlock > QWord(24) then
+        if DWord(Opts.VmBlock - QWord(24)) < maxSave then
+          maxSave := DWord(Opts.VmBlock - QWord(24));
+
+      MMInit(mm, Opts.MemLimit); mmReady := True;
+      VmInit(vm, Opts.VmBlock, Opts.HasVmFile, Opts.VmFile); vmReady := True;
+      HeapInit(heap); heapReady := True;
+
+      blockStart := 0;
+      totalStat := 0;
+      { contado, no leido del stream: el que llama puede pasar un stream con
+        buffer, cuya posicion va adelantada }
+      consumed := QWord(V5_HEADER_SIZE) + QWord(Length(seed));
+      blocks := 0;
+      while blocks < QWord(h.BlockCount) do
+      begin
+        ReadOrTruncated(Input, bhb, V5_BLOCK_HEADER_SIZE);
+        DecodeBlockHeader(bhb, 0, bh);
+        ReadOrTruncated(Input, stored, QWord(h.HashSize));
+        ReadOrTruncated(Input, statBytes, QWord(bh.StatSize));
+        V5Words(statBytes, words);
+        ReadOrTruncated(Input, literals, QWord(bh.LiteralBytes));
+
+        if QWord(Length(outbuf)) > QWord(bh.OrigSize) then SetLength(outbuf, bh.OrigSize);
+        DecompressBlockFlz(0, Sink, blockStart, words, literals,
+                           outbuf, QWord(bh.OrigSize), mm, vm, heap, maxSave);
+
+        if verified then
+        begin
+          want := DigestCompute(dig, outbuf);
+          same := Length(want) = Length(stored);
+          if same then
+            for i := 0 to Length(want) - 1 do
+              if want[i] <> stored[i] then same := False;
+          if not same then
+            Fail(deDigestMismatch, 'checksum of decoded block ' + IntToStr(blocks) +
+                 ' differs from the stored one');
+        end;
+
+        SeekExact(Sink, blockStart);
+        SinkWrite(Sink, outbuf, QWord(bh.OrigSize));
+
+        blockStart := blockStart + QWord(bh.OrigSize);
+        totalStat := totalStat + QWord(bh.StatSize);
+        consumed := consumed + QWord(V5_BLOCK_HEADER_SIZE) + QWord(h.HashSize) +
+                    QWord(bh.StatSize) + QWord(bh.LiteralBytes);
+        if Assigned(Progress) then Progress(consumed, fileLen);
+        Inc(blocks);
+      end;
+      if Assigned(Progress) then Progress(fileLen, fileLen);
+
+      { Los bloques terminan justo donde empieza la meta, o el footer si no
+        hay: nada puede haber en el medio. }
+      if QWord(f.MetaSize) > fileLen - QWord(V5_FOOTER_SIZE) then
+        Fail(deBadData, 'v5 -dup meta runs past the file');
+      metaAt := fileLen - QWord(V5_FOOTER_SIZE) - QWord(f.MetaSize);
+      if consumed <> metaAt then Fail(deBadData, 'v5 blocks do not end at the footer');
+      if f.StatSize <> totalStat then Fail(deBadData, 'v5 footer disagrees with the blocks');
+
+      St.Blocks := QWord(h.BlockCount);
+      St.OrigSize := blockStart;
+      St.Verified := verified;
+      St.VmBytesWritten := vm.TotalWrite;
+      St.VmBytesRead := vm.TotalRead;
+    except
+      on E: EFlz do
+      begin
+        Result := E.Kind;
+        ErrMsg := E.Message;
+      end;
+      on E: Exception do
+      begin
         Result := deIo;
         ErrMsg := E.Message;
       end;

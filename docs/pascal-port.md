@@ -1,7 +1,8 @@
 # Port a Pascal (FPC) — plan
 
-> **Estado**: en curso. La decisión se tomó el 2026-09-25; las fases 0 a 4b
-> están hechas (decoders I/O-LZ y Future/Index-LZ). Ver la tabla de fases.
+> **Estado**: en curso. La decisión se tomó el 2026-09-25; las fases 0 a 4c
+> están hechas: el port decodifica los cinco contenedores (v1 a v5). Ver la
+> tabla de fases.
 
 ## Por qué, y qué cambió respecto del port a Rust
 
@@ -150,6 +151,8 @@ ignorando.
       pascal_decode_conformance.sh     I/O-LZ, errores de decodetool, y que v5
                                        diga "no portado"
       pascal_futurelz_conformance.sh   v3/v4, con la linea de estadisticas entera
+      pascal_v5_conformance.sh         v5, y el mismo error que el Rust en ~1.700
+                                       archivos danados
 
 `pascal/bin/` es salida de build y está en `.gitignore`. `build.sh` construye
 el programa y las tres herramientas para Linux x86-64, Win64 y Win32 (las
@@ -178,7 +181,7 @@ round-trip**.
 | **3** | Container: header, seed, bloques, footer v4 y v5 | **hecha** (2026-09-25): 84 comprobaciones, 80 archivos leídos igual que el oráculo y **reescritos byte a byte**; idéntico en i386 y x64 |
 | **4a** | Decoder I/O-LZ (v1/v2, sufijo `o`) | **hecha** (2026-09-25): 231 comprobaciones, 225 combinaciones byte a byte, verificado en i386 y x64 |
 | **4b** | Decoder Future/Index-LZ (v3/v4) + memory manager + spill | **hecha** (2026-09-26): 80 comprobaciones (79 bajo wine) con la línea de estadísticas entera —incluidos los bytes del spill— y los bytes reconstruidos; decode sube a 248. Revisión adversarial de cinco enfoques, ~80.000 comparaciones diferenciales: cero divergencias en el decoder, 17 hallazgos en los bordes que se reducen a 4 causas, todas arregladas con su regresión (verificado que cada una falla con el bug reintroducido). Win7 real: 73/73 en i386 y en x64 |
-| **4c** | Decoder v5 | pendiente |
+| **4c** | Decoder v5 | **hecha** (2026-10-09): 1.764 comprobaciones en Linux, i386 y x64 —60 archivos (12 métodos y hashes, `-dup` incluido) y el spill bajo cuatro presupuestos con la línea de estadísticas entera, ~1.700 archivos dañados que fallan **con el mismo mensaje** que el Rust, y 59 mutaciones que el Rust acepta y el Pascal reconstruye igual. Verificado que el harness atrapa tres bugs inyectados (después de agregar los casos que hicieron falta para dos de ellos). Win7 real: 70/70 en i386 y en x64 |
 | **5** | Encoder: los 17 modos | `encode_conformance`, byte-idéntico en todos |
 | **6** | `-dup` y `--verify` | `dup_v5_conformance`, `format_v5_conformance` |
 | **7** | CLI completa | las 219 de `rust_cli_conformance` con `OSREP_BIN` |
@@ -325,6 +328,21 @@ round-trip**.
   así que un archivo de 109 bytes que declaraba 3 GiB lo tumbaba. Se arregló
   igual que en Pascal (reservar sin tocar páginas o crecer a medida); ahora da
   el mismo error que x64.
+* **Un barrido de mutaciones no ve ni el orden de los chequeos ni lo que el
+  encoder nunca escribe.** El harness de v5 pasaba 1.760 casos con dos bugs
+  inyectados adentro: dos chequeos del contenedor en el orden equivocado, y el
+  límite del décimo byte de un varint sacado. Ninguna mutación de un solo
+  campo rompe *dos* chequeos a la vez, que es lo único que hace visible el
+  orden; y ningún archivo real trae un varint de 10 bytes. Hicieron falta
+  casos armados a mano para cada uno. La regla que queda: **un harness nuevo
+  se prueba contra bugs inyectados** antes de creerle un verde.
+* **Un harness que fuerza el decoder no es lo mismo que uno que despacha.**
+  `decode_conformance v5` decodifica como v5 lo que le den; `decodetool`, como
+  la CLI, elige por la magia. Un v5 con la magia rota o truncado a menos de 4
+  bytes ya no es un v5 para el segundo, y la diferencia de mensaje es del
+  despacho (fase 7), no del decoder. Y un v5 `-dup` decodifica al stream
+  *deduplicado*: el original lo arma el post-paso de la CLI (fase 6), así que
+  ahí se comparan los dos decoders entre sí y no contra la entrada.
 * **El orden de los chequeos es observable.** Un archivo truncado cuya lista
   de STATs además no es múltiplo de 4 da *truncated* en Rust porque lee antes
   de validar; validar primero da *bad data*. Lo mismo con cualquier par de

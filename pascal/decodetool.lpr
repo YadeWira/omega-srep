@@ -7,10 +7,11 @@ program decodetool;
   se puedan diffear tal cual:
 
       I/O-LZ (v1/v2):        ok blocks=N origsize=N verified=0|1
-      Future/Index-LZ (v3/v4): ok blocks=N origsize=N verified=0|1 vmw=N vmr=N
+      Future/Index-LZ (v3/v4) y v5: ok blocks=N origsize=N verified=0|1 vmw=N vmr=N
 
-  Salida: 0 ok; 2 linea de comandos; 3 archivo valido que todavia no se
-  soporta (v5); 4 archivo danado, o que no se pudo leer o escribir. En error
+  Salida: 0 ok; 2 linea de comandos; 4 archivo danado, o que no se pudo leer
+  o escribir. (El 3, "valido pero todavia no soportado", lo uso v5 hasta la
+  fase 4c; ya no queda contenedor sin decoder.) En error
   se borra la salida si la creamos nosotros: nunca queda un archivo a medias,
   y nunca se borra uno que ya estaba. Ninguna excepcion llega a ser un runtime
   error: antes, no poder abrir el archivo o crear la salida terminaba en 217. }
@@ -129,7 +130,6 @@ begin
     on X: Exception do Die(4, arcPath + ': ' + X.Message);
   end;
   if not ok then Die(4, 'not an Omega SREP compressed file (.osr)');
-  if isV5 then Die(3, 'a valid v5 archive; this decoder does not handle v5 yet');
 
   msg := '';
   e := deIo;
@@ -140,7 +140,15 @@ begin
     try
       { la entrada se abre ANTES de crear la salida: si no se puede leer, la
         salida (que quizas ya existia) no se toca }
-      if (h.Version = 1) or (h.Version = 2) then
+      { v5 primero: con v5, PeekHeader no llena h }
+      if isV5 then
+      begin
+        inS := TFileStream.Create(arcPath, fmOpenRead or fmShareDenyNone);
+        outS := TFileStream.Create(outPath, fmCreate);
+        created := True;
+        e := DecodeV5(inS, outS, opts, fst, msg);
+      end
+      else if (h.Version = 1) or (h.Version = 2) then
       begin
         arc := ReadAll(arcPath);
         outS := TFileStream.Create(outPath, fmCreate);
@@ -170,7 +178,7 @@ begin
 
   if e = deOK then
   begin
-    if (h.Version = 1) or (h.Version = 2) then
+    if (not isV5) and ((h.Version = 1) or (h.Version = 2)) then
       WriteOut('ok blocks=' + IntToStr(st.Blocks) + ' origsize=' + IntToStr(st.OrigSize) +
                ' verified=' + IntToStr(Ord(st.Verified)) + #10)
     else

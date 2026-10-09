@@ -134,13 +134,14 @@ if [ -x "$DC" ]; then
     done
 fi
 
-say "lo que todavia no esta portado lo dice, en vez de intentarlo"
-# v5 es la fase 4c. (v3/v4 ya estan, y los cubre
-# tests/pascal_futurelz_conformance.sh con mucho mas detalle.)
+say "decodetool despacha cada contenedor a su decoder, v5 incluido"
+# Hasta la fase 4c, v5 salia con 3 ("valido pero no portado"). Ahora tiene
+# decoder; tests/pascal_v5_conformance.sh lo cubre en detalle, y aca solo se
+# comprueba que el despacho por la magia lo encuentre.
 "$RS" --format=v5 --seed=7 -m3 "$TMP/dup.bin" "$TMP/np.osr" >/dev/null 2>&1
 rc=0; "$DT" "$TMP/np.osr" "$TMP/np.out" >/dev/null 2>&1 || rc=$?
-[ "$rc" -eq 3 ] || fail "v5 salio $rc, esperado 3 (no portado)"
-[ ! -e "$TMP/np.out" ] || fail "v5 dejo un archivo detras"
+[ "$rc" -eq 0 ] || fail "v5 salio $rc, esperado 0"
+cmp -s "$TMP/dup.bin" "$TMP/np.out" || fail "v5 no reconstruyo la entrada"
 pass=$((pass + 1))
 
 echo "  pascal_decode_conformance: passed=$pass mismatches=0"

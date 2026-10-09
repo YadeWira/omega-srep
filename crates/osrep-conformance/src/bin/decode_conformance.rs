@@ -4,6 +4,7 @@
 //! Usage:
 //!   decode_conformance io-lz <archive.osr> <output>
 //!   decode_conformance future-lz <archive.osr> <output> [--mem=N] [--vmblock=N] [--maxsave=N]
+//!   decode_conformance v5 <archive.osr> <output> [--mem=N] [--vmblock=N] [--maxsave=N]
 //!
 //! Decodes the archive and writes the result to `<output>`, printing
 //! `ok blocks=N origsize=M verified=0|1`. Exits non-zero on any error, so a
@@ -12,20 +13,21 @@
 //! The `future-lz` options exist to force the VM spill path: the defaults never
 //! spill on ordinary inputs, so `--mem`/`--vmblock` shrink the budget until they
 //! do. Spilling only changes where a held match lives, never the decoded bytes,
-//! so the output must still equal the input.
+//! so the output must still equal the input. `v5` takes the same options: its
+//! blocks go through the same Future-LZ decoder.
 
 use std::fs::File;
 use std::io::BufReader;
 use std::process::ExitCode;
 
 use osrep_core::decompress::decode_io_lz;
-use osrep_core::future_lz::{decode_future_lz, FutureLzOptions, FutureLzStats};
+use osrep_core::future_lz::{decode_future_lz, decode_v5, FutureLzOptions, FutureLzStats};
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 4 {
         eprintln!(
-            "usage: decode_conformance {{io-lz|future-lz}} <archive.osr> <output> [--mem=N] [--vmblock=N] [--maxsave=N]"
+            "usage: decode_conformance {{io-lz|future-lz|v5}} <archive.osr> <output> [--mem=N] [--vmblock=N] [--maxsave=N]"
         );
         return ExitCode::from(2);
     }
@@ -63,7 +65,7 @@ fn main() -> ExitCode {
                 vm_bytes_read: 0,
             })
         }
-        "future-lz" => {
+        "future-lz" | "v5" => {
             let mut opts = FutureLzOptions::default();
             for arg in &args[4..] {
                 let (key, value) = match arg.split_once('=') {
@@ -97,7 +99,11 @@ fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
-            decode_future_lz(&mut BufReader::new(input), &mut sink, &opts, None, None)
+            if args[1] == "v5" {
+                decode_v5(&mut BufReader::new(input), &mut sink, &opts, None)
+            } else {
+                decode_future_lz(&mut BufReader::new(input), &mut sink, &opts, None, None)
+            }
         }
         other => {
             eprintln!("unknown mode: {other}");
@@ -115,7 +121,7 @@ fn main() -> ExitCode {
             );
             // The spill counters are only meaningful for future-lz; io-lz has
             // no memory manager to report.
-            if args[1] == "future-lz" {
+            if args[1] != "io-lz" {
                 print!(
                     " vmw={} vmr={}",
                     stats.vm_bytes_written, stats.vm_bytes_read
