@@ -11,6 +11,8 @@ what happened in 2.0.0.
 
 ## [Unreleased]
 
+## [2.1.2] — 2026-10-09
+
 ### Fixed
 
 - **A v5 archive compressed through a pipe could not be decompressed.** With
