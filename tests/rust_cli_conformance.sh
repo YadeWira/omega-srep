@@ -46,6 +46,12 @@ if ! cargo build --release -p osrep-cli >target/rust-cli-build.log 2>&1; then
     fail "cargo build failed"
 fi
 RS=target/release/osrep
+# `OSREP_PORT_BIN` runs this whole script -- both layers -- over another build
+# of the port's CLI. That is how the Pascal port (docs/pascal-port.md, phase 7)
+# is held to exactly the gate the Rust one passes.
+if [ -n "${OSREP_PORT_BIN:-}" ]; then
+    RS="$OSREP_PORT_BIN"
+fi
 [[ -x "$RS" ]] || fail "missing $RS"
 OSREP_BIN="$RS"
 
@@ -145,6 +151,25 @@ for m in m3 m4 m5f m1; do
     "$RS" -d - - <"$TMP/v5.pipe" >"$TMP/v5.pipe.out" 2>/dev/null \
         || fail "-$m: a v5 archive written through a pipe does not decompress"
     cmp -s tests/corpus/text.bin "$TMP/v5.pipe.out" || fail "-$m: v5 piped round-trip differs"
+    pass=$((pass + 1))
+done
+# `-sBYTES` smaller than what arrives on stdin. The match finder is sized from
+# the declared value, so the longer input overran it: the C++ hangs, and the
+# port panicked (exit 101) through 2.1.1. Now it is a command-line error that
+# writes nothing; an exact or generous -s still round-trips.
+text_size=$(stat -c%s tests/corpus/text.bin)
+for fmt in "" "--format=v4"; do
+    rc=0
+    "$RS" $fmt --seed=7 -s1000 - - <tests/corpus/text.bin >"$TMP/s.pipe" 2>"$TMP/s.err" || rc=$?
+    [ "$rc" -eq 2 ] || fail "-s1000 ${fmt:-v5}: exit $rc, expected 2 ($(tail -1 "$TMP/s.err"))"
+    [ ! -s "$TMP/s.pipe" ] || fail "-s1000 ${fmt:-v5}: wrote an archive anyway"
+    for s in "$text_size" $((text_size * 3)); do
+        "$RS" $fmt --seed=7 -s"$s" - - <tests/corpus/text.bin >"$TMP/s.pipe" 2>/dev/null \
+            || fail "-s$s ${fmt:-v5}: compression failed"
+        "$RS" -d - - <"$TMP/s.pipe" >"$TMP/s.out" 2>/dev/null \
+            || fail "-s$s ${fmt:-v5}: does not decompress"
+        cmp -s tests/corpus/text.bin "$TMP/s.out" || fail "-s$s ${fmt:-v5}: round-trip differs"
+    done
     pass=$((pass + 1))
 done
 # `-` used to land on disk as a file with that name, which both hid the bug and

@@ -25,6 +25,14 @@ what happened in 2.0.0.
   the declared size still sizes the match finder, as in the C++. Archives of
   regular files are byte-identical to before. `tests/rust_cli_conformance.sh`
   now round-trips v5 through a pipe, which its v4-pinned layer never did.
+- **`-sBYTES` smaller than the stdin input panicked.** The match finder is
+  sized from the declared size, so a longer input overran its table:
+  `osrep -s1000 - - < bigfile` aborted with a Rust panic (exit 101) in every
+  mode with a match finder (`-m0` and `-m1` happened to survive). The C++
+  1.0.7 hangs on the same command. It is now a command-line error (exit 2)
+  that writes nothing, and the encoder itself refuses the case
+  (`DeclaredSizeTooSmall`) for library callers. An exact or larger `-s` is
+  unchanged. Found by the Pascal port's CLI smoke tests.
 
 ## [2.1.1] — 2026-10-09
 

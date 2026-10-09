@@ -97,6 +97,10 @@ pub enum EncodeError {
     /// `Seed::Bytes` does not carry exactly the archive's key length, which is
     /// what `OSREP_SEED_HEX` being a fixed-length hex string means.
     BadSeed { want: usize, got: usize },
+    /// `declared_size` (`-sBYTES`) is smaller than the input. The match finder
+    /// is sized from the declared value, so a longer input overruns it: the
+    /// C++ hangs there and this used to panic (2.0.0-2.1.1).
+    DeclaredSizeTooSmall { declared: u64, actual: u64 },
 }
 
 impl From<std::io::Error> for EncodeError {
@@ -379,7 +383,17 @@ pub fn encode<R: Read + Seek, W: Write>(
     // the C++ uses when the input is stdin and it is what decides the block
     // count and the match finder's sizing.
     let filesize = match opts.declared_size {
-        Some(n) => n,
+        Some(n) => {
+            let actual = input.seek(SeekFrom::End(0))?;
+            input.seek(SeekFrom::Start(0))?;
+            if actual > n {
+                return Err(EncodeError::DeclaredSizeTooSmall {
+                    declared: n,
+                    actual,
+                });
+            }
+            n
+        }
         None => {
             let n = input.seek(SeekFrom::End(0))?;
             input.seek(SeekFrom::Start(0))?;

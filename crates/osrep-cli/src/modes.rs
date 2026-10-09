@@ -337,6 +337,22 @@ fn compress(o: &Options, finame: &str, foutname: &str) -> Result<i32, RunError> 
     } else {
         None
     };
+    // `-s` is a promise about the input's size, and the match finder is
+    // sized from it: an input that breaks the promise overruns the table (the
+    // C++ hangs, the port panicked through 2.1.1). Checked here too, and not
+    // only in the encoder, so the message names the option.
+    if let Some(d) = declared {
+        let actual = file_size(&input_path);
+        if actual > d {
+            return Err(err(
+                ERROR_CMDLINE,
+                format!(
+                    "-s{d} is smaller than the {actual} bytes read from stdin; \
+                     give the real size or leave -s out"
+                ),
+            ));
+        }
+    }
     let enc = encode_options(o, declared);
 
     let mut bar = report::Bar::new(o.bar);
