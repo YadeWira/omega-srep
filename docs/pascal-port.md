@@ -129,6 +129,7 @@ ignorando.
       hashtool.lpr         herramientas de prueba: cada una expone una capa
       containertool.lpr    para diffearla contra el oraculo antes de que
       decodetool.lpr       exista la CLI completa
+      encodetool.lpr
       build.sh             todo lo anterior, en los tres targets
       src/
         widths.pas         guardas de ancho en tiempo de compilacion
@@ -140,8 +141,13 @@ ignorando.
         digest.pas         que digest verifica un archivo (Digest::for_archive)
         container.pas      header, bloques, footer v4 y v5, CRC-32C
         decompress.pas     decoder I/O-LZ (v1/v2), LzCopy, GrowOut
-        futurelz.pas       decoder Future/Index-LZ (v3/v4): memory manager,
-                           heap de matches, spill a disco
+        futurelz.pas       decoder Future/Index-LZ (v3/v4) y v5: memory
+                           manager, heap de matches, spill a disco
+        rolling.pas        hashes rodantes de los match finders
+        lzcodec.pas        el codec de records LZ (ENCODE/DECODE_LZ_MATCH)
+        hashtable.pas      el match finder de -m3/-m4/-m5
+        fixedcompress.pas  el compresor de un bloque de -m3/-m4/-m5
+        encoder.pas        el driver de compresion
         spillfile.pas      el temporal del spill, creado como el Rust (lo
                            unico que depende de la plataforma)
     tests/
@@ -151,6 +157,7 @@ ignorando.
       pascal_decode_conformance.sh     I/O-LZ, errores de decodetool, y que v5
                                        diga "no portado"
       pascal_futurelz_conformance.sh   v3/v4, con la linea de estadisticas entera
+      pascal_encode_conformance.sh     el encoder, byte a byte contra el Rust
       pascal_v5_conformance.sh         v5, y el mismo error que el Rust en ~1.700
                                        archivos danados
 
@@ -182,7 +189,11 @@ round-trip**.
 | **4a** | Decoder I/O-LZ (v1/v2, sufijo `o`) | **hecha** (2026-09-25): 231 comprobaciones, 225 combinaciones byte a byte, verificado en i386 y x64 |
 | **4b** | Decoder Future/Index-LZ (v3/v4) + memory manager + spill | **hecha** (2026-09-26): 80 comprobaciones (79 bajo wine) con la línea de estadísticas entera —incluidos los bytes del spill— y los bytes reconstruidos; decode sube a 248. Revisión adversarial de cinco enfoques, ~80.000 comparaciones diferenciales: cero divergencias en el decoder, 17 hallazgos en los bordes que se reducen a 4 causas, todas arregladas con su regresión (verificado que cada una falla con el bug reintroducido). Win7 real: 73/73 en i386 y en x64 |
 | **4c** | Decoder v5 | **hecha** (2026-10-09): 1.764 comprobaciones en Linux, i386 y x64 —60 archivos (12 métodos y hashes, `-dup` incluido) y el spill bajo cuatro presupuestos con la línea de estadísticas entera, ~1.700 archivos dañados que fallan **con el mismo mensaje** que el Rust, y 59 mutaciones que el Rust acepta y el Pascal reconstruye igual. Verificado que el harness atrapa tres bugs inyectados (después de agregar los casos que hicieron falta para dos de ellos). Win7 real: 70/70 en i386 y en x64 |
-| **5** | Encoder: los 17 modos | `encode_conformance`, byte-idéntico en todos |
+| **5** | Encoder: los 17 modos | `encode_conformance`, byte-idéntico en todos. En cuatro partes, cada una con su gate contra el encoder Rust en `tests/pascal_encode_conformance.sh` (lo no portado se cuenta aparte, no como fallo): |
+| 5a | match finder (`-m3`/`-m4`/`-m5`) y driver, contenedor I/O-LZ | **hecha** (2026-10-09): 83 archivos byte-idénticos en Linux, i386 y x64 — `-m3o`/`-m4o`/`-m5o` con `-b1mb`, `-l1024`, `-l256`, los seis hashes, 20 MiB cruzando bloques y entradas degeneradas |
+| 5b | REP en memoria (`-m0`, `-d`) y CDC (`-m1`/`-m2`) | pendiente |
+| 5c | segunda pasada: Index-LZ (v4) y Future-LZ (v3) | pendiente |
+| 5d | writer v5 | pendiente |
 | **6** | `-dup` y `--verify` | `dup_v5_conformance`, `format_v5_conformance` |
 | **7** | CLI completa | las 219 de `rust_cli_conformance` con `OSREP_BIN` |
 | **8** | Release: tres targets, verificación en Win7 real, tag | como 2.1.0 |

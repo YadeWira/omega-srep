@@ -1,0 +1,417 @@
+unit HashTable;
+{ El match finder (hash_table.rs, que porta hash_table.cpp): una tabla de hash
+  sobre chunks de L bytes, donde cada slot de chunkarr empaqueta bits de hash
+  y un numero de chunk en un DWord, sondeada por una cadena acotada. Las dos
+  mitades del hash de 64 bits se usan -- chunkarr guarda los 32 bajos
+  (enmascarados por hash_mask) y hasharr los 32 altos --, asi que mezclarlas
+  encuentra los matches "correctos" en el lugar equivocado.
+
+  Lo que el Rust deja afuera queda afuera aca tambien: bitarr y los prefetch
+  (probadamente neutros a la salida). speed_opt SI es semantica: find_match
+  abandona el sondeo tras un chequeo de slices fallido.
+
+  Por ahora el camino de chunks de tamano fijo (-m3/-m4/-m5); CDC es la 5b. }
+
+{$MODE OBJFPC}{$H+}
+{$RANGECHECKS OFF}
+{$OVERFLOWCHECKS OFF}
+interface
+
+uses Classes, Widths, Hashes, Vmac;
+
+const
+  MAX_HASH_CHAIN = DWord(12);
+  NOT_FOUND      = DWord(0);     { el chunk 0 es "no hay match": nunca se guarda }
+  DIGEST_SIZE    = 20;
+
+type
+  TSliceHash = record
+    Active: Boolean;
+    H: array of DWord;
+    L, SlicesInBlock, SliceSize: QWord;
+    CheckSlices: Int64;
+  end;
+
+  THashTableRec = record
+    RoundMatches, CompareDigests, PrecomputeDigests, Cdc: Boolean;
+    L, FileSize, TotalChunks: QWord;
+    ChunknumMask, HashMask: DWord;
+    HashSize1: QWord;
+    ChunkArr: array of DWord;
+    HashArr: array of DWord;
+    Slice: TSliceHash;
+    DigestArr: TBytes;           { DIGEST_SIZE bytes por chunk }
+    Digest: TVmac;               { el VDigest con clave cero }
+  end;
+
+procedure HtInit(out T: THashTableRec; RoundMatches, CompareDigests, PrecomputeDigests,
+                 Cdc: Boolean; L, MinMatch: QWord; IoAccelerator: LongInt; FileSize: QWord);
+
+{ prepare_buffer: digests (-m3) y huellas de slices de los chunks enteros del
+  bloque de BlockLen bytes que esta en Buf[BufOff] y empieza en Offset. }
+procedure HtPrepareBuffer(var T: THashTableRec; const Buf: TBytes; BufOff, BlockLen,
+                          Offset: QWord);
+
+function HtAddHash(var T: THashTableRec; Index: QWord; StoredValue: DWord;
+                   CurChunk: QWord): DWord;
+
+function HtFindMatch(const T: THashTableRec; const Buf: TBytes; BufOff, I, BlockSize,
+                     Index: QWord; StoredValue: DWord): DWord;
+
+{ match_len: Dict tiene el bloque en BufOff; Reread es la entrada, que se
+  re-lee con seek (el C++ usa un segundo handle). }
+function HtMatchLen(const T: THashTableRec; StartChunk: QWord; const Dict: TBytes;
+                    BufOff, MinP, StartP, LastP, Offset: QWord; RoundMatches: Boolean;
+                    Reread: TStream; out AddLen: DWord): DWord;
+
+{ VDigest::compute: vhash1 en 0 y vhash2 en 4, con la misma clave (cero), asi
+  que es tag[0..4) ++ tag[0..16). }
+procedure VDigestCompute(const V: TVmac; const B: TBytes; At, Len: QWord; var Out_: TBytes;
+                         OutAt: QWord);
+
+implementation
+
+uses Rolling;
+
+{ ------------------------------------------------------------- slices --- }
+
+function SliceHashOf(const B: TBytes; Off, Size: QWord): DWord;
+var h: DWord; i: QWord;
+begin
+  h := 111222341;
+  i := 0;
+  while i < Size do
+  begin
+    h := DWord(QWord(h) * 123456791 + QWord(B[Off + i]));
+    Inc(i);
+  end;
+  h := DWord(QWord(h) * 123456791);
+  Result := h shr (32 - 4);
+end;
+
+procedure SliceInit(out S: TSliceHash; FileSize, L, MinMatch: QWord; IoAccelerator: LongInt);
+var memreq: QWord;
+begin
+  S.SlicesInBlock := 8;                  { sizeof(entry)*CHAR_BIT/BITS = 32/4 }
+  S.L := L;
+  S.SliceSize := L div S.SlicesInBlock;
+  S.CheckSlices := (Int64(MinMatch) - Int64(L)) div Int64(S.SliceSize) - Int64(IoAccelerator);
+  if (IoAccelerator < 0) or (S.CheckSlices <= 0) then memreq := 0
+  else memreq := FileSize div L;
+  S.Active := memreq <> 0;
+  { Una entrada de mas: check lee h[chunk+1], y el escaneo puede llegar al
+    ultimo chunk del archivo (el avance de a cuatro se pasa de next_chunk).
+    El C++ lee ahi el relleno de pagina de su BigAlloc, que es cero. }
+  SetLength(S.H, memreq + 1);
+end;
+
+procedure SlicePrepareRange(var S: TSliceHash; const Buf: TBytes; BufOff, ChunkStart,
+                            ChunkEnd: QWord);
+var p, cur, i: QWord; checksum: DWord;
+begin
+  if not S.Active then Exit;
+  p := BufOff;
+  cur := ChunkStart;
+  while cur < ChunkEnd do
+  begin
+    checksum := 0;
+    i := 0;
+    while i < S.SlicesInBlock do
+    begin
+      checksum := DWord(QWord(checksum) + QWord(DWord(SliceHashOf(Buf, p, S.SliceSize) shl (i * 4))));
+      p := p + S.SliceSize;
+      Inc(i);
+    end;
+    S.H[cur] := checksum;
+    Inc(cur);
+  end;
+end;
+
+function SliceCheck(const S: TSliceHash; Chunk: QWord; const Buf: TBytes; BufOff, I,
+                    BlockSize: QWord): Boolean;
+var p, j, k, slice: QWord; checksum: DWord;
+begin
+  if not S.Active then Exit(True);
+  if (I < S.L) or (BlockSize - I < 2 * S.L) then Exit(True);
+  p := BufOff + I;
+  checksum := S.H[Chunk + 1];
+  j := 0;
+  while True do
+  begin
+    if Int64(j) = S.CheckSlices then Exit(True);
+    if ((checksum shr (j * 4)) and $F) <> SliceHashOf(Buf, p + S.L + j * S.SliceSize, S.SliceSize) then
+      Break;
+    Inc(j);
+  end;
+  checksum := S.H[Chunk - 1];
+  k := 0;
+  while True do
+  begin
+    if Int64(j + k) = S.CheckSlices then Exit(True);
+    slice := p - (k + 1) * S.SliceSize;
+    if ((checksum shr ((S.SlicesInBlock - (k + 1)) * 4)) and $F) <> SliceHashOf(Buf, slice, S.SliceSize) then
+      Break;
+    Inc(k);
+  end;
+  Result := False;
+end;
+
+{ ------------------------------------------------------------ digests --- }
+
+procedure VDigestCompute(const V: TVmac; const B: TBytes; At, Len: QWord; var Out_: TBytes;
+                         OutAt: QWord);
+var m, t: TBytes; i: LongInt;
+begin
+  SetLength(m, Len);
+  if Len > 0 then Move(B[At], m[0], Len);
+  t := VmacCompute(V, m);
+  for i := 0 to 3 do Out_[OutAt + QWord(i)] := t[i];
+  for i := 0 to 15 do Out_[OutAt + 4 + QWord(i)] := t[i];
+end;
+
+{ -------------------------------------------------------------- tabla --- }
+
+function MinHashSize(N: QWord): QWord;
+begin
+  Result := (N div 4 + 1) * 5;
+end;
+
+function NextHashSlot(H: QWord): QWord; inline;
+begin
+  Result := H * 123456791 + (H shr 16) + 462782923;
+end;
+
+procedure HtInit(out T: THashTableRec; RoundMatches, CompareDigests, PrecomputeDigests,
+                 Cdc: Boolean; L, MinMatch: QWord; IoAccelerator: LongInt; FileSize: QWord);
+var fs, hashsize: QWord; key: TBytes;
+begin
+  T.RoundMatches := RoundMatches;
+  T.CompareDigests := CompareDigests;
+  T.PrecomputeDigests := PrecomputeDigests;
+  T.Cdc := Cdc;
+  T.L := L;
+  fs := FileSize;
+  if fs < L then fs := L;
+  T.FileSize := fs;
+  T.TotalChunks := fs div L;
+  if Cdc then
+  begin
+    if T.TotalChunks > 1024 then T.TotalChunks := T.TotalChunks + T.TotalChunks div 10
+    else T.TotalChunks := T.TotalChunks + T.TotalChunks;
+  end;
+  T.ChunknumMask := DWord(RoundupToPowerOfTwo(T.TotalChunks + 2) - 1);
+  T.HashMask := not T.ChunknumMask;
+  hashsize := RoundupToPowerOfTwo(MinHashSize(T.TotalChunks));
+  T.HashSize1 := hashsize - 1;
+  SetLength(T.ChunkArr, hashsize);                   { en ceros }
+  if Cdc then SetLength(T.HashArr, 0) else SetLength(T.HashArr, T.TotalChunks);
+  SliceInit(T.Slice, fs, L, MinMatch, IoAccelerator);
+  if CompareDigests then SetLength(T.DigestArr, T.TotalChunks * DIGEST_SIZE)
+  else SetLength(T.DigestArr, 0);
+  SetLength(key, VMAC_KEY_LEN_BYTES);                { clave cero: ver VDigestCompute }
+  VmacSetKey(key, T.Digest);
+end;
+
+procedure HtPrepareBuffer(var T: THashTableRec; const Buf: TBytes; BufOff, BlockLen,
+                          Offset: QWord);
+var cur, n, c: QWord;
+begin
+  cur := Offset div T.L;
+  n := BlockLen div T.L;
+  if T.PrecomputeDigests then
+  begin
+    c := cur;
+    while c < cur + n do
+    begin
+      VDigestCompute(T.Digest, Buf, BufOff + (c - cur) * T.L, T.L, T.DigestArr, c * DIGEST_SIZE);
+      Inc(c);
+    end;
+  end;
+  SlicePrepareRange(T.Slice, Buf, BufOff, cur, cur + n);
+end;
+
+function ChunkarrValue(const T: THashTableRec; Hash: QWord; Chunk: DWord): DWord; inline;
+begin
+  Result := DWord(QWord(DWord(Hash) and T.HashMask) + QWord(Chunk));
+end;
+
+function HtAddHash(var T: THashTableRec; Index: QWord; StoredValue: DWord;
+                   CurChunk: QWord): DWord;
+var savedHash, value, chunk: DWord; h: QWord; limit: DWord;
+begin
+  T.HashArr[CurChunk] := StoredValue;
+  if DWord(CurChunk) = NOT_FOUND then Exit(NOT_FOUND);
+  savedHash := ChunkarrValue(T, Index, 0);
+  h := Index;
+  limit := MAX_HASH_CHAIN;
+  Result := NOT_FOUND;
+  while True do
+  begin
+    value := T.ChunkArr[h and T.HashSize1];
+    if value = NOT_FOUND then Break;
+    Dec(limit);
+    if limit = 0 then Break;
+    if (value and T.HashMask) = savedHash then
+    begin
+      chunk := value and T.ChunknumMask;
+      if T.HashArr[chunk] = StoredValue then
+      begin
+        Result := chunk;
+        Break;
+      end;
+    end;
+    Inc(h);
+    if (limit and 3) = 0 then h := NextHashSlot(h);
+  end;
+  T.ChunkArr[h and T.HashSize1] := ChunkarrValue(T, Index, DWord(CurChunk));
+end;
+
+function DigestEq(const T: THashTableRec; const D: TBytes; Chunk: QWord): Boolean;
+var i: LongInt;
+begin
+  for i := 0 to DIGEST_SIZE - 1 do
+    if D[i] <> T.DigestArr[Chunk * DIGEST_SIZE + QWord(i)] then Exit(False);
+  Result := True;
+end;
+
+function HtFindMatch(const T: THashTableRec; const Buf: TBytes; BufOff, I, BlockSize,
+                     Index: QWord; StoredValue: DWord): DWord;
+var savedHash, value, chunk, limit: DWord; h: QWord; dig: TBytes;
+begin
+  savedHash := ChunkarrValue(T, Index, 0);
+  h := Index;
+  limit := MAX_HASH_CHAIN;
+  while True do
+  begin
+    value := T.ChunkArr[h and T.HashSize1];
+    if value = NOT_FOUND then Break;
+    Dec(limit);
+    if limit = 0 then Break;
+    if (value and T.HashMask) = savedHash then
+    begin
+      chunk := value and T.ChunknumMask;
+      if T.HashArr[chunk] = StoredValue then
+      begin
+        if T.CompareDigests then
+        begin
+          { -m3: el digest de 20 bytes; un fallo NO corta el sondeo }
+          SetLength(dig, DIGEST_SIZE);
+          VDigestCompute(T.Digest, Buf, BufOff + I, T.L, dig, 0);
+          if DigestEq(T, dig, chunk) then Exit(chunk);
+        end
+        else if SliceCheck(T.Slice, chunk, Buf, BufOff, I, BlockSize) then
+          Exit(chunk)
+        else
+          Exit(NOT_FOUND);          { speed_opt: no sigue la cadena }
+      end;
+    end;
+    Inc(h);
+    if (limit and 3) = 0 then h := NextHashSlot(h);
+  end;
+  Result := NOT_FOUND;
+end;
+
+{ Un pread: N bytes en Off, devolviendo cuantos se leyeron. }
+function ReadAt(S: TStream; Off: QWord; var B: TBytes; N: QWord): QWord;
+var got: LongInt;
+begin
+  Result := 0;
+  if (Off > QWord(High(Int64))) or (S.Seek(Int64(Off), soBeginning) <> Int64(Off)) then Exit;
+  while Result < N do
+  begin
+    got := S.Read(B[Result], LongInt(N - Result));
+    if got <= 0 then Break;
+    Inc(Result, QWord(got));
+  end;
+end;
+
+function HtMatchLen(const T: THashTableRec; StartChunk: QWord; const Dict: TBytes;
+                    BufOff, MinP, StartP, LastP, Offset: QWord; RoundMatches: Boolean;
+                    Reread: TStream; out AddLen: DWord): DWord;
+const BUFSIZE = 4096;
+var
+  l, oldOffset, p, n, i, q: QWord;
+  stopped: Boolean;
+  old, oldbuf, dig: TBytes;
+begin
+  l := T.L;
+  oldOffset := StartChunk * l;
+  p := StartP;
+  AddLen := 0;
+  { match_len sale por "goto stop", que cae DESPUES de la comparacion final
+    dentro del bloque: toda salida temprana la saltea. stopped es eso. }
+  stopped := False;
+
+  if T.CompareDigests then
+  begin
+    SetLength(dig, DIGEST_SIZE);
+    while True do
+    begin
+      p := p + T.L;
+      oldOffset := oldOffset + l;
+      if oldOffset >= Offset then Break;
+      if p + T.L > LastP then begin stopped := True; Break; end;
+      VDigestCompute(T.Digest, Dict, p, T.L, dig, 0);
+      if not DigestEq(T, dig, oldOffset div l) then begin stopped := True; Break; end;
+    end;
+  end
+  else if oldOffset < Offset then
+  begin
+    { el chunk esta en un bloque anterior: se relee de la entrada }
+    n := oldOffset;
+    if l < n then n := l;
+    if StartP - MinP < n then n := StartP - MinP;
+    if (n > 0) and (not RoundMatches) then
+    begin
+      SetLength(old, n);
+      if ReadAt(Reread, oldOffset - n, old, n) <> n then
+        stopped := True
+      else
+      begin
+        i := 1;
+        while (i <= n) and (Dict[StartP - i] = old[n - i]) do Inc(i);
+        AddLen := DWord(i - 1);
+      end;
+    end;
+    if not stopped then
+    begin
+      SetLength(oldbuf, BUFSIZE);
+      while oldOffset < Offset do
+      begin
+        if ReadAt(Reread, oldOffset, oldbuf, BUFSIZE) <> BUFSIZE then begin stopped := True; Break; end;
+        q := 0;
+        while q < BUFSIZE do
+        begin
+          if (p = LastP) or (Dict[p] <> oldbuf[q]) then begin stopped := True; Break; end;
+          Inc(p);
+          Inc(q);
+        end;
+        if stopped then Break;
+        oldOffset := oldOffset + BUFSIZE;
+      end;
+    end;
+  end
+  else if (not T.CompareDigests) and (not RoundMatches) then
+  begin
+    { el chunk esta en el bloque actual: los bytes de antes del match }
+    n := oldOffset - Offset;
+    if l < n then n := l;
+    if StartP - MinP < n then n := StartP - MinP;
+    i := 1;
+    while (i <= n) and (Dict[StartP - i] = Dict[BufOff + (oldOffset - Offset) - i]) do Inc(i);
+    AddLen := DWord(i - 1);
+  end;
+
+  if not stopped then
+  begin
+    q := BufOff + (oldOffset - Offset);
+    while (p < LastP) and (Dict[p] = Dict[q]) do
+    begin
+      Inc(p);
+      Inc(q);
+    end;
+  end;
+  Result := DWord((p - StartP) + QWord(AddLen));
+end;
+
+end.

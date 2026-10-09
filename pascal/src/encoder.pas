@@ -1,0 +1,317 @@
+unit Encoder;
+{ El driver de compresion (encoder.rs): lo que la primera pasada de srep.cpp
+  hace alrededor de los compresores de cada modo, y lo que el hilo de fondo de
+  io.cpp hace por ella. El C++ solapa leer un bloque con comprimir el anterior
+  por un anillo de dos ranuras; las dos ordenes dan los mismos bytes (medido:
+  -t1 contra -t8), asi que se corre en secuencia.
+
+  La lectura adelantada no es solo velocidad: compress lee unos bytes pasado
+  el final del bloque (el lote de cuatro se pasa de next_chunk), y en el C++
+  esos bytes son la ranura siguiente del anillo -- que el hilo de fondo ya
+  suele haber llenado con el bloque que sigue. Leer un bloque adelante lo
+  reproduce de forma determinista.
+
+  Fase 5a: -m3/-m4/-m5 con el contenedor I/O-LZ (sufijo o, formato v1/v2) y
+  sin -d. Lo demas sale como "no portado". }
+
+{$MODE OBJFPC}{$H+}
+{$RANGECHECKS OFF}
+{$OVERFLOWCHECKS OFF}
+interface
+
+uses SysUtils, Classes, Widths, Hashes, Container, LzCodec, HashTable, FixedCompress;
+
+const
+  DEFAULT_BUFSIZE  = QWord(8) shl 20;        { -b, srep.cpp:288 }
+  DEFAULT_DICTSIZE = QWord(512) shl 20;      { -d de -m0, srep.cpp:285,445 }
+
+type
+  TEncKind = (ekInmem, ekCdc, ekCdcZpaq, ekDigest, ekFixed, ekFixedExhaustive);
+  TEncContainer = (ecIoLz, ecIndexLz, ecFutureLz, ecV5);
+
+  TEncodeOptions = record
+    BufSize: QWord;          { -b }
+    DictSize: QWord;         { -d; 0 = sin pase en memoria }
+    DictHashSize: QWord;     { -dh }
+    MinMatch: QWord;         { -l; 0 = el default del modo }
+    DictMinMatch: QWord;     { -dl; 0 = 512 }
+    DictChunk: QWord;        { -dc; 0 = DictMinMatch/8 }
+    L: QWord;                { -c; 0 = derivado de MinMatch }
+    HasSeed: Boolean;
+    Seed: QWord;             { --seed=N }
+    Hash: AnsiString;        { -hash=; '' = -hash- }
+  end;
+
+  { Lo que el modo todavia no tiene portado. }
+  ENotPorted = class(Exception);
+
+procedure DefaultEncodeOptions(out O: TEncodeOptions);
+
+{ osrep_fill_seed_from (srep.cpp:251-261): xorshift64, un byte por paso. }
+procedure FillSeedFrom(var Out_: TBytes; Seed64: QWord);
+
+{ Comprime Input en Output. Errores: EEncode (el Debug del Rust en el
+  mensaje), ENotPorted. }
+procedure Encode(Input, Output: TStream; const Opts: TEncodeOptions; Kind: TEncKind;
+                 Cont: TEncContainer);
+
+implementation
+
+uses Rolling, HashesKeyed, Vmac;
+
+const
+  BUFFERS = 2;           { io.cpp:90: el anillo lleva dos bloques de margen }
+
+procedure DefaultEncodeOptions(out O: TEncodeOptions);
+begin
+  O.BufSize := DEFAULT_BUFSIZE;
+  O.DictSize := 0;
+  O.DictHashSize := 0;
+  O.MinMatch := 0;
+  O.DictMinMatch := 0;
+  O.DictChunk := 0;
+  O.L := 0;
+  O.HasSeed := False;
+  O.Seed := 0;
+  O.Hash := 'vmac';
+end;
+
+procedure FillSeedFrom(var Out_: TBytes; Seed64: QWord);
+var s: QWord; i: LongInt;
+begin
+  s := Seed64;
+  for i := 0 to Length(Out_) - 1 do
+  begin
+    s := s xor (s shl 13);
+    s := s xor (s shr 7);
+    s := s xor (s shl 17);
+    Out_[i] := Byte(s and $FF);
+  end;
+end;
+
+{ ------------------------------------------------------ block hasher --- }
+
+type
+  TBlockHasher = record
+    Name: AnsiString;
+    Key: TBytes;
+    VmacKey: TVmac;
+  end;
+
+procedure HasherInit(out H: TBlockHasher; const Info: THashInfo; const Seed: TBytes);
+begin
+  H.Name := Info.Name;
+  H.Key := Copy(Seed);
+  if H.Name = 'vmac' then VmacSetKey(Seed, H.VmacKey);
+end;
+
+{ hash_func(hash_obj, buf, size, header+3). El desactivado nunca corre en el
+  C++ -- la cabecera es calloc, asi que el digest queda en ceros. }
+function HasherCompute(const H: TBlockHasher; const B: TBytes; At, Len: QWord;
+                       out D: TBytes): Boolean;
+var m: TBytes;
+begin
+  Result := H.Name <> '';
+  if not Result then Exit;
+  SetLength(m, Len);
+  if Len > 0 then Move(B[At], m[0], Len);
+  if H.Name = 'md5' then D := MD5(m)
+  else if H.Name = 'sha1' then D := SHA1(m)
+  else if H.Name = 'sha512' then D := SHA512(m)
+  else if H.Name = 'vmac' then D := VmacCompute(H.VmacKey, m)
+  else if H.Name = 'siphash' then D := SipHash(H.Key, m)
+  else Result := False;
+end;
+
+{ ------------------------------------------------------------ helpers --- }
+
+function RoundUp(A, B: QWord): QWord;
+begin
+  if (A <> 0) and (B > 1) then Result := ((A - 1) div B) * B + B else Result := A;
+end;
+
+{ Un fread en un offset explicito. El offset no sobra: match_len re-lee el
+  MISMO stream en cualquier posicion, asi que las lecturas secuenciales se
+  re-anclan cada vez. }
+function ReadBlockAt(S: TStream; Off: QWord; var B: TBytes; At, Len: QWord): QWord;
+var got: LongInt;
+begin
+  Result := 0;
+  S.Seek(Int64(Off), soBeginning);
+  while Result < Len do
+  begin
+    got := S.Read(B[At + Result], LongInt(Len - Result));
+    if got <= 0 then Break;
+    Inc(Result, QWord(got));
+  end;
+end;
+
+procedure PutLE32(var B: TBytes; At: QWord; V: DWord); inline;
+begin
+  B[At] := Byte(V); B[At + 1] := Byte(V shr 8);
+  B[At + 2] := Byte(V shr 16); B[At + 3] := Byte(V shr 24);
+end;
+
+procedure WriteStats(S: TStream; const Stat: TStatList);
+var b: TBytes; i: QWord;
+begin
+  if Stat.N = 0 then Exit;
+  SetLength(b, Stat.N * 4);
+  i := 0;
+  while i < Stat.N do
+  begin
+    PutLE32(b, i * 4, Stat.W[i]);
+    Inc(i);
+  end;
+  S.WriteBuffer(b[0], LongInt(Length(b)));
+end;
+
+{ Los runs de literales que save_data escribe entre los records, en el orden
+  de los records. }
+procedure WriteLiterals(Output: TStream; const Dict: TBytes; BufOffset, Filled: QWord;
+                        const Stat: TStatList; RoundMatches: Boolean; BaseLen: DWord);
+var inPos, at, used, lit: QWord; m: TLzMatch;
+begin
+  inPos := 0;
+  at := 0;
+  while Stat.N - at >= StatsPerMatch(RoundMatches) do
+  begin
+    if not DecodeLzMatch(Stat, at, RoundMatches, False, BaseLen, 0, m, used) then
+      raise EEncode.Create('BadBlockRecord');
+    lit := QWord(m.LitLen);
+    if lit > Filled - inPos then raise EEncode.Create('BadBlockRecord');
+    if lit > 0 then Output.WriteBuffer(Dict[BufOffset + inPos], LongInt(lit));
+    inPos := inPos + lit + QWord(m.Len);
+    if inPos > Filled then raise EEncode.Create('BadBlockRecord');
+    at := at + used;
+  end;
+  if Filled > inPos then Output.WriteBuffer(Dict[BufOffset + inPos], LongInt(Filled - inPos));
+end;
+
+{ ------------------------------------------------------------- driver --- }
+
+procedure Encode(Input, Output: TStream; const Opts: TEncodeOptions; Kind: TEncKind;
+                 Cont: TEncContainer);
+var
+  info: THashInfo;
+  hasher: TBlockHasher;
+  seed, dict, header, digest: TBytes;
+  minMatch, l, dictMinMatch, baseLen, bufsize, fileSize, ringSize: QWord;
+  roundMatches, cdc: Boolean;
+  ah: TArchiveHeader;
+  bh: TBlockHeader;
+  table: THashTableRec;
+  bufOffset, nextPos, filled, blockStart, nextOffset, nextFilled: QWord;
+  stat, inStat: TStatList;
+  literalBytes: DWord;
+  hb: TBytes;
+begin
+  if not HashByName(Opts.Hash, info) then
+    raise EEncode.Create('UnknownHash("' + Opts.Hash + '")');
+  cdc := Kind in [ekCdc, ekCdcZpaq];
+  if not (Kind in [ekDigest, ekFixed, ekFixedExhaustive]) then
+    raise ENotPorted.Create('mode not ported to Pascal yet');
+  if Cont <> ecIoLz then raise ENotPorted.Create('container not ported to Pascal yet');
+  if Opts.DictSize <> 0 then raise ENotPorted.Create('-d not ported to Pascal yet');
+
+  { los defaults de las opciones (srep.cpp:448-457), en el orden del C++ }
+  minMatch := Opts.MinMatch;
+  l := Opts.L;
+  if (l = 0) and (minMatch = 0) then
+    if cdc then minMatch := 4096 else minMatch := 512;
+  if l = 0 then
+  begin
+    if cdc then begin l := minMatch; minMatch := 0; end
+    else if Kind = ekFixedExhaustive then l := RounddownToPowerOfTwo(minMatch + 1) div 2
+    else l := minMatch;
+  end;
+  if minMatch = 0 then
+    if cdc then minMatch := 32 else minMatch := l;
+  if Opts.DictMinMatch <> 0 then dictMinMatch := Opts.DictMinMatch else dictMinMatch := 512;
+  baseLen := minMatch;
+  if dictMinMatch < baseLen then baseLen := dictMinMatch;
+  bufsize := Opts.BufSize;
+
+  { ROUND_MATCHES = (-m3) && dictsize == 0: -m3o escribe v1 con records de 3 }
+  roundMatches := (Kind = ekDigest) and (Opts.DictSize = 0);
+
+  { la semilla del archivo: sin --seed el C++ la saca de Fortuna }
+  SetLength(seed, info.SeedSize);
+  if info.SeedSize > 0 then
+  begin
+    if not Opts.HasSeed then raise EEncode.Create('NeedsSeed');
+    FillSeedFrom(seed, Opts.Seed);
+  end;
+  HasherInit(hasher, info, seed);
+
+  ah.HashNum := info.Num;
+  ah.HashSeedSize := info.SeedSize;
+  ah.HashSize := info.HashSize;
+  ah.BaseLen := DWord(baseLen);                 { FUTURELZ_BASE_LEN con I/O-LZ }
+  if roundMatches then ah.Version := 1 else ah.Version := 2;
+
+  fileSize := QWord(Input.Seek(0, soEnd));
+  Input.Seek(0, soBeginning);
+
+  hb := EncodeArchiveHeader(ah);
+  Output.WriteBuffer(hb[0], Length(hb));
+  if Length(seed) > 0 then Output.WriteBuffer(seed[0], Length(seed));
+
+  { COMPARE_DIGESTS = metodo <= -m3; PRECOMPUTE_DIGESTS = -m3; io_accelerator 1 }
+  HtInit(table, roundMatches, Kind in [ekInmem, ekCdc, ekCdcZpaq, ekDigest],
+         Kind = ekDigest, cdc, l, minMatch, 1, fileSize);
+
+  { el anillo: el diccionario redondeado a bloques enteros, mas dos de margen }
+  ringSize := RoundUp(Opts.DictSize, bufsize) + BUFFERS * bufsize;
+  SetLength(dict, ringSize);
+
+  bufOffset := 0;
+  nextPos := 0;
+  filled := ReadBlockAt(Input, nextPos, dict, bufOffset, bufsize);
+  nextPos := nextPos + filled;
+  blockStart := 0;
+  stat.N := 0; inStat.N := 0;
+
+  while filled > 0 do
+  begin
+    { lectura adelantada: llena la ranura siguiente }
+    nextOffset := (bufOffset + bufsize) mod ringSize;
+    nextFilled := ReadBlockAt(Input, nextPos, dict, nextOffset, bufsize);
+
+    SetLength(header, BLOCK_HEADER_SIZE + info.HashSize);
+    FillChar(header[0], Length(header), 0);
+    if HasherCompute(hasher, dict, bufOffset, filled, digest) then
+      Move(digest[0], header[BLOCK_HEADER_SIZE], Length(digest));
+
+    HtPrepareBuffer(table, dict, bufOffset, filled, blockStart);
+
+    StatClear(stat);
+    StatClear(inStat);
+    literalBytes := 0;
+    { el cerco: len+1 / BASE_LEN / BASE_LEN. Empieza pasado el bloque, asi
+      que compress nunca lo alcanza: solo corta el recorrido. }
+    if not EncodeLzMatch(inStat, roundMatches, DWord(baseLen), DWord(filled + 1), baseLen,
+                         DWord(baseLen)) then
+      MatchTooSmall(DWord(baseLen), DWord(baseLen));
+    CompressFixed(table, dict, bufOffset, filled, roundMatches, l, minMatch, DWord(baseLen),
+                  blockStart, inStat, stat, literalBytes, Input);
+
+    bh.LiteralBytes := literalBytes;
+    bh.OrigSize := DWord(filled);
+    bh.StatSize := DWord(stat.N * 4);
+    hb := EncodeBlockHeader(bh);
+    Move(hb[0], header[0], BLOCK_HEADER_SIZE);
+
+    { save_data: la cabecera, la lista de matches, los literales }
+    Output.WriteBuffer(header[0], Length(header));
+    WriteStats(Output, stat);
+    WriteLiterals(Output, dict, bufOffset, filled, stat, roundMatches, DWord(baseLen));
+
+    blockStart := blockStart + filled;
+    nextPos := nextPos + nextFilled;
+    bufOffset := nextOffset;
+    filled := nextFilled;
+  end;
+end;
+
+end.
