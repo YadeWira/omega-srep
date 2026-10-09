@@ -11,6 +11,21 @@ what happened in 2.0.0.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A v5 archive compressed through a pipe could not be decompressed.** With
+  stdin as the input and no `-s`, the v5 header took its block count and
+  original size from the 25 GiB size the encoder assumes for stdin, while the
+  footer recorded the real ones. `osrep - - < file > archive.osr` exited 0 and
+  wrote an archive that `-d` refused ("v5 footer disagrees with the blocks")
+  and `--verify` called truncated: silent data loss in the typical backup
+  pipeline, in every release since 2.0.0 made v5 the default. v4 records
+  neither field and was never affected, and neither was `-s` with the real
+  size. The header now takes both fields from the input's measured length;
+  the declared size still sizes the match finder, as in the C++. Archives of
+  regular files are byte-identical to before. `tests/rust_cli_conformance.sh`
+  now round-trips v5 through a pipe, which its v4-pinned layer never did.
+
 ## [2.1.1] — 2026-10-09
 
 ### Fixed

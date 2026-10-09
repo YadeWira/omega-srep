@@ -131,6 +131,22 @@ for m in m0 m3 m4 m4f m5o; do
     cmp -s tests/corpus/text.bin "$TMP/rs.pipe.out" || fail "-$m: piped round-trip differs"
     pass=$((pass + 1))
 done
+# The default container through a pipe, with no -s. Until 2.1.2 the v5 header
+# took its block count and size from the 25 gb stdin default while the footer
+# recorded the real ones, so every such archive compressed with exit 0 and then
+# refused to decompress -- silent data loss in the typical backup pipeline
+# (`tar c dir | osrep - - > backup.osr`). The layer above pins --format=v4
+# and never saw it.
+for m in m3 m4 m5f m1; do
+    "$RS" -$m --seed=7 - - <tests/corpus/text.bin >"$TMP/v5.pipe" 2>"$TMP/rs.err" \
+        || fail "-$m: v5 through a pipe failed to compress: $(tail -1 "$TMP/rs.err")"
+    "$RS" --verify "$TMP/v5.pipe" >/dev/null 2>&1 \
+        || fail "-$m: a v5 archive written through a pipe does not --verify"
+    "$RS" -d - - <"$TMP/v5.pipe" >"$TMP/v5.pipe.out" 2>/dev/null \
+        || fail "-$m: a v5 archive written through a pipe does not decompress"
+    cmp -s tests/corpus/text.bin "$TMP/v5.pipe.out" || fail "-$m: v5 piped round-trip differs"
+    pass=$((pass + 1))
+done
 # `-` used to land on disk as a file with that name, which both hid the bug and
 # made a naive test pass anyway.
 [[ ! -e ./- ]] || fail "a file literally named '-' was created in the working directory"

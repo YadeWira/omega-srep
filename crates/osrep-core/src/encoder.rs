@@ -390,7 +390,18 @@ pub fn encode<R: Read + Seek, W: Write>(
     if v5 {
         // `docs/format-spec-v5.md` §2: one magic, the hash pair un-biased, and
         // the block count and input size written down instead of inferred.
-        let block_count = filesize.div_ceil(bufsize as u64) as u32;
+        //
+        // Written down from the input's *real* length, not from `filesize`:
+        // with stdin and no `-s`, `filesize` is the 25 gb default the match
+        // finder is sized for, and a header built from it disagreed with the
+        // footer -- every v5 archive compressed through a pipe exited 0 and
+        // could not be decompressed (2.0.0-2.1.1). The input is seekable
+        // here (the CLI spools stdin before encoding), so the length is known
+        // before the header is written. v4 records neither field, and the
+        // declared size still sizes the match finder in both, as in the C++.
+        let actual = input.seek(SeekFrom::End(0))?;
+        input.seek(SeekFrom::Start(0))?;
+        let block_count = actual.div_ceil(bufsize as u64) as u32;
         output.write_all(
             &v5::Header {
                 flags: if opts.dup_meta.is_some() { v5::FLAG_HAS_DUP } else { 0 },
@@ -400,7 +411,7 @@ pub fn encode<R: Read + Seek, W: Write>(
                 hash_size: if hash.name.is_empty() { 0 } else { hash.hash_size },
                 max_match: v5::DEFAULT_MAX_MATCH,
                 block_count,
-                original_size: filesize,
+                original_size: actual,
             }
             .encode(),
         )?;
