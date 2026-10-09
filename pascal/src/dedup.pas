@@ -21,7 +21,7 @@ unit Dedup;
 {$OVERFLOWCHECKS OFF}
 interface
 
-uses SysUtils, Classes, Widths, Hashes;
+uses SysUtils, Classes, Widths, Hashes, StreamIO;
 
 const
   DUP_MAGIC   = DWord($52505544);   { "DUPR" LE }
@@ -542,12 +542,12 @@ end;
 { ---------------------------------------------------------- streaming --- }
 
 function ReadSome(S: TStream; var B: TBytes; N: QWord): QWord;
-var got: LongInt;
 begin
-  { fi.read(&mut work): UNA lectura, como el Rust (que corta en got < buf) }
-  got := S.Read(B[0], LongInt(N));
-  if got < 0 then got := 0;
-  Result := QWord(got);
+  { read_fill: llena el buffer como un fread. El llamador toma got < buf por
+    fin de la entrada, asi que una lectura corta (un pipe, mas de 2 GiB) no
+    puede cortar ahi. }
+  if N = 0 then Exit(0);
+  Result := ReadUpTo(S, B[0], N);
 end;
 
 function EncodeStreaming(const InPath, BodyPath: AnsiString; const P: TDupParams;
@@ -602,7 +602,7 @@ begin
           begin
             if QWord(Length(cmpBuf)) < clen then SetLength(cmpBuf, clen);
             fb.Seek(Int64(uniqueOff[uidx]), soBeginning);
-            fb.ReadBuffer(cmpBuf[0], LongInt(clen));
+            ReadExact(fb, cmpBuf[0], clen);
             fb.Seek(Int64(bodyPos), soBeginning);
             if not CompareMem(@cmpBuf[0], @work[chunks.W[ci].S], clen) then isDup := False;
           end;
@@ -622,7 +622,7 @@ begin
           SetLength(uniqueLen, Length(uniqueLen) + 1);
           uniqueLen[High(uniqueLen)] := DWord(clen);
         end;
-        fb.WriteBuffer(work[chunks.W[ci].S], LongInt(clen));
+        WriteAll(fb, work[chunks.W[ci].S], clen);
         bodyPos := bodyPos + clen;
         Inc(uniqueCount);
         Inc(ci);

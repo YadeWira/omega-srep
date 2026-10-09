@@ -717,6 +717,22 @@ pub fn decode_split(meta: &[u8], body: &[u8]) -> Result<Vec<u8>, i32> {
 
 // ------------------------------------------------------------ streaming --
 
+/// Fills `buf` like C's `fread`: one `read` can return short (a pipe, or a
+/// request over the ~2 GiB a single `read(2)` moves), and the caller takes a
+/// short count for end of input, which would drop the rest of the file.
+fn read_fill<R: Read + ?Sized>(r: &mut R, buf: &mut [u8]) -> std::io::Result<usize> {
+    let mut got = 0;
+    while got < buf.len() {
+        match r.read(&mut buf[got..]) {
+            Ok(0) => break,
+            Ok(n) => got += n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(got)
+}
+
 /// Streaming encoder: reads `in_path` in `buf_size`-sized chunks, runs
 /// CDC + dedup on each, writes unique chunks to `body_path` as they are
 /// decided, and keeps only the chunk table in memory. Returns the meta
@@ -768,7 +784,7 @@ pub fn encode_streaming(
     let mut body_pos: u64 = 0;
 
     loop {
-        let got = fi.read(&mut work).map_err(|_| DEDUP_ERR_INVAL)?;
+        let got = read_fill(&mut fi, &mut work).map_err(|_| DEDUP_ERR_INVAL)?;
         if got == 0 {
             break;
         }
