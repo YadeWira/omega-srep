@@ -11,6 +11,8 @@ what happened in 2.0.0.
 
 ## [Unreleased]
 
+## [2.1.1] — 2026-10-09
+
 ### Fixed
 
 - **Four crafted-archive panics in the decoders.** `-d` aborted with a Rust
