@@ -95,6 +95,11 @@ var
   k: DWord;
   c: LongInt;
   hsh: QWord;
+  { el lazo caliente trabaja sobre copias locales: hash1 en un registro y la
+    tabla por puntero, sin pasar por el record ni por el indice dinamico }
+  hv, prime, primeL, hmask: QWord;
+  pd: PByte;
+  chunkArr: PDWord;
 
   procedure DecodeNext(BasicPos: QWord);
   var m: TLzMatch; used: QWord;
@@ -116,6 +121,11 @@ begin
   if 2 * L > BlockSize then Exit;
 
   PolyInit(hash1, L, PRIME1);
+  prime := hash1.Prime;
+  primeL := hash1.PrimeL;
+  pd := @Dict[BufOff];
+  chunkArr := @T.ChunkArr[0];
+  hmask := T.HashSize1;
 
   { --- los primeros L bytes (compress.cpp:78-94) --- }
   PolyMoveTo(hash1, Dict, BufOff);
@@ -159,30 +169,41 @@ begin
         PolyMoveTo(hash1, Dict, BufOff + i);
       end
       else
+      begin
+        hv := hash1.Value;
         while i + X <= nextI do
           for c := 1 to X do
           begin
-            PolyUpdate(hash1, Dict[BufOff + i], Dict[BufOff + i + L]);
+            hv := hv * prime + QWord(pd[i + L]) - primeL * QWord(pd[i]);
             Inc(i);
           end;
+        hash1.Value := hv;
+      end;
 
       lastI := i + LOOKAHEAD;
       if nextChunk < lastI then lastI := nextChunk;
 
-      { el lote: cuatro posiciones mas, guardando las candidatas }
+      { el lote: cuatro posiciones mas, guardando las candidatas. Una
+        candidata cuyo primer slot de chunkarr esta vacio no se guarda:
+        HtFindMatch la descartaria en el primer paso (NOT_FOUND), y entre el
+        lote y la busqueda nada escribe chunkarr, asi que el orden y el
+        resultado de las que quedan son los mismos. }
       npairs := 0;
+      hv := hash1.Value;
       while i < lastI do
         for c := 1 to X do
         begin
-          PolyUpdate(hash1, Dict[BufOff + i], Dict[BufOff + i + L]);
+          hv := hv * prime + QWord(pd[i + L]) - primeL * QWord(pd[i]);
           Inc(i);
-          if (i >= lastMatchEnd) and (i < matchStart) then
+          if (i >= lastMatchEnd) and (i < matchStart) and
+             (chunkArr[hv and hmask] <> NOT_FOUND) then
           begin
-            pairH[npairs] := hash1.Value;
+            pairH[npairs] := hv;
             pairP[npairs] := i;
             Inc(npairs);
           end;
         end;
+      hash1.Value := hv;
 
       { chunkarr, buscando un match }
       for pi_ := 0 to npairs - 1 do
