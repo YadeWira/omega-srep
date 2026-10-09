@@ -13,6 +13,11 @@ program osrep;
   -s dimensiona el match finder para 25 GiB y no entra ("Out of memory"). Con
   el, un Windows de 64 bits le da 4 GB. }
 {$IFDEF WIN32}{$SETPEFLAGS $20}{$ENDIF}
+{ DEP y ASLR, como los .exe de MinGW del Rust: NX_COMPAT ($100) y
+  DYNAMIC_BASE ($40), mas HIGH_ENTROPY_VA ($20) en x64. FPC los deja en 0;
+  DYNAMIC_BASE necesita la seccion .reloc, que build.sh pide con -WR. }
+{$IFDEF WIN64}{$SETPEOPTFLAGS $160}{$ENDIF}
+{$IFDEF WIN32}{$SETPEOPTFLAGS $140}{$ENDIF}
 {$RANGECHECKS OFF}
 {$OVERFLOWCHECKS OFF}
 

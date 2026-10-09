@@ -370,7 +370,13 @@ round-trip**.
   `LongInt`.** `LongInt(n)` con n ≥ 2 GiB da negativo, y con los range checks
   apagados no avisa nada. Rust acepta bloques de hasta 4 GiB, así que eso se
   rompía **también en x64**. Todo largo que llega a un stream va por tramos de
-  1 GiB (`SinkRead`, `SinkWrite`).
+  1 GiB: `SinkRead`/`SinkWrite` en el decoder y, desde la fase 8,
+  `src/streamio.pas` (`ReadUpTo`, `ReadExact`, `WriteAll`) en todo lo demás.
+  **La trampa estaba anotada acá desde la fase 4 y el encoder la tuvo igual
+  hasta la fase 8**: con `-b2g`/`-b3g`/`-b4g` el `Read` del anillo recibía una
+  cuenta negativa, devolvía 0, y salía un archivo **sin bloques con exit 0**.
+  Anotar una trampa no la barre: al anotarla, `grep -n 'LongInt(' src/*.pas`
+  y revisar cada sitio, no solo el que mordió.
 * **`THandleStream.Seek` no lanza excepciones.** Con un offset que no entra en
   un `Int64` (o que el sistema de archivos rechaza) devuelve -1 y **deja la
   posición donde estaba**: la lectura que sigue lee de otro lado, sin error.
@@ -472,10 +478,19 @@ round-trip**.
   (en `osrep.lpr`) cuenta lo escrito y contesta `Seek(0, soCurrent)` con eso;
   cualquier otro seek es un error. Además bufferea: el encoder escribe de a
   pedazos chicos.
-* **Comprimir desde stdin sin `-s` usa ~1,5× la memoria del Rust** (1,5 GB
+* **Comprimir desde stdin sin `-s` usaba ~1,5× la memoria del Rust** (1,5 GB
   contra 1,0 GB de pico, medido con `VmHWM`): `SetLength` pone a cero las
   tablas dimensionadas para 25 GiB y eso las toca enteras, mientras que el
-  Rust las pide con calloc. No cambia la salida; queda anotado para la fase 8.
+  Rust las pide con calloc. Resuelto en la fase 8 con `zeropages.pas` (10 MB
+  de pico en ese caso). Efecto lateral que hay que saber: un `-b` absurdo que
+  antes fallaba con "Out of memory" ahora **se mapea y sigue**, y eso destapó
+  el `LongInt` de las cuentas de stream (la trampa de arriba).
+* **FPC deja `DllCharacteristics` en 0: sin DEP ni ASLR.** Los `.exe` de MinGW
+  del Rust traen `NX_COMPAT` y `DYNAMIC_BASE` (y `HIGH_ENTROPY_VA` en x64);
+  los de FPC, nada. `{$SETPEOPTFLAGS $160}` (win64) / `$140` (win32) en
+  `osrep.lpr` los pide, pero `DYNAMIC_BASE` sin sección `.reloc` no hace
+  nada: build.sh compila los dos targets de Windows con `-WR`. Lo chequea
+  `pascal_cli_conformance.sh` con `objdump`.
 * **`zsh` no parte `$args` en palabras.** Un bucle de humo con
   `for args in "-m5f --format=v4"` le pasó al binario un solo argumento y los
   dos binarios "fallaron igual". Los scripts de prueba van con `bash`.

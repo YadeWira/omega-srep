@@ -65,6 +65,22 @@ if [ -f "$X86" ] && command -v objdump >/dev/null 2>&1; then
     pass=$((pass + 1))
 fi
 
+say "los .exe piden DEP y ASLR, como los de MinGW del Rust"
+# FPC deja DllCharacteristics en 0: sin NX_COMPAT ni DYNAMIC_BASE, Windows
+# no aplica DEP ni ASLR al proceso. DYNAMIC_BASE sin .reloc no sirve de nada.
+for exe in pascal/bin/osrep-windows-x86.exe pascal/bin/osrep-windows-x86_64.exe; do
+    [ -f "$exe" ] && command -v objdump >/dev/null 2>&1 || continue
+    pe=$(LC_ALL=C objdump -p "$exe"); sec=$(LC_ALL=C objdump -h "$exe")
+    for f in NX_COMPAT DYNAMIC_BASE; do
+        printf '%s\n' "$pe" | grep -q "$f" || fail "$exe sin $f ({\$SETPEOPTFLAGS} en osrep.lpr)"
+    done
+    case "$exe" in *x86_64*)
+        printf '%s\n' "$pe" | grep -q HIGH_ENTROPY_VA || fail "$exe sin HIGH_ENTROPY_VA" ;;
+    esac
+    printf '%s\n' "$sec" | grep -q '\.reloc' || fail "$exe sin .reloc (-WR en build.sh)"
+    pass=$((pass + 1))
+done
+
 # Fase 7: la CLI entera. Lo que sigue compara el Pascal con el Rust desde la
 # linea de comandos; la puerta completa es tests/rust_cli_conformance.sh con
 # OSREP_PORT_BIN apuntando al Pascal (OSREP_PASCAL_FULL=1 la corre al final).

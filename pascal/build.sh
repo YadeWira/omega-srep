@@ -29,9 +29,9 @@ compile() {
 build3() {
     local prog="$1" lin="$2" w64="$3" w32="$4"
     compile fpc "$lin" "$prog" -FU"$OUT/units-linux"
-    compile "$X/ppcrossx64" "$w64" "$prog" -Twin64 -Px86_64 \
+    compile "$X/ppcrossx64" "$w64" "$prog" -Twin64 -Px86_64 -WR \
         -Fu"$X/units/x86_64-win64/*" -FU"$OUT/units-win64"
-    compile "$X/ppcross386" "$w32" "$prog" -Twin32 -Pi386 \
+    compile "$X/ppcross386" "$w32" "$prog" -Twin32 -Pi386 -WR \
         -Fu"$X/units/i386-win32/*" -FU"$OUT/units-win32"
     printf '  %-13s %9s %9s %9s\n' "$prog" \
         "$(stat -c%s "$OUT/$lin")" "$(stat -c%s "$OUT/$w64")" "$(stat -c%s "$OUT/$w32")"
