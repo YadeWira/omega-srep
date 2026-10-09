@@ -11,6 +11,29 @@ what happened in 2.0.0.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Four crafted-archive panics in the decoders.** `-d` aborted with a Rust
+  panic (exit 101, a backtrace hint instead of an error) on archives built to
+  hit an unchecked case; each now fails with a clean error, exit 4. Found by
+  the adversarial review of the Pascal port, which fails cleanly in all of
+  them. None loses data — they are corrupt inputs either way — but a panic is
+  the wrong answer to a bad file.
+  - A v4 footer whose `total_stat_size` is near 2^64 wrapped the size check
+    under the file size, then allocating it overflowed. The sum is now checked
+    ("footer + index exceeds the file size").
+  - A header declaring a block digest shorter than its hash produces (16 bytes
+    for sha1) sliced past the stored digest, in the v3/v4 and v1/v2 decoders.
+    It now reports a checksum mismatch, as v5 already did.
+  - A v1 header with `base_len` 0 divided by zero at the first match record
+    (the C++ dies on SIGFPE there). It is checked at that point, so such an
+    archive with no records still decodes as before.
+  - A forged zero-length record restoring a spill slot under `-vmblock=0`
+    walked the empty slot past its end. Now "spilled block overruns its slot".
+
+  `tests/decode_conformance.sh` builds one archive per case and requires a
+  clean failure; each was confirmed to panic on 2.1.0.
+
 ## [2.1.0] — 2026-09-22
 
 ### Added

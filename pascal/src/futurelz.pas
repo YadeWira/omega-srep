@@ -604,7 +604,8 @@ end;
   la lectura escribiendo fuera del buffer). Para fallar en el mismo lugar que
   el read_exact del Rust, antes de tocar nada se exige que el slot entero
   exista en el archivo. Los registros los escribio VmSaveToDisk, asi que
-  siempre terminan dentro del slot; si no, el Rust hace panic y aca se falla. }
+  siempre terminan dentro del slot; si no (una marca falsa con -vmblock=0),
+  los dos fallan con 'overruns its slot'. }
 procedure VmRestoreFromDisk(var VM: TVirtualMemory; var MM: TMemoryManager;
                             var H: TMatchHeap; Block: QWord);
 var
@@ -619,8 +620,8 @@ begin
   while MMAvailable(MM) < VM.VmBlock do
     if VmSaveToDisk(VM, MM, H) = 0 then
       Fail(deBadData, 'cannot free enough VM space to restore a spilled block');
-  if VM.VmBlock < 4 then
-    Fail(deBadData, 'VM block too small to hold a spilled block');
+  { Sin chequeo de VmBlock < 4 aca: como el Rust, con 1..3 falla la lectura
+    del slot y con 0 el recorrido ('overruns its slot'). }
   blk := DWord(Block);            { truncado a 32 bits, como el `as u32` }
   off := QWord(blk) * VM.VmBlock;
   f := VmSpillFile(VM);
@@ -918,7 +919,12 @@ begin
         if fv <> 1 then Fail(deContainer, 'incompatible footer format');
         statSize := QWord(LE32(footer, 0)) or (QWord(LE32(footer, 4)) shl 32);
         footerSize := QWord(LE32(footer, 8));
-        stSum := fahs + footerSize + statSize;  { suma con wrap, como el Rust }
+        { suma con desborde chequeado, como el Rust desde el 2026-10-09: antes se
+          envolvia, pasaba el chequeo, y el Rust hacia panic reservando
+          statSize bytes }
+        if statSize > High(QWord) - fahs - footerSize then
+          Fail(deContainer, 'footer + index exceeds the file size');
+        stSum := fahs + footerSize + statSize;
         if stSum > filesize then Fail(deContainer, 'footer + index exceeds the file size');
         if footerSize < QWord(INDEX_LZ_FOOTER_SIZE) then
           Fail(deContainer, 'footer + index exceeds the file size');
@@ -1021,8 +1027,8 @@ begin
         if verified then
         begin
           want := DigestCompute(dig, outbuf);
-          { el Rust hace panic si el digest guardado es mas corto; se trata
-            como discrepancia, igual que en v5 }
+          { un digest guardado mas corto no puede coincidir: discrepancia,
+            igual que en v5 (el Rust hacia panic aca hasta el 2026-10-09) }
           if QWord(h.HashSize) < QWord(Length(want)) then
             Fail(deDigestMismatch, 'checksum of decoded block ' + IntToStr(blocks) +
                  ' differs from the stored one');

@@ -318,4 +318,76 @@ done
 
 say "truncation: $trunc_pass archives rejected cleanly"
 
-echo "decode_conformance: passed=$((total + v34 + spill_pass + corrupt_pass + trunc_pass)) mismatches=0"
+# --- Crafted archives that used to panic ----------------------------- #
+
+# Found by the adversarial review of the Pascal port (2026-09-26): the shipped
+# decoders panicked (exit 101) on each of these, where they must fail with a
+# clean error. One per cause:
+#   v1-baselen0   v1 header with base_len 0: division by zero in I/O-LZ
+#   footer-wrap   v4 total_stat_size near 2^64: the footer sum wrapped under
+#                 the file size, then allocating it was a capacity overflow
+#   short-digest  a header declaring a 16-byte digest for sha1 (20): slicing
+#                 the stored digest ran past it (v3, v4 and v2)
+#   vmblock0      a forged marking point restoring a slot with -vmblock=0:
+#                 walking the empty slot indexed past its end
+"$OSREP" -m3f $BFLAGS -t1 -hash- "$TMP/dup.bin" "$TMP/p.v1l0.osr" >/dev/null 2>&1
+"$OSREP" -m3 $BFLAGS -t1 "$TMP/repeat.bin" "$TMP/p.wrap.osr" >/dev/null 2>&1
+"$OSREP" -m3f $BFLAGS -t1 -hash=sha1 "$TMP/tiny.bin" "$TMP/p.sd3.osr" >/dev/null 2>&1
+"$OSREP" -m3 $BFLAGS -t1 -hash=sha1 "$TMP/tiny.bin" "$TMP/p.sd4.osr" >/dev/null 2>&1
+"$OSREP" -m1o $BFLAGS -t1 -hash=sha1 "$TMP/tiny.bin" "$TMP/p.sd2.osr" >/dev/null 2>&1
+"$OSREP" -m3f $BFLAGS -t1 -hash- "$TMP/repeat.bin" "$TMP/p.mark.osr" >/dev/null 2>&1
+python3 - "$TMP" <<'PY' || fail "could not craft the panic regressions"
+import struct, sys
+d = sys.argv[1]
+def rd(n): return bytearray(open(f"{d}/p.{n}.osr", "rb").read())
+def wr(n, b): open(f"{d}/p.{n}.osr", "wb").write(bytes(b))
+def word(b): return struct.unpack_from("<I", b, 8)[0]
+
+b = rd("v1l0"); b[8] = 1                        # v3 -> v1; its base_len is 0
+assert struct.unpack_from("<I", b, 12)[0] == 0
+wr("v1l0", b)
+
+b = rd("wrap")
+fahs = 16 + ((word(b) >> 16) & 255)
+fsz = struct.unpack_from("<I", b, len(b) - 16)[0]
+st = (1 << 64) - (fahs + fsz) + 8               # fahs + fsz + st wraps to 8
+struct.pack_into("<II", b, len(b) - 24, st & 0xFFFFFFFF, st >> 32)
+wr("wrap", b)
+
+for n in ("sd3", "sd4", "sd2"):
+    b = rd(n); w = word(b)
+    assert ((w >> 24) + 16) & 255 == 20         # sha1
+    struct.pack_into("<I", b, 8, w & 0x00FFFFFF)  # declare 16
+    at = 16 + ((w >> 16) & 255) + 12 + 16         # the one block header
+    del b[at:at + 4]
+    wr(n, b)
+
+b = rd("mark"); w = word(b)
+L = struct.unpack_from("<I", b, 12)[0]
+hs = ((w >> 24) + 16) & 255
+p = 16 + ((w >> 16) & 255)
+while True:                                     # first block with a record
+    lb, osz, ssz = struct.unpack_from("<III", b, p)
+    if ssz >= 16: break
+    p += 12 + hs + ssz + lb
+struct.pack_into("<I", b, p + 12 + hs + 12, (1 << 32) - L if L else 0)  # len + L wraps to 0
+wr("mark", b)
+PY
+
+panic_pass=0
+for c in "v1-baselen0|io-lz|v1l0|" "footer-wrap|future-lz|wrap|" \
+         "short-digest-v3|future-lz|sd3|" "short-digest-v4|future-lz|sd4|" \
+         "short-digest-v2|io-lz|sd2|" "vmblock0|future-lz|mark|--vmblock=0"; do
+    IFS='|' read -r tag decoder name opt <<<"$c"
+    rc=0
+    # shellcheck disable=SC2086
+    out=$("$RS" "$decoder" "$TMP/p.$name.osr" "$TMP/p.$name.out" $opt 2>&1) || rc=$?
+    [ "$rc" -eq 1 ] || fail "[panic/$tag] exit $rc, expected a clean error (1): $out"
+    case "$out" in
+        *panic*) fail "[panic/$tag] panicked: $out" ;;
+    esac
+    panic_pass=$((panic_pass + 1))
+done
+say "panics: $panic_pass crafted archives that used to panic now fail cleanly"
+
+echo "decode_conformance: passed=$((total + v34 + spill_pass + corrupt_pass + trunc_pass + panic_pass)) mismatches=0"

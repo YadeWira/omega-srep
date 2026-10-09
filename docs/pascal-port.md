@@ -309,15 +309,17 @@ round-trip**.
   contenido descomprimido quedaba fuera del temporal. Todo eso vive en
   `spillfile.pas`, con la cadena de `$IF` terminada en `$FATAL`.
 * **El oráculo también tiene bugs, y el port no los copia.** En la revisión de
-  la 4b, el Rust publicado hizo **panic** (exit 101) donde el Pascal falla
-  limpio: en una sola de las campañas, 933 archivos corruptos dieron `capacity
-  overflow` al reservar lo que declara el footer (`future_lz.rs:839`, `:373`);
-  aparte, el slice de un digest más corto que el descriptor, y la división por
-  cero de un v1 con `base_len = 0` (`decompress.rs:155`; el C++ muere con
-  SIGFPE). El criterio del harness es «los dos fallan», así que eso no es una
-  divergencia. Pero son bugs del binario que se publica hoy, y hay que
-  arreglarlos en Rust también (el mismo criterio que el port a Rust aplicó al
-  C++).
+  la 4b, el Rust publicado (2.1.0) hizo **panic** (exit 101) donde el Pascal
+  falla limpio: 933 archivos corruptos en una sola de las campañas. Las
+  causas son cuatro: la suma del footer v4 que se envolvía y terminaba en
+  `capacity overflow`, el slice de un digest más corto que el descriptor, la
+  división por cero de un v1 con `base_len = 0` (el C++ muere con SIGFPE), y
+  el recorrido de un slot vacío con `-vmblock=0`. El criterio del harness es «los dos fallan», así que
+  no eran divergencias, pero sí bugs del binario que se publica. **Arreglados
+  en Rust el 2026-10-09**, fallando en el mismo punto donde reventaban (ver
+  CHANGELOG), con un caso por causa en `tests/decode_conformance.sh`; y el
+  Pascal se alineó a esos puntos (la suma chequeada del footer, y sin chequeo
+  previo de `VmBlock < 4`), así que ahora los dos dan el mismo error.
 * **El orden de los chequeos es observable.** Un archivo truncado cuya lista
   de STATs además no es múltiplo de 4 da *truncated* en Rust porque lee antes
   de validar; validar primero da *bad data*. Lo mismo con cualquier par de

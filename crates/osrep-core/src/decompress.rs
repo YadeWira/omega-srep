@@ -152,6 +152,12 @@ fn decompress_block<S: Read + Write + Seek>(
         // Rounds the destination down to a multiple of L1, then subtracts the
         // offset. The subtraction wraps like the C's unsigned Offset, and the
         // src >= dest test below rejects the result.
+        // A v1 header with base_len 0 makes L1 zero; the division panicked (and
+        // the C++ dies on SIGFPE). Checked here, where it used to panic, so a v1
+        // like that with no records still decodes as before.
+        if l1 == 0 {
+            return Err(DecodeError::BadData("v1 archive with a zero base length"));
+        }
         let mut src = (dest / l1 * l1).wrapping_sub(offset);
 
         if lit_len > (literals.len() - in_pos) as u64
@@ -372,9 +378,10 @@ pub fn decode_io_lz<R: Read + Seek, S: Read + Write + Seek>(
 
         if verified {
             let want = digest.compute(&outbuf);
-            let got = &block_buf[crate::container::BLOCK_HEADER_SIZE
-                ..crate::container::BLOCK_HEADER_SIZE + want.len()];
-            if got != want.as_slice() {
+            // A declared digest shorter than the hash cannot match; slicing
+            // `want.len()` bytes out of it panicked.
+            let got = block_buf[crate::container::BLOCK_HEADER_SIZE..].get(..want.len());
+            if got != Some(want.as_slice()) {
                 return Err(DecodeError::DigestMismatch { block: blocks });
             }
         }

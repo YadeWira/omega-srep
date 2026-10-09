@@ -150,9 +150,9 @@ begin
 
     basicPos := BlockStart + outPos;
     dest := basicPos + litLen;
-    { Un v1 con base_len = 0 divide por cero. El Rust hace panic justo aca (y
-      el C++ muere con SIGFPE); se falla limpio en el mismo punto, asi que un
-      v1 asi SIN records sigue decodificando, como en el Rust. }
+    { Un v1 con base_len = 0 divide por cero. El Rust hacia panic justo aca
+      hasta el 2026-10-09 (y el C++ muere con SIGFPE); los dos fallan limpio en el
+      mismo punto, asi que un v1 asi SIN records sigue decodificando. }
     if l1 = 0 then Exit(deBadData);
     { Redondea el destino hacia abajo a un multiplo de L1 y resta el offset.
       La resta se envuelve como el `Offset` sin signo del C; el chequeo

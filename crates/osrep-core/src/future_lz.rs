@@ -368,15 +368,22 @@ impl VirtualMemory {
         self.total_read += self.vm_block;
         self.free_blocks.push(block);
 
+        // `save_to_disk` always leaves the terminator inside the slot, but a
+        // marking point forged in the archive can name a slot this decode never
+        // wrote, and `-vmblock=0` makes that slot empty: walking it indexed
+        // past the end and panicked. Running off the slot is broken data.
+        const OVERRUN: DecodeError = DecodeError::BadData("spilled block overruns its slot");
         let mut p = 0usize;
         loop {
-            let len = u32::from_le_bytes(data[p..p + 4].try_into().unwrap());
+            let head = data.get(p..p + 4).ok_or(OVERRUN)?;
+            let len = u32::from_le_bytes(head.try_into().unwrap());
             if len == 0 {
                 break; // end-of-block mark
             }
-            let src = u64::from_le_bytes(data[p + 4..p + 12].try_into().unwrap());
-            let dest = u64::from_le_bytes(data[p + 12..p + 20].try_into().unwrap());
-            let index = mm.save(&data[p + 20..p + 20 + len as usize]);
+            let rec = data.get(p + 4..p + 20 + len as usize).ok_or(OVERRUN)?;
+            let src = u64::from_le_bytes(rec[0..8].try_into().unwrap());
+            let dest = u64::from_le_bytes(rec[8..16].try_into().unwrap());
+            let index = mm.save(&rec[16..]);
             heap.insert(Match {
                 src,
                 dest,
@@ -734,8 +741,14 @@ pub fn decode_future_lz<R: Read + Seek, S: Read + Write + Seek>(
 
         let footer_size = u64::from(head.footer_size);
         let stat_size = head.total_stat_size;
-        // `if (compsize > filesize) error("Broken ... footer")`.
-        if full_archive_header_size + footer_size + stat_size > filesize {
+        // `if (compsize > filesize) error("Broken ... footer")`. Checked: a
+        // `total_stat_size` near 2^64 used to wrap the sum under the file size,
+        // pass, and then panic allocating `stat_size` bytes (capacity overflow).
+        let compsize = full_archive_header_size
+            .checked_add(footer_size)
+            .and_then(|v| v.checked_add(stat_size))
+            .ok_or(ContainerError::FooterExceedsFile)?;
+        if compsize > filesize {
             return Err(ContainerError::FooterExceedsFile.into());
         }
         let table_size = footer_size
@@ -836,8 +849,10 @@ pub fn decode_future_lz<R: Read + Seek, S: Read + Write + Seek>(
 
         if verified {
             let want = digest.compute(&outbuf);
-            let got = &block_buf[BLOCK_HEADER_SIZE..BLOCK_HEADER_SIZE + want.len()];
-            if got != want.as_slice() {
+            // The header may declare a digest shorter than the hash produces;
+            // slicing `want.len()` bytes out of it panicked. It cannot match.
+            let got = block_buf[BLOCK_HEADER_SIZE..].get(..want.len());
+            if got != Some(want.as_slice()) {
                 return Err(DecodeError::DigestMismatch { block: blocks });
             }
         }
