@@ -147,6 +147,9 @@ ignorando.
         lzcodec.pas        el codec de records LZ (ENCODE/DECODE_LZ_MATCH)
         hashtable.pas      el match finder de -m3/-m4/-m5
         fixedcompress.pas  el compresor de un bloque de -m3/-m4/-m5
+        inmem.pas          el REP en memoria de -m0 (y de -d)
+        cdc.pas            chunking por contenido de -m1/-m2
+        cpufeat.pas        si la CPU tiene SSE4.2 (elige la ruta de CDC)
         encoder.pas        el driver de compresion
         spillfile.pas      el temporal del spill, creado como el Rust (lo
                            unico que depende de la plataforma)
@@ -191,7 +194,7 @@ round-trip**.
 | **4c** | Decoder v5 | **hecha** (2026-10-09): 1.764 comprobaciones en Linux, i386 y x64 —60 archivos (12 métodos y hashes, `-dup` incluido) y el spill bajo cuatro presupuestos con la línea de estadísticas entera, ~1.700 archivos dañados que fallan **con el mismo mensaje** que el Rust, y 59 mutaciones que el Rust acepta y el Pascal reconstruye igual. Verificado que el harness atrapa tres bugs inyectados (después de agregar los casos que hicieron falta para dos de ellos). Win7 real: 70/70 en i386 y en x64 |
 | **5** | Encoder: los 17 modos | `encode_conformance`, byte-idéntico en todos. En cuatro partes, cada una con su gate contra el encoder Rust en `tests/pascal_encode_conformance.sh` (lo no portado se cuenta aparte, no como fallo): |
 | 5a | match finder (`-m3`/`-m4`/`-m5`) y driver, contenedor I/O-LZ | **hecha** (2026-10-09): 83 archivos byte-idénticos en Linux, i386 y x64 — `-m3o`/`-m4o`/`-m5o` con `-b1mb`, `-l1024`, `-l256`, los seis hashes, 20 MiB cruzando bloques y entradas degeneradas |
-| 5b | REP en memoria (`-m0`, `-d`) y CDC (`-m1`/`-m2`) | pendiente |
+| 5b | REP en memoria (`-m0`, `-d`) y CDC (`-m1`/`-m2`) | **hecha** (2026-10-09): 171 archivos byte-idénticos en Linux, i386 y x64 — `-m0o` dando vueltas al anillo, `-d` sobre `-m3o`/`-m4o`/`-m5o`, y CDC por **las dos rutas** del hash de frontera (CRC32C con SSE4.2, polinomial con `OSREP_CDC_POLY=1`), sobre una entrada en la que las dos rutas dan archivos distintos |
 | 5c | segunda pasada: Index-LZ (v4) y Future-LZ (v3) | pendiente |
 | 5d | writer v5 | pendiente |
 | **6** | `-dup` y `--verify` | `dup_v5_conformance`, `format_v5_conformance` |
@@ -303,6 +306,23 @@ round-trip**.
   completa con ceros al escribirlo (el archivo queda byte a byte como el del
   Rust), y la restauración lee registro por registro: i386 decodifica bien con
   `--vmblock` de 2³¹, 2³² y 2³²+1, igual que Rust.
+* **El anillo del encoder tambien es un `vec![0u8; n]` de Rust.** Con el `-d`
+  por defecto de `-m0` mide 528 MiB; Rust no los ocupa hasta escribirlos, y
+  `SetLength` los ocuparía al arrancar aunque la entrada fuera de 5 bytes. El
+  anillo se llena bloque a bloque y nunca se lee una zona sin escribir, así
+  que crece a medida, en ceros, que es exactamente lo que ve Rust ahí.
+* **Una prueba de CDC necesita una entrada que distinga las dos rutas.** El
+  hash de frontera se elige por la CPU (SSE4.2: CRC32C; si no, polinomial) y
+  las dos rutas dan archivos distintos, pero solo si hay fronteras que mover:
+  la entrada periódica del harness (`dup4m`) no tiene ninguna, y con ella la
+  ruta polinomial "pasaba" sin probarse. El harness usa 16 copias de 1 MiB
+  aleatorio y **verifica primero que las dos rutas difieran**. FPC no trae
+  detección de SSE4.2: `cpufeat.pas` hace el CPUID a mano, en asm para
+  x86-64 y para i386, y que i386 bajo wine dé los archivos de la ruta CRC es
+  lo que prueba que esa rama corre.
+* **En bash, `VAR=x funcion` no llega seguro a los procesos que la función
+  lanza.** Para correr un caso con `OSREP_CDC_POLY=1` el harness usa `export`
+  y `unset` explícitos.
 * **Los conteos de `TStream.Read`/`Write`/`ReadBuffer`/`WriteBuffer` son
   `LongInt`.** `LongInt(n)` con n ≥ 2 GiB da negativo, y con los range checks
   apagados no avisa nada. Rust acepta bloques de hasta 4 GiB, así que eso se

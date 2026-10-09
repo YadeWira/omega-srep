@@ -11,8 +11,9 @@ unit Encoder;
   suele haber llenado con el bloque que sigue. Leer un bloque adelante lo
   reproduce de forma determinista.
 
-  Fase 5a: -m3/-m4/-m5 con el contenedor I/O-LZ (sufijo o, formato v1/v2) y
-  sin -d. Lo demas sale como "no portado". }
+  Hasta la 5b: todos los compresores (-m0 a -m5, con -d) sobre el contenedor
+  I/O-LZ (sufijo o, formato v1/v2). Los otros contenedores salen como "no
+  portado". }
 
 {$MODE OBJFPC}{$H+}
 {$RANGECHECKS OFF}
@@ -20,6 +21,7 @@ unit Encoder;
 interface
 
 uses SysUtils, Classes, Widths, Hashes, Container, LzCodec, HashTable, FixedCompress;
+
 
 const
   DEFAULT_BUFSIZE  = QWord(8) shl 20;        { -b, srep.cpp:288 }
@@ -57,7 +59,7 @@ procedure Encode(Input, Output: TStream; const Opts: TEncodeOptions; Kind: TEncK
 
 implementation
 
-uses Rolling, HashesKeyed, Vmac;
+uses Rolling, HashesKeyed, Vmac, Inmem, Cdc;
 
 const
   BUFFERS = 2;           { io.cpp:90: el anillo lleva dos bloques de margen }
@@ -152,6 +154,17 @@ begin
   B[At + 2] := Byte(V shr 16); B[At + 3] := Byte(V shr 24);
 end;
 
+{ Hace crecer el anillo (en ceros) hasta cubrir Need bytes, sin pasar de Ring. }
+procedure RingEnsure(var D: TBytes; Need, Ring: QWord);
+var want: QWord;
+begin
+  if Need <= QWord(Length(D)) then Exit;
+  want := QWord(Length(D)) * 2;
+  if want < Need then want := Need;
+  if want > Ring then want := Ring;
+  SetLength(D, want);
+end;
+
 procedure WriteStats(S: TStream; const Stat: TStatList);
 var b: TBytes; i: QWord;
 begin
@@ -205,14 +218,15 @@ var
   stat, inStat: TStatList;
   literalBytes: DWord;
   hb: TBytes;
+  dictChunk: QWord;
+  inmem: TDictCompressor;
+  hashptr: TQList;
+  chunkKey: TVmac;
 begin
   if not HashByName(Opts.Hash, info) then
     raise EEncode.Create('UnknownHash("' + Opts.Hash + '")');
   cdc := Kind in [ekCdc, ekCdcZpaq];
-  if not (Kind in [ekDigest, ekFixed, ekFixedExhaustive]) then
-    raise ENotPorted.Create('mode not ported to Pascal yet');
   if Cont <> ecIoLz then raise ENotPorted.Create('container not ported to Pascal yet');
-  if Opts.DictSize <> 0 then raise ENotPorted.Create('-d not ported to Pascal yet');
 
   { los defaults de las opciones (srep.cpp:448-457), en el orden del C++ }
   minMatch := Opts.MinMatch;
@@ -228,6 +242,8 @@ begin
   if minMatch = 0 then
     if cdc then minMatch := 32 else minMatch := l;
   if Opts.DictMinMatch <> 0 then dictMinMatch := Opts.DictMinMatch else dictMinMatch := 512;
+  { -dc, NO -c: el compresor en memoria se arma con dict_chunk (srep.cpp:663) }
+  if Opts.DictChunk <> 0 then dictChunk := Opts.DictChunk else dictChunk := dictMinMatch div 8;
   baseLen := minMatch;
   if dictMinMatch < baseLen then baseLen := dictMinMatch;
   bufsize := Opts.BufSize;
@@ -257,13 +273,23 @@ begin
   Output.WriteBuffer(hb[0], Length(hb));
   if Length(seed) > 0 then Output.WriteBuffer(seed[0], Length(seed));
 
-  { COMPARE_DIGESTS = metodo <= -m3; PRECOMPUTE_DIGESTS = -m3; io_accelerator 1 }
-  HtInit(table, roundMatches, Kind in [ekInmem, ekCdc, ekCdcZpaq, ekDigest],
-         Kind = ekDigest, cdc, l, minMatch, 1, fileSize);
+  { COMPARE_DIGESTS = metodo <= -m3; PRECOMPUTE_DIGESTS = -m3; io_accelerator 1.
+    -m0 no tiene tabla. }
+  if Kind <> ekInmem then
+    HtInit(table, roundMatches, Kind in [ekInmem, ekCdc, ekCdcZpaq, ekDigest],
+           Kind = ekDigest, cdc, l, minMatch, 1, fileSize);
+  DcInit(inmem, Opts.DictSize, Opts.DictHashSize, dictMinMatch, dictChunk, baseLen);
+  CdcHasherInit(chunkKey);
 
-  { el anillo: el diccionario redondeado a bloques enteros, mas dos de margen }
+  { El anillo: el diccionario redondeado a bloques enteros, mas dos de margen.
+    Con el -d por defecto de -m0 son 528 MiB: el Rust los pide en ceros sin
+    tocarlos (vec![0u8; n]), y SetLength los ocuparia de verdad aunque la
+    entrada fuera de 5 bytes. Como el anillo se llena bloque a bloque y nunca
+    se lee una zona sin escribir, crece a medida -- con ceros, que es lo que
+    el Rust ve donde todavia no escribio. }
   ringSize := RoundUp(Opts.DictSize, bufsize) + BUFFERS * bufsize;
-  SetLength(dict, ringSize);
+  SetLength(dict, 0);
+  RingEnsure(dict, bufsize, ringSize);
 
   bufOffset := 0;
   nextPos := 0;
@@ -276,6 +302,7 @@ begin
   begin
     { lectura adelantada: llena la ranura siguiente }
     nextOffset := (bufOffset + bufsize) mod ringSize;
+    RingEnsure(dict, nextOffset + bufsize, ringSize);
     nextFilled := ReadBlockAt(Input, nextPos, dict, nextOffset, bufsize);
 
     SetLength(header, BLOCK_HEADER_SIZE + info.HashSize);
@@ -283,18 +310,40 @@ begin
     if HasherCompute(hasher, dict, bufOffset, filled, digest) then
       Move(digest[0], header[BLOCK_HEADER_SIZE], Length(digest));
 
-    HtPrepareBuffer(table, dict, bufOffset, filled, blockStart);
+    if Kind <> ekInmem then HtPrepareBuffer(table, dict, bufOffset, filled, blockStart);
 
     StatClear(stat);
     StatClear(inStat);
     literalBytes := 0;
-    { el cerco: len+1 / BASE_LEN / BASE_LEN. Empieza pasado el bloque, asi
-      que compress nunca lo alcanza: solo corta el recorrido. }
-    if not EncodeLzMatch(inStat, roundMatches, DWord(baseLen), DWord(filled + 1), baseLen,
-                         DWord(baseLen)) then
-      MatchTooSmall(DWord(baseLen), DWord(baseLen));
-    CompressFixed(table, dict, bufOffset, filled, roundMatches, l, minMatch, DWord(baseLen),
-                  blockStart, inStat, stat, literalBytes, Input);
+    case Kind of
+      ekInmem:
+        begin
+          { -m0: el pase en memoria ES el compresor; sin cerco ni segundo
+            compresor (srep.cpp:726-727) }
+          DcPrepareBuffer(inmem, hashptr, dict, bufOffset, filled);
+          DcCompress(inmem, dict, ringSize, bufOffset, filled, hashptr, literalBytes, stat);
+        end;
+      ekCdc, ekCdcZpaq:
+        CompressCdc(Kind = ekCdcZpaq, l, minMatch, blockStart, table, dict, bufOffset, filled,
+                    literalBytes, stat, chunkKey);
+    else
+      begin
+        { srep.cpp:722-724: el pase en memoria (solo con -d) escribe en la
+          lista auxiliar, y despues va el cerco len+1 / BASE_LEN / BASE_LEN.
+          Empieza pasado el bloque, asi que compress nunca lo alcanza: solo
+          corta el recorrido. }
+        if Opts.DictSize <> 0 then
+        begin
+          DcPrepareBuffer(inmem, hashptr, dict, bufOffset, filled);
+          DcCompress(inmem, dict, ringSize, bufOffset, filled, hashptr, literalBytes, inStat);
+        end;
+        if not EncodeLzMatch(inStat, roundMatches, DWord(baseLen), DWord(filled + 1), baseLen,
+                             DWord(baseLen)) then
+          MatchTooSmall(DWord(baseLen), DWord(baseLen));
+        CompressFixed(table, dict, bufOffset, filled, roundMatches, l, minMatch, DWord(baseLen),
+                      blockStart, inStat, stat, literalBytes, Input);
+      end;
+    end;
 
     bh.LiteralBytes := literalBytes;
     bh.OrigSize := DWord(filled);

@@ -42,6 +42,14 @@ open(os.path.join(d, "dup4m.bin"), "wb").write(unit * 8)
 open(os.path.join(d, "dup20m.bin"), "wb").write(unit * 40)   # cruza bloques y da la vuelta al anillo
 open(os.path.join(d, "empty.bin"), "wb").write(b"")
 open(os.path.join(d, "tiny.bin"), "wb").write(b"osrep")
+# 16 copias de 1 MiB aleatorio: la entrada con la que el port a Rust midio que
+# las dos rutas de CDC dan archivos distintos. dup4m es periodica y CDC no
+# encuentra fronteras en ella: con esa sola, las dos rutas coinciden y la
+# prueba de la ruta polinomial pasaria sin probar nada.
+import random
+random.seed(1)
+blk = bytes(random.randrange(256) for _ in range(1 << 20))
+open(os.path.join(d, "rnd16.bin"), "wb").write(blk * 16)
 PY
 
 # enc <entrada> <modo> <opciones...>: los dos encoders, --seed=7, cmp.
@@ -125,6 +133,25 @@ for input in $C/mixed.bin "$TMP/dup4m.bin" "$TMP/dup20m.bin"; do
     enc "$input" m2f
     enc "$input" m1o -l2048
     enc "$input" m1o -b1mb
+done
+
+say "CDC por las dos rutas del hash de frontera (CRC32C y polinomial)"
+# La CPU decide la ruta (SSE4.2); OSREP_CDC_POLY=1 fuerza la polinomial en los
+# dos encoders. Primero, que la entrada distinga las rutas.
+"$RS" m1o --seed=7 "$TMP/rnd16.bin" "$TMP/crc.osr" >/dev/null 2>&1
+OSREP_CDC_POLY=1 "$RS" m1o --seed=7 "$TMP/rnd16.bin" "$TMP/poly.osr" >/dev/null 2>&1
+cmp -s "$TMP/crc.osr" "$TMP/poly.osr" \
+    && fail "las dos rutas de CDC dan el mismo archivo: la prueba no distinguiria"
+for input in "$TMP/rnd16.bin" "$TMP/dup20m.bin"; do
+    for m in m1o m2o m1 m1f; do
+        enc "$input" "$m"
+        export OSREP_CDC_POLY=1          # explicito: un prefijo delante de una
+        enc "$input" "$m"                # funcion no llega seguro a sus hijos
+        unset OSREP_CDC_POLY
+    done
+done
+for m in m0o m3o m4o m5o; do
+    if [ "$m" = m0o ]; then enc "$TMP/rnd16.bin" "$m" -d16mb; else enc "$TMP/rnd16.bin" "$m"; fi
 done
 
 say "v5 (el contenedor por defecto)"
