@@ -46,9 +46,9 @@ function ZNew(var A: Pointer; TI: Pointer; Count: SizeInt; ElemSize: SizeUInt): 
 function ZTryNew(var A: Pointer; Count: QWord; ElemSize: SizeUInt): Boolean;
 
 { Libera un arreglo armado por ZNew y deja A en nil. Si A es un arreglo
-  comun (o nil), no hace nada: lo libera la finalizacion de siempre. Solo
-  para variables que paso por ZNew: una constante de arreglo dinamico
-  tambien lleva refcount -1. }
+  comun (o nil), no hace nada: lo libera la finalizacion de siempre. Una
+  constante de arreglo dinamico tambien lleva refcount -1; la distingue la
+  marca MAP_MAGIC que ZTryNew deja delante de la cabecera. }
 procedure ZFree(var A: Pointer);
 
 { True si A vive en un mapeo de ZNew (para las pruebas). }
@@ -76,6 +76,16 @@ const
   { los datos empiezan a 32 bytes del mapeo (alineados a 16 en los dos
     anchos); la cabecera va justo antes, y el largo del mapeo al principio }
   DATA_OFFSET = 32;
+  { en el byte 8 del mapeo (libre en los dos anchos: la cabecera empieza en
+    16 en x86-64 y en 24 en i386): distingue un mapeo propio de un arreglo
+    constante, que tambien lleva refcount -1 }
+  MAP_MAGIC = QWord($5A4F5352455A5047);
+
+function Owned(A: Pointer): Boolean; inline;
+begin
+  Result := (A <> nil) and (PDynHeader(PByte(A) - SizeOf(TDynHeader))^.RefCount < 0) and
+            (PQWord(PByte(A) - DATA_OFFSET + 8)^ = MAP_MAGIC);
+end;
 
 function OsMap(Size: PtrUInt): Pointer;
 begin
@@ -108,6 +118,7 @@ begin
   base := OsMap(PtrUInt(bytes + DATA_OFFSET));
   if base = nil then Exit;
   PPtrUInt(base)^ := PtrUInt(bytes + DATA_OFFSET);
+  PQWord(PByte(base) + 8)^ := MAP_MAGIC;
   h := PDynHeader(PByte(base) + DATA_OFFSET - SizeOf(TDynHeader));
   h^.RefCount := -1;
   h^.High := SizeInt(Count) - 1;
@@ -126,14 +137,13 @@ end;
 
 function ZIsMapped(A: Pointer): Boolean;
 begin
-  Result := (A <> nil) and (PDynHeader(PByte(A) - SizeOf(TDynHeader))^.RefCount < 0);
+  Result := Owned(A);
 end;
 
 procedure ZFree(var A: Pointer);
 var base: Pointer;
 begin
-  if A = nil then Exit;
-  if PDynHeader(PByte(A) - SizeOf(TDynHeader))^.RefCount >= 0 then Exit;
+  if not Owned(A) then Exit;
   base := PByte(A) - DATA_OFFSET;
   A := nil;
   OsUnmap(base, PPtrUInt(base)^);

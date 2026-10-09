@@ -171,6 +171,14 @@ type
 procedure NhPair(P, K: PQWord; NW: LongInt; out rh, rl, rh2, rl2: QWord);
 var ctx: TNhCtx; pc: ^TNhCtx;
 begin
+  { el lazo cuenta rcx de -NW a 0 de a 2 y solo para en 0 exacto: con NW
+    impar o <= 0 leeria fuera del buffer sin fin }
+  if (NW <= 0) or Odd(NW) then
+  begin
+    rh := 0; rl := 0; rh2 := 0; rl2 := 0;
+    if NW = 0 then Exit;
+    RunError(201);
+  end;
   ctx.P := P + NW;
   ctx.K := K + NW;
   ctx.N := -Int64(NW);

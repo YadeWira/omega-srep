@@ -75,6 +75,10 @@ want="${OSREP_PASCAL_VMAC_IMPL:-}"
 if [ -z "$want" ] && [ -z "${OSREP_PASCAL_HASHTOOL:-}" ] && [ "$(uname -m)" = x86_64 ]; then
     want=x86_64-asm
 fi
+if [ -z "$want" ] && [ -n "${OSREP_PASCAL_HASHTOOL:-}" ]; then
+    # un hashtool ajeno (wine) sin la rama esperada pasaria sin chequear nada
+    fail "OSREP_PASCAL_HASHTOOL sin OSREP_PASCAL_VMAC_IMPL (x86_64-asm o pascal)"
+fi
 if [ -n "$want" ]; then
     [ "$impl" = "$want" ] || fail "vmac NH compilado como '$impl', se esperaba '$want'"
     pass=$((pass + 1))
