@@ -49,6 +49,10 @@ type
 procedure HtInit(out T: THashTableRec; RoundMatches, CompareDigests, PrecomputeDigests,
                  Cdc: Boolean; L, MinMatch: QWord; IoAccelerator: LongInt; FileSize: QWord);
 
+{ Libera las tablas de HtInit (las que viven en paginas propias; el resto
+  lo libera la finalizacion de siempre). }
+procedure HtFree(var T: THashTableRec);
+
 { prepare_buffer: digests (-m3) y huellas de slices de los chunks enteros del
   bloque de BlockLen bytes que esta en Buf[BufOff] y empieza en Offset. }
 procedure HtPrepareBuffer(var T: THashTableRec; const Buf: TBytes; BufOff, BlockLen,
@@ -79,7 +83,7 @@ procedure VDigestCompute(const V: TVmac; const B: TBytes; At, Len: QWord; var Ou
 
 implementation
 
-uses Rolling;
+uses Rolling, ZeroPages;
 
 { ------------------------------------------------------------- slices --- }
 
@@ -110,7 +114,7 @@ begin
   { Una entrada de mas: check lee h[chunk+1], y el escaneo puede llegar al
     ultimo chunk del archivo (el avance de a cuatro se pasa de next_chunk).
     El C++ lee ahi el relleno de pagina de su BigAlloc, que es cero. }
-  SetLength(S.H, memreq + 1);
+  ZNew(Pointer(S.H), TypeInfo(S.H), memreq + 1, SizeOf(DWord));
 end;
 
 procedure SlicePrepareRange(var S: TSliceHash; const Buf: TBytes; BufOff, ChunkStart,
@@ -211,15 +215,30 @@ begin
   T.HashMask := not T.ChunknumMask;
   hashsize := RoundupToPowerOfTwo(MinHashSize(T.TotalChunks));
   T.HashSize1 := hashsize - 1;
-  SetLength(T.ChunkArr, hashsize);                   { en ceros }
-  if Cdc then SetLength(T.HashArr, 0) else SetLength(T.HashArr, T.TotalChunks);
+  { Todas en ceros, y en paginas que el sistema entrega al escribirlas
+    (zeropages.pas), como el calloc del Rust: con stdin sin -s se dimensionan
+    para 25 GiB y la mayor parte nunca se toca. HtFree las libera. }
+  ZNew(Pointer(T.ChunkArr), TypeInfo(T.ChunkArr), hashsize, SizeOf(DWord));
+  if Cdc then SetLength(T.HashArr, 0)
+  else ZNew(Pointer(T.HashArr), TypeInfo(T.HashArr), T.TotalChunks, SizeOf(DWord));
   T.CurChunk := 0;
-  if Cdc then SetLength(T.StartArr, T.TotalChunks) else SetLength(T.StartArr, 0);
+  if Cdc then ZNew(Pointer(T.StartArr), TypeInfo(T.StartArr), T.TotalChunks, SizeOf(QWord))
+  else SetLength(T.StartArr, 0);
   SliceInit(T.Slice, fs, L, MinMatch, IoAccelerator);
-  if CompareDigests then SetLength(T.DigestArr, T.TotalChunks * DIGEST_SIZE)
+  if CompareDigests then
+    ZNew(Pointer(T.DigestArr), TypeInfo(T.DigestArr), T.TotalChunks * DIGEST_SIZE, 1)
   else SetLength(T.DigestArr, 0);
   SetLength(key, VMAC_KEY_LEN_BYTES);                { clave cero: ver VDigestCompute }
   VmacSetKey(key, T.Digest);
+end;
+
+procedure HtFree(var T: THashTableRec);
+begin
+  ZFree(Pointer(T.ChunkArr));
+  ZFree(Pointer(T.HashArr));
+  ZFree(Pointer(T.StartArr));
+  ZFree(Pointer(T.Slice.H));
+  ZFree(Pointer(T.DigestArr));
 end;
 
 procedure HtPrepareBuffer(var T: THashTableRec; const Buf: TBytes; BufOff, BlockLen,

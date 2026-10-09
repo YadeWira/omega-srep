@@ -35,6 +35,7 @@ type
 
 procedure DcInit(out D: TDictCompressor; InmemDictSize, HashSizeHint, MinMatch, L,
                  BaseLen: QWord);
+procedure DcFree(var D: TDictCompressor);
 { prepare_buffer sobre B[At..At+Len): el maximo local del hash rodante en cada
   bloque de L bytes, y donde ocurrio. }
 procedure DcPrepareBuffer(const D: TDictCompressor; var HashPtr: TQList; const B: TBytes;
@@ -46,7 +47,7 @@ procedure DcCompress(var D: TDictCompressor; const Dict: TBytes; DictSize, BufSt
 
 implementation
 
-uses Rolling, FixedCompress;
+uses Rolling, FixedCompress, ZeroPages;
 
 function MinHashSize(N: QWord): QWord;
 begin
@@ -80,8 +81,14 @@ begin
     hashsize := RoundupToPowerOfTwo(hint);
     { hashsize cuenta BYTES en el C++; la tabla son elementos de 8 }
     D.HashMask := hashsize div 8 - 1;
-    SetLength(D.HashArr, hashsize div 8);
+    { en paginas en cero sin tocar, como el Rust (zeropages.pas); DcFree }
+    ZNew(Pointer(D.HashArr), TypeInfo(D.HashArr), hashsize div 8, SizeOf(QWord));
   end;
+end;
+
+procedure DcFree(var D: TDictCompressor);
+begin
+  ZFree(Pointer(D.HashArr));
 end;
 
 procedure DcPrepareBuffer(const D: TDictCompressor; var HashPtr: TQList; const B: TBytes;
