@@ -16,7 +16,7 @@ unit Decompress;
 {$OVERFLOWCHECKS OFF}
 interface
 
-uses Widths, Hashes, Container, Classes;
+uses SysUtils, Widths, Hashes, Container, Classes;   { SysUtils antes de Hashes: TBytes }
 
 type
   TDecodeError = (deOK, deTruncated, deBadData, deDigestMismatch, deContainer,
@@ -28,7 +28,14 @@ type
     Verified: Boolean;   { lo que decidio el selector de digest, no una regla aparte }
   end;
 
-function DecodeIoLz(const Arc: TBytes; Sink: TStream; out St: TDecodeStats): TDecodeError;
+  { progreso: Done de Total bytes del archivo (lo que cuenta -bar) }
+  TDecodeProgress = procedure(Done, Total: QWord);
+
+{ decode_io_lz: v1/v2 leidos del stream, sin cargar el archivo entero. Index,
+  si no es nil, es el archivo de -index= de donde salen las listas de matches.
+  ErrMsg lleva el texto del error (el Display del Rust). }
+function DecodeIoLz(Input, Sink: TStream; Index: TStream; out St: TDecodeStats;
+                    out ErrMsg: AnsiString; Progress: TDecodeProgress = nil): TDecodeError;
 
 { Copia con semantica LZ, compartida con el decoder Future-LZ. }
 procedure LzCopy(var Buf: TBytes; Src, Dest, Len: QWord);
@@ -126,12 +133,13 @@ end;
 function DecompressBlock(RoundMatches: Boolean; L: QWord; Sink: TStream;
                          BlockStart: QWord; const Stats: array of DWord;
                          const Literals: TBytes; var OutBuf: TBytes;
-                         OutLen: QWord): TDecodeError;
+                         OutLen: QWord; out Msg: AnsiString): TDecodeError;
 var
   per, st: LongInt;
   l1, litLen, offset, mlen, basicPos, dest, src, bytes: QWord;
   inPos, outPos: QWord;
 begin
+  Msg := '';
   if RoundMatches then begin per := 3; l1 := L; end
   else begin per := 4; l1 := 1; end;
 
@@ -153,7 +161,11 @@ begin
     { Un v1 con base_len = 0 divide por cero. El Rust hacia panic justo aca
       hasta el 2026-10-09 (y el C++ muere con SIGFPE); los dos fallan limpio en el
       mismo punto, asi que un v1 asi SIN records sigue decodificando. }
-    if l1 = 0 then Exit(deBadData);
+    if l1 = 0 then
+    begin
+      Msg := 'v1 archive with a zero base length';
+      Exit(deBadData);
+    end;
     { Redondea el destino hacia abajo a un multiplo de L1 y resta el offset.
       La resta se envuelve como el `Offset` sin signo del C; el chequeo
       `src >= dest` de abajo descarta el resultado. }
@@ -161,8 +173,16 @@ begin
 
     if (litLen > QWord(Length(Literals)) - inPos) or
        (litLen + mlen > OutLen - outPos) or
-       (src >= dest) then Exit(deBadData);
-    if not GrowOut(OutBuf, outPos + litLen + mlen, OutLen) then Exit(deIo);
+       (src >= dest) then
+    begin
+      Msg := 'record does not fit the block';
+      Exit(deBadData);
+    end;
+    if not GrowOut(OutBuf, outPos + litLen + mlen, OutLen) then
+    begin
+      Msg := 'Out of memory';
+      Exit(deIo);
+    end;
 
     if litLen > 0 then Move(Literals[inPos], OutBuf[outPos], litLen);
     Inc(inPos, litLen); Inc(outPos, litLen);
@@ -183,109 +203,195 @@ begin
 
   { Los literales que sobran tienen que llenar exactamente el resto. }
   if (QWord(Length(Literals)) - inPos) <> (OutLen - outPos) then
+  begin
+    Msg := 'literal run does not fill the block';
     Exit(deBadData);
+  end;
   { siempre, aunque no sobren literales: el bloque sale del largo exacto }
-  if not GrowOut(OutBuf, OutLen, OutLen) then Exit(deIo);
+  if not GrowOut(OutBuf, OutLen, OutLen) then
+  begin
+    Msg := 'Out of memory';
+    Exit(deIo);
+  end;
   if inPos < QWord(Length(Literals)) then
     Move(Literals[inPos], OutBuf[outPos], QWord(Length(Literals)) - inPos);
   Result := deOK;
 end;
 
-function DecodeIoLz(const Arc: TBytes; Sink: TStream; out St: TDecodeStats): TDecodeError;
+type
+  TRd = (rdOK, rdEOF, rdPartial);
+
+{ read_exact_or_eof para un largo que declara el archivo: el buffer crece a
+  medida que llegan los datos (ver GrowOut). }
+function ReadDecl(S: TStream; var B: TBytes; N: QWord): TRd;
+var got: LongInt; pos, cap, chunk: QWord;
+begin
+  if N = 0 then
+  begin
+    SetLength(B, 0);
+    Exit(rdOK);
+  end;
+  cap := N;
+  if cap > OUT_FIRST then cap := OUT_FIRST;
+  SetLength(B, SizeInt(cap));
+  pos := 0;
+  while pos < N do
+  begin
+    if pos = cap then
+    begin
+      cap := cap * 2;
+      if cap > N then cap := N;
+      if cap > QWord(High(SizeInt)) then raise EOutOfMemory.Create('Out of memory');
+      SetLength(B, SizeInt(cap));
+    end;
+    chunk := cap - pos;
+    if chunk > IO_CHUNK then chunk := IO_CHUNK;
+    got := S.Read(B[pos], LongInt(chunk));
+    if got <= 0 then
+    begin
+      if pos = 0 then Exit(rdEOF) else Exit(rdPartial);
+    end;
+    Inc(pos, QWord(got));
+  end;
+  Result := rdOK;
+end;
+
+function DecodeIoLz(Input, Sink: TStream; Index: TStream; out St: TDecodeStats;
+                    out ErrMsg: AnsiString; Progress: TDecodeProgress = nil): TDecodeError;
 var
   h: TArchiveHeader;
   ce: TContainerError;
-  seed, literals, outbuf, want: TBytes;
+  hb, seed, blockBuf, statBytes, literals, outbuf, got: TBytes;
   stats: array of DWord;
   bh: TBlockHeader;
-  pos, blockStart: QWord;
-  headerSize: QWord;
-  i: LongInt;
+  blockStart, headerSize, total, consumed, i: QWord;
+  k: LongInt;
   de: TDecodeError;
   verified: Boolean;
   dig: TDigestSel;
-  got: TBytes;
-  k: LongInt;
+  rd: TRd;
+  src: TStream;
 begin
   St.Blocks := 0; St.OrigSize := 0; St.Verified := False;
-  outbuf := nil;                   { GrowOut parte de lo que haya }
-  { Un archivo v5 es valido, solo que su decoder es otra fase. Decir "no es un
-    archivo omega srep" seria mentir sobre un archivo sano, que es justo el
-    tipo de mensaje que este proyecto trata de no dar. }
-  if IsV5(Arc) then Exit(deNotPortedYet);
-  ce := DecodeArchiveHeader(Arc, h);
-  if ce <> ceOK then Exit(deContainer);
-  { Idem v3/v4: son archivos buenos que este decoder todavia no hace. }
-  if (h.Version <> 1) and (h.Version <> 2) then Exit(deNotPortedYet);
-
-  pos := ARCHIVE_HEADER_SIZE;
-  SetLength(seed, h.HashSeedSize);
-  if h.HashSeedSize > 0 then
-  begin
-    if QWord(Length(Arc)) < pos + h.HashSeedSize then Exit(deTruncated);
-    Move(Arc[pos], seed[0], h.HashSeedSize);
-    Inc(pos, h.HashSeedSize);
-  end;
-  { Digest::for_archive: un hash desconocido o tamanos que exceden al
-    descriptor NO son error, simplemente no se verifica. La 4a tenia
-    `HashNum <> 1`, que falla en esos casos. }
-  DigestForArchive(h.HashNum, h.HashSeedSize, h.HashSize, seed, dig);
-  verified := DigestEnabled(dig);
-  St.Verified := verified;
-
-  headerSize := QWord(BLOCK_HEADER_SIZE) + QWord(h.HashSize);
-  blockStart := 0;
-
-  while pos < QWord(Length(Arc)) do
-  begin
-    if QWord(Length(Arc)) < pos + headerSize then Exit(deTruncated);
-    ce := DecodeBlockHeader(Arc, pos, bh);
-    if ce <> ceOK then Exit(deContainer);
-    { Un bloque de largo cero cierra el stream. }
-    if (bh.LiteralBytes = 0) and (bh.OrigSize = 0) then Break;
-
-    SetLength(want, h.HashSize);
-    if h.HashSize > 0 then Move(Arc[pos + BLOCK_HEADER_SIZE], want[0], h.HashSize);
-    Inc(pos, headerSize);
-
-    { Primero que este, DESPUES que sea multiplo de 4: al reves, un archivo
-      truncado da BadData donde el Rust da Truncated. Lo encontro el critico de
-      la fase 4b. }
-    if QWord(Length(Arc)) < pos + QWord(bh.StatSize) then Exit(deTruncated);
-    if (bh.StatSize mod 4) <> 0 then Exit(deBadData);
-    SetLength(stats, bh.StatSize div 4);
-    for i := 0 to High(stats) do
-      stats[i] := DWord(Arc[pos + QWord(i)*4]) or (DWord(Arc[pos + QWord(i)*4+1]) shl 8) or
-                  (DWord(Arc[pos + QWord(i)*4+2]) shl 16) or (DWord(Arc[pos + QWord(i)*4+3]) shl 24);
-    Inc(pos, bh.StatSize);
-
-    if QWord(Length(Arc)) < pos + bh.LiteralBytes then Exit(deTruncated);
-    SetLength(literals, bh.LiteralBytes);
-    if bh.LiteralBytes > 0 then Move(Arc[pos], literals[0], bh.LiteralBytes);
-    Inc(pos, bh.LiteralBytes);
-
-    { se reusa el buffer del bloque anterior; solo tiene que no sobrar }
-    if QWord(Length(outbuf)) > QWord(bh.OrigSize) then SetLength(outbuf, bh.OrigSize);
-    de := DecompressBlock(h.Version = 1, QWord(h.BaseLen), Sink, blockStart,
-                          stats, literals, outbuf, QWord(bh.OrigSize));
-    if de <> deOK then Exit(de);
-
-    if verified then
+  ErrMsg := '';
+  outbuf := nil;
+  total := 0;
+  try
+    { -bar cuenta el archivo: el total se mide antes de leer nada }
+    if Assigned(Progress) then
     begin
-      got := DigestCompute(dig, outbuf);
-      if QWord(h.HashSize) < QWord(Length(got)) then Exit(deDigestMismatch);
-      for k := 0 to Length(got) - 1 do
-        if want[k] <> got[k] then Exit(deDigestMismatch);
+      total := QWord(Input.Seek(0, soEnd));
+      Input.Seek(0, soBeginning);
+    end;
+    if ReadDecl(Input, hb, ARCHIVE_HEADER_SIZE) <> rdOK then
+    begin
+      ErrMsg := 'truncated structure';
+      Exit(deTruncated);
+    end;
+    if IsV5(hb) then
+    begin
+      ErrMsg := 'not an I/O-LZ archive (v5)';
+      Exit(deNotIoLz);
+    end;
+    ce := DecodeArchiveHeader(hb, h);
+    if ce = ceNotAnOsrepFile then begin ErrMsg := 'not an Omega SREP file (.osr)'; Exit(deContainer); end;
+    if ce <> ceOK then begin ErrMsg := 'incompatible compressed data format'; Exit(deContainer); end;
+    if (h.Version <> 1) and (h.Version <> 2) then
+    begin
+      ErrMsg := 'not an I/O-LZ archive (v' + IntToStr(h.Version) + ')';
+      Exit(deNotIoLz);
     end;
 
-    Sink.Seek(Int64(blockStart), soBeginning);
-    SinkWrite(Sink, outbuf, QWord(bh.OrigSize));
-    Inc(blockStart, bh.OrigSize);
-    Inc(St.Blocks);
-  end;
+    if ReadDecl(Input, seed, QWord(h.HashSeedSize)) <> rdOK then
+    begin
+      ErrMsg := 'truncated structure';
+      Exit(deTruncated);
+    end;
+    { Digest::for_archive: un hash desconocido o tamanos que exceden al
+      descriptor NO son error, simplemente no se verifica }
+    DigestForArchive(h.HashNum, h.HashSeedSize, h.HashSize, seed, dig);
+    verified := DigestEnabled(dig);
+    St.Verified := verified;
 
-  St.OrigSize := blockStart;
-  Result := deOK;
+    headerSize := QWord(BLOCK_HEADER_SIZE) + QWord(h.HashSize);
+    blockStart := 0;
+    consumed := QWord(ARCHIVE_HEADER_SIZE) + QWord(h.HashSeedSize);
+    if Index <> nil then src := Index else src := Input;
+
+    while True do
+    begin
+      rd := ReadDecl(Input, blockBuf, headerSize);
+      if rd = rdEOF then Break;
+      if rd = rdPartial then begin ErrMsg := 'truncated structure'; Exit(deTruncated); end;
+      DecodeBlockHeader(blockBuf, 0, bh);
+      { un bloque de largo cero cierra el stream }
+      if (bh.LiteralBytes = 0) and (bh.OrigSize = 0) then Break;
+
+      { primero que este, DESPUES que sea multiplo de 4 }
+      if ReadDecl(src, statBytes, QWord(bh.StatSize)) <> rdOK then
+      begin
+        ErrMsg := 'truncated structure';
+        Exit(deTruncated);
+      end;
+      if (bh.StatSize mod 4) <> 0 then
+      begin
+        ErrMsg := 'match list is not a whole number of STATs';
+        Exit(deBadData);
+      end;
+      SetLength(stats, bh.StatSize div 4);
+      i := 0;
+      while i < QWord(bh.StatSize) div 4 do
+      begin
+        stats[i] := DWord(statBytes[i * 4]) or (DWord(statBytes[i * 4 + 1]) shl 8) or
+                    (DWord(statBytes[i * 4 + 2]) shl 16) or (DWord(statBytes[i * 4 + 3]) shl 24);
+        Inc(i);
+      end;
+      if ReadDecl(Input, literals, QWord(bh.LiteralBytes)) <> rdOK then
+      begin
+        ErrMsg := 'truncated structure';
+        Exit(deTruncated);
+      end;
+
+      if QWord(Length(outbuf)) > QWord(bh.OrigSize) then SetLength(outbuf, bh.OrigSize);
+      de := DecompressBlock(h.Version = 1, QWord(h.BaseLen), Sink, blockStart,
+                            stats, literals, outbuf, QWord(bh.OrigSize), ErrMsg);
+      if de <> deOK then Exit(de);
+
+      if verified then
+      begin
+        got := DigestCompute(dig, outbuf);
+        { un digest declarado mas corto que el hash no puede coincidir }
+        if QWord(h.HashSize) < QWord(Length(got)) then
+        begin
+          ErrMsg := 'checksum of decoded block ' + IntToStr(St.Blocks) + ' differs from the stored one';
+          Exit(deDigestMismatch);
+        end;
+        for k := 0 to Length(got) - 1 do
+          if blockBuf[BLOCK_HEADER_SIZE + k] <> got[k] then
+          begin
+            ErrMsg := 'checksum of decoded block ' + IntToStr(St.Blocks) + ' differs from the stored one';
+            Exit(deDigestMismatch);
+          end;
+      end;
+
+      Sink.Seek(Int64(blockStart), soBeginning);
+      SinkWrite(Sink, outbuf, QWord(bh.OrigSize));
+      Inc(blockStart, bh.OrigSize);
+      Inc(St.Blocks);
+      consumed := consumed + headerSize + QWord(bh.StatSize) + QWord(bh.LiteralBytes);
+      if Assigned(Progress) then Progress(consumed, total);
+    end;
+    { un ultimo tick asegurado: el consumidor siempre ve done == total }
+    if Assigned(Progress) then Progress(total, total);
+    St.OrigSize := blockStart;
+    Result := deOK;
+  except
+    on X: Exception do
+    begin
+      ErrMsg := X.Message;
+      Result := deIo;
+    end;
+  end;
 end;
 
 end.

@@ -72,7 +72,7 @@ procedure DefaultFutureLzOptions(out O: TFutureLzOptions);
 
 function DecodeFutureLz(Input, Sink: TStream; const Opts: TFutureLzOptions;
                         out St: TFutureLzStats; out ErrMsg: AnsiString;
-                        Progress: TFlzProgress = nil): TDecodeError;
+                        Progress: TFlzProgress = nil; Index: TStream = nil): TDecodeError;
 
 { `decode_v5` (future_lz.rs): el contenedor v5 sobre el mismo decoder de
   bloques. Mismas opciones y estadisticas que v3/v4. }
@@ -849,7 +849,7 @@ end;
 
 function DecodeFutureLz(Input, Sink: TStream; const Opts: TFutureLzOptions;
                         out St: TFutureLzStats; out ErrMsg: AnsiString;
-                        Progress: TFlzProgress = nil): TDecodeError;
+                        Progress: TFlzProgress = nil; Index: TStream = nil): TDecodeError;
 var
   hdr, seed, blockBuf, literals, outbuf, want, footer, tableBytes, statBytes: TBytes;
   h: TArchiveHeader;
@@ -1013,7 +1013,9 @@ begin
         begin
           { leer PRIMERO, recien despues el chequeo de multiplo de 4: al reves,
             un archivo truncado da BadData donde el Rust da Truncated }
-          ReadOrTruncated(Input, statBytes, QWord(ssz));
+          { -index=: en v3 las listas pueden vivir en otro archivo }
+          if Index <> nil then ReadOrTruncated(Index, statBytes, QWord(ssz))
+          else ReadOrTruncated(Input, statBytes, QWord(ssz));
           if (QWord(ssz) mod 4) <> 0 then
             Fail(deBadData, 'match list is not a whole number of STATs');
           SetLength(blockStats, QWord(ssz) div 4);

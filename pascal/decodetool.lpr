@@ -173,10 +173,10 @@ begin
       end
       else if (h.Version = 1) or (h.Version = 2) then
       begin
-        arc := ReadAll(arcPath);
+        inS := TFileStream.Create(arcPath, fmOpenRead or fmShareDenyNone);
         outS := TFileStream.Create(outPath, fmCreate);
         created := True;
-        e := DecodeIoLz(arc, outS, st);
+        e := DecodeIoLz(inS, outS, nil, st, msg);
       end
       else
       begin

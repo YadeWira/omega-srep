@@ -170,9 +170,7 @@ begin
       if DecodeArchiveHeader(head, h) <> ceOK then raise EDup.Create('Decode(Container(NotAnOsrepFile))');
       if (h.Version = 1) or (h.Version = 2) then
       begin
-        SetLength(arc, inS.Size);
-        if Length(arc) > 0 then inS.ReadBuffer(arc[0], Length(arc));
-        e := DecodeIoLz(arc, outS, dst);
+        e := DecodeIoLz(inS, outS, nil, dst, msg);
       end
       else
         e := DecodeFutureLz(inS, outS, Opts, st, msg);

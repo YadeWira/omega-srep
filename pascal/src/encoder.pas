@@ -44,7 +44,18 @@ type
     Hash: AnsiString;        { -hash=; '' = -hash- }
     { la meta .dupref de -dup que viaja adentro de un v5 (vacia = sin -dup) }
     DupMeta: TBytes;
+    { la clave del archivo en bytes (OSREP_SEED_HEX, o la que sorteo la CLI);
+      gana sobre Seed, y tiene que medir lo que pide el hash }
+    SeedBytes: TBytes;
+    { -sBYTES: el tamano con el que se comprime (stdin); decide la cantidad de
+      bloques y el tamano de la tabla }
+    HasDeclaredSize: Boolean;
+    DeclaredSize: QWord;
+    { -index=: las listas de matches van a este stream en vez del archivo }
+    Index: TStream;
   end;
+
+  TEncodeProgress = procedure(Done, Total: QWord);
 
   { Lo que el modo todavia no tiene portado. }
   ENotPorted = class(Exception);
@@ -57,7 +68,7 @@ procedure FillSeedFrom(var Out_: TBytes; Seed64: QWord);
 { Comprime Input en Output. Errores: EEncode (el Debug del Rust en el
   mensaje), ENotPorted. }
 procedure Encode(Input, Output: TStream; const Opts: TEncodeOptions; Kind: TEncKind;
-                 Cont: TEncContainer);
+                 Cont: TEncContainer; Progress: TEncodeProgress = nil);
 
 implementation
 
@@ -79,6 +90,10 @@ begin
   O.Seed := 0;
   O.Hash := 'vmac';
   O.DupMeta := nil;
+  O.SeedBytes := nil;
+  O.HasDeclaredSize := False;
+  O.DeclaredSize := 0;
+  O.Index := nil;
 end;
 
 procedure FillSeedFrom(var Out_: TBytes; Seed64: QWord);
@@ -207,7 +222,7 @@ end;
 { ------------------------------------------------------------- driver --- }
 
 procedure Encode(Input, Output: TStream; const Opts: TEncodeOptions; Kind: TEncKind;
-                 Cont: TEncContainer);
+                 Cont: TEncContainer; Progress: TEncodeProgress = nil);
 var
   info: THashInfo;
   hasher: TBlockHasher;
@@ -229,7 +244,7 @@ var
   storedHashSize, futurelzBaseLen: QWord;
   v5h: TV5Header;
   blocks: TCompressedBlocks;
-  nblocks: QWord;
+  nblocks, actual: QWord;
 begin
   if not HashByName(Opts.Hash, info) then
     raise EEncode.Create('UnknownHash("' + Opts.Hash + '")');
@@ -266,8 +281,18 @@ begin
   SetLength(seed, info.SeedSize);
   if info.SeedSize > 0 then
   begin
-    if not Opts.HasSeed then raise EEncode.Create('NeedsSeed');
-    FillSeedFrom(seed, Opts.Seed);
+    if Length(Opts.SeedBytes) > 0 then
+    begin
+      if Length(Opts.SeedBytes) <> info.SeedSize then
+        raise EEncode.Create('BadSeed { want: ' + IntToStr(info.SeedSize) + ', got: ' +
+                             IntToStr(Length(Opts.SeedBytes)) + ' }');
+      seed := Copy(Opts.SeedBytes);
+    end
+    else
+    begin
+      if not Opts.HasSeed then raise EEncode.Create('NeedsSeed');
+      FillSeedFrom(seed, Opts.Seed);
+    end;
   end;
   HasherInit(hasher, info, seed);
 
@@ -288,8 +313,14 @@ begin
   else if roundMatches then ah.Version := 1
   else ah.Version := 2;
 
-  fileSize := QWord(Input.Seek(0, soEnd));
-  Input.Seek(0, soBeginning);
+  { -sBYTES gana sobre la medicion: es lo que el C++ usa con stdin, y decide
+    la cantidad de bloques y el tamano del match finder }
+  if Opts.HasDeclaredSize then fileSize := Opts.DeclaredSize
+  else
+  begin
+    fileSize := QWord(Input.Seek(0, soEnd));
+    Input.Seek(0, soBeginning);
+  end;
 
   if v5 then
   begin
@@ -300,8 +331,13 @@ begin
     v5h.HashId := info.Num;
     if info.Name = '' then v5h.HashSize := 0 else v5h.HashSize := info.HashSize;
     v5h.MaxMatch := DWord(8 * 1024 * 1024 - 24);
-    v5h.BlockCount := DWord((fileSize + bufsize - 1) div bufsize);
-    v5h.OriginalSize := fileSize;
+    { del largo REAL de la entrada, no de fileSize: con stdin y sin -s,
+      fileSize es el default de 25 GiB y el header no coincidia con el footer
+      (el bug de 2.0.0-2.1.1 en el Rust, arreglado en los dos a la vez) }
+    actual := QWord(Input.Seek(0, soEnd));
+    Input.Seek(0, soBeginning);
+    v5h.BlockCount := DWord((actual + bufsize - 1) div bufsize);
+    v5h.OriginalSize := actual;
     hb := EncodeV5Header(v5h);
   end
   else
@@ -394,7 +430,8 @@ begin
     begin
       { save_data: la cabecera, la lista (vacia en Index-LZ), los literales }
       Output.WriteBuffer(header[0], Length(header));
-      if not indexLz then WriteStats(Output, stat);
+      if not indexLz then
+        if Opts.Index <> nil then WriteStats(Opts.Index, stat) else WriteStats(Output, stat);
       WriteLiterals(Output, dict, bufOffset, filled, stat, roundMatches, DWord(baseLen));
     end;
     { no_writes = FUTURE_LZ (io.cpp:270): Future-LZ y v5 no escriben nada en
@@ -418,12 +455,16 @@ begin
     nextPos := nextPos + nextFilled;
     bufOffset := nextOffset;
     filled := nextFilled;
+    { -bar cuenta la entrada consumida contra el tamano declarado (srep.cpp:808) }
+    if Assigned(Progress) then Progress(blockStart, fileSize);
   end;
+  { un ultimo tick asegurado: el consumidor siempre ve done == total }
+  if Assigned(Progress) then Progress(fileSize, fileSize);
 
   { Future-LZ, Index-LZ y v5 re-emiten la lista de cada bloque (srep.cpp:820) }
   if not ioLz then
     RunSecondPass(blocks, nblocks, Input, Output, roundMatches, DWord(baseLen),
-                  DWord(futurelzBaseLen), futureLz, indexLz, v5, Opts.DupMeta);
+                  DWord(futurelzBaseLen), futureLz, indexLz, v5, Opts.DupMeta, Opts.Index);
 end;
 
 end.

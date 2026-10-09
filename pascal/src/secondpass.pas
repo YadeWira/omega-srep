@@ -33,7 +33,8 @@ type
   se re-emiten usan FuturelzBaseLen. Input se relee desde el principio. }
 procedure RunSecondPass(const Blocks: TCompressedBlocks; NBlocks: QWord; Input, Output: TStream;
                         RoundMatches: Boolean; BaseLen, FuturelzBaseLen: DWord;
-                        FutureLz, IndexLz, V5: Boolean; const DupMeta: TBytes);
+                        FutureLz, IndexLz, V5: Boolean; const DupMeta: TBytes;
+                        Index: TStream = nil);
 
 implementation
 
@@ -117,7 +118,8 @@ end;
 
 procedure RunSecondPass(const Blocks: TCompressedBlocks; NBlocks: QWord; Input, Output: TStream;
                         RoundMatches: Boolean; BaseLen, FuturelzBaseLen: DWord;
-                        FutureLz, IndexLz, V5: Boolean; const DupMeta: TBytes);
+                        FutureLz, IndexLz, V5: Boolean; const DupMeta: TBytes;
+                        Index: TStream = nil);
 var
   matches: TMatches;
   bi, at, used, blockPos, i, savedI, src, len, statSize, totalStat, inPos, lit, vn, got: QWord;
@@ -212,14 +214,19 @@ begin
       WriteBytes(Output, header, Length(header));
     end;
 
+    { la lista se arma una vez y va al sink que la tenga (el archivo, o el
+      -index=), asi los dos destinos no pueden separarse }
     if V5 then
-      WriteBytes(Output, v5bytes, vn)
+    begin
+      if Index <> nil then WriteBytes(Index, v5bytes, vn) else WriteBytes(Output, v5bytes, vn);
+    end
     else
     begin
       SetLength(listBytes, stat.N * 4);
       at := 0;
       while at < stat.N do begin PutLE32(listBytes, at * 4, stat.W[at]); Inc(at); end;
-      WriteBytes(Output, listBytes, stat.N * 4);
+      if Index <> nil then WriteBytes(Index, listBytes, stat.N * 4)
+      else WriteBytes(Output, listBytes, stat.N * 4);
     end;
 
     table[bi] := DWord(statSize);

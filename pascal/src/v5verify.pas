@@ -34,12 +34,24 @@ type
     HasBlockDigests: Boolean;
   end;
 
+  { archive::Info: lo que muestra -i }
+  TArchiveInfo = record
+    Mode: AnsiString;          { 'v5', 'Index-LZ', 'Future-LZ', 'I/O LZ' }
+    HashName: AnsiString;
+    BaseLen: DWord;
+    Blocks: QWord;
+    OrigSize, CompSize, StatSize: QWord;
+  end;
+
 { v5::verify. Lanza EV5 con el Debug del V5Error. }
 procedure VerifyV5(const B: TBytes; out R: TVerifyReport);
 
 { archive::inspect para v1-v4: el contenedor entero se parsea y el hash es
   conocido. }
 function InspectV14(const B: TBytes): Boolean;
+
+{ archive::inspect completo (v5 por v5::parse, sin las reglas de verify). }
+function Inspect(const B: TBytes; out Info: TArchiveInfo): Boolean;
 
 implementation
 
@@ -93,7 +105,8 @@ begin
   end;
 end;
 
-procedure VerifyV5(const B: TBytes; out R: TVerifyReport);
+procedure VerifyCore(const B: TBytes; OnlyParse: Boolean; out R: TVerifyReport;
+                     out StatTotal: QWord);
 var
   n, pos, seedSize, hashSize, totalStat, blockStart, blockEnd, p, src, dest, metaSize,
   metaOff, metaEnd, k, records, origSize: QWord;
@@ -192,6 +205,14 @@ begin
     if crc <> Crc32c(B, metaOff, metaSize - 4) then Fail('BadCrc("meta")');
   end;
 
+  StatTotal := fStatSize;
+  R.Blocks := blockCount;
+  R.OriginalSize := origSize;
+  R.Records := 0;
+  R.HasDupMeta := fMetaSize > 0;
+  R.HasBlockDigests := hsz > 0;
+  if OnlyParse then Exit;
+
   { verify: las reglas de rango del decoder, sin aplicarlas. Los records de
     Future-LZ no son "literales y despues match": lit_len es el hueco hasta el
     ORIGEN del proximo match, el match se copia HACIA ADELANTE a src+distance y
@@ -234,17 +255,57 @@ begin
 end;
 
 { Archive::parse (container.rs) para v1-v4, y que el hash sea conocido. }
+procedure VerifyV5(const B: TBytes; out R: TVerifyReport);
+var st: QWord;
+begin
+  VerifyCore(B, False, R, st);
+end;
+
+function InspectCore(const B: TBytes; out Info: TArchiveInfo): Boolean; forward;
+
 function InspectV14(const B: TBytes): Boolean;
+var info: TArchiveInfo;
+begin
+  Result := InspectCore(B, info);
+end;
+
+function Inspect(const B: TBytes; out Info: TArchiveInfo): Boolean;
+var r: TVerifyReport; st: QWord; hi: THashInfo;
+begin
+  if (Length(B) >= HEADER_SIZE) and (L32(B, 0) = MAGIC) then
+  begin
+    try
+      VerifyCore(B, True, r, st);
+    except
+      on EV5 do Exit(False);
+    end;
+    HashByNum(B[6], hi);
+    Info.Mode := 'v5';
+    Info.HashName := hi.Name;
+    Info.BaseLen := 0;
+    Info.Blocks := r.Blocks;
+    Info.OrigSize := r.OriginalSize;
+    Info.CompSize := QWord(Length(B));
+    Info.StatSize := st;
+    Exit(True);
+  end;
+  Result := InspectCore(B, Info);
+end;
+
+function InspectCore(const B: TBytes; out Info: TArchiveInfo): Boolean;
 var
   h: TArchiveHeader;
-  info: THashInfo;
+  hinfo: THashInfo;
   n, bhs, pos, statSize, tableSize, start, matchListStart, need, inlineStat, tableSum, nb, i: QWord;
   footerSize: DWord;
   table: array of DWord;
   lit, orig, st: DWord;
   isV4: Boolean;
+  origSum, statSum: QWord;
 begin
   Result := False;
+  origSum := 0;
+  statSum := 0;
   n := QWord(Length(B));
   if DecodeArchiveHeader(B, h) <> ceOK then Exit;
   bhs := BLOCK_HEADER_SIZE + QWord(h.HashSize);
@@ -299,6 +360,8 @@ begin
       inlineStat := st;
     need := bhs + inlineStat + QWord(lit);
     if matchListStart - pos < need then Exit;
+    origSum := origSum + QWord(orig);
+    statSum := statSum + QWord(st);
     Inc(nb);
     pos := pos + need;
   end;
@@ -312,7 +375,19 @@ begin
     if tableSum <> statSize then Exit;
     if matchListStart + statSize <> n - QWord(footerSize) then Exit;
   end;
-  Result := HashByNum(h.HashNum, info);
+  Result := HashByNum(h.HashNum, hinfo);
+  if not Result then Exit;
+  if isV4 then Info.Mode := 'Index-LZ'
+  else if h.Version = 3 then Info.Mode := 'Future-LZ'
+  else Info.Mode := 'I/O LZ';
+  Info.HashName := hinfo.Name;
+  Info.BaseLen := h.BaseLen;
+  Info.Blocks := nb;
+  Info.OrigSize := origSum;
+  Info.CompSize := n;
+  { v4 guarda la lista entera al final y anota su tamano en el footer; v1-v3
+    llevan la lista de cada bloque adentro }
+  if statSize > 0 then Info.StatSize := statSize else Info.StatSize := statSum;
 end;
 
 end.
