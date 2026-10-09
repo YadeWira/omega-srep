@@ -111,8 +111,9 @@ pub(crate) fn lz_copy(buf: &mut [u8], src: usize, dest: usize, len: usize) {
 }
 
 /// Decode one I/O-LZ block in place, mirroring `decompress()`
-/// (`decompress.cpp:9-45`). `outbuf` must be exactly the block's `origsize`;
-/// the C++ derives that from `outend - outbuf`.
+/// (`decompress.cpp:9-45`). `block_len` is the block's `origsize` (the C++'s
+/// `outend - outbuf`); `outbuf` grows to it as it is written -- writes are
+/// strictly sequential -- and ends exactly that long. See [`grow_zeroed`].
 ///
 /// `sink` is the output so far: matches that start before `block_start` are
 /// read back from it, the rest come from `outbuf` itself.
@@ -123,7 +124,8 @@ fn decompress_block<S: Read + Write + Seek>(
     block_start: u64,
     stats: &[u32],
     literals: &[u8],
-    outbuf: &mut [u8],
+    outbuf: &mut Vec<u8>,
+    block_len: usize,
 ) -> Result<(), DecodeError> {
     let per = if round_matches { 3 } else { 4 };
     let l1: u64 = if round_matches { u64::from(l) } else { 1 };
@@ -161,17 +163,19 @@ fn decompress_block<S: Read + Write + Seek>(
         let mut src = (dest / l1 * l1).wrapping_sub(offset);
 
         if lit_len > (literals.len() - in_pos) as u64
-            || lit_len + mlen > (outbuf.len() - out_pos) as u64
+            || lit_len + mlen > (block_len - out_pos) as u64
             || src >= dest
         {
             return Err(DecodeError::BadData("record does not fit the block"));
         }
 
         // Longest literal run first, then the match: strictly interleaved.
-        outbuf[out_pos..out_pos + lit_len as usize]
-            .copy_from_slice(&literals[in_pos..in_pos + lit_len as usize]);
+        // The buffer is exactly `out_pos` long here: writes are sequential.
+        debug_assert_eq!(outbuf.len(), out_pos);
+        append(outbuf, &literals[in_pos..in_pos + lit_len as usize])?;
         in_pos += lit_len as usize;
         out_pos += lit_len as usize;
+        grow_zeroed(outbuf, out_pos + mlen as usize)?;
 
         // The part of the match that lives in earlier blocks comes from the
         // sink; whatever is left comes from this block's outbuf.
@@ -189,10 +193,11 @@ fn decompress_block<S: Read + Write + Seek>(
     }
 
     // Whatever literals are left must exactly fill the rest of the block.
-    if literals.len() - in_pos != outbuf.len() - out_pos {
+    if literals.len() - in_pos != block_len - out_pos {
         return Err(DecodeError::BadData("literal run does not fill the block"));
     }
-    outbuf[out_pos..].copy_from_slice(&literals[in_pos..]);
+    debug_assert_eq!(outbuf.len(), out_pos);
+    append(outbuf, &literals[in_pos..])?;
     Ok(())
 }
 
@@ -282,6 +287,95 @@ pub(crate) fn read_exact_or_eof<R: Read + ?Sized>(
     Ok(true)
 }
 
+/// Grow `buf` with zeros to `need` bytes.
+///
+/// Block sizes, literal runs and match lists are lengths the archive declares,
+/// so nothing is allocated up front by them. `vec![0u8; n]` looks free on
+/// x86-64 -- the zeroed pages are not touched until written -- but on a 32-bit
+/// build any `n` of 2 GiB or more is a capacity-overflow panic, and the Windows
+/// x86 binary hit exactly that on a 109-byte archive declaring a 3 GiB block.
+/// The buffers grow as they are filled instead, and a reservation that cannot
+/// be made is an error rather than a panic or an abort.
+pub(crate) fn grow_zeroed(buf: &mut Vec<u8>, need: usize) -> Result<(), DecodeError> {
+    if need > buf.len() {
+        reserve(buf, need - buf.len())?;
+        buf.resize(need, 0);
+    }
+    Ok(())
+}
+
+/// Append `s` to `buf`, reserving fallibly first (see [`grow_zeroed`]). The
+/// literal runs go in this way: written once, never zeroed first.
+pub(crate) fn append(buf: &mut Vec<u8>, s: &[u8]) -> Result<(), DecodeError> {
+    reserve(buf, s.len())?;
+    buf.extend_from_slice(s);
+    Ok(())
+}
+
+fn reserve(buf: &mut Vec<u8>, add: usize) -> Result<(), DecodeError> {
+    // Amortized growth can overshoot what a 32-bit address space allows even
+    // when the exact size fits; fall back to it before giving up.
+    if buf.try_reserve(add).is_err() {
+        buf.try_reserve_exact(add).map_err(|_| out_of_memory())?;
+    }
+    Ok(())
+}
+
+/// An empty output buffer for a block of `block_len` bytes, with the whole
+/// block reserved when that is possible. A reservation touches no pages, so it
+/// costs no memory and decides nothing -- a block that cannot be reserved (a
+/// 32-bit build, a size near its address space) simply grows as it is
+/// written. It only spares an ordinary block the reallocations.
+pub(crate) fn block_buffer(block_len: usize) -> Vec<u8> {
+    let mut buf = Vec::new();
+    let _ = buf.try_reserve_exact(block_len);
+    buf
+}
+
+pub(crate) fn out_of_memory() -> DecodeError {
+    DecodeError::Io(io::Error::new(io::ErrorKind::OutOfMemory, "Out of memory"))
+}
+
+/// [`read_exact_or_eof`] for a length the archive declares. `None` is a clean
+/// EOF before the first byte; a partial read is [`ContainerError::Truncated`].
+///
+/// The whole length is *reserved* when it can be: a reservation touches no
+/// pages, so a lying length costs no memory, and `read_to_end` fills it without
+/// zeroing it first. Only when even the reservation fails -- a 32-bit build
+/// handed a length near its address space -- does the buffer grow by doubling
+/// as the bytes arrive, so a truncated archive still fails as truncated and a
+/// real shortage is [`out_of_memory`], never a panic or an abort.
+pub(crate) fn read_declared<R: Read + ?Sized>(
+    r: &mut R,
+    n: usize,
+) -> Result<Option<Vec<u8>>, DecodeError> {
+    let mut buf = Vec::new();
+    let filled = if buf.try_reserve_exact(n).is_ok() {
+        r.take(n as u64).read_to_end(&mut buf)?
+    } else {
+        let mut filled = 0;
+        while filled < n {
+            if filled == buf.len() {
+                let next = n.min(buf.len().saturating_mul(2).max(1 << 20));
+                grow_zeroed(&mut buf, next)?;
+            }
+            match r.read(&mut buf[filled..])? {
+                0 => break,
+                k => filled += k,
+            }
+        }
+        buf.truncate(filled);
+        filled
+    };
+    if filled == n {
+        Ok(Some(buf))
+    } else if filled == 0 {
+        Ok(None)
+    } else {
+        Err(ContainerError::Truncated.into())
+    }
+}
+
 /// Decode a v1/v2 archive. `sink` receives the decompressed bytes at their
 /// final offsets and must allow reading them back, exactly like the C++'s
 /// single read/write `FILE*`.
@@ -342,14 +436,11 @@ pub fn decode_io_lz<R: Read + Seek, S: Read + Write + Seek>(
             break;
         }
 
-        let mut stat_bytes = vec![0u8; bh.statsize as usize];
-        let got = match index.as_deref_mut() {
-            Some(ix) => read_exact_or_eof(ix, &mut stat_bytes)?,
-            None => read_exact_or_eof(input, &mut stat_bytes)?,
-        };
-        if !got {
-            return Err(ContainerError::Truncated.into());
+        let stat_bytes = match index.as_deref_mut() {
+            Some(ix) => read_declared(ix, bh.statsize as usize)?,
+            None => read_declared(input, bh.statsize as usize)?,
         }
+        .ok_or(ContainerError::Truncated)?;
         if stat_bytes.len() % 4 != 0 {
             return Err(DecodeError::BadData(
                 "match list is not a whole number of STATs",
@@ -360,12 +451,10 @@ pub fn decode_io_lz<R: Read + Seek, S: Read + Write + Seek>(
             .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
             .collect();
 
-        let mut literals = vec![0u8; bh.literal_bytes as usize];
-        if !read_exact_or_eof(input, &mut literals)? {
-            return Err(ContainerError::Truncated.into());
-        }
+        let literals = read_declared(input, bh.literal_bytes as usize)?
+            .ok_or(ContainerError::Truncated)?;
 
-        let mut outbuf = vec![0u8; bh.origsize as usize];
+        let mut outbuf = block_buffer(bh.origsize as usize);
         decompress_block(
             header.version.round_matches(),
             header.base_len,
@@ -374,6 +463,7 @@ pub fn decode_io_lz<R: Read + Seek, S: Read + Write + Seek>(
             &stats,
             &literals,
             &mut outbuf,
+            bh.origsize as usize,
         )?;
 
         if verified {

@@ -319,7 +319,12 @@ round-trip**.
   en Rust el 2026-10-09**, fallando en el mismo punto donde reventaban (ver
   CHANGELOG), con un caso por causa en `tests/decode_conformance.sh`; y el
   Pascal se alineó a esos puntos (la suma chequeada del footer, y sin chequeo
-  previo de `VmBlock < 4`), así que ahora los dos dan el mismo error.
+  previo de `VmBlock < 4`), así que ahora los dos dan el mismo error. Y el
+  binario Rust de **32 bits** tenía la versión Rust de la trampa de `SetLength`:
+  `vec![0u8; n]` con un largo declarado de 2 GiB o más es *capacity overflow*,
+  así que un archivo de 109 bytes que declaraba 3 GiB lo tumbaba. Se arregló
+  igual que en Pascal (reservar sin tocar páginas o crecer a medida); ahora da
+  el mismo error que x64.
 * **El orden de los chequeos es observable.** Un archivo truncado cuya lista
   de STATs además no es múltiplo de 4 da *truncated* en Rust porque lee antes
   de validar; validar primero da *bad data*. Lo mismo con cualquier par de

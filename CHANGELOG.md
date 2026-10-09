@@ -33,6 +33,17 @@ what happened in 2.0.0.
 
   `tests/decode_conformance.sh` builds one archive per case and requires a
   clean failure; each was confirmed to panic on 2.1.0.
+- **The Windows x86 build panicked on a 109-byte archive declaring a 3 GiB
+  block.** The decoders allocated every block, literal run and match list by
+  the length the archive declares. On x86-64 that is free until written, but
+  on 32 bits any length of 2 GiB or more is a capacity overflow — and the same
+  happened with `-vmblock=2048m` and up as soon as anything spilled. Those
+  buffers are now reserved (which costs nothing) when possible and otherwise
+  grow as they are filled, so a lying length fails with the archive's own
+  error on every target, and a genuine shortage is "Out of memory" instead of
+  a panic. The 32-bit build now decodes with `-vmblock` of 2 GiB and of 4 GiB
+  and up, byte-identical to x86-64. Decompression speed is unchanged (within
+  ±3% on 256 MiB, literal-heavy and match-heavy).
 
 ## [2.1.0] — 2026-09-22
 

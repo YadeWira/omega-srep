@@ -32,7 +32,8 @@ use crate::container::{
     BLOCK_HEADER_SIZE, INDEX_LZ_FOOTER_SIZE,
 };
 use crate::decompress::{
-    read_exact_or_eof, DecodeError, DecodeStats, Digest, lz_copy,
+    append, block_buffer, grow_zeroed, lz_copy, out_of_memory, read_declared,
+    read_exact_or_eof, DecodeError, DecodeStats, Digest,
 };
 use crate::util::TempFile;
 
@@ -281,7 +282,11 @@ impl VirtualMemory {
         mm: &mut MemoryManager,
         heap: &mut MatchHeap,
     ) -> Result<usize, DecodeError> {
-        let mut buf = vec![0u8; self.vm_block as usize];
+        // Built as it is packed rather than allocated whole: `-vmblock` is
+        // allowed to be huge, and on a 32-bit build a slot of 2 GiB or more
+        // could not even be allocated. Padded with zeros on write, so the file
+        // holds exactly the slot it always did.
+        let mut buf: Vec<u8> = Vec::new();
         let mut p = 0u64;
         let mut evicted = 0usize;
         let mut min_dest = u64::MAX;
@@ -305,6 +310,9 @@ impl VirtualMemory {
                 break;
             }
             let len = m.len as usize;
+            // The 24-byte margin covers this record (20 + len) and the
+            // terminator after it.
+            grow_zeroed(&mut buf, p as usize + 24 + len)?;
             buf[p as usize..p as usize + 4].copy_from_slice(&m.len.to_le_bytes());
             buf[p as usize + 4..p as usize + 12].copy_from_slice(&m.src.to_le_bytes());
             buf[p as usize + 12..p as usize + 20].copy_from_slice(&m.dest.to_le_bytes());
@@ -331,6 +339,7 @@ impl VirtualMemory {
         let file = self.spill_file()?;
         file.seek(SeekFrom::Start(offset))?;
         file.write_all(&buf)?;
+        write_zeros(file, vm_block - buf.len() as u64)?;
         self.total_write += vm_block;
 
         heap.insert(Match {
@@ -361,10 +370,22 @@ impl VirtualMemory {
 
         let block = block as u32;
         let offset = self.offset(block);
-        let mut data = vec![0u8; self.vm_block as usize];
+        // On a 32-bit build a `-vmblock` past the address space does not fit a
+        // usize at all, and the slot is read into a buffer that grows.
+        let n = usize::try_from(self.vm_block).map_err(|_| out_of_memory())?;
         let file = self.spill_file()?;
         file.seek(SeekFrom::Start(offset))?;
-        file.read_exact(&mut data)?;
+        let data = match read_declared(file, n) {
+            Ok(Some(d)) => d,
+            Ok(None) | Err(DecodeError::Container(ContainerError::Truncated)) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "failed to fill whole buffer",
+                )
+                .into())
+            }
+            Err(e) => return Err(e),
+        };
         self.total_read += self.vm_block;
         self.free_blocks.push(block);
 
@@ -394,6 +415,17 @@ impl VirtualMemory {
         }
         Ok(())
     }
+}
+
+/// Write `n` zero bytes without allocating `n`: the tail of a spill slot.
+fn write_zeros(w: &mut impl Write, mut n: u64) -> io::Result<()> {
+    const ZEROS: [u8; 64 * 1024] = [0; 64 * 1024];
+    while n > 0 {
+        let k = n.min(ZEROS.len() as u64) as usize;
+        w.write_all(&ZEROS[..k])?;
+        n -= k as u64;
+    }
+    Ok(())
 }
 
 // ------------------------------------------------------------ match heap --
@@ -528,8 +560,9 @@ fn decode_record(stat: &[u32], l: u32) -> Record {
 /// Decode one v3/v4 block, mirroring `decompress_FUTURE_LZ`
 /// (`decompress.cpp:315-380`).
 ///
-/// `outbuf` is filled with the block's `origsize` bytes; `sink` supplies the
-/// earlier output that a `maximum_save`-length match reads back from.
+/// `outbuf` grows to `block_len`, the block's `origsize`, as it is written
+/// (see `grow_zeroed`); `sink` supplies the earlier output that a
+/// `maximum_save`-length match reads back from.
 #[allow(clippy::too_many_arguments)]
 fn decompress_block<S: Read + Write + Seek>(
     l: u32,
@@ -537,13 +570,14 @@ fn decompress_block<S: Read + Write + Seek>(
     block_start: u64,
     stats: &[u32],
     literals: &[u8],
-    outbuf: &mut [u8],
+    outbuf: &mut Vec<u8>,
+    block_len: usize,
     mm: &mut MemoryManager,
     vm: &mut VirtualMemory,
     heap: &mut MatchHeap,
     maximum_save: u32,
 ) -> Result<(), DecodeError> {
-    let block_end = block_start + outbuf.len() as u64;
+    let block_end = block_start + block_len as u64;
 
     // 1. Insert matches whose destination lands in this block.
     let mut block_pos = block_start;
@@ -590,13 +624,16 @@ fn decompress_block<S: Read + Write + Seek>(
         let lit_len = (m.dest - block_start) as usize - out_pos;
         if m.dest < block_start + out_pos as u64
             || lit_len > literals.len() - in_pos
-            || out_pos + lit_len + m.len as usize > outbuf.len()
+            || out_pos + lit_len + m.len as usize > block_len
         {
             return Err(DecodeError::BadData("future-lz match does not fit the block"));
         }
-        outbuf[out_pos..out_pos + lit_len].copy_from_slice(&literals[in_pos..in_pos + lit_len]);
+        // The buffer is exactly `out_pos` long here: writes are sequential.
+        debug_assert_eq!(outbuf.len(), out_pos);
+        append(outbuf, &literals[in_pos..in_pos + lit_len])?;
         in_pos += lit_len;
         out_pos += lit_len;
+        grow_zeroed(outbuf, out_pos + m.len as usize)?;
 
         if m.len >= maximum_save && m.src < block_start {
             sink.seek(SeekFrom::Start(m.src))?;
@@ -613,10 +650,11 @@ fn decompress_block<S: Read + Write + Seek>(
     }
 
     // Whatever literals remain must exactly fill the block.
-    if literals.len() - in_pos != outbuf.len() - out_pos {
+    if literals.len() - in_pos != block_len - out_pos {
         return Err(DecodeError::BadData("future-lz literal run does not fill the block"));
     }
-    outbuf[out_pos..].copy_from_slice(&literals[in_pos..]);
+    debug_assert_eq!(outbuf.len(), out_pos);
+    append(outbuf, &literals[in_pos..])?;
 
     // 3. Hoist matches whose destination is in a later block.
     block_pos = block_start;
@@ -817,23 +855,18 @@ pub fn decode_future_lz<R: Read + Seek, S: Read + Write + Seek>(
             stat_cursor += size / 4;
             s
         } else {
-            let mut stat_bytes = vec![0u8; bh.statsize as usize];
-            let got = match index.as_deref_mut() {
-                Some(ix) => read_exact_or_eof(ix, &mut stat_bytes)?,
-                None => read_exact_or_eof(input, &mut stat_bytes)?,
-            };
-            if !got {
-                return Err(ContainerError::Truncated.into());
+            let stat_bytes = match index.as_deref_mut() {
+                Some(ix) => read_declared(ix, bh.statsize as usize)?,
+                None => read_declared(input, bh.statsize as usize)?,
             }
+            .ok_or(ContainerError::Truncated)?;
             stats_from_bytes(&stat_bytes)?
         };
 
-        let mut literals = vec![0u8; bh.literal_bytes as usize];
-        if !read_exact_or_eof(input, &mut literals)? {
-            return Err(ContainerError::Truncated.into());
-        }
+        let literals = read_declared(input, bh.literal_bytes as usize)?
+            .ok_or(ContainerError::Truncated)?;
 
-        let mut outbuf = vec![0u8; bh.origsize as usize];
+        let mut outbuf = block_buffer(bh.origsize as usize);
         decompress_block(
             header.base_len,
             sink,
@@ -841,6 +874,7 @@ pub fn decode_future_lz<R: Read + Seek, S: Read + Write + Seek>(
             &block_stats,
             &literals,
             &mut outbuf,
+            bh.origsize as usize,
             &mut mm,
             &mut vm,
             &mut heap,
@@ -1198,18 +1232,14 @@ pub fn decode_v5<R: Read + Seek, S: Read + Write + Seek>(
             return Err(ContainerError::Truncated.into());
         }
 
-        let mut stat_bytes = vec![0u8; bh.statsize as usize];
-        if !read_exact_or_eof(input, &mut stat_bytes)? {
-            return Err(ContainerError::Truncated.into());
-        }
+        let stat_bytes = read_declared(input, bh.statsize as usize)?
+            .ok_or(ContainerError::Truncated)?;
         let block_stats = v5_words(&stat_bytes)?;
 
-        let mut literals = vec![0u8; bh.literal_bytes as usize];
-        if !read_exact_or_eof(input, &mut literals)? {
-            return Err(ContainerError::Truncated.into());
-        }
+        let literals = read_declared(input, bh.literal_bytes as usize)?
+            .ok_or(ContainerError::Truncated)?;
 
-        let mut outbuf = vec![0u8; bh.origsize as usize];
+        let mut outbuf = block_buffer(bh.origsize as usize);
         decompress_block(
             0,
             sink,
@@ -1217,6 +1247,7 @@ pub fn decode_v5<R: Read + Seek, S: Read + Write + Seek>(
             &block_stats,
             &literals,
             &mut outbuf,
+            bh.origsize as usize,
             &mut mm,
             &mut vm,
             &mut heap,

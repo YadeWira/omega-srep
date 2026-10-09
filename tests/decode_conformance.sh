@@ -374,10 +374,30 @@ struct.pack_into("<I", b, p + 12 + hs + 12, (1 << 32) - L if L else 0)  # len + 
 wr("mark", b)
 PY
 
+# And a block declaring 3 GiB in a ~100-byte archive, of literals or of
+# output. x86-64 never panicked on these (an untouched `vec![0u8; n]` costs
+# nothing there), but the Windows x86 build did: on 32 bits any n >= 2 GiB is a
+# capacity overflow. The decoders now grow their buffers as they fill them;
+# here they must fail with the archive's own error. (The 32-bit side was
+# checked under wine, with i686-pc-windows-gnu.)
+"$OSREP" -m3 $BFLAGS -t1 "$TMP/tiny.bin" "$TMP/p.c4.osr" >/dev/null 2>&1
+"$OSREP" -m1o $BFLAGS -t1 "$TMP/tiny.bin" "$TMP/p.c2.osr" >/dev/null 2>&1
+python3 - "$TMP" <<'PY' || fail "could not craft the 3 GiB claims"
+import struct, sys
+d = sys.argv[1]
+for src, dst, off in (("c4", "claimlit", 0), ("c4", "claimorig", 4), ("c2", "claimio", 4)):
+    b = bytearray(open(f"{d}/p.{src}.osr", "rb").read())
+    at = 16 + ((struct.unpack_from("<I", b, 8)[0] >> 16) & 255)
+    struct.pack_into("<I", b, at + off, 3 << 30)
+    open(f"{d}/p.{dst}.osr", "wb").write(b)
+PY
+
 panic_pass=0
 for c in "v1-baselen0|io-lz|v1l0|" "footer-wrap|future-lz|wrap|" \
          "short-digest-v3|future-lz|sd3|" "short-digest-v4|future-lz|sd4|" \
-         "short-digest-v2|io-lz|sd2|" "vmblock0|future-lz|mark|--vmblock=0"; do
+         "short-digest-v2|io-lz|sd2|" "vmblock0|future-lz|mark|--vmblock=0" \
+         "claim-3g-literals|future-lz|claimlit|" "claim-3g-output|future-lz|claimorig|" \
+         "claim-3g-io-lz|io-lz|claimio|"; do
     IFS='|' read -r tag decoder name opt <<<"$c"
     rc=0
     # shellcheck disable=SC2086
