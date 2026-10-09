@@ -1,8 +1,9 @@
 # Port a Pascal (FPC) — plan
 
-> **Estado**: en curso. La decisión se tomó el 2026-09-25; las fases 0 a 4c
-> están hechas: el port decodifica los cinco contenedores (v1 a v5). Ver la
-> tabla de fases.
+> **Estado**: en curso. La decisión se tomó el 2026-09-25; las fases 0 a 5
+> están hechas: el port decodifica los cinco contenedores y comprime con los
+> seis compresores en los cuatro contenedores que se escriben, byte a byte
+> igual que el Rust y el C++. Falta `-dup`/`--verify`, la CLI y el release.
 
 ## Por qué, y qué cambió respecto del port a Rust
 
@@ -150,6 +151,7 @@ ignorando.
         inmem.pas          el REP en memoria de -m0 (y de -d)
         cdc.pas            chunking por contenido de -m1/-m2
         cpufeat.pas        si la CPU tiene SSE4.2 (elige la ruta de CDC)
+        secondpass.pas     la segunda pasada: v3, v4 y v5
         encoder.pas        el driver de compresion
         spillfile.pas      el temporal del spill, creado como el Rust (lo
                            unico que depende de la plataforma)
@@ -192,11 +194,11 @@ round-trip**.
 | **4a** | Decoder I/O-LZ (v1/v2, sufijo `o`) | **hecha** (2026-09-25): 231 comprobaciones, 225 combinaciones byte a byte, verificado en i386 y x64 |
 | **4b** | Decoder Future/Index-LZ (v3/v4) + memory manager + spill | **hecha** (2026-09-26): 80 comprobaciones (79 bajo wine) con la línea de estadísticas entera —incluidos los bytes del spill— y los bytes reconstruidos; decode sube a 248. Revisión adversarial de cinco enfoques, ~80.000 comparaciones diferenciales: cero divergencias en el decoder, 17 hallazgos en los bordes que se reducen a 4 causas, todas arregladas con su regresión (verificado que cada una falla con el bug reintroducido). Win7 real: 73/73 en i386 y en x64 |
 | **4c** | Decoder v5 | **hecha** (2026-10-09): 1.764 comprobaciones en Linux, i386 y x64 —60 archivos (12 métodos y hashes, `-dup` incluido) y el spill bajo cuatro presupuestos con la línea de estadísticas entera, ~1.700 archivos dañados que fallan **con el mismo mensaje** que el Rust, y 59 mutaciones que el Rust acepta y el Pascal reconstruye igual. Verificado que el harness atrapa tres bugs inyectados (después de agregar los casos que hicieron falta para dos de ellos). Win7 real: 70/70 en i386 y en x64 |
-| **5** | Encoder: los 17 modos | `encode_conformance`, byte-idéntico en todos. En cuatro partes, cada una con su gate contra el encoder Rust en `tests/pascal_encode_conformance.sh` (lo no portado se cuenta aparte, no como fallo): |
+| **5** | Encoder: los 17 modos | **hecha** (2026-10-09). En cuatro partes, cada una con su gate contra el encoder Rust en `tests/pascal_encode_conformance.sh` (lo no portado se cuenta aparte, no como fallo): |
 | 5a | match finder (`-m3`/`-m4`/`-m5`) y driver, contenedor I/O-LZ | **hecha** (2026-10-09): 83 archivos byte-idénticos en Linux, i386 y x64 — `-m3o`/`-m4o`/`-m5o` con `-b1mb`, `-l1024`, `-l256`, los seis hashes, 20 MiB cruzando bloques y entradas degeneradas |
 | 5b | REP en memoria (`-m0`, `-d`) y CDC (`-m1`/`-m2`) | **hecha** (2026-10-09): 171 archivos byte-idénticos en Linux, i386 y x64 — `-m0o` dando vueltas al anillo, `-d` sobre `-m3o`/`-m4o`/`-m5o`, y CDC por **las dos rutas** del hash de frontera (CRC32C con SSE4.2, polinomial con `OSREP_CDC_POLY=1`), sobre una entrada en la que las dos rutas dan archivos distintos |
-| 5c | segunda pasada: Index-LZ (v4) y Future-LZ (v3) | pendiente |
-| 5d | writer v5 | pendiente |
+| 5c | segunda pasada: Index-LZ (v4) y Future-LZ (v3) | **hecha** junto con la 5d: la segunda pasada de Rust arma los tres contenedores |
+| 5d | writer v5 | **hecha** (2026-10-09): 376 archivos byte-idénticos en Linux, i386 y x64 — toda la matriz de `encode_conformance.sh` más v5 con `-hash-`, siphash, sha512, `-b1mb` y `-d`, contra el Rust (308) y contra el C++ directo en v1–v4 (68). Win7 real: 108/108 en i386 y en x64. Velocidad, sin gate (como en Rust): x64 nativo 2,7–2,9× más lento que Rust en `-m3`/`-m4`, igual en `-m5`, más rápido en `-m0`/`-m1`; i386 1,5–1,7× más lento que x64 |
 | **6** | `-dup` y `--verify` | `dup_v5_conformance`, `format_v5_conformance` |
 | **7** | CLI completa | las 219 de `rust_cli_conformance` con `OSREP_BIN` |
 | **8** | Release: tres targets, verificación en Win7 real, tag | como 2.1.0 |

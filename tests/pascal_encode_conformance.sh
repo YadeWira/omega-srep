@@ -155,9 +155,20 @@ for m in m0o m3o m4o m5o; do
 done
 
 say "v5 (el contenedor por defecto)"
-for input in $C/mixed.bin "$TMP/dup4m.bin" "$TMP/dup20m.bin"; do
-    for m in m0v m1v m3v m4v m5v; do
+for input in $C/mixed.bin "$TMP/dup4m.bin" "$TMP/dup20m.bin" "$TMP/rnd16.bin"; do
+    for m in m0v m1v m2v m3v m4v m5v; do
         if [ "$m" = m0v ]; then enc "$input" "$m" -d16mb; else enc "$input" "$m"; fi
+    done
+done
+# -hash- es el caso propio de v5: no reserva digest (hash_size 0), donde v1-v4
+# guardan 16 bytes en cero. Y bloques chicos, y -d, sobre las dos pasadas.
+for input in $C/mixed.bin "$TMP/dup20m.bin"; do
+    for m in m3v m4v m5v m3 m4f; do
+        enc "$input" "$m" -hash-
+        enc "$input" "$m" -hash=siphash
+        enc "$input" "$m" -hash=sha512
+        enc "$input" "$m" -b1mb
+        enc "$input" "$m" -d16mb
     done
 done
 
@@ -169,5 +180,31 @@ for m in m4o m5o m3o; do
 done
 enc "$TMP/empty.bin" m0o -d16mb
 enc "$TMP/tiny.bin"  m0o -d16mb
+for m in m4 m4f m4v m1v; do
+    enc "$TMP/empty.bin" "$m"
+    enc "$TMP/tiny.bin" "$m"
+done
+
+say "el segundo oraculo: el C++ 1.0.7, directo, en lo que el escribe (v1-v4)"
+# El Rust es byte-identico al C++, pero comparar contra los dos es mas fuerte:
+# una diferencia contra dos que coinciden entre si es, sin ambiguedad, del
+# port nuevo (docs/pascal-port.md, "Dos oraculos, no uno").
+if [ -x bin/osrep ] || make bin/osrep >/dev/null 2>&1; then
+    for input in $C/mixed.bin $C/text.bin "$TMP/dup20m.bin" "$TMP/rnd16.bin"; do
+        for case in "m0o|-d16mb" "m1o|" "m2o|" "m3o|" "m4o|" "m5o|" "m0|-d16mb" "m1|" "m2|" \
+                    "m3|" "m4|" "m5|" "m1f|" "m3f|" "m4f|" "m5f|" "m4o|-d16mb"; do
+            IFS='|' read -r m o <<<"$case"
+            # shellcheck disable=SC2086
+            ./bin/osrep "-$m" $o --seed=7 "$input" "$TMP/cpp.osr" >/dev/null 2>&1 \
+                || fail "el C++ fallo en -$m $o"
+            # shellcheck disable=SC2086
+            "$ET" "$m" $o --seed=7 "$input" "$TMP/pa.osr" >/dev/null 2>&1 \
+                || fail "el Pascal fallo en $m $o"
+            cmp -s "$TMP/cpp.osr" "$TMP/pa.osr" \
+                || fail "-$m $o sobre $(basename "$input"): distinto del C++"
+            pass=$((pass + 1))
+        done
+    done
+fi
 
 echo "  pascal_encode_conformance: passed=$pass mismatches=0 not_ported=$notported"

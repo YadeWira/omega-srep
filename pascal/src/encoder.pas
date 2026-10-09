@@ -11,9 +11,9 @@ unit Encoder;
   suele haber llenado con el bloque que sigue. Leer un bloque adelante lo
   reproduce de forma determinista.
 
-  Hasta la 5b: todos los compresores (-m0 a -m5, con -d) sobre el contenedor
-  I/O-LZ (sufijo o, formato v1/v2). Los otros contenedores salen como "no
-  portado". }
+  Todos los compresores (-m0 a -m5, con -d) y los cuatro contenedores:
+  I/O-LZ (sufijo o, v1/v2) en una pasada; Index-LZ (v4), Future-LZ (sufijo f,
+  v3) y v5 con la segunda pasada. -dup es la fase 6. }
 
 {$MODE OBJFPC}{$H+}
 {$RANGECHECKS OFF}
@@ -59,7 +59,7 @@ procedure Encode(Input, Output: TStream; const Opts: TEncodeOptions; Kind: TEncK
 
 implementation
 
-uses Rolling, HashesKeyed, Vmac, Inmem, Cdc;
+uses Rolling, HashesKeyed, Vmac, Inmem, Cdc, SecondPass;
 
 const
   BUFFERS = 2;           { io.cpp:90: el anillo lleva dos bloques de margen }
@@ -222,11 +222,19 @@ var
   inmem: TDictCompressor;
   hashptr: TQList;
   chunkKey: TVmac;
+  ioLz, indexLz, futureLz, v5: Boolean;
+  storedHashSize, futurelzBaseLen: QWord;
+  v5h: TV5Header;
+  blocks: TCompressedBlocks;
+  nblocks: QWord;
 begin
   if not HashByName(Opts.Hash, info) then
     raise EEncode.Create('UnknownHash("' + Opts.Hash + '")');
   cdc := Kind in [ekCdc, ekCdcZpaq];
-  if Cont <> ecIoLz then raise ENotPorted.Create('container not ported to Pascal yet');
+  ioLz := Cont = ecIoLz;
+  indexLz := Cont = ecIndexLz;
+  futureLz := Cont = ecFutureLz;
+  v5 := Cont = ecV5;
 
   { los defaults de las opciones (srep.cpp:448-457), en el orden del C++ }
   minMatch := Opts.MinMatch;
@@ -260,18 +268,45 @@ begin
   end;
   HasherInit(hasher, info, seed);
 
+  { v5 no guarda digest con -hash- (hash_size = 0); v1-v4 siempre reservan
+    los 16 bytes del descriptor. Dimensionar la cabecera de bloque por el
+    descriptor en los dos casos desincroniza todos los bloques de v5. }
+  if v5 and (info.Name = '') then storedHashSize := 0 else storedHashSize := info.HashSize;
+  { header[3] = FUTURELZ_BASE_LEN = IO_LZ ? BASE_LEN : 0 (srep.cpp:458): el
+    decoder v3/v4 lee de aca la base del largo, y 0 da largos crudos }
+  if ioLz then futurelzBaseLen := baseLen else futurelzBaseLen := 0;
+
   ah.HashNum := info.Num;
   ah.HashSeedSize := info.SeedSize;
   ah.HashSize := info.HashSize;
-  ah.BaseLen := DWord(baseLen);                 { FUTURELZ_BASE_LEN con I/O-LZ }
-  if roundMatches then ah.Version := 1 else ah.Version := 2;
+  ah.BaseLen := DWord(futurelzBaseLen);
+  if indexLz then ah.Version := 4
+  else if futureLz then ah.Version := 3
+  else if roundMatches then ah.Version := 1
+  else ah.Version := 2;
 
   fileSize := QWord(Input.Seek(0, soEnd));
   Input.Seek(0, soBeginning);
 
-  hb := EncodeArchiveHeader(ah);
+  if v5 then
+  begin
+    { format-spec-v5 seccion 2: una magia, el par de hash sin sesgo, y la
+      cantidad de bloques y el tamano escritos en vez de inferidos }
+    v5h.Version := 5;
+    v5h.Flags := 0;
+    v5h.HashId := info.Num;
+    if info.Name = '' then v5h.HashSize := 0 else v5h.HashSize := info.HashSize;
+    v5h.MaxMatch := DWord(8 * 1024 * 1024 - 24);
+    v5h.BlockCount := DWord((fileSize + bufsize - 1) div bufsize);
+    v5h.OriginalSize := fileSize;
+    hb := EncodeV5Header(v5h);
+  end
+  else
+    hb := EncodeArchiveHeader(ah);
   Output.WriteBuffer(hb[0], Length(hb));
   if Length(seed) > 0 then Output.WriteBuffer(seed[0], Length(seed));
+  SetLength(blocks, 0);
+  nblocks := 0;
 
   { COMPARE_DIGESTS = metodo <= -m3; PRECOMPUTE_DIGESTS = -m3; io_accelerator 1.
     -m0 no tiene tabla. }
@@ -305,7 +340,7 @@ begin
     RingEnsure(dict, nextOffset + bufsize, ringSize);
     nextFilled := ReadBlockAt(Input, nextPos, dict, nextOffset, bufsize);
 
-    SetLength(header, BLOCK_HEADER_SIZE + info.HashSize);
+    SetLength(header, BLOCK_HEADER_SIZE + storedHashSize);
     FillChar(header[0], Length(header), 0);
     if HasherCompute(hasher, dict, bufOffset, filled, digest) then
       Move(digest[0], header[BLOCK_HEADER_SIZE], Length(digest));
@@ -347,20 +382,45 @@ begin
 
     bh.LiteralBytes := literalBytes;
     bh.OrigSize := DWord(filled);
-    bh.StatSize := DWord(stat.N * 4);
+    { header[2] = (INDEX_LZ ? 0 : stat_size) (srep.cpp:747) }
+    if indexLz then bh.StatSize := 0 else bh.StatSize := DWord(stat.N * 4);
     hb := EncodeBlockHeader(bh);
     Move(hb[0], header[0], BLOCK_HEADER_SIZE);
 
-    { save_data: la cabecera, la lista de matches, los literales }
-    Output.WriteBuffer(header[0], Length(header));
-    WriteStats(Output, stat);
-    WriteLiterals(Output, dict, bufOffset, filled, stat, roundMatches, DWord(baseLen));
+    if not (futureLz or v5) then
+    begin
+      { save_data: la cabecera, la lista (vacia en Index-LZ), los literales }
+      Output.WriteBuffer(header[0], Length(header));
+      if not indexLz then WriteStats(Output, stat);
+      WriteLiterals(Output, dict, bufOffset, filled, stat, roundMatches, DWord(baseLen));
+    end;
+    { no_writes = FUTURE_LZ (io.cpp:270): Future-LZ y v5 no escriben nada en
+      la primera pasada; la segunda re-emite cabecera, lista y literales }
+    if not ioLz then
+    begin
+      if nblocks >= QWord(Length(blocks)) then
+      begin
+        if Length(blocks) < 16 then SetLength(blocks, 16) else SetLength(blocks, Length(blocks) * 2);
+      end;
+      blocks[nblocks].Start := blockStart;
+      blocks[nblocks].EndPos := blockStart + filled;
+      blocks[nblocks].Size := filled;
+      blocks[nblocks].Header := Copy(header);
+      blocks[nblocks].Stat.W := Copy(stat.W, 0, stat.N);
+      blocks[nblocks].Stat.N := stat.N;
+      Inc(nblocks);
+    end;
 
     blockStart := blockStart + filled;
     nextPos := nextPos + nextFilled;
     bufOffset := nextOffset;
     filled := nextFilled;
   end;
+
+  { Future-LZ, Index-LZ y v5 re-emiten la lista de cada bloque (srep.cpp:820) }
+  if not ioLz then
+    RunSecondPass(blocks, nblocks, Input, Output, roundMatches, DWord(baseLen),
+                  DWord(futurelzBaseLen), futureLz, indexLz, v5);
 end;
 
 end.
