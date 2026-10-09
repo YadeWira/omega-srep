@@ -19,10 +19,10 @@ program osrep;
 uses
   { Windows antes que SysUtils: trae su propio DeleteFile (con PChar) }
   {$IFDEF WINDOWS} Windows, {$ENDIF}
-  {$IFDEF UNIX} termio, {$ENDIF}
-  SysUtils, Classes, TypInfo,
+  {$IFDEF UNIX} termio, BaseUnix, {$ENDIF}
+  SysUtils, Classes,
   Widths, OutRaw, Hashes, Help, Container, Decompress, FutureLz, Encoder, FixedCompress,
-  Dedup, DupWrap,
+  Dedup, DupWrap, DecFault,
   V5Verify, SpillFile, CliArgs, CliReport, RandBytes, StreamIO;
 
 const
@@ -52,6 +52,7 @@ type
     FCount: QWord;
     FBuf: array of Byte;
     FUsed: LongInt;
+    FSawNewline: Boolean;
     procedure Drain;
   public
     constructor Create(AHandle: THandle);
@@ -59,6 +60,10 @@ type
     function Write(const Buffer; Count: LongInt): LongInt; override;
     function Seek(const Offset: Int64; Origin: TSeekOrigin): Int64; override;
     procedure Flush;
+    { si el stdout del Rust (un LineWriter de 1024 bytes) ya habria escrito
+      algo al fd antes de terminar el encode: con un '\n' en lo escrito, o
+      con 1024 bytes o mas. Si no, todo esperaba al flush final. }
+    function RustWroteEarly: Boolean;
     property Written: QWord read FCount;
   end;
 
@@ -105,6 +110,8 @@ var p: PByte; n: LongInt;
 begin
   Result := Count;
   p := @Buffer;
+  if (not FSawNewline) and (Count > 0) then
+    FSawNewline := IndexByte(p^, Count, 10) >= 0;
   while Count > 0 do
   begin
     n := Length(FBuf) - FUsed;
@@ -127,6 +134,11 @@ end;
 procedure TCountWriter.Flush;
 begin
   Drain;
+end;
+
+function TCountWriter.RustWroteEarly: Boolean;
+begin
+  Result := FSawNewline or (FCount >= 1024);
 end;
 
 { ------------------------------------------------------------ helpers --- }
@@ -181,11 +193,13 @@ begin
     repeat
       n := FileRead(InHandle, buf[0], Length(buf));
       if n < 0 then Fail(ERROR_IO, 'Can''t read from input file');
+      { el std::io::copy del Rust falla igual al leer o al escribir, y los dos
+        dan el mismo texto: con el disco lleno tambien es "Can't read" }
       if n > 0 then
         try
           f.WriteBuffer(buf[0], n);
         except
-          Fail(ERROR_IO, 'Can''t write to tempfile');
+          Fail(ERROR_IO, 'Can''t read from input file');
         end;
     until n = 0;
   finally
@@ -407,6 +421,15 @@ begin
   Fail(ERROR_IO, 'Io');
 end;
 
+(* `format!("{e:?}")` de un EncodeError: los EEncode ya traen el Debug; toda
+  falla de E/S es EncodeError::Io en el Rust (From<io::Error>), sin detalle *)
+function EncodeErrorText(X: Exception): AnsiString;
+begin
+  if X is EEncode then Exit(X.Message);
+  if IsIoException(X) then Exit('Io');
+  Result := X.Message;
+end;
+
 function Compress(const O: TOptions; const FiName, FoutName: AnsiString): LongInt;
 var
   warnings: LongInt;
@@ -509,12 +532,17 @@ begin
             Encode(inS, cw, enc, KindOf(O), ContainerOf(O), @OnProgress);
           except
             on X: ERun do raise;
-            on X: Exception do Fail(ERROR_COMPRESSION, X.Message);
+            on X: Exception do Fail(ERROR_COMPRESSION, EncodeErrorText(X));
           end;
+          { El Rust escribe por un LineWriter: lo que no entro en el flush
+            final ya fue al fd DURANTE el encode, y una falla ahi es un
+            EncodeError::Io. Este buffer es mas grande, asi que la falla
+            puede llegar recien aca; se reporta donde la veria el Rust. }
           try
             cw.Flush;
           except
-            Fail(ERROR_IO, 'Can''t write to stdout');
+            if cw.RustWroteEarly then Fail(ERROR_COMPRESSION, 'Io')
+            else Fail(ERROR_IO, 'Can''t write to stdout');
           end;
           written := cw.Written;
         end
@@ -529,7 +557,7 @@ begin
             Encode(inS, outS, enc, KindOf(O), ContainerOf(O), @OnProgress);
           except
             on X: ERun do raise;
-            on X: Exception do Fail(ERROR_COMPRESSION, X.Message);
+            on X: Exception do Fail(ERROR_COMPRESSION, EncodeErrorText(X));
           end;
           written := QWord(outS.Seek(0, soEnd));
         end;
@@ -567,70 +595,72 @@ begin
   D.VmFile := O.VmFile;
 end;
 
-function ContainerErrorName(E: TContainerError): AnsiString;
+{$IFDEF UNIX}
+{ Un directorio como entrada de -d. El FileOpen de FPC rechaza los
+  directorios; el File::open del Rust en Unix no: abre, y lo que falla despues
+  es el seek o el read, con un error distinto segun el sistema de archivos
+  (ext4 da un largo enorme al seek, tmpfs da EINVAL, /proc da 0). Se recorre
+  el mismo camino que el Rust con las mismas llamadas, para dar su error: el
+  sniff de -dup (dup.rs: Io si falla el seek, Truncated si falla el read) y
+  despues archive::decode (el Io(Os ..) del seek o del read). }
+procedure DirectoryInput(const O: TOptions; const FiName, FoutName: AnsiString);
+var fd: cint; len: Int64; b: array[0..15] of Byte; seekErr, readErr: LongInt;
+    t: TFileStream;
 begin
-  Result := GetEnumName(TypeInfo(TContainerError), Ord(E));
-  Delete(Result, 1, 2);   { el prefijo ce }
-end;
-
-{ archive::decode: el decoder que corresponde a la version }
-function DecodeArchive(Input, Sink: TStream; const Opts: TFutureLzOptions; Index: TStream;
-                       out Msg: AnsiString): Boolean;
-var
-  len: Int64;
-  head: TBytes;
-  h: TArchiveHeader;
-  ce: TContainerError;
-  e: TDecodeError;
-  fst: TFutureLzStats;
-  dst: TDecodeStats;
-begin
-  Msg := '';
-  len := Input.Seek(0, soEnd);
-  Input.Seek(0, soBeginning);
-  if len >= V5_HEADER_SIZE then
+  fd := fpOpen(PChar(FiName), O_RDONLY);
+  if fd < 0 then Exit;            { tampoco el Rust lo abre: el camino de siempre }
+  len := fpLseek(fd, 0, Seek_End);
+  seekErr := 0;
+  if len < 0 then seekErr := fpgeterrno;
+  readErr := 0;
+  if len >= 0 then
   begin
-    SetLength(head, 4);
-    Input.ReadBuffer(head[0], 4);
-    Input.Seek(0, soBeginning);
-    if IsV5(head) then
-    begin
-      e := DecodeV5(Input, Sink, Opts, fst, Msg, @OnProgress);
-      Exit(e = deOK);
+    fpLseek(fd, 0, Seek_Set);
+    if fpRead(fd, b[0], SizeOf(b)) < 0 then readErr := fpgeterrno;
+  end;
+  fpClose(fd);
+  if readErr = 0 then readErr := 21;   { EISDIR, lo que da todo read de un directorio }
+  if FoutName <> '-' then
+  begin
+    { dup::decode: seek(End)? es Io; con 12 bytes o mas lee la cola (read_exact_at,
+      que da Truncated) }
+    if len < 0 then Fail(ERROR_IO, 'Io');
+    if len >= 12 then Fail(ERROR_IO, 'Truncated');
+    try
+      t := TFileStream.Create(FoutName, fmCreate);
+      t.Free;
+    except
+      Fail(ERROR_IO, 'Can''t open ' + FoutName + ' for write');
     end;
   end;
-  SetLength(head, ARCHIVE_HEADER_SIZE);
-  if (len < ARCHIVE_HEADER_SIZE) or (Input.Read(head[0], ARCHIVE_HEADER_SIZE) <> ARCHIVE_HEADER_SIZE) then
-  begin
-    Msg := 'Container(Truncated)';
-    Exit(False);
-  end;
-  Input.Seek(0, soBeginning);
-  ce := DecodeArchiveHeader(head, h);
-  if ce <> ceOK then
-  begin
-    Msg := 'Container(' + ContainerErrorName(ce) + ')';
-    Exit(False);
-  end;
-  if (h.Version = 1) or (h.Version = 2) then
-    e := DecodeIoLz(Input, Sink, Index, dst, Msg, @OnProgress)
-  else
-    e := DecodeFutureLz(Input, Sink, Opts, fst, Msg, @OnProgress, Index);
-  Result := e = deOK;
+  if O.IndexFile <> '' then
+    if not (FileExists(O.IndexFile) or DirectoryExists(O.IndexFile)) then
+      Fail(ERROR_IO, 'Can''t open index file ' + O.IndexFile + ' for read');
+  if len < 0 then Fail(ERROR_COMPRESSION, FaultDebug(FaultOs(seekErr)) + ': ' + FiName);
+  Fail(ERROR_COMPRESSION, FaultDebug(FaultOs(readErr)) + ': ' + FiName);
 end;
+{$ENDIF}
 
 function Decompress(const O: TOptions; const FiName, FoutName: AnsiString): LongInt;
 var
   opts: TFutureLzOptions;
   isDup: Boolean;
-  inputPath, sinkPath, stdinSpool, stdoutSpool, msg: AnsiString;
-  inS, sink, indexS, f: TFileStream;
+  inputPath, sinkPath, stdinSpool, stdoutSpool: AnsiString;
+  err: TDecodeFault;
+  inS, sink, f: TFileStream;
+  indexS: TStream;
+{$IFDEF UNIX}
+  ixfd: cint;
+{$ENDIF}
   total, decoded: QWord;
   ok: Boolean;
   buf: array of Byte;
   n, off, w: LongInt;
 begin
   DecodeOptionsOf(O, opts);
+{$IFDEF UNIX}
+  if (FiName <> '-') and DirectoryExists(FiName) then DirectoryInput(O, FiName, FoutName);
+{$ENDIF}
 
   { -dup primero: el C++ lo detecta en cada descompresion, con o sin la
     opcion. Reescribe la cola del archivo, asi que necesita dos archivos de
@@ -694,7 +724,21 @@ begin
     { -index= de vuelta: las listas salen del archivo nombrado }
     if O.IndexFile <> '' then
       try
+      begin
+{$IFDEF UNIX}
+        { un directorio: el File::open del Rust lo abre y falla al leerlo
+          (un Io(Os) con EISDIR), o no lo lee nunca si el archivo no usa el
+          indice. FileOpen lo rechazaria antes. }
+        if DirectoryExists(O.IndexFile) then
+        begin
+          ixfd := fpOpen(PChar(O.IndexFile), O_RDONLY);
+          if ixfd < 0 then raise EFOpenError.Create(O.IndexFile);
+          indexS := TOwnedHandleStream.Create(ixfd);
+        end
+        else
+{$ENDIF}
         indexS := TFileStream.Create(O.IndexFile, fmOpenRead or fmShareDenyNone);
+      end
       except
         Fail(ERROR_IO, 'Can''t open index file ' + O.IndexFile + ' for read');
       end;
@@ -702,16 +746,13 @@ begin
     { un rechazo es una salida limpia distinta de cero: nunca un crash ni un
       cuelgue, que es lo que asertan los tests de corrupcion }
     try
-      ok := DecodeArchive(inS, sink, opts, indexS, msg);
+      ok := DecodeArchive(inS, sink, opts, indexS, err, @OnProgress);
     except
       on X: ERun do raise;
-      on X: Exception do begin ok := False; msg := X.Message; end;
+      on X: Exception do begin ok := False; err := FaultOfException(X); end;
     end;
-    if not ok then
-    begin
-      if msg = '' then msg := 'decode failed';
-      Fail(ERROR_COMPRESSION, msg + ': ' + FiName);
-    end;
+    (* el Debug del DecodeError, como modes.rs: `format!("{e:?}: {finame}")` *)
+    if not ok then Fail(ERROR_COMPRESSION, FaultDebug(err) + ': ' + FiName);
     decoded := QWord(sink.Seek(0, soEnd));
     FreeAndNil(sink);
 

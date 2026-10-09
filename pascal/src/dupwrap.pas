@@ -33,7 +33,7 @@ function DupDecode(const InPath, OutPath: AnsiString; const Opts: TFutureLzOptio
 
 implementation
 
-uses Container, Decompress, SpillFile, StreamIO;
+uses Container, Decompress, DecFault, SpillFile, StreamIO, FixedCompress;
 
 const
   ODUP_TRAILER_SIZE = 12;          { meta_size u64 + "ODUP" }
@@ -74,7 +74,15 @@ begin
     try
       bs := TFileStream.Create(body, fmOpenRead or fmShareDenyNone);
       os := TFileStream.Create(OutPath, fmCreate);
-      Encode(bs, os, o, Kind, Cont, Progress);
+      { el `?` de encoder::encode convierte su error en DupError::Encode: una
+        falla de E/S ahi es Encode(Io), no el Io suelto de los otros pasos }
+      try
+        Encode(bs, os, o, Kind, Cont, Progress);
+      except
+        on X: EEncode do raise;
+        on X: Exception do
+          if IsIoException(X) then raise EEncode.Create('Io') else raise;
+      end;
       if Mode = dmV4 then
       begin
         { dup_wrapper.cpp:254-262: meta || u64_le(meta_size) || "ODUP" }
@@ -150,36 +158,20 @@ begin
   IsDup := True;
 end;
 
-{ archive::decode: el decoder que corresponde a la version }
-procedure DecodeAny(const InPath, OutPath: AnsiString; const Opts: TFutureLzOptions);
-var inS, outS: TFileStream; st: TFutureLzStats; dst: TDecodeStats; msg: AnsiString;
-    e: TDecodeError; head, arc: TBytes; h: TArchiveHeader;
+{ El cuerpo de un -dup, decodificado como lo hace dup.rs: un v5 directo por
+  decode_v5, el cuerpo de un ODUP por archive::decode. Un rechazo sale como
+  DupError::Decode, con el Debug del DecodeError adentro. }
+procedure DecodeAny(const InPath, OutPath: AnsiString; const Opts: TFutureLzOptions;
+                    V5: Boolean);
+var inS, outS: TFileStream; st: TFutureLzStats; err: TDecodeFault; ok: Boolean;
 begin
   inS := nil; outS := nil;
   try
     inS := TFileStream.Create(InPath, fmOpenRead or fmShareDenyNone);
     outS := TFileStream.Create(OutPath, fmCreate);
-    SetLength(head, ARCHIVE_HEADER_SIZE);
-    msg := '';
-    if inS.Read(head[0], ARCHIVE_HEADER_SIZE) <> ARCHIVE_HEADER_SIZE then
-      raise EDup.Create('Decode(Container(Truncated))');
-    inS.Seek(0, soBeginning);
-    if IsV5(head) then e := DecodeV5(inS, outS, Opts, st, msg)
-    else
-    begin
-      if DecodeArchiveHeader(head, h) <> ceOK then raise EDup.Create('Decode(Container(NotAnOsrepFile))');
-      if (h.Version = 1) or (h.Version = 2) then
-      begin
-        e := DecodeIoLz(inS, outS, nil, dst, msg);
-      end
-      else
-        e := DecodeFutureLz(inS, outS, Opts, st, msg);
-    end;
-    if e <> deOK then
-    begin
-      if msg = '' then msg := 'decode failed';
-      raise EDup.Create('Decode(' + msg + ')');
-    end;
+    if V5 then ok := DecodeV5(inS, outS, Opts, st, err) = deOK
+    else ok := DecodeArchive(inS, outS, Opts, nil, err);
+    if not ok then raise EDup.Create('Decode(' + FaultDebug(err) + ')');
   finally
     outS.Free;
     inS.Free;
@@ -210,7 +202,7 @@ begin
       s.Free; s := nil;
       body := NewTempPath('osrep-dup-body');
       try
-        DecodeAny(InPath, body, Opts);
+        DecodeAny(InPath, body, Opts, True);
         try
           DecodeStreaming(meta, body, OutPath);
         except
@@ -237,7 +229,7 @@ begin
       end;
       s.Free; s := nil;
       decoded := NewTempPath('osrep-dup-body-dec');
-      DecodeAny(body, decoded, Opts);
+      DecodeAny(body, decoded, Opts, False);
       try
         DecodeStreaming(meta, decoded, OutPath);
       except

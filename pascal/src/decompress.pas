@@ -16,7 +16,7 @@ unit Decompress;
 {$OVERFLOWCHECKS OFF}
 interface
 
-uses SysUtils, Widths, Hashes, Container, Classes;   { SysUtils antes de Hashes: TBytes }
+uses SysUtils, Widths, Hashes, Container, Classes, DecFault;   { SysUtils antes de Hashes: TBytes }
 
 type
   TDecodeError = (deOK, deTruncated, deBadData, deDigestMismatch, deContainer,
@@ -33,9 +33,10 @@ type
 
 { decode_io_lz: v1/v2 leidos del stream, sin cargar el archivo entero. Index,
   si no es nil, es el archivo de -index= de donde salen las listas de matches.
-  ErrMsg lleva el texto del error (el Display del Rust). }
+  Err lleva el error con su estructura (decfault.pas): Err.Msg es el texto de
+  las herramientas, FaultDebug(Err) el Debug que imprime la CLI. }
 function DecodeIoLz(Input, Sink: TStream; Index: TStream; out St: TDecodeStats;
-                    out ErrMsg: AnsiString; Progress: TDecodeProgress = nil): TDecodeError;
+                    out Err: TDecodeFault; Progress: TDecodeProgress = nil): TDecodeError;
 
 { Copia con semantica LZ, compartida con el decoder Future-LZ. }
 procedure LzCopy(var Buf: TBytes; Src, Dest, Len: QWord);
@@ -110,7 +111,7 @@ begin
   begin
     n := Len;
     if n > IO_CHUNK then n := IO_CHUNK;
-    S.ReadBuffer(Buf[Off], LongInt(n));
+    ReadExactOrFault(S, Buf[Off], n);
     Inc(Off, n);
     Dec(Len, n);
   end;
@@ -124,7 +125,7 @@ begin
   begin
     n := Len;
     if n > IO_CHUNK then n := IO_CHUNK;
-    S.WriteBuffer(Buf[off], LongInt(n));
+    WriteAllOrFault(S, Buf[off], n);
     Inc(off, n);
     Dec(Len, n);
   end;
@@ -133,13 +134,13 @@ end;
 function DecompressBlock(RoundMatches: Boolean; L: QWord; Sink: TStream;
                          BlockStart: QWord; const Stats: array of DWord;
                          const Literals: TBytes; var OutBuf: TBytes;
-                         OutLen: QWord; out Msg: AnsiString): TDecodeError;
+                         OutLen: QWord; out Err: TDecodeFault): TDecodeError;
 var
   per, st: LongInt;
   l1, litLen, offset, mlen, basicPos, dest, src, bytes: QWord;
   inPos, outPos: QWord;
 begin
-  Msg := '';
+  Err := NoFault;
   if RoundMatches then begin per := 3; l1 := L; end
   else begin per := 4; l1 := 1; end;
 
@@ -163,7 +164,7 @@ begin
       mismo punto, asi que un v1 asi SIN records sigue decodificando. }
     if l1 = 0 then
     begin
-      Msg := 'v1 archive with a zero base length';
+      Err := FaultBadData('v1 archive with a zero base length');
       Exit(deBadData);
     end;
     { Redondea el destino hacia abajo a un multiplo de L1 y resta el offset.
@@ -175,12 +176,12 @@ begin
        (litLen + mlen > OutLen - outPos) or
        (src >= dest) then
     begin
-      Msg := 'record does not fit the block';
+      Err := FaultBadData('record does not fit the block');
       Exit(deBadData);
     end;
     if not GrowOut(OutBuf, outPos + litLen + mlen, OutLen) then
     begin
-      Msg := 'Out of memory';
+      Err := FaultOutOfMemory;
       Exit(deIo);
     end;
 
@@ -204,13 +205,13 @@ begin
   { Los literales que sobran tienen que llenar exactamente el resto. }
   if (QWord(Length(Literals)) - inPos) <> (OutLen - outPos) then
   begin
-    Msg := 'literal run does not fill the block';
+    Err := FaultBadData('literal run does not fill the block');
     Exit(deBadData);
   end;
   { siempre, aunque no sobren literales: el bloque sale del largo exacto }
   if not GrowOut(OutBuf, OutLen, OutLen) then
   begin
-    Msg := 'Out of memory';
+    Err := FaultOutOfMemory;
     Exit(deIo);
   end;
   if inPos < QWord(Length(Literals)) then
@@ -241,12 +242,12 @@ begin
     begin
       cap := cap * 2;
       if cap > N then cap := N;
-      if cap > QWord(High(SizeInt)) then raise EOutOfMemory.Create('Out of memory');
+      if cap > QWord(High(SizeInt)) then raise EDecodeFault.CreateFault(FaultOutOfMemory);
       SetLength(B, SizeInt(cap));
     end;
     chunk := cap - pos;
     if chunk > IO_CHUNK then chunk := IO_CHUNK;
-    got := S.Read(B[pos], LongInt(chunk));
+    got := ReadOnceOrFault(S, B[pos], LongInt(chunk));
     if got <= 0 then
     begin
       if pos = 0 then Exit(rdEOF) else Exit(rdPartial);
@@ -257,7 +258,7 @@ begin
 end;
 
 function DecodeIoLz(Input, Sink: TStream; Index: TStream; out St: TDecodeStats;
-                    out ErrMsg: AnsiString; Progress: TDecodeProgress = nil): TDecodeError;
+                    out Err: TDecodeFault; Progress: TDecodeProgress = nil): TDecodeError;
 var
   h: TArchiveHeader;
   ce: TContainerError;
@@ -273,7 +274,7 @@ var
   src: TStream;
 begin
   St.Blocks := 0; St.OrigSize := 0; St.Verified := False;
-  ErrMsg := '';
+  Err := NoFault;
   outbuf := nil;
   total := 0;
   try
@@ -285,26 +286,26 @@ begin
     end;
     if ReadDecl(Input, hb, ARCHIVE_HEADER_SIZE) <> rdOK then
     begin
-      ErrMsg := 'truncated structure';
+      Err := FaultContainer(ckTruncated);
       Exit(deTruncated);
     end;
     if IsV5(hb) then
     begin
-      ErrMsg := 'not an I/O-LZ archive (v5)';
+      Err := FaultNotIoLz(5);
       Exit(deNotIoLz);
     end;
     ce := DecodeArchiveHeader(hb, h);
-    if ce = ceNotAnOsrepFile then begin ErrMsg := 'not an Omega SREP file (.osr)'; Exit(deContainer); end;
-    if ce <> ceOK then begin ErrMsg := 'incompatible compressed data format'; Exit(deContainer); end;
+    if ce = ceNotAnOsrepFile then begin Err := FaultContainer(ckNotAnOsrepFile); Exit(deContainer); end;
+    if ce <> ceOK then begin Err := FaultContainer(ckUnsupportedVersion, h.Version); Exit(deContainer); end;
     if (h.Version <> 1) and (h.Version <> 2) then
     begin
-      ErrMsg := 'not an I/O-LZ archive (v' + IntToStr(h.Version) + ')';
+      Err := FaultNotIoLz(h.Version);
       Exit(deNotIoLz);
     end;
 
     if ReadDecl(Input, seed, QWord(h.HashSeedSize)) <> rdOK then
     begin
-      ErrMsg := 'truncated structure';
+      Err := FaultContainer(ckTruncated);
       Exit(deTruncated);
     end;
     { Digest::for_archive: un hash desconocido o tamanos que exceden al
@@ -322,7 +323,7 @@ begin
     begin
       rd := ReadDecl(Input, blockBuf, headerSize);
       if rd = rdEOF then Break;
-      if rd = rdPartial then begin ErrMsg := 'truncated structure'; Exit(deTruncated); end;
+      if rd = rdPartial then begin Err := FaultContainer(ckTruncated); Exit(deTruncated); end;
       DecodeBlockHeader(blockBuf, 0, bh);
       { un bloque de largo cero cierra el stream }
       if (bh.LiteralBytes = 0) and (bh.OrigSize = 0) then Break;
@@ -330,12 +331,12 @@ begin
       { primero que este, DESPUES que sea multiplo de 4 }
       if ReadDecl(src, statBytes, QWord(bh.StatSize)) <> rdOK then
       begin
-        ErrMsg := 'truncated structure';
+        Err := FaultContainer(ckTruncated);
         Exit(deTruncated);
       end;
       if (bh.StatSize mod 4) <> 0 then
       begin
-        ErrMsg := 'match list is not a whole number of STATs';
+        Err := FaultBadData('match list is not a whole number of STATs');
         Exit(deBadData);
       end;
       SetLength(stats, bh.StatSize div 4);
@@ -348,13 +349,13 @@ begin
       end;
       if ReadDecl(Input, literals, QWord(bh.LiteralBytes)) <> rdOK then
       begin
-        ErrMsg := 'truncated structure';
+        Err := FaultContainer(ckTruncated);
         Exit(deTruncated);
       end;
 
       if QWord(Length(outbuf)) > QWord(bh.OrigSize) then SetLength(outbuf, bh.OrigSize);
       de := DecompressBlock(h.Version = 1, QWord(h.BaseLen), Sink, blockStart,
-                            stats, literals, outbuf, QWord(bh.OrigSize), ErrMsg);
+                            stats, literals, outbuf, QWord(bh.OrigSize), Err);
       if de <> deOK then Exit(de);
 
       if verified then
@@ -363,13 +364,13 @@ begin
         { un digest declarado mas corto que el hash no puede coincidir }
         if QWord(h.HashSize) < QWord(Length(got)) then
         begin
-          ErrMsg := 'checksum of decoded block ' + IntToStr(St.Blocks) + ' differs from the stored one';
+          Err := FaultDigest(St.Blocks);
           Exit(deDigestMismatch);
         end;
         for k := 0 to Length(got) - 1 do
           if blockBuf[BLOCK_HEADER_SIZE + k] <> got[k] then
           begin
-            ErrMsg := 'checksum of decoded block ' + IntToStr(St.Blocks) + ' differs from the stored one';
+            Err := FaultDigest(St.Blocks);
             Exit(deDigestMismatch);
           end;
       end;
@@ -388,7 +389,7 @@ begin
   except
     on X: Exception do
     begin
-      ErrMsg := X.Message;
+      Err := FaultOfException(X);
       Result := deIo;
     end;
   end;

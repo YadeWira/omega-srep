@@ -39,7 +39,7 @@ interface
 
 { Hashes despues de SysUtils: las dos definen TBytes, y la ultima gana. Asi
   interface e implementacion ven la misma. }
-uses SysUtils, Classes, avl_tree, Widths, Hashes, Container, Digest, Decompress,
+uses SysUtils, Classes, avl_tree, Widths, Hashes, Container, Digest, Decompress, DecFault,
      SpillFile;
 
 type
@@ -61,24 +61,32 @@ type
 
   TFlzProgress = procedure(Done, Total: QWord);
 
-  EFlz = class(Exception)
+  { lleva la clase del resultado (TDecodeError, lo que usan las herramientas)
+    y el error con su estructura }
+  EFlz = class(EDecodeFault)
   public
     Kind: TDecodeError;
-    constructor CreateKind(AKind: TDecodeError; const AMsg: AnsiString);
+    constructor CreateKind(AKind: TDecodeError; const F: TDecodeFault);
   end;
 
 { FutureLzOptions::default: 1 GiB, 8 MiB, u32::MAX, sin -vmfile. }
 procedure DefaultFutureLzOptions(out O: TFutureLzOptions);
 
 function DecodeFutureLz(Input, Sink: TStream; const Opts: TFutureLzOptions;
-                        out St: TFutureLzStats; out ErrMsg: AnsiString;
+                        out St: TFutureLzStats; out Err: TDecodeFault;
                         Progress: TFlzProgress = nil; Index: TStream = nil): TDecodeError;
 
 { `decode_v5` (future_lz.rs): el contenedor v5 sobre el mismo decoder de
   bloques. Mismas opciones y estadisticas que v3/v4. }
 function DecodeV5(Input, Sink: TStream; const Opts: TFutureLzOptions;
-                  out St: TFutureLzStats; out ErrMsg: AnsiString;
+                  out St: TFutureLzStats; out Err: TDecodeFault;
                   Progress: TFlzProgress = nil): TDecodeError;
+
+{ archive::decode (archive.rs): el decoder que corresponde a la magia. Un v5
+  empieza con la suya; lo demas con el header de 16 bytes, cuya palabra de
+  seleccion dice la version. Err lleva el error con su estructura. }
+function DecodeArchive(Input, Sink: TStream; const Opts: TFutureLzOptions; Index: TStream;
+                       out Err: TDecodeFault; Progress: TFlzProgress = nil): Boolean;
 
 implementation
 
@@ -92,15 +100,15 @@ const
     4 del terminador. Confundirlos cambia cuantos matches entran por slot. }
   VM_FIT_MARGIN      = QWord(24);
 
-constructor EFlz.CreateKind(AKind: TDecodeError; const AMsg: AnsiString);
+constructor EFlz.CreateKind(AKind: TDecodeError; const F: TDecodeFault);
 begin
-  inherited Create(AMsg);
+  inherited CreateFault(F);
   Kind := AKind;
 end;
 
-procedure Fail(K: TDecodeError; const Msg: AnsiString);
+procedure Fail(K: TDecodeError; const F: TDecodeFault);
 begin
-  raise EFlz.CreateKind(K, Msg);
+  raise EFlz.CreateKind(K, F);
 end;
 
 procedure DefaultFutureLzOptions(out O: TFutureLzOptions);
@@ -416,7 +424,7 @@ type
     HasVmFile: Boolean;
     VmFileName: AnsiString;
     SpillOpen: Boolean;
-    Spill: THandleStream;          { TFileStream con -vmfile=, si no el temporal }
+    Spill: THandleStream;          { con -vmfile= o el temporal, dueno de su handle }
     SpillPath: AnsiString;
     TotalRead, TotalWrite: QWord;
   end;
@@ -454,24 +462,31 @@ begin
 end;
 
 function VmSpillFile(var VM: TVirtualMemory): THandleStream;
+var h: THandle; fault: TDecodeFault;
 begin
   if VM.SpillOpen then Exit(VM.Spill);
   if VM.HasVmFile then
   begin
     VM.SpillPath := VM.VmFileName;
-    try
-      VM.Spill := TFileStream.Create(VM.SpillPath, fmCreate);   { trunca }
-    except
+    { FileCreate y no TFileStream.Create: el open del Rust es
+      read+write+create+truncate, y si falla su errno es el error que se
+      imprime (un Io(Os ..)), que la excepcion de TFileStream no conserva }
+    ClearOsError;
+    h := FileCreate(VM.SpillPath);
+    if h = THandle(-1) then
+    begin
+      fault := LastOsFault;
       DeleteFile(VM.SpillPath);   { el Rust suelta el VmPath, que borra }
-      Fail(deIo, 'cannot open the VM file ' + VM.SpillPath);
+      Fail(deIo, fault);
     end;
+    VM.Spill := TOwnedHandleStream.Create(h);
   end
   else
   begin
     { si falla, SpillPath NO es nuestro (puede ser de otro) y no se borra:
       SpillOpen sigue en falso }
     VM.Spill := CreateTempExclusive('osrep-virtual-memory', VM.SpillPath);
-    if VM.Spill = nil then Fail(deBadData, 'cannot allocate the VM scratch file');
+    if VM.Spill = nil then Fail(deBadData, FaultBadData('cannot allocate the VM scratch file'));
   end;
   VM.SpillOpen := True;
   Result := VM.Spill;
@@ -499,18 +514,12 @@ begin
   Inc(VM.FreeCount);
 end;
 
+{ read_exact: lo que falta es el Error(UnexpectedEof) de std, y una falla
+  del sistema su Os(code) (ReadExactOrFault lee el errno, que el Read de
+  THandleStream pierde al convertir el -1 en 0) }
 procedure StreamReadExact(S: TStream; var B: TBytes; Off, Len: QWord);
-var got: LongInt; pos, n: QWord;
 begin
-  pos := 0;
-  while pos < Len do
-  begin
-    n := Len - pos;
-    if n > (QWord(1) shl 30) then n := QWord(1) shl 30;   { Read toma un LongInt }
-    got := S.Read(B[Off + pos], LongInt(n));
-    if got <= 0 then Fail(deIo, 'failed to fill whole buffer');
-    Inc(pos, QWord(got));
-  end;
+  if Len > 0 then ReadExactOrFault(S, B[Off], Len);
 end;
 
 { THandleStream.Seek no lanza: con un offset que no entra en un Int64 devuelve
@@ -518,8 +527,9 @@ end;
   lado. El Rust falla ahi (EINVAL). Solo es alcanzable con -vmblock enorme. }
 procedure SeekExact(S: TStream; Off: QWord);
 begin
-  if (Off > QWord(High(Int64))) or (S.Seek(Int64(Off), soBeginning) <> Int64(Off)) then
-    Fail(deIo, 'Invalid argument');
+  if Off > QWord(High(Int64)) then Fail(deIo, FaultNegativeSeek);
+  ClearOsError;
+  if S.Seek(Int64(Off), soBeginning) <> Int64(Off) then Fail(deIo, LastOsFault);
 end;
 
 procedure WriteZeros(S: TStream; N: QWord);
@@ -532,7 +542,7 @@ begin
   while N > 0 do
   begin
     if k > N then k := N;
-    S.WriteBuffer(z[0], LongInt(k));
+    WriteAllOrFault(S, z[0], k);
     Dec(N, k);
   end;
 end;
@@ -573,7 +583,7 @@ begin
     if VM.VmBlock - p < VM_FIT_MARGIN + QWord(m.Len) then Break;
     { el margen de 24 cubre este registro (20 + len) y el terminador }
     if not GrowOut(buf, p + VM_FIT_MARGIN + QWord(m.Len), VM.VmBlock) then
-      Fail(deIo, 'Out of memory');
+      Fail(deIo, FaultOutOfMemory);
     PutLE32(buf, p, m.Len);
     PutLE64(buf, p + 4, m.Src);
     PutLE64(buf, p + 12, m.Dest);
@@ -626,7 +636,7 @@ begin
     estos desalojos nunca lo pisan. }
   while MMAvailable(MM) < VM.VmBlock do
     if VmSaveToDisk(VM, MM, H) = 0 then
-      Fail(deBadData, 'cannot free enough VM space to restore a spilled block');
+      Fail(deBadData, FaultBadData('cannot free enough VM space to restore a spilled block'));
   { Sin chequeo de VmBlock < 4 aca: como el Rust, con 1..3 falla la lectura
     del slot y con 0 el recorrido ('overruns its slot'). }
   blk := DWord(Block);            { truncado a 32 bits, como el `as u32` }
@@ -636,7 +646,7 @@ begin
     la lectura (que falla si el slot no esta entero) }
   SeekExact(f, off);
   if (VM.VmBlock > QWord(High(Int64)) - off) or (QWord(f.Size) < off + VM.VmBlock) then
-    Fail(deIo, 'failed to fill whole buffer');
+    Fail(deIo, FaultEofCustom);   { io::Error::new(UnexpectedEof, ..) }
   VM.TotalRead := VM.TotalRead + VM.VmBlock;
   VmPushFreeBlock(VM, blk);       { DESPUES de leer }
   SetLength(hdr, VM_RECORD_HEADER);
@@ -644,19 +654,19 @@ begin
   p := 0;
   while True do
   begin
-    if VM.VmBlock - p < 4 then Fail(deBadData, 'spilled block overruns its slot');
+    if VM.VmBlock - p < 4 then Fail(deBadData, FaultBadData('spilled block overruns its slot'));
     StreamReadExact(f, hdr, 0, 4);
     len := LE32(hdr, 0);
     if len = 0 then Break;
     if VM.VmBlock - p - 4 < QWord(VM_RECORD_HEADER - 4) + QWord(len) then
-      Fail(deBadData, 'spilled block overruns its slot');
+      Fail(deBadData, FaultBadData('spilled block overruns its slot'));
     StreamReadExact(f, hdr, 4, VM_RECORD_HEADER - 4);
     m.Src := LE64(hdr, 4);
     m.Dest := LE64(hdr, 12);
     m.Len := len;
     if QWord(Length(rec)) < QWord(len) then
     begin
-      if QWord(len) > QWord(High(SizeInt)) then Fail(deIo, 'Out of memory');
+      if QWord(len) > QWord(High(SizeInt)) then Fail(deIo, FaultOutOfMemory);
       SetLength(rec, SizeInt(len));
     end;
     StreamReadExact(f, rec, 0, QWord(len));
@@ -712,7 +722,7 @@ begin
     dest := src + off;
     if (src < blockPos) or (src >= blockEnd) or
        (QWord(rl) > blockEnd - src) or (dest <= src) then
-      Fail(deBadData, 'future-lz record out of range');
+      Fail(deBadData, FaultBadData('future-lz record out of range'));
     if dest < blockEnd then
     begin
       m.Src := src; m.Dest := dest; m.Len := rl; m.Index := INVALID_INDEX;
@@ -740,9 +750,9 @@ begin
     litLen := (m.Dest - BlockStart) - outPos;
     if (m.Dest < BlockStart + outPos) or (litLen > nlit - inPos) or
        (outPos + litLen + QWord(m.Len) > nout) then
-      Fail(deBadData, 'future-lz match does not fit the block');
+      Fail(deBadData, FaultBadData('future-lz match does not fit the block'));
     if not GrowOut(OutBuf, outPos + litLen + QWord(m.Len), nout) then
-      Fail(deIo, 'Out of memory');
+      Fail(deIo, FaultOutOfMemory);
     if litLen > 0 then Move(Literals[inPos], OutBuf[outPos], litLen);
     Inc(inPos, litLen);
     Inc(outPos, litLen);
@@ -764,9 +774,9 @@ begin
   end;
 
   if (nlit - inPos) <> (nout - outPos) then
-    Fail(deBadData, 'future-lz literal run does not fill the block');
+    Fail(deBadData, FaultBadData('future-lz literal run does not fill the block'));
   { siempre, aunque no sobren literales: el bloque sale del largo exacto }
-  if not GrowOut(OutBuf, nout, nout) then Fail(deIo, 'Out of memory');
+  if not GrowOut(OutBuf, nout, nout) then Fail(deIo, FaultOutOfMemory);
   if inPos < nlit then Move(Literals[inPos], OutBuf[outPos], nlit - inPos);
 
   { PASO 3: guardar los matches que salen de este bloque. Corre con el bloque
@@ -785,7 +795,7 @@ begin
       begin
         while QWord(rl) > MMAvailable(MM) do
           if VmSaveToDisk(VM, MM, H) = 0 then
-            Fail(deBadData, 'cannot free enough memory to store a match');
+            Fail(deBadData, FaultBadData('cannot free enough memory to store a match'));
         idx := MMSave(MM, OutBuf, src - BlockStart, QWord(rl));
       end;
       m.Src := src; m.Dest := dest; m.Len := rl; m.Index := idx;
@@ -827,12 +837,12 @@ begin
     begin
       cap := cap * 2;
       if cap > N then cap := N;
-      if cap > QWord(High(SizeInt)) then Fail(deIo, 'Out of memory');
+      if cap > QWord(High(SizeInt)) then Fail(deIo, FaultOutOfMemory);
       SetLength(B, SizeInt(cap));
     end;
     chunk := cap - pos;
     if chunk > (QWord(1) shl 30) then chunk := QWord(1) shl 30;   { Read toma un LongInt }
-    got := S.Read(B[pos], LongInt(chunk));
+    got := ReadOnceOrFault(S, B[pos], LongInt(chunk));
     if got <= 0 then
     begin
       if pos = 0 then Exit(rrEOF) else Exit(rrPartial);
@@ -844,11 +854,11 @@ end;
 
 procedure ReadOrTruncated(S: TStream; var B: TBytes; N: QWord);
 begin
-  if ReadExactOrEof(S, B, N) <> rrOK then Fail(deContainer, 'truncated structure');
+  if ReadExactOrEof(S, B, N) <> rrOK then Fail(deContainer, FaultContainer(ckTruncated));
 end;
 
 function DecodeFutureLz(Input, Sink: TStream; const Opts: TFutureLzOptions;
-                        out St: TFutureLzStats; out ErrMsg: AnsiString;
+                        out St: TFutureLzStats; out Err: TDecodeFault;
                         Progress: TFlzProgress = nil; Index: TStream = nil): TDecodeError;
 var
   hdr, seed, blockBuf, literals, outbuf, want, footer, tableBytes, statBytes: TBytes;
@@ -870,7 +880,7 @@ var
 begin
   St.Blocks := 0; St.OrigSize := 0; St.Verified := False;
   St.VmBytesWritten := 0; St.VmBytesRead := 0;
-  ErrMsg := '';
+  Err := NoFault;
   Result := deOK;
   mmReady := False; vmReady := False; heapReady := False;
   outbuf := nil;                   { GrowOut parte de lo que haya }
@@ -888,12 +898,12 @@ begin
       ce := DecodeArchiveHeader(hdr, h);
       case ce of
         ceOK: ;
-        ceNotAnOsrepFile: Fail(deContainer, 'not an Omega SREP file (.osr)');
-        ceUnsupportedVersion: Fail(deContainer, 'incompatible compressed data format');
-      else Fail(deContainer, 'truncated structure');
+        ceNotAnOsrepFile: Fail(deContainer, FaultContainer(ckNotAnOsrepFile));
+        ceUnsupportedVersion: Fail(deContainer, FaultContainer(ckUnsupportedVersion, h.Version));
+      else Fail(deContainer, FaultContainer(ckTruncated));
       end;
       if (h.Version = 1) or (h.Version = 2) then
-        Fail(deNotIoLz, 'not a Future/Index-LZ archive (v' + IntToStr(h.Version) + ')');
+        Fail(deNotIoLz, FaultNotFutureLz(h.Version));
       isV4 := h.Version = 4;
 
       ReadOrTruncated(Input, seed, QWord(h.HashSeedSize));
@@ -916,33 +926,33 @@ begin
       begin
         { [cabecera][semilla][bloques][listas][tabla][footer de 24] }
         filesize := QWord(Input.Seek(0, soEnd));
-        if filesize < QWord(INDEX_LZ_FOOTER_SIZE) then Fail(deContainer, 'truncated structure');
+        if filesize < QWord(INDEX_LZ_FOOTER_SIZE) then Fail(deContainer, FaultContainer(ckTruncated));
         Input.Seek(Int64(filesize - QWord(INDEX_LZ_FOOTER_SIZE)), soBeginning);
         SetLength(footer, INDEX_LZ_FOOTER_SIZE);
         StreamReadExact(Input, footer, 0, INDEX_LZ_FOOTER_SIZE);
         if (LE32(footer, 16) <> SREP_SIGNATURE_INV) or (LE32(footer, 20) <> BULAT_SIGNATURE_INV) then
-          Fail(deContainer, 'no Omega SREP footer');
+          Fail(deContainer, FaultContainer(ckNoFooter));
         fv := LE32(footer, 12) and 255;        { solo el byte bajo }
-        if fv <> 1 then Fail(deContainer, 'incompatible footer format');
+        if fv <> 1 then Fail(deContainer, FaultContainer(ckUnsupportedFooterVersion, fv));
         statSize := QWord(LE32(footer, 0)) or (QWord(LE32(footer, 4)) shl 32);
         footerSize := QWord(LE32(footer, 8));
         { suma con desborde chequeado, como el Rust desde el 2026-10-09: antes se
           envolvia, pasaba el chequeo, y el Rust hacia panic reservando
           statSize bytes }
         if statSize > High(QWord) - fahs - footerSize then
-          Fail(deContainer, 'footer + index exceeds the file size');
+          Fail(deContainer, FaultContainer(ckFooterExceedsFile));
         stSum := fahs + footerSize + statSize;
-        if stSum > filesize then Fail(deContainer, 'footer + index exceeds the file size');
+        if stSum > filesize then Fail(deContainer, FaultContainer(ckFooterExceedsFile));
         if footerSize < QWord(INDEX_LZ_FOOTER_SIZE) then
-          Fail(deContainer, 'footer + index exceeds the file size');
+          Fail(deContainer, FaultContainer(ckFooterExceedsFile));
         tableSize := footerSize - QWord(INDEX_LZ_FOOTER_SIZE);
         Input.Seek(Int64(filesize - footerSize), soBeginning);
         { con la suma de arriba envuelta, footerSize puede superar al archivo:
           no reservar lo que dice, leer lo que hay }
         if ReadExactOrEof(Input, tableBytes, tableSize) <> rrOK then
-          Fail(deIo, 'failed to fill whole buffer');
+          Fail(deIo, FaultReadExact);
         if (tableSize mod 4) <> 0 then
-          Fail(deContainer, 'block-size table disagrees with the block headers');
+          Fail(deContainer, FaultContainer(ckTableMismatch));
         SetLength(table, tableSize div 4);
         k := 0;
         while k < tableSize div 4 do
@@ -952,9 +962,9 @@ begin
         end;
         Input.Seek(Int64(filesize - footerSize - statSize), soBeginning);
         if ReadExactOrEof(Input, statBytes, statSize) <> rrOK then
-          Fail(deIo, 'failed to fill whole buffer');
+          Fail(deIo, FaultReadExact);
         if (statSize mod 4) <> 0 then
-          Fail(deBadData, 'match list is not a whole number of STATs');
+          Fail(deBadData, FaultBadData('match list is not a whole number of STATs'));
         SetLength(stats, statSize div 4);
         k := 0;
         while k < statSize div 4 do
@@ -978,12 +988,12 @@ begin
         { v4 sabe cuantos bloques hay y para ANTES de leer. }
         if isV4 and (blocks = QWord(Length(table))) then Break;
         rr := ReadExactOrEof(Input, blockBuf, bhs);
-        if rr = rrPartial then Fail(deContainer, 'truncated structure');
+        if rr = rrPartial then Fail(deContainer, FaultContainer(ckTruncated));
         if rr = rrEOF then
         begin
           { v3 termina cuando el heap quedo solo con la barrera }
           if (not isV4) and (heap.Count = 1) then Break;
-          Fail(deContainer, 'truncated structure');
+          Fail(deContainer, FaultContainer(ckTruncated));
         end;
         lb := LE32(blockBuf, 0);
         osz := LE32(blockBuf, 4);
@@ -995,11 +1005,11 @@ begin
         if isV4 then
         begin
           if blocks >= QWord(Length(table)) then
-            Fail(deContainer, 'block-size table disagrees with the block headers');
+            Fail(deContainer, FaultContainer(ckTableMismatch));
           sz := QWord(table[blocks]);
           nwords := sz div 4;
           if ((sz mod 4) <> 0) or (statCursor + nwords > QWord(Length(stats))) then
-            Fail(deContainer, 'block-size table disagrees with the block headers');
+            Fail(deContainer, FaultContainer(ckTableMismatch));
           SetLength(blockStats, nwords);
           k := 0;
           while k < nwords do
@@ -1017,7 +1027,7 @@ begin
           if Index <> nil then ReadOrTruncated(Index, statBytes, QWord(ssz))
           else ReadOrTruncated(Input, statBytes, QWord(ssz));
           if (QWord(ssz) mod 4) <> 0 then
-            Fail(deBadData, 'match list is not a whole number of STATs');
+            Fail(deBadData, FaultBadData('match list is not a whole number of STATs'));
           SetLength(blockStats, QWord(ssz) div 4);
           k := 0;
           while k < QWord(ssz) div 4 do
@@ -1039,12 +1049,10 @@ begin
           { un digest guardado mas corto no puede coincidir: discrepancia,
             igual que en v5 (el Rust hacia panic aca hasta el 2026-10-09) }
           if QWord(h.HashSize) < QWord(Length(want)) then
-            Fail(deDigestMismatch, 'checksum of decoded block ' + IntToStr(blocks) +
-                 ' differs from the stored one');
+            Fail(deDigestMismatch, FaultDigest(blocks));
           for i := 0 to Length(want) - 1 do
             if blockBuf[QWord(BLOCK_HEADER_SIZE) + QWord(i)] <> want[i] then
-              Fail(deDigestMismatch, 'checksum of decoded block ' + IntToStr(blocks) +
-                   ' differs from the stored one');
+              Fail(deDigestMismatch, FaultDigest(blocks));
         end;
 
         { recien con el digest aprobado se escribe }
@@ -1067,13 +1075,13 @@ begin
       on E: EFlz do
       begin
         Result := E.Kind;
-        ErrMsg := E.Message;
+        Err := E.Fault;
       end;
       on E: Exception do
       begin
         { errores de stream: seek fuera de rango, lectura corta, escritura }
         Result := deIo;
-        ErrMsg := E.Message;
+        Err := FaultOfException(E);
       end;
     end;
   finally
@@ -1118,9 +1126,9 @@ begin
   begin
     if not (GetVarint(List, pos, lit) and GetVarint(List, pos, len) and
             GetVarint(List, pos, dist)) then
-      Fail(deBadData, 'v5 record');
+      Fail(deBadData, FaultBadData('v5 record'));
     if (lit > QWord(High(DWord))) or (len > QWord(High(DWord))) then
-      Fail(deBadData, 'v5 record too large');
+      Fail(deBadData, FaultBadData('v5 record too large'));
     if n + 4 > QWord(Length(W)) then
     begin
       if Length(W) = 0 then SetLength(W, 64) else SetLength(W, Length(W) * 2);
@@ -1135,7 +1143,7 @@ begin
 end;
 
 function DecodeV5(Input, Sink: TStream; const Opts: TFutureLzOptions;
-                  out St: TFutureLzStats; out ErrMsg: AnsiString;
+                  out St: TFutureLzStats; out Err: TDecodeFault;
                   Progress: TFlzProgress = nil): TDecodeError;
 var
   fb, hb, seed, bhb, stored, statBytes, literals, outbuf, want: TBytes;
@@ -1155,7 +1163,7 @@ var
 begin
   St.Blocks := 0; St.OrigSize := 0; St.Verified := False;
   St.VmBytesWritten := 0; St.VmBytesRead := 0;
-  ErrMsg := '';
+  Err := NoFault;
   Result := deOK;
   mmReady := False; vmReady := False; heapReady := False;
   heap.Tree := nil;
@@ -1166,21 +1174,21 @@ begin
         dice donde terminan los bloques: se lee primero. }
       fileLen := QWord(Input.Seek(0, soEnd));
       if fileLen < QWord(V5_HEADER_SIZE + V5_FOOTER_SIZE) then
-        Fail(deContainer, 'truncated structure');
+        Fail(deContainer, FaultContainer(ckTruncated));
       SeekExact(Input, fileLen - QWord(V5_FOOTER_SIZE));
       ReadOrTruncated(Input, fb, V5_FOOTER_SIZE);
-      if DecodeV5Footer(fb, 0, f) <> ceOK then Fail(deBadData, 'v5 footer');
+      if DecodeV5Footer(fb, 0, f) <> ceOK then Fail(deBadData, FaultBadData('v5 footer'));
       SeekExact(Input, 0);
 
       ReadOrTruncated(Input, hb, V5_HEADER_SIZE);
-      if DecodeV5Header(hb, h) <> ceOK then Fail(deBadData, 'v5 header');
+      if DecodeV5Header(hb, h) <> ceOK then Fail(deBadData, FaultBadData('v5 header'));
       if f.BlockCount <> h.BlockCount then
-        Fail(deBadData, 'v5 footer disagrees with the blocks');
+        Fail(deBadData, FaultBadData('v5 footer disagrees with the blocks'));
       { flags.bit0 y un meta_size distinto de cero dicen lo mismo dos veces }
       if ((h.Flags and V5_FLAG_HAS_DUP) <> 0) <> (f.MetaSize <> 0) then
-        Fail(deBadData, 'v5 -dup meta disagrees with the flags');
+        Fail(deBadData, FaultBadData('v5 -dup meta disagrees with the flags'));
       if not V5HashInfo(h.HashId, h.HashSize, info) then
-        Fail(deBadData, 'v5 hash descriptor');
+        Fail(deBadData, FaultBadData('v5 hash descriptor'));
 
       ReadOrTruncated(Input, seed, QWord(info.SeedSize));
       DigestForHash(info, seed, dig);
@@ -1223,8 +1231,7 @@ begin
             for i := 0 to Length(want) - 1 do
               if want[i] <> stored[i] then same := False;
           if not same then
-            Fail(deDigestMismatch, 'checksum of decoded block ' + IntToStr(blocks) +
-                 ' differs from the stored one');
+            Fail(deDigestMismatch, FaultDigest(blocks));
         end;
 
         SeekExact(Sink, blockStart);
@@ -1242,10 +1249,10 @@ begin
       { Los bloques terminan justo donde empieza la meta, o el footer si no
         hay: nada puede haber en el medio. }
       if QWord(f.MetaSize) > fileLen - QWord(V5_FOOTER_SIZE) then
-        Fail(deBadData, 'v5 -dup meta runs past the file');
+        Fail(deBadData, FaultBadData('v5 -dup meta runs past the file'));
       metaAt := fileLen - QWord(V5_FOOTER_SIZE) - QWord(f.MetaSize);
-      if consumed <> metaAt then Fail(deBadData, 'v5 blocks do not end at the footer');
-      if f.StatSize <> totalStat then Fail(deBadData, 'v5 footer disagrees with the blocks');
+      if consumed <> metaAt then Fail(deBadData, FaultBadData('v5 blocks do not end at the footer'));
+      if f.StatSize <> totalStat then Fail(deBadData, FaultBadData('v5 footer disagrees with the blocks'));
 
       St.Blocks := QWord(h.BlockCount);
       St.OrigSize := blockStart;
@@ -1256,18 +1263,78 @@ begin
       on E: EFlz do
       begin
         Result := E.Kind;
-        ErrMsg := E.Message;
+        Err := E.Fault;
       end;
       on E: Exception do
       begin
         Result := deIo;
-        ErrMsg := E.Message;
+        Err := FaultOfException(E);
       end;
     end;
   finally
     if heapReady then HeapDone(heap);
     if vmReady then VmDone(vm);
   end;
+end;
+
+{ ------------------------------------------------------- dispatch --- }
+
+function DecodeArchive(Input, Sink: TStream; const Opts: TFutureLzOptions; Index: TStream;
+                       out Err: TDecodeFault; Progress: TFlzProgress): Boolean;
+var
+  len: Int64;
+  head: TBytes;
+  h: TArchiveHeader;
+  ce: TContainerError;
+  e: TDecodeError;
+  fst: TFutureLzStats;
+  dst: TDecodeStats;
+  got: QWord;
+begin
+  Err := NoFault;
+  try
+    len := Input.Seek(0, soEnd);
+    Input.Seek(0, soBeginning);
+    if len >= V5_HEADER_SIZE then
+    begin
+      { read_exact_or_eof: un pedazo es Truncated; nada, ceros que no son la
+        magia }
+      SetLength(head, V5_HEADER_SIZE);
+      got := ReadUpToOrFault(Input, head[0], V5_HEADER_SIZE);
+      if (got > 0) and (got < V5_HEADER_SIZE) then
+      begin
+        Err := FaultContainer(ckTruncated);
+        Exit(False);
+      end;
+      if got = 0 then FillChar(head[0], V5_HEADER_SIZE, 0);
+      Input.Seek(0, soBeginning);
+      if IsV5(head) then
+        Exit(DecodeV5(Input, Sink, Opts, fst, Err, Progress) = deOK);
+    end;
+    { read_exact_or_eof: nada o un pedazo, los dos son Truncated aca }
+    SetLength(head, ARCHIVE_HEADER_SIZE);
+    got := ReadUpToOrFault(Input, head[0], ARCHIVE_HEADER_SIZE);
+    if got <> ARCHIVE_HEADER_SIZE then
+    begin
+      Err := FaultContainer(ckTruncated);
+      Exit(False);
+    end;
+    Input.Seek(0, soBeginning);
+    ce := DecodeArchiveHeader(head, h);
+    if ce = ceNotAnOsrepFile then begin Err := FaultContainer(ckNotAnOsrepFile); Exit(False); end;
+    if ce <> ceOK then begin Err := FaultContainer(ckUnsupportedVersion, h.Version); Exit(False); end;
+  except
+    on X: Exception do
+    begin
+      Err := FaultOfException(X);
+      Exit(False);
+    end;
+  end;
+  if (h.Version = 1) or (h.Version = 2) then
+    e := DecodeIoLz(Input, Sink, Index, dst, Err, Progress)
+  else
+    e := DecodeFutureLz(Input, Sink, Opts, fst, Err, Progress, Index);
+  Result := e = deOK;
 end;
 
 end.

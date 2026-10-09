@@ -16,7 +16,7 @@ program decodetool;
   y nunca se borra uno que ya estaba. Ninguna excepcion llega a ser un runtime
   error: antes, no poder abrir el archivo o crear la salida terminaba en 217. }
 {$MODE OBJFPC}{$H+}
-uses SysUtils, Classes, Widths, OutRaw, Hashes, Container, Decompress, FutureLz, DupWrap;
+uses SysUtils, Classes, Widths, OutRaw, Hashes, Container, Decompress, FutureLz, DupWrap, DecFault;
 
 function ReadAll(const Path: AnsiString): TBytes;
 var fs: TFileStream;
@@ -83,6 +83,7 @@ var
   st: TDecodeStats;
   fst: TFutureLzStats;
   msg: AnsiString;
+  fe: TDecodeFault;
   inS, outS: TFileStream;
   n: QWord;
   ok, created, dupFlag: Boolean;
@@ -169,21 +170,24 @@ begin
         inS := TFileStream.Create(arcPath, fmOpenRead or fmShareDenyNone);
         outS := TFileStream.Create(outPath, fmCreate);
         created := True;
-        e := DecodeV5(inS, outS, opts, fst, msg);
+        e := DecodeV5(inS, outS, opts, fst, fe);
+        msg := fe.Msg;
       end
       else if (h.Version = 1) or (h.Version = 2) then
       begin
         inS := TFileStream.Create(arcPath, fmOpenRead or fmShareDenyNone);
         outS := TFileStream.Create(outPath, fmCreate);
         created := True;
-        e := DecodeIoLz(inS, outS, nil, st, msg);
+        e := DecodeIoLz(inS, outS, nil, st, fe);
+        msg := fe.Msg;
       end
       else
       begin
         inS := TFileStream.Create(arcPath, fmOpenRead or fmShareDenyNone);
         outS := TFileStream.Create(outPath, fmCreate);
         created := True;
-        e := DecodeFutureLz(inS, outS, opts, fst, msg);
+        e := DecodeFutureLz(inS, outS, opts, fst, fe);
+        msg := fe.Msg;
       end;
     except
       { la division por cero de v1, un disco lleno, lo que sea }
