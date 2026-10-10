@@ -20,6 +20,15 @@ pub const GB: u64 = 1024 * 1024 * 1024;
 /// The smallest `-c` that leaves `SliceHash` a non-zero slice.
 pub const SLICES_IN_BLOCK: usize = 8;
 
+/// The largest `-l`, `-c`, `-dl` or `-dc`: the C++ keeps all four in an
+/// `unsigned` (`srep.cpp:292`), so anything larger wraps there (`-l4294967296`
+/// is `-l0`, the default), while the port took it whole -- and on i686
+/// truncated it to 32 bits like the C++, so the same command line gave the two
+/// builds different archives. Values past 2^63 also overflowed the match
+/// finder's `2 * L` (a panic in 2.1.2; an access violation in the Pascal) and
+/// `-m5`'s `-l + 1`.
+pub const MAX_LENGTH_OPTION: u64 = u32::MAX as u64;
+
 pub const DEFAULT_STDIN_FILESIZE: u64 = 25 * GB;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -247,6 +256,16 @@ fn physical_memory() -> u64 {
 
 // --------------------------------------------------------------- parse --
 
+/// `-l`, `-c`, `-dl` and `-dc`, bounded by `MAX_LENGTH_OPTION`.
+fn length_option(a: &str, n: u64, what: &str) -> Result<usize, CmdLineError> {
+    if n > MAX_LENGTH_OPTION {
+        return Err(bad(format!(
+            "Invalid option: {a} -- the {what} must be at most {MAX_LENGTH_OPTION} bytes"
+        )));
+    }
+    Ok(n as usize)
+}
+
 fn parse_int(s: &str) -> Option<i64> {
     let s = s.strip_prefix('=').unwrap_or(s);
     if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
@@ -393,10 +412,11 @@ pub fn parse(args: &[String]) -> Result<Options, CmdLineError> {
             o.vm_mem =
                 parse_mem_option(v, Unit::M).ok_or_else(|| bad(format!("Invalid option: {a}")))?;
         } else if let Some(v) = a.strip_prefix("-l") {
-            o.min_match =
-                parse_mem(v, Unit::B).ok_or_else(|| bad(format!("Invalid option: {a}")))? as usize;
+            let n = parse_mem(v, Unit::B).ok_or_else(|| bad(format!("Invalid option: {a}")))?;
+            o.min_match = length_option(a, n, "match length")?;
         } else if let Some(v) = a.strip_prefix("-c") {
-            o.l = parse_mem(v, Unit::B).ok_or_else(|| bad(format!("Invalid option: {a}")))? as usize;
+            let n = parse_mem(v, Unit::B).ok_or_else(|| bad(format!("Invalid option: {a}")))?;
+            o.l = length_option(a, n, "chunk length")?;
             // `SliceHash` divides by `slice_size = L / slices_in_block`, and
             // `slices_in_block` is 8 (`hash_table.cpp:32`), so any L from 1 to
             // 7 makes that zero and the next line divides by it. The C++ dies
@@ -426,8 +446,22 @@ pub fn parse(args: &[String]) -> Result<Options, CmdLineError> {
                 let (head, tail) = part.split_at(part.len().min(1));
                 let parsed = match head {
                     "a" => parse_int(tail).map(|_| ()),
-                    "c" => parse_mem(tail, Unit::B).map(|n| o.dict_chunk = n as usize),
-                    "l" => parse_mem(tail, Unit::B).map(|n| o.dict_min_match = n as usize),
+                    "c" => match parse_mem(tail, Unit::B) {
+                        Some(n) => {
+                            o.dict_chunk =
+                                length_option(&format!("-d{part}"), n, "dictionary chunk length")?;
+                            Some(())
+                        }
+                        None => None,
+                    },
+                    "l" => match parse_mem(tail, Unit::B) {
+                        Some(n) => {
+                            o.dict_min_match =
+                                length_option(&format!("-d{part}"), n, "dictionary match length")?;
+                            Some(())
+                        }
+                        None => None,
+                    },
                     "d" => parse_mem_option(tail, Unit::M).map(|n| o.dictsize = n),
                     "h" => parse_mem_option(tail, Unit::M).map(|n| o.dict_hashsize = n),
                     _ => parse_mem_option(part, Unit::M).map(|n| o.dictsize = n),

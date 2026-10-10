@@ -44,6 +44,60 @@ what happened in 2.0.0.
     still gets the "-l parameter should be power of 2" warning (exit 1), and
     it is meant: `-m3` with one can write an archive that does not decode,
     in 1.0.7 as well.
+- **`-m3` with a match length that does not divide the chunk size wrote
+  archives that do not decompress (exit 0: silent data loss), or stopped with
+  "MatchTooSmall" (exit 4).** Without `-d`, `-m3` stores match offsets and
+  lengths in units of `BASE_LEN` (the smaller of `-l` and `-dl`), not of the
+  chunk size `L`, and the decoder rebuilds the source on that grid. That is
+  exact when `BASE_LEN` divides `L` -- the default, and any `-l` that is a
+  power of two up to `-c` -- but `-m3 -c8 -l16`, `-m3 -c8 -l17`,
+  `-m3 -c256 -l1024` or `-m3 -dl17` (with any container) wrote matches the
+  decoder put back at the wrong place or length: on the inputs tried, every
+  `-l` from 17 to 498 with `-m3 -c8` either failed to decompress or exited 4.
+  The C++ 1.0.7 does exactly the same, and the "-l parameter should be power
+  of 2" warning never fired, since `-c8` is one. Such a match is now moved to
+  the next source on the `BASE_LEN` grid and cut to whole units of it (still
+  inside the verified match), or not taken when less than one unit is left.
+  A record that already decoded to the right bytes -- an exact one, or one
+  whose shifted source happens to hold the same bytes, as on all-zero input
+  -- is written exactly as before, so every archive that used to decompress
+  is unchanged.
+- **`-m3` with an `-l`/`-c` that is not a power of two could still panic**
+  (exit 101, "range end index ... out of range"): `-m3 -l17 -b4kb`, also
+  `-m3o`/`-m3f` and `-c17`. The digest check at a candidate position hashes
+  the `L` bytes there, which the 4-byte scan can push up to three bytes past
+  a full block in the ring's last slot -- the read 2.1.2's `-l` fixes above
+  made zero-padded for the scan itself but not for this hash. Those bytes now
+  read as zero here too; the Pascal port already read them that way, and the
+  archives are the ones it wrote.
+- **Huge `-l`, `-c`, `-dl` or `-dc` values crashed or diverged.** The C++
+  keeps all four in an `unsigned`, so it wraps anything above 4294967295
+  (`-l4294967296` is `-l0` there, the default); the port took the value whole.
+  `-l9223372036854775808` and larger panicked with `-m3`/`-m4`/`-m3f`
+  (`2 * L` overflowed; "index out of bounds" in `rolling.rs`), `-m5
+  -l18446744073709551615` overflowed `-l + 1` to a chunk of 0 and divided by
+  zero, and the i686 build truncated the value to 32 bits, so the same command
+  line gave the 32- and 64-bit builds different archives. Values above
+  4294967295 are now refused, exit 2: "Invalid option: -l4294967296 -- the
+  match length must be at most 4294967295 bytes" (and "chunk length",
+  "dictionary match length", "dictionary chunk length" for `-c`, `-dl`,
+  `-dc`). Up to 4294967295 everything works as before, and on i686 too: an
+  `-l`/`-c` of 2^31 or more used to panic there (`2 * L` wrapped in 32 bits),
+  as did `-m5 -l4294967295`.
+- **`-dl1`..`-dl7` without `-dc` divided by zero** whenever the in-memory
+  dictionary is on (`-m0`, or `-d` with `-m3`..`-m5`): its default chunk is
+  `-dl / 8`, and the table is sized by dictionary size / chunk. Rust
+  panicked ("attempt to divide by zero", `inmem.rs`), the C++ dies with
+  SIGFPE. Refused now, exit 2: "Invalid option: -dl4 -- without -dc the
+  dictionary match length must be 0 (default) or at least 8 bytes". Any
+  `-dc` of 1 or more makes it work, and without a dictionary `-dl` only sets
+  the record base and takes any value, as before.
+- **`-m5` with a `-c` that is not a power of two exited 0 in silence.** The
+  C++ tests the final chunk size and prints "Warning: -l parameter should be
+  power of 2, otherwise compressed file may be corrupt", exit 1; the port
+  skipped the test for `-m5` altogether, which is only right without `-c`
+  (then the chunk is always a power of two). `-m5 -c17` now warns and exits
+  1 like 1.0.7; the archive is the same.
 
 ## [2.1.2] — 2026-10-09
 

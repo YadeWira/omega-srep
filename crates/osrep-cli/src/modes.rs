@@ -304,6 +304,28 @@ fn small_window(o: &Options) -> Option<String> {
     ))
 }
 
+/// The in-memory dictionary (`-m0`, or `-d` with `-m3`..`-m5`) hashes chunks
+/// of `-dc` bytes, `-dl / 8` when `-dc` is not given (`srep.cpp:473`), and
+/// sizes its table by `dictsize / chunk` (`compress_inmem.cpp:28`). So
+/// `-dl1`..`-dl7` without `-dc` divide by zero: the C++ dies with SIGFPE and
+/// the port panicked (Rust) or failed with "Division by zero" (Pascal). Any
+/// `-dc` of 1 or more works, and without a dictionary `-dl` only sets the
+/// record base, which takes any value.
+fn small_dict_window(o: &Options) -> Option<String> {
+    let inmem = o.method == 0 || o.dictsize != 0;
+    if !inmem || o.dict_chunk != 0 || o.dict_min_match == 0 {
+        return None;
+    }
+    if o.dict_min_match >= args::SLICES_IN_BLOCK {
+        return None;
+    }
+    Some(format!(
+        "Invalid option: -dl{} -- without -dc the dictionary match length must be 0 (default) or at least {} bytes",
+        o.dict_min_match,
+        args::SLICES_IN_BLOCK
+    ))
+}
+
 fn compress(o: &Options, finame: &str, foutname: &str) -> Result<i32, RunError> {
     if o.dup && (o.method == 1 || o.method == 2) {
         eprintln!(
@@ -330,16 +352,21 @@ fn compress(o: &Options, finame: &str, foutname: &str) -> Result<i32, RunError> 
     if let Some(msg) = small_window(o) {
         return Err(err(ERROR_CMDLINE, msg));
     }
+    if let Some(msg) = small_dict_window(o) {
+        return Err(err(ERROR_CMDLINE, msg));
+    }
 
     // `srep.cpp:459-462`: the match window has to be a power of two or the
     // archive may be corrupt, which the C++ turns into the exit code rather
     // than a printed line alone. The window is `-c` when it is given and `-l`
-    // otherwise -- and CDC takes `-l` as the window only to discard it, while
-    // `-m5` halves and rounds, so neither can ever fail the test
-    // (`srep.cpp:448-454`).
+    // otherwise. CDC never fails the test (`!CONTENT_DEFINED_CHUNKING`), and
+    // neither does `-m5` without `-c`, whose window is `-l + 1` rounded down
+    // to a power of two and halved (`srep.cpp:466-470`) -- but `-m5 -c17`
+    // tests 17 like any other method, and 1.0.7 warns and exits 1 there.
     let mut warnings = 0;
     let window = match o.method {
-        1 | 2 | 5 => None,
+        1 | 2 => None,
+        5 if o.l == 0 => None,
         _ if o.l != 0 => Some(o.l),
         _ if o.min_match != 0 => Some(o.min_match),
         _ => None,

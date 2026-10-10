@@ -25,11 +25,21 @@ const
   DIGEST_SIZE    = 20;
   { Bytes en cero detras del anillo del encoder, que nunca se escriben. El lote
     de CompressFixed avanza de a 4 y, si 4 no divide a L (-l o -c que no son
-    potencia de dos), lee hasta 3 bytes despues del bloque: con un bloque
-    lleno en la ultima ranura eso es pasado el anillo. El C++ lee ahi fuera de
-    su reserva, el Rust lee cero (compress.rs) y aca tambien, pero sin
-    chequear byte por byte en el lazo mas caliente. SliceCheck no los cuenta
-    como parte del buffer. }
+    potencia de dos), se pasa de next_chunk hasta 3 posiciones: con un bloque
+    lleno en la ultima ranura del anillo eso lee pasado el anillo. El C++ lee
+    ahi fuera de su reserva; el Rust lee cero y aca tambien, pero sin chequear
+    byte por byte en el lazo mas caliente.
+    El invariante, que dos lecturas usan:
+    * el byte que entra al hash en el lote (pbL[i], compress.rs: dict.get);
+    * la ventana de L bytes del digest de -m3 en una posicion candidata
+      (DigestMatchesAt; hash_table.rs: digest_at), que con esas 3 posiciones
+      de mas termina hasta 3 bytes despues del bloque.
+    Las dos llegan a lo sumo X - 1 = 3 bytes pasado el fin de un bloque, asi
+    que con RING_TAIL >= 3 nunca salen del TBytes, y como la cola esta en cero
+    leen exactamente lo que el Rust rellena con ceros: mismos digests, mismos
+    archivos. Por eso RingEnsure (encoder.pas) siempre pide RING_TAIL bytes
+    detras de la ranura que llena, y nada escribe en ellos. SliceCheck no los
+    cuenta como parte del buffer: para el Rust el anillo termina antes. }
   RING_TAIL      = 4;
 
 type
@@ -92,7 +102,10 @@ function HtMatchLen(const T: THashTableRec; StartChunk: QWord; const Dict: TByte
                     BufOff, MinP, StartP, LastP, Offset: QWord; RoundMatches: Boolean;
                     Reread: TStream; out AddLen: DWord): DWord;
 
-{ VDigest::compute: vhash1 en 0 y vhash2 en 4, con la misma clave (cero), asi
+{ Un pread: N bytes en Off, devolviendo cuantos se leyeron. }
+function ReadAt(S: TStream; Off: QWord; var B: TBytes; N: QWord): QWord;
+
+{ VDigest::compute:vhash1 en 0 y vhash2 en 4, con la misma clave (cero), asi
   que es tag[0..4) ++ tag[0..16). }
 procedure VDigestCompute(const V: TVmac; const B: TBytes; At, Len: QWord; var Out_: TBytes;
                          OutAt: QWord);
@@ -374,7 +387,9 @@ end;
   local obliga a FPC a armar un marco try/finally implicito (setjmp + push/pop
   de la pila de excepciones + finalize) en CADA llamada de la funcion que lo
   declara. HtFindMatch corre una vez por posicion candidata y casi nunca llega
-  aca; con el TBytes adentro, ese marco era ~29% del tiempo de -m3. }
+  aca; con el TBytes adentro, ese marco era ~29% del tiempo de -m3.
+  At + L puede pasar hasta 3 bytes el fin del anillo (ver RING_TAIL): se leen
+  los ceros de la cola, que es lo que el Rust rellena en digest_at. }
 function DigestMatchesAt(const T: THashTableRec; const Buf: TBytes; At, Chunk: QWord): Boolean;
 var dig: TBytes;
 begin

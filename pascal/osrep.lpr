@@ -453,6 +453,24 @@ begin
             ' the match length must be 0 (default) or at least ' + IntToStr(least) + ' bytes';
 end;
 
+{ El diccionario en memoria (-m0, o -d con -m3..-m5) hashea chunks de -dc
+  bytes, -dl div 8 si no se dio -dc (srep.cpp:473), y mide su tabla por
+  dictsize div chunk (compress_inmem.cpp:28). Asi que -dl1..-dl7 sin -dc
+  dividen por cero: el C++ muere con SIGFPE, el Rust entraba en panico y aca
+  salia "Division by zero" con codigo 4. Cualquier -dc de 1 o mas anda, y sin
+  diccionario -dl solo fija la base de los records, que acepta cualquier
+  valor. Devuelve '' si sirve (modes.rs, small_dict_window). }
+function SmallDictWindow(const O: TOptions): AnsiString;
+begin
+  Result := '';
+  if not ((O.Method = 0) or (O.DictSize <> 0)) then Exit;
+  if (O.DictChunk <> 0) or (O.DictMinMatch = 0) then Exit;
+  if O.DictMinMatch >= SLICES_IN_BLOCK then Exit;
+  Result := 'Invalid option: -dl' + IntToStr(O.DictMinMatch) +
+            ' -- without -dc the dictionary match length must be 0 (default) or at least ' +
+            IntToStr(SLICES_IN_BLOCK) + ' bytes';
+end;
+
 function Compress(const O: TOptions; const FiName, FoutName: AnsiString): LongInt;
 var
   warnings: LongInt;
@@ -476,14 +494,17 @@ begin
   if ((O.Method = 1) or (O.Method = 2)) and (O.DictSize <> 0) then
     Fail(ERROR_CMDLINE, 'Incompatible options: -m' + IntToStr(O.Method) + ' -d' + ShowMem(O.DictSize, True));
   if SmallWindow(O) <> '' then Fail(ERROR_CMDLINE, SmallWindow(O));
+  if SmallDictWindow(O) <> '' then Fail(ERROR_CMDLINE, SmallDictWindow(O));
 
   { srep.cpp:459-462: la ventana tiene que ser potencia de dos. Es -c si se
-    dio, -l si no; CDC y -m5 nunca pueden fallar la prueba. }
+    dio, -l si no. CDC nunca falla la prueba, y -m5 sin -c tampoco: su ventana
+    es -l + 1 redondeado a potencia de dos y partido al medio. Pero -m5 -c17
+    prueba el 17 como cualquier metodo, y el 1.0.7 avisa y sale con 1 ahi. }
   warnings := 0;
   window := 0;
-  if not (O.Method in [1, 2, 5]) then
+  if not (O.Method in [1, 2]) then
     if O.L <> 0 then window := O.L
-    else if O.MinMatch <> 0 then window := O.MinMatch;
+    else if (O.MinMatch <> 0) and (O.Method <> 5) then window := O.MinMatch;
   if (window <> 0) and ((window and (window - 1)) <> 0) then
   begin
     WriteErr('Warning: -l parameter should be power of 2, otherwise compressed file may be corrupt' + #10);

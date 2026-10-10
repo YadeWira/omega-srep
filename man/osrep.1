@@ -95,13 +95,20 @@ and at least 15 with
 .BR -m5 ;
 smaller values are refused with exit status 2, as for
 .BR -c .
+At most 4294967295 (the C++ 1.0.7 keeps it in 32 bits and wraps anything
+larger); larger values are refused with exit status 2.
 .TP
 \fB-c\fIN\fR
 Hash chunk size in bytes. Must be 0 (the default) or at least 8: the slice
 hash divides by
 .IR N /8,
 so 1 to 7 would be a division by zero. Those values are refused with exit
-status 2 rather than crashing, which is what they used to do.
+status 2 rather than crashing, which is what they used to do. At most
+4294967295, like
+.BR -l .
+A chunk size that is not a power of two earns a warning and exit status 1,
+with every method but
+.BR -m1 / -m2 .
 .TP
 \fB-a\fIX\fR[\fB/\fIY\fR]
 Compression accelerator: allocate
@@ -125,6 +132,24 @@ below.
 Dictionary size for
 .BR -m0 .
 Default 512 MB. Suffixes: k, m, g, t.
+The in-memory dictionary also takes
+.BI -dl N
+(its minimum match length, default 512) and
+.BI -dc N
+(its chunk size, default
+.IR -dl /8),
+alone or joined with colons, as in
+.BR -d64mb:l256:c32 .
+Both are at most 4294967295, and while the dictionary is in use (with
+.B -m0
+or an explicit
+.BR -d )
+a
+.B -dl
+of 1 to 7 needs an explicit
+.BR -dc :
+its default chunk would be 0 bytes. Those values are refused with exit
+status 2.
 .TP
 \fB-b\fIBYTES\fR
 Compression block size. Default 8 MB.

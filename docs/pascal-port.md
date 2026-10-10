@@ -558,3 +558,36 @@ diferencias.
   no en la nueva. Cuando el Rust entra en pánico por un índice, buscar el
   mismo acceso en el Pascal aunque el Pascal "pase": es la misma lectura,
   sólo que muda. Ver `SliceCheck` y `RING_TAIL` en `hashtable.pas`.
+* **El invariante de `RING_TAIL`: 4 bytes en cero detrás del anillo del
+  encoder, que nada escribe.** El lote de `CompressFixed` avanza de a 4 (`X`)
+  y, si 4 no divide a `L` (`-l`/`-c` que no son potencia de dos), se pasa de
+  su chunk hasta 3 posiciones. Dos lecturas llegan entonces hasta 3 bytes
+  después del fin de un bloque, y con un bloque lleno en la última ranura,
+  después del fin del anillo: el byte que entra al hash rodante y la ventana
+  de `L` bytes del digest de `-m3` en una posición candidata
+  (`DigestMatchesAt`). El Rust las rellena con ceros (`dict.get()` y
+  `digest_at`), el C++ lee fuera de su reserva, y el Pascal lee la cola: los
+  mismos ceros, sin chequear nada en el lazo más caliente. Para que eso valga,
+  `RingEnsure` siempre pide `RING_TAIL` bytes detrás de la ranura que llena,
+  la cola nace en cero (`ZTryNew`) y nunca se escribe, y `SliceCheck` la
+  excluye, porque para el Rust el anillo termina antes. El digest de `-m3` fue
+  la segunda lectura de este tipo: la rama `perf8-lparam` arregló la del lote
+  y el Rust siguió entrando en pánico en la otra (`-m3 -l17 -b4kb`), mientras
+  el Pascal ya leía los ceros y daba el archivo correcto. Si alguna vez
+  `X` crece, o aparece otra lectura relativa a una posición del lote, la cola
+  tiene que crecer con ella.
+* **En `-m3` sin `-d` los records cuentan en unidades de `BASE_LEN`, no de
+  `L`.** `ENCODE_LZ_MATCH` divide offset y largo por su parámetro `L`, que es
+  `BASE_LEN` = min(`-l`, `-dl`), y el decoder rearma el origen como
+  `dest div BASE_LEN * BASE_LEN - offset`. Con el default (`L` = `-l`,
+  `BASE_LEN` = min(`-l`, 512), potencias de dos) `BASE_LEN` divide a `L` y
+  todo es exacto; con `-m3 -c8 -l16`, `-c8 -l17` o `-dl17` no, y el C++ 1.0.7
+  escribía archivos que no descomprimen con exit 0, o cortaba con "match len
+  too small". El port lo copiaba al pie de la letra, y ninguna prueba de
+  conformidad podía verlo: los dos lados daban el mismo archivo roto. Lo vio
+  un barrido que **descomprimía** lo que comprimía. `RecordMatch` ahora corre a
+  la grilla un record que no va a descomprimir bien (y deja intacto el que sí,
+  aunque sea inexacto, para no cambiar ningún archivo que funcionaba). La
+  lección: comparar archivos contra el oráculo prueba que el port copia, no
+  que el formato aguanta; los barridos de opciones tienen que hacer la ida y
+  vuelta.

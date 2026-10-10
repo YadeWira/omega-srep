@@ -143,7 +143,9 @@ impl DictionaryCompressor {
 
         let mut hp = 0usize; // cursor over hashptr
         let mut last_i = bufstart;
-        while last_i + 2 * l <= bufend {
+        // `last_i + 2*L <= bufend`, in u64: with `-dc` of 2^31 or more the
+        // usize sum wrapped on i686 and the loop ran with no hash list.
+        while last_i as u64 + 2 * l as u64 <= bufend as u64 {
             let hash = hashptr[hp] as usize;
             hp += 1;
             let i = last_i + hashptr[hp] as usize;
