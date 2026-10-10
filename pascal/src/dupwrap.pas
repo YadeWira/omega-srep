@@ -23,9 +23,10 @@ type
   { DupError, con el texto del Debug del Rust en el mensaje }
   EDup = class(Exception);
 
-procedure DupEncode(const InPath, OutPath: AnsiString; const Opts: TEncodeOptions;
-                    Kind: TEncKind; Cont: TEncContainer; const P: TDupParams;
-                    Paranoid: Boolean; Mode: TDupMode; Progress: TEncodeProgress = nil);
+{ devuelve el largo del archivo escrito: out.metadata()?.len() }
+function DupEncode(const InPath, OutPath: AnsiString; const Opts: TEncodeOptions;
+                   Kind: TEncKind; Cont: TEncContainer; const P: TDupParams;
+                   Paranoid: Boolean; Mode: TDupMode; Progress: TEncodeProgress = nil): QWord;
 
 { True si el archivo era -dup y corrio el post-paso; False si es uno comun,
   lo que es un EXITO: el que llama lo decodifica el mismo. }
@@ -46,14 +47,15 @@ begin
   s.Free;
 end;
 
-procedure DupEncode(const InPath, OutPath: AnsiString; const Opts: TEncodeOptions;
-                    Kind: TEncKind; Cont: TEncContainer; const P: TDupParams;
-                    Paranoid: Boolean; Mode: TDupMode; Progress: TEncodeProgress);
+function DupEncode(const InPath, OutPath: AnsiString; const Opts: TEncodeOptions;
+                   Kind: TEncKind; Cont: TEncContainer; const P: TDupParams;
+                   Paranoid: Boolean; Mode: TDupMode; Progress: TEncodeProgress): QWord;
 var
   body: AnsiString;
   meta, t: TBytes;
   o: TEncodeOptions;
-  bs, os: TFileStream;
+  bs: TFileStream;
+  os: TRawFileStream;
   i: LongInt;
 begin
   { -dup no tiene sentido con -m0: no hay tabla de chunks contra que deduplicar }
@@ -73,7 +75,10 @@ begin
     bs := nil; os := nil;
     try
       bs := TFileStream.Create(body, fmOpenRead or fmShareDenyNone);
-      os := TFileStream.Create(OutPath, fmCreate);
+      { File::create(output)?: O_WRONLY y sin el open previo de TFileStream,
+        que sobre un FIFO se bloqueaba }
+      os := CreateWriteRaw(OutPath);
+      if os = nil then raise EDup.Create('Io');
       { el `?` de encoder::encode convierte su error en DupError::Encode: una
         falla de E/S ahi es Encode(Io), no el Io suelto de los otros pasos }
       try
@@ -92,6 +97,9 @@ begin
         t[8] := Ord('O'); t[9] := Ord('D'); t[10] := Ord('U'); t[11] := Ord('P');
         os.WriteBuffer(t[0], ODUP_TRAILER_SIZE);
       end;
+      { del handle abierto, como el Rust: un FIFO contesta 0, y medirlo por
+        el nombre lo volveria a abrir }
+      Result := HandleSize(os.Handle);
     finally
       os.Free;
       bs.Free;
@@ -101,10 +109,23 @@ begin
   end;
 end;
 
+{ seek(..)? de dup.rs: falla solo si falla la llamada al sistema, y entonces
+  es DupError::Io. La posicion no se compara con nada (ver SeekOrFault). }
+function SeekOrIo(S: TStream; Off: Int64; Origin: TSeekOrigin): QWord;
+var r: Int64;
+begin
+  r := S.Seek(Off, Origin);
+  if r < 0 then raise EDup.Create('Io');
+  Result := QWord(r);
+end;
+
+{ read_exact_at: el seek que falla es Io; el read_exact que falla, por EOF o
+  por un error del sistema (EISDIR), es Truncated }
 function ReadAt(S: TStream; Off, N: QWord): TBytes;
 begin
   SetLength(Result, N);
-  S.Seek(Int64(Off), soBeginning);
+  if Off > QWord(High(Int64)) then raise EDup.Create('Io');
+  SeekOrIo(S, Int64(Off), soBeginning);
   if N > 0 then
     if ReadUpTo(S, Result[0], N) <> N then raise EDup.Create('Truncated');
 end;
@@ -160,36 +181,69 @@ end;
 
 { El cuerpo de un -dup, decodificado como lo hace dup.rs: un v5 directo por
   decode_v5, el cuerpo de un ODUP por archive::decode. Un rechazo sale como
-  DupError::Decode, con el Debug del DecodeError adentro. }
-procedure DecodeAny(const InPath, OutPath: AnsiString; const Opts: TFutureLzOptions;
+  DupError::Decode, con el Debug del DecodeError adentro. La salida se abre en
+  lectura-escritura: el decoder relee de ella los matches que caen en bloques
+  anteriores (el Rust 2.1.2 la abria solo para escribir, con File::create, y
+  esos archivos fallaban con EBADF). }
+procedure DecodeAny(InS: TStream; const OutPath: AnsiString; const Opts: TFutureLzOptions;
                     V5: Boolean);
-var inS, outS: TFileStream; st: TFutureLzStats; err: TDecodeFault; ok: Boolean;
+var outS: TRawFileStream; st: TFutureLzStats; err: TDecodeFault; ok: Boolean;
 begin
-  inS := nil; outS := nil;
+  outS := CreateRaw(OutPath);
+  if outS = nil then raise EDup.Create('Io');
   try
-    inS := TFileStream.Create(InPath, fmOpenRead or fmShareDenyNone);
-    outS := TFileStream.Create(OutPath, fmCreate);
-    if V5 then ok := DecodeV5(inS, outS, Opts, st, err) = deOK
-    else ok := DecodeArchive(inS, outS, Opts, nil, err);
+    if V5 then ok := DecodeV5(InS, outS, Opts, st, err) = deOK
+    else ok := DecodeArchive(InS, outS, Opts, nil, err);
     if not ok then raise EDup.Create('Decode(' + FaultDebug(err) + ')');
   finally
     outS.Free;
-    inS.Free;
+  end;
+end;
+
+{ std::io::copy(&mut archive.take(n), &mut out)?: lo que haya hasta n bytes;
+  un EOF antes no es un error, una falla de lectura o escritura es Io }
+procedure CopyPrefix(Src: TStream; const OutPath: AnsiString; N: QWord);
+var outS: TRawFileStream; buf: TBytes; want, got: QWord;
+begin
+  outS := CreateRaw(OutPath);
+  if outS = nil then raise EDup.Create('Io');
+  try
+    SeekOrIo(Src, 0, soBeginning);
+    SetLength(buf, 1 shl 16);
+    while N > 0 do
+    begin
+      want := N;
+      if want > QWord(Length(buf)) then want := Length(buf);
+      try
+        got := QWord(ReadOnceOrFault(Src, buf[0], LongInt(want)));
+        if got = 0 then Break;
+        WriteAllOrFault(outS, buf[0], got);
+      except
+        on X: EDecodeFault do raise EDup.Create('Io');
+      end;
+      Dec(N, got);
+    end;
+  finally
+    outS.Free;
   end;
 end;
 
 function DupDecode(const InPath, OutPath: AnsiString; const Opts: TFutureLzOptions): Boolean;
 var
-  s, cut: TFileStream;
+  s: TRawFileStream;
+  bodyIn: TFileStream;
   len, bodyLen: QWord;
   meta: TBytes;
   isOdup: Boolean;
   body, decoded: AnsiString;
 begin
   Result := False;
-  s := TFileStream.Create(InPath, fmOpenRead or fmShareDenyNone);
+  { File::open(input)?: con el open crudo, como el Rust (un directorio abre, y
+    falla despues en el read: Truncated) }
+  s := OpenReadRaw(InPath);
+  if s = nil then raise EDup.Create('Io');
   try
-    len := QWord(s.Size);
+    len := SeekOrIo(s, 0, soEnd);
     meta := V5Meta(s, len);
     isOdup := False;
     if meta = nil then meta := OdupMeta(s, len, isOdup);
@@ -199,10 +253,10 @@ begin
     begin
       { v5: el cuerpo se decodifica a un temporal, porque el post-paso vuelve
         a leerlo para expandir las referencias }
-      s.Free; s := nil;
       body := NewTempPath('osrep-dup-body');
       try
-        DecodeAny(InPath, body, Opts, True);
+        SeekOrIo(s, 0, soBeginning);
+        DecodeAny(s, body, Opts, True);
         try
           DecodeStreaming(meta, body, OutPath);
         except
@@ -220,16 +274,18 @@ begin
     body := NewTempPath('osrep-dup-body-osr');
     decoded := '';
     try
-      cut := TFileStream.Create(body, fmCreate);
-      try
-        s.Seek(0, soBeginning);
-        if bodyLen > 0 then cut.CopyFrom(s, Int64(bodyLen));
-      finally
-        cut.Free;
-      end;
-      s.Free; s := nil;
+      CopyPrefix(s, body, bodyLen);
       decoded := NewTempPath('osrep-dup-body-dec');
-      DecodeAny(body, decoded, Opts, False);
+      try
+        bodyIn := TFileStream.Create(body, fmOpenRead or fmShareDenyNone);
+      except
+        raise EDup.Create('Io');
+      end;
+      try
+        DecodeAny(bodyIn, decoded, Opts, False);
+      finally
+        bodyIn.Free;
+      end;
       try
         DecodeStreaming(meta, decoded, OutPath);
       except

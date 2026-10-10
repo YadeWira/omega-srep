@@ -522,7 +522,8 @@ end;
 function ReadAt(S: TStream; Off: QWord; var B: TBytes; N: QWord): QWord;
 begin
   Result := 0;
-  if (Off > QWord(High(Int64))) or (S.Seek(Int64(Off), soBeginning) <> Int64(Off)) then Exit;
+  { el Rust mira solo is_err() del seek, no la posicion que devuelve }
+  if (Off > QWord(High(Int64))) or (S.Seek(Int64(Off), soBeginning) < 0) then Exit;
   if N > 0 then Result := ReadUpTo(S, B[0], N);
 end;
 

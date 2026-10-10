@@ -433,8 +433,40 @@ diferencias.
 * **`THandleStream.Seek` no lanza excepciones.** Con un offset que no entra en
   un `Int64` (o que el sistema de archivos rechaza) devuelve -1 y **deja la
   posición donde estaba**: la lectura que sigue lee de otro lado, sin error.
-  Rust falla ahí con EINVAL. Todo seek que llega a un archivo se hace con
-  `SeekExact`, que verifica la posición que devuelve.
+  Rust falla ahí con EINVAL. Todo seek de los decoders va por `SeekOrFault` /
+  `SeekToOrFault` (`decfault.pas`, y `SeekExact` en Future-LZ), que lanzan el
+  `Io(Os ..)` del errno **solo si la llamada falla**. Verificar además que la
+  posición devuelta sea la pedida fue un error: el Rust no lo mira, y `lseek`
+  sobre `/dev/null` devuelve 0 sin error, así que `-d x.osr /dev/null` de un
+  v5 de varios bloques salía con `Io(Os { code: 0, .. "Success" })` y el Rust
+  terminaba bien. Y un seek ignorado sobre un **pipe** era peor: el sink se
+  abre en lectura-escritura, y la relectura de un match esperaba datos de su
+  propio pipe para siempre (v1 y `-dup` a `/dev/stdout` colgaban; v3/v4 salían
+  con exit 0 y un resumen de 2^64-1 bytes). El Rust falla ahí con ESPIPE. Lo
+  mismo en el encoder (`EncSeek`, `EncodeError::Io`) y en el dedup
+  (`SeekOrInval`, rc 8).
+* **`TFileStream.Create(fmCreate)` abre el archivo ANTES con `O_RDONLY`** (para
+  revisar el lock del `ShareMode`), y sobre un FIFO ese open se bloquea hasta
+  que aparezca un escritor: `osrep -d x.osr fifo` o `osrep x fifo`, con un
+  lector del otro lado, colgaban en el open. Las salidas se crean con
+  `CreateRaw` (lectura-escritura, el `OpenOptions` del sink del Rust) o
+  `CreateWriteRaw` (`File::create`, solo escritura), y las entradas de `-d`,
+  `-i` y `--verify` se abren con `OpenReadRaw`, el `open(2)` pelado
+  (`streamio.pas`): como el `File::open` del Rust, abre un directorio y falla
+  después con el errno que toque, así que el caso especial de directorios que
+  tenía `osrep.lpr` desapareció. Medir un archivo por nombre es `stat`, no
+  abrirlo (`PathSize`): abrir un FIFO para leer también se bloquea.
+* **El tamaño de lo que se lee no se pregunta.** `-i` y `--verify` leen hasta
+  el EOF, como `std::fs::read`: un FIFO, `<(cmd)` o `/proc` no saben su largo
+  (`THandleStream.Size` daba -1 o 0). Pero antes leen 8 bytes y, si no son la
+  magia de v5 ni las firmas de v1-v4, cortan ahí (el Rust también, desde la
+  misma rama): si no, `/dev/zero` se leía hasta agotar la memoria. Y el
+  offset de la meta de `-dup` en el footer de v5 se cuenta (`BaseOffset` más
+  lo emitido), no se le pregunta a `Output.Position`: comprimir a un FIFO
+  escribía un footer con offset 2^64-1.
+* **El runtime del Rust ignora SIGPIPE; FPC no.** Sin el `fpSignal(SIGPIPE,
+  SIG_IGN)` del principio de `Main`, `osrep -d x.osr - | head` moría por la
+  señal (rc 141) donde el Rust da `Can't write to stdout` (rc 3).
 * **El directorio temporal de FPC no es el de Rust.** En Unix, `GetTempDir`
   mira `TEMP`, después `TMP` y recién después `TMPDIR`. `std::env::temp_dir()`
   mira **solo** `TMPDIR` (o `/tmp`). Con `TEMP` apuntando a otro lado, el spill

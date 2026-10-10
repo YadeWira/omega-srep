@@ -193,7 +193,7 @@ begin
     begin
       bytes := BlockStart - src;
       if bytes > mlen then bytes := mlen;
-      Sink.Seek(Int64(src), soBeginning);
+      SeekToOrFault(Sink, src);
       SinkRead(Sink, OutBuf, outPos, bytes);
       Inc(outPos, bytes); Inc(src, bytes); Dec(mlen, bytes);
     end;
@@ -281,8 +281,8 @@ begin
     { -bar cuenta el archivo: el total se mide antes de leer nada }
     if Assigned(Progress) then
     begin
-      total := QWord(Input.Seek(0, soEnd));
-      Input.Seek(0, soBeginning);
+      total := SeekOrFault(Input, 0, soEnd);
+      SeekOrFault(Input, 0, soBeginning);
     end;
     if ReadDecl(Input, hb, ARCHIVE_HEADER_SIZE) <> rdOK then
     begin
@@ -375,7 +375,7 @@ begin
           end;
       end;
 
-      Sink.Seek(Int64(blockStart), soBeginning);
+      SeekToOrFault(Sink, blockStart);
       SinkWrite(Sink, outbuf, QWord(bh.OrigSize));
       Inc(blockStart, bh.OrigSize);
       Inc(St.Blocks);

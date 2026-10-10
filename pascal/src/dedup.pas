@@ -550,6 +550,16 @@ begin
   Result := ReadUpTo(S, B[0], N);
 end;
 
+{ seek(..).map_err(|_| DEDUP_ERR_INVAL): falla solo si falla la llamada al
+  sistema. Sobre un pipe (una salida a /dev/stdout, a un FIFO, a >(cmd)) el
+  Rust da rc=8 ahi; sin este chequeo la lectura que sigue esperaba datos de
+  ese mismo pipe, abierto en lectura-escritura, y colgaba para siempre. }
+procedure SeekOrInval(S: TStream; Off: QWord);
+begin
+  if (Off > QWord(High(Int64))) or (S.Seek(Int64(Off), soBeginning) < 0) then
+    raise EDedup.CreateCode(DEDUP_ERR_INVAL);
+end;
+
 function EncodeStreaming(const InPath, BodyPath: AnsiString; const P: TDupParams;
                          Paranoid: Boolean): TBytes;
 var
@@ -602,9 +612,9 @@ begin
           begin
             if QWord(Length(cmpBuf)) < clen then SetLength(cmpBuf, clen);
             try
-              fb.Seek(Int64(uniqueOff[uidx]), soBeginning);
+              SeekOrInval(fb, uniqueOff[uidx]);
               ReadExact(fb, cmpBuf[0], clen);
-              fb.Seek(Int64(bodyPos), soBeginning);
+              SeekOrInval(fb, bodyPos);
             except
               on X: Exception do raise EDedup.CreateCode(DEDUP_ERR_INVAL);
             end;
@@ -710,7 +720,8 @@ procedure DecodeStreaming(const Meta: TBytes; const BodyPath, OutPath: AnsiStrin
 var
   recs: TRecs;
   uniqueCount, n, need, take, outPos, readAt, writeAt, remaining, uidx: QWord;
-  fb, fo: TFileStream;
+  fb: TFileStream;
+  fo: THandleStream;
   slotOff: array of QWord;
   slotLen: array of DWord;
   nslots: QWord;
@@ -721,7 +732,8 @@ begin
   try
     try
       fb := TFileStream.Create(BodyPath, fmOpenRead or fmShareDenyNone);
-      fo := TFileStream.Create(OutPath, fmCreate);
+      fo := CreateRaw(OutPath);
+      if fo = nil then Abort;
     except
       raise EDedup.CreateCode(DEDUP_ERR_INVAL);
     end;
@@ -740,7 +752,7 @@ begin
         begin
           take := need;
           if take > QWord(Length(ioBuf)) then take := Length(ioBuf);
-          if QWord(fb.Read(ioBuf[0], LongInt(take))) <> take then
+          if ReadUpTo(fb, ioBuf[0], take) <> take then
             raise EDedup.CreateCode(DEDUP_ERR_TRUNCATED);
           WriteOrInval(fo, ioBuf[0], LongInt(take));
           Dec(need, take);
@@ -767,10 +779,10 @@ begin
         begin
           take := remaining;
           if take > QWord(Length(ioBuf)) then take := Length(ioBuf);
-          fo.Seek(Int64(readAt), soBeginning);
-          if QWord(fo.Read(ioBuf[0], LongInt(take))) <> take then
+          SeekOrInval(fo, readAt);
+          if ReadUpTo(fo, ioBuf[0], take) <> take then
             raise EDedup.CreateCode(DEDUP_ERR_TRUNCATED);
-          fo.Seek(Int64(writeAt), soBeginning);
+          SeekOrInval(fo, writeAt);
           WriteOrInval(fo, ioBuf[0], LongInt(take));
           readAt := readAt + take;
           writeAt := writeAt + take;

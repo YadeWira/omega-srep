@@ -168,7 +168,11 @@ pub fn decode(input: &Path, output: &Path, opts: &FutureLzOptions) -> Result<boo
     // expand the references, so the two halves cannot share a file.
     if let Some(meta) = v5_meta(&mut archive, len)? {
         let body = TempFile::new("osrep-dup-body")?;
-        let mut sink = File::create(body.path())?;
+        // Read as well as write: the decoder reads back a match whose source
+        // lies in an earlier block (one of `maximum_save` bytes or more) from
+        // what it has already written. `File::create` alone failed those
+        // archives with EBADF.
+        let mut sink = create_rw(body.path())?;
         archive.seek(SeekFrom::Start(0))?;
         future_lz::decode_v5(&mut archive, &mut sink, opts, None).map_err(DupError::Decode)?;
         sink.flush()?;
@@ -190,7 +194,7 @@ pub fn decode(input: &Path, output: &Path, opts: &FutureLzOptions) -> Result<boo
         }
         let decoded = TempFile::new("osrep-dup-body-dec")?;
         let mut body_file = File::open(body.path())?;
-        let mut sink = File::create(decoded.path())?;
+        let mut sink = create_rw(decoded.path())?;
         // The wrapper decodes the body it just carved out; `-index=` on the
         // decompress side is handled by the CLI, which opens the index and
         // hands it to `archive::decode` directly.
@@ -261,6 +265,16 @@ fn odup_meta(archive: &mut File, len: u64) -> Result<Option<Vec<u8>>, DupError> 
         return Err(DupError::BadDup);
     }
     Ok(Some(meta))
+}
+
+/// A decoder sink: created like `File::create`, but readable too.
+fn create_rw(path: &Path) -> std::io::Result<File> {
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(path)
 }
 
 /// One `read` at an explicit offset, into a buffer the caller sized.
