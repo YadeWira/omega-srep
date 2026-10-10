@@ -45,6 +45,25 @@ what happened in 2.0.0.
     it is meant: `-m3` with one can write an archive that does not decode,
     in 1.0.7 as well.
 
+- **Valid `-dup` archives whose matches reach back into an earlier block
+  failed to decompress.** The future-LZ decoder reads a match of
+  `maximum_save` bytes or more back from the output it has already written,
+  and `dup::decode` created that body file with `File::create`, write-only:
+  the read failed with `Decode(Io(Os { code: 9, .. "Bad file descriptor" }))`
+  (exit 3; code 5 under Windows). It hit any `-dup` archive, v5 or v4, decoded
+  with a small `-vmblock` (`-mem0 -vmblock=4k` on `text.bin` at `-b64k`), and
+  with the defaults any one carrying a match of 8 MB or more into an earlier
+  block. No data was written wrong; the archives were always sound. The body
+  file is now opened for reading and writing, as the plain decode path always
+  did. The C++ 1.0.7 does not have the bug (its `srep_main` opens the output
+  `"w+b"`) and decodes those archives, as does the Pascal port.
+- **`-i` and `--verify` read an endless input until memory ran out.** Both
+  parse the archive in memory, and read all of it before looking at the first
+  bytes: `osrep -i /dev/zero`, or a pipe that never closes, grew without
+  bound. They now read eight bytes first, and when those are neither the v5
+  magic nor the v1-v4 signatures, stop there with the same "Not an Omega SREP
+  compressed file" they always gave. Every other answer is unchanged.
+
 ## [2.1.2] — 2026-10-09
 
 ### Fixed

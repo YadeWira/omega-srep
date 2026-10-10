@@ -225,6 +225,43 @@ if "$RS" -dup -m4 --chunk-hash=bogus --seed=7 "$TMP/dup1m.bin" "$TMP/x.osr" >/de
 fi
 pass=$((pass + 1))
 
+say "-dup: a match that reaches back into an earlier block decodes"
+# The future-LZ decoder reads a match of maximum_save bytes or more back from
+# the output it has already written. dup::decode created that body file with
+# File::create, write-only, so in 2.1.2 those archives failed with
+# Decode(Io(Os { code: 9 .. "Bad file descriptor" })). -mem0 -vmblock=4k caps
+# maximum_save at 4072 bytes, which text.bin at -b64k is full of; the C++
+# (srep_main opens its output "w+b") never had the bug.
+for fmt in "" "--format=v4"; do
+    # shellcheck disable=SC2086
+    "$RS" -v0 --seed=7 -b64k -dup $fmt tests/corpus/text.bin "$TMP/back.osr" >/dev/null 2>&1 \
+        || fail "-dup -b64k $fmt: compress failed"
+    "$RS" -v0 -d -mem0 -vmblock=4k "$TMP/back.osr" "$TMP/back.out" >/dev/null 2>"$TMP/back.err" \
+        || fail "-dup -b64k $fmt: -d -mem0 -vmblock=4k failed: $(cat "$TMP/back.err")"
+    cmp -s tests/corpus/text.bin "$TMP/back.out" || fail "-dup -b64k $fmt: round-trip differs"
+    pass=$((pass + 1))
+done
+
+say "-i and --verify answer an endless input at once"
+# Both parse the archive in memory, and 2.1.2 read the whole input before
+# looking at its first bytes: /dev/zero (or a pipe that never closes) was read
+# until memory ran out. Eight bytes that are neither the v5 magic nor the
+# v1-v4 signatures settle it. The address space is capped so that a relapse
+# fails here instead of taking the machine down.
+if [ -c /dev/zero ]; then
+    for m in -i --verify; do
+        for src in "/dev/zero" "- </dev/zero"; do
+            rc=0
+            # shellcheck disable=SC2086
+            (ulimit -v 1048576; eval timeout 20 '"$RS"' $m $src) >/dev/null 2>"$TMP/zero.err" || rc=$?
+            name=${src%% *}
+            [ "$rc" -eq 4 ] && grep -qxF "  ERROR! Not an Omega SREP compressed file (.osr): $name" "$TMP/zero.err" \
+                || fail "$m $src: exit $rc, '$(cat "$TMP/zero.err")'"
+        done
+    done
+    pass=$((pass + 1))
+fi
+
 say "--seed=N and OSREP_SEED_HEX"
 "$RS" --seed=12345 -m4 "$TMP/dup1m.bin" "$TMP/s1.osr" >/dev/null 2>&1
 "$RS" --seed=12345 -m4 "$TMP/dup1m.bin" "$TMP/s2.osr" >/dev/null 2>&1

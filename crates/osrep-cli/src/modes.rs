@@ -664,6 +664,39 @@ fn decompress(o: &Options, finame: &str, foutname: &str) -> Result<i32, RunError
 
 // ------------------------------------------------------------------ info --
 
+/// The whole archive, for `-i` and `--verify`, which parse it in memory.
+///
+/// The first eight bytes are read on their own: an archive starts with the v5
+/// magic or with the two v1-v4 signatures, and when it does neither, both
+/// callers reject it whatever follows. Stopping there keeps an endless input
+/// (`/dev/zero`, a pipe that never closes) from being read until memory runs
+/// out; the prefix alone still fails `inspect` the same way, so the message
+/// does not change.
+fn read_archive(finame: &str) -> Result<Vec<u8>, RunError> {
+    fn slurp<R: Read>(mut r: R) -> std::io::Result<Vec<u8>> {
+        let mut bytes = Vec::new();
+        (&mut r).take(8).read_to_end(&mut bytes)?;
+        if bytes.len() == 8 {
+            let word = |i: usize| u32::from_le_bytes(bytes[i..i + 4].try_into().unwrap());
+            let archive = word(0) == osrep_core::v5::MAGIC
+                || (word(0) == container::BULAT_ZIGANSHIN_SIGNATURE
+                    && word(4) == container::SREP_SIGNATURE);
+            if !archive {
+                return Ok(bytes);
+            }
+        }
+        r.read_to_end(&mut bytes)?;
+        Ok(bytes)
+    }
+    if finame == "-" {
+        slurp(std::io::stdin().lock()).map_err(|_| err(ERROR_IO, "Can't read from stdin"))
+    } else {
+        File::open(finame)
+            .and_then(slurp)
+            .map_err(|_| err(ERROR_IO, format!("Can't open {finame} for read")))
+    }
+}
+
 /// `--verify`: say whether an archive is sound **without reconstructing it**.
 ///
 /// This exists because v5 can answer the question and v4 cannot. v4 carries no
@@ -679,17 +712,7 @@ fn decompress(o: &Options, finame: &str, foutname: &str) -> Result<i32, RunError
 /// survives this and is only caught by decoding. A verify that let someone
 /// believe otherwise would be worse than not having one.
 fn verify(_o: &Options, finame: &str) -> Result<i32, RunError> {
-    let bytes = if finame == "-" {
-        let mut buf = Vec::new();
-        std::io::stdin()
-            .lock()
-            .read_to_end(&mut buf)
-            .map_err(|_| err(ERROR_IO, "Can't read from stdin"))?;
-        buf
-    } else {
-        std::fs::read(finame)
-            .map_err(|_| err(ERROR_IO, format!("Can't open {finame} for read")))?
-    };
+    let bytes = read_archive(finame)?;
 
     let is_v5 = bytes.len() >= 4
         && u32::from_le_bytes(bytes[..4].try_into().unwrap()) == osrep_core::v5::MAGIC;
@@ -745,17 +768,7 @@ literal run needs a decompress{}.",
 
 fn info(o: &Options, finame: &str) -> Result<i32, RunError> {
     let opts = decode_options(o);
-    let bytes = if finame == "-" {
-        let mut buf = Vec::new();
-        std::io::stdin()
-            .lock()
-            .read_to_end(&mut buf)
-            .map_err(|_| err(ERROR_IO, "Can't read from stdin"))?;
-        buf
-    } else {
-        std::fs::read(finame)
-            .map_err(|_| err(ERROR_IO, format!("Can't open {finame} for read")))?
-    };
+    let bytes = read_archive(finame)?;
     let info = archive::inspect(&bytes).map_err(|_| {
         err(
             ERROR_COMPRESSION,
