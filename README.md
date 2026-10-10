@@ -6,13 +6,20 @@ Upstream SREP froze at **3.93a beta (October 11, 2014)**; Omega SREP picks up
 the lineage with a clean break — new file format, new identity, modern target
 platforms.
 
-**Since 2.0.0 the released binaries are the Rust implementation** in `crates/`.
-The original C++ in `Compression/` has not been deleted and is not dead code:
-it is the oracle the Rust port is tested against. Every ported module is diffed
-byte-for-byte against the C++ binary rather than merely round-tripped through
-itself, which is why it stays buildable and in-tree. It is simply no longer
-released, and stays at its last shipped version, **1.0.7**. See
-`docs/rust-port.md`.
+**Since 2.2.0 the released binaries are the Free Pascal implementation** in
+`pascal/`. Two earlier implementations stay in-tree, buildable, and are not
+dead code: the **Rust** in `crates/` (the released binary from 2.0.0 to 2.1.2)
+and the original **C++** in `Compression/` (1.0.x, frozen at **1.0.7**). They
+are the oracles: every Pascal module is diffed byte-for-byte against the Rust,
+which is diffed byte-for-byte against the C++, rather than merely
+round-tripped through itself. The archives are the same bytes whichever of
+the three wrote them.
+
+Why a third implementation: Windows 7 and 32-bit Windows are requirements of
+this project, and Rust upstream is leaving both — `i686-pc-windows-gnu` was
+demoted from Tier 1 in Rust 1.88, and 1.77.2, the last release that targets
+Windows 7, can never move. Free Pascal 3.2.2 targets both natively. See
+`docs/pascal-port.md` and, for the Rust port, `docs/rust-port.md`.
 
 ## What is different from upstream SREP
 
@@ -49,13 +56,14 @@ released, and stays at its last shipped version, **1.0.7**. See
   quietly: a 1.0.x binary handed a v5 archive exits 4 with *"Not an Omega SREP
   compressed file (.osr)"* and writes no output. It cannot mistake one for the
   other.
-- **Supported platforms:** Linux x64 and Windows x64/x86. The Rust builds
-  target **Windows 7 and later** — the toolchain is pinned to Rust 1.77.2,
-  the last release supporting Win7 for `*-pc-windows-gnu`, and both Windows
-  binaries are verified on a real Windows 7 SP1 machine each release, not
-  only cross-compiled. (The C++ build needs Windows 10/11, or the KB2999226
-  Universal C Runtime on an older target.) The historical big-endian,
-  FreeBSD, and macOS branches are gone.
+- **Supported platforms:** Linux x64 and Windows x64/x86. The released
+  builds target **Windows 7 and later**, and both Windows binaries are
+  verified on a real Windows 7 SP1 machine each release, not only
+  cross-compiled. The 32-bit `.exe` is large address aware (up to 4 GiB of
+  address space on a 64-bit Windows). The Rust builds also run on Windows 7,
+  because the toolchain is pinned to Rust 1.77.2. (The C++ build needs
+  Windows 10/11, or the KB2999226 Universal C Runtime on an older target.)
+  The historical big-endian, FreeBSD, and macOS branches are gone.
 - **Binary name:** `osrep` (replaces `srep`).
 - **Version line:** Omega SREP starts a new lineage at `1.0a beta`.
   First stable release: `1.0.0`.
@@ -124,11 +132,33 @@ produce archives within 0.000005% of each other at `-m3`. See
 
 ## Build
 
-The released binary — the Rust implementation:
+The released binary — the Free Pascal implementation. It needs **Free Pascal
+3.2.2** for Linux x64, plus its two Windows cross compilers for the `.exe`
+files:
 
 ```bash
-  $ cargo build --release
-  # install -m755 target/release/osrep /usr/local/bin/
+  $ bash pascal/build.sh      # all three targets, into pascal/bin/
+  # install -m755 pascal/bin/osrep-linux-x86_64 /usr/local/bin/osrep
+```
+
+`build.sh` builds `osrep-linux-x86_64`, `osrep-windows-x86_64.exe` and
+`osrep-windows-x86.exe`, plus the small test tools the conformance suites
+use. Point `OSREP_FPC_CROSS` at the directory that holds `ppcrossx64`,
+`ppcross386` and `units/{x86_64-win64,i386-win32}/` (no `fpc.cfg` needed;
+the script passes the unit paths), and `OSREP_PASCAL_OUT` somewhere else to
+build without replacing binaries in use. The cross compilers can be built
+from the FPC 3.2.2 sources (`fpcbuild-3.2.2`) with
+`make crossinstall OS_TARGET=win64 CPU_TARGET=x86_64` and
+`make crossinstall OS_TARGET=win32 CPU_TARGET=i386`; FPC links Windows
+executables with its internal linker, so no MinGW is needed. The flags are
+fixed in the script (`-Mobjfpc -O2`): in FPC's default mode `Integer` is 16
+bits, and `pascal/src/widths.pas` turns that into a compile error rather than
+a different file format.
+
+The Rust oracle — needed only to run the differential tests:
+
+```bash
+  $ cargo build --release --target x86_64-unknown-linux-gnu -p osrep-cli
 ```
 
 The toolchain is pinned in `rust-toolchain.toml` to **1.77.2**, deliberately:
@@ -156,15 +186,19 @@ the preprocessor. For Windows, see `docs/windows-build.md` (FOSS
 MinGW-w64 toolchain, no Visual Studio needed) and `docs/32bit-support.md`
 for the opt-in 32-bit (i686) cross-compile path.
 
-Point the CLI-level test scripts at either build with `OSREP_BIN`; that is
+Point the CLI-level test scripts at either oracle with `OSREP_BIN`; that is
 how the Rust port is run through the suite the C++ was developed against.
+`tests/rust_cli_conformance.sh` runs the Pascal binary through the whole Rust
+gate with `OSREP_PORT_BIN=pascal/bin/osrep-linux-x86_64`, and the
+`tests/pascal_*_conformance.sh` suites diff each Pascal module against the
+Rust one; the `OSREP_PASCAL_*` variables point them at the `.exe` files under
+wine.
 
-One thing that surprises people: `cargo build --release` lands a ~760 KB
-binary in `target/release/`, while the released assets, built with an explicit
-`--target`, are ~2.4 MB. The code is identical — cargo defaults
-`split-debuginfo` differently in the two cases, so the explicit-target build
-embeds debug info the plain one leaves in separate files. The releases are
-shipped unstripped on purpose, so a backtrace from a user is symbolicated.
+One thing that surprises people about the Rust oracle: `cargo build --release`
+lands a ~760 KB binary in `target/release/`, while a build with an explicit
+`--target` is ~2.4 MB, and the test scripts use the latter
+(`target/x86_64-unknown-linux-gnu/release/osrep`). The code is identical —
+cargo defaults `split-debuginfo` differently in the two cases.
 
 ## Description
 

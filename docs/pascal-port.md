@@ -1,10 +1,11 @@
 # Port a Pascal (FPC) — plan
 
-> **Estado**: en curso. La decisión se tomó el 2026-09-25; las fases 0 a 6
-> están hechas: el port decodifica los cinco contenedores, comprime con los
-> seis compresores en los cuatro contenedores que se escriben, hace `-dup` y
-> `--verify`, todo byte a byte igual que el Rust y el C++. Falta la CLI y el
-> release.
+> **Estado**: hecho. La decisión se tomó el 2026-09-25; desde la **2.2.0**
+> (2026-10-10) el binario que se publica es el Pascal, con archivos byte a
+> byte iguales a los de la 2.1.2. El Rust (`crates/`) y el C++
+> (`Compression/`) quedan como oráculos. Lo que sigue: la 2.2.1 (pérdidas de
+> datos con combinaciones raras de `-l`/`-c`/`-b`, heredadas del C++) y la
+> 2.3.0 (el orden de empates del `std::sort` del C++).
 
 ## Por qué, y qué cambió respecto del port a Rust
 
@@ -207,7 +208,7 @@ round-trip**.
 | 5d | writer v5 | **hecha** (2026-10-09): 376 archivos byte-idénticos en Linux, i386 y x64 — toda la matriz de `encode_conformance.sh` más v5 con `-hash-`, siphash, sha512, `-b1mb` y `-d`, contra el Rust (308) y contra el C++ directo en v1–v4 (68). Win7 real: 108/108 en i386 y en x64. Velocidad, sin gate (como en Rust): x64 nativo 2,7–2,9× más lento que Rust en `-m3`/`-m4`, igual en `-m5`, más rápido en `-m0`/`-m1`; i386 1,5–1,7× más lento que x64 |
 | **6** | `-dup` y `--verify` | **hecha** (2026-10-09): `tests/pascal_dup_conformance.sh`, 797 comprobaciones en Linux, i386 y x64 — archivos `-dup` byte-idénticos al Rust (v5, con la meta adentro) y al C++ (v4, con el trailer ODUP) que vuelven a la entrada por el decoder del Pascal, y `--verify` con **la misma salida y el mismo código** que `osrep --verify` en archivos sanos, v1–v4, lo que no es un `.osr` y ~710 mutaciones. Verificado que atrapa tres bugs inyectados. Win7 real: 18/18 y 8/8 en i386 y en x64, sin temporales. **Sin cubrir todavía**: el corte Gear y `--dup-paranoid`, que son opciones de la CLI (`--chunk-*`) y no tienen oráculo hasta la fase 7 |
 | **7** | CLI completa | **hecha** (2026-10-09): `pascal/osrep.lpr` + `src/cliargs.pas` (args.rs), `src/clireport.pas` (report.rs) y `src/randbytes.pas`. La puerta del Rust entera, **`rust_cli_conformance.sh` con `OSREP_PORT_BIN` apuntando al Pascal: 225/225** — la capa byte a byte contra el C++ 1.0.7, pipes, `-index=`, `--verify`, `stderr_conformance` y las diez suites CLI. Además `tests/pascal_cli_conformance.sh`, 96 comprobaciones en Linux y bajo wine i386/x64: ~35 líneas de comandos con archivo e índice idénticos al Rust (incluye lo que la fase 6 no podía: Gear, `--dup-paranoid`, `--chunk-*`), pipes con y sin `-s`, ~37 errores con **el mismo código y el mismo stderr**, warnings, `OSREP_SEED_HEX`, nombres derivados, `-delete`, `-bar`. Verificado que atrapa siete bugs inyectados (después de agregar los casos para cinco que se escapaban). Win7 real: 170/170 en i386 y x64, sin temporales en `%TEMP%`. Encontró dos bugs que no eran del Pascal: el v5 por pipe del Rust (92b4a77) y el pánico de `-s` menor que la entrada (d267376). |
-| **8** | Release: tres targets, verificación en Win7 real, tag | como 2.1.0 |
+| **8** | Release: tres targets, verificación en Win7 real, tag | **hecha** (2026-10-10): **2.2.0**. Antes de publicar, velocidad y robustez. Cuatro optimizaciones en paralelo, cada una con revisor adversarial (VMAC con NH en asm x86-64, sin marcos de excepción en el match finder, lazos internos del match finder, tablas en páginas del sistema): el Pascal pasó de 2,4-2,9× más lento que el Rust a la par o más rápido (`-d` 0,4 s contra 0,5 s sobre 256 MiB) y `-m0` de 1061 MB a 398 MB. Después, tres rondas de revisión adversarial que encontraron y cerraron: cuentas de stream truncadas a `LongInt` (`-b2g` escribía un archivo sin bloques con exit 0), los errores de los decoders en el texto Debug del Rust (231.778 mutaciones, 0 diferencias), Unicode en Windows (argv con las reglas del Rust, rutas anchas, `WriteConsoleW`), `/dev/null`, pipes, FIFOs y `/proc` como entrada o salida (había cuelgues), el fin de un pipe anónimo en Windows, decimales exactos como el `format!` del Rust (SSE2 en i386), y DEP/ASLR en los `.exe`. Arreglos que también fueron al Rust: `-l`/`-c`/`-dl` raros (pánicos y una pérdida de datos de `-m3`), el sink de `-dup` abierto solo para escritura, `-i /dev/zero` sin límite y la lectura corta del `-dup`. Win7 real: ver la release |
 
 Para la fase 8: el stderr de los errores ya es **el mismo, byte a byte**, que
 el del Rust, también el de los decoders, que el Rust imprime con Debug

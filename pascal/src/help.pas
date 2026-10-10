@@ -13,8 +13,8 @@ const
   { Kept in step with the released version. The Pascal port reports the same
     line as the Rust one while it is being validated against it; once it is
     what ships, this is what a release bumps. }
-  VERSION     = '2.1.2';
-  RELEASE_DATE = 'October 9, 2026';
+  VERSION     = '2.2.0';
+  RELEASE_DATE = 'October 10, 2026';
   DESCRIPTION = 'huge-dictionary LZ77 preprocessor (Omega lineage, fork of SREP by Bulat Ziganshin)';
   HOMEPAGE    = 'https://github.com/YadeWira/omega-srep';
 

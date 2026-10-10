@@ -11,7 +11,48 @@ what happened in 2.0.0.
 
 ## [Unreleased]
 
+## [2.2.0] — 2026-10-10
+
+### Changed
+
+- **The released binaries are now the Free Pascal implementation** in
+  `pascal/`, built with FPC 3.2.2 for the same three targets (Linux x64,
+  Windows x64, Windows x86) and under the same asset names. **Archives are
+  byte-identical to 2.1.x's** for the same input, options and seed, in every
+  mode and container, and each reads everything the other writes. The Rust
+  stays in `crates/` as the oracle the Pascal is diffed against, byte for
+  byte, with the C++ 1.0.7 behind it; the Pascal passes the Rust's whole CLI
+  gate (`rust_cli_conformance.sh`), and its stderr and exit codes match the
+  Rust's, error messages included. Why: Windows 7 and 32-bit Windows are
+  requirements of this project, and Rust upstream is leaving both
+  (`i686-pc-windows-gnu` was demoted from Tier 1 in Rust 1.88, and 1.77.2,
+  the last release that targets Windows 7, can never move). See
+  `docs/pascal-port.md`. What you may notice:
+  - The Linux binary is statically linked: no glibc dependency.
+  - The Windows binaries import only `kernel32`, `user32` and `oleaut32`, all
+    on a stock Windows 7 SP1. DEP and ASLR are on, as in the Rust builds, and
+    the 32-bit one is large address aware.
+  - File names and arguments outside the ANSI code page (Cyrillic, CJK,
+    emoji) work on Windows, as they did with the Rust.
+  - Speed, against the 2.1.2 binary on 256 MiB of real data (Linux x64):
+    `-m3`/`-m4`/`-m5` compress 1.6-1.9x faster (5.2 s -> 2.8 s at `-m3`) and
+    `-d` is about as fast or up to 20% faster; `-m0`/`-m1`/`-m2` are
+    25-40% slower (1.07 s -> 1.35-1.46 s at `-m1`/`-m2`, 1.40 s -> 1.93 s at
+    `-m0`). Peak memory is the same or lower in every mode. The 32-bit
+    Windows build has no assembly in its hash, so it gains less.
+  - `osrep -d` from a pipe, `-i`/`--verify` on a non-archive and a broken
+    stdout behave as in 2.1.2 except where 2.1.2 crashed (below). One
+    intentional difference: when the reader of stderr or stdout goes away
+    (`osrep ... 2>&1 | head -c1`), 2.1.2 aborted with a Rust panic (exit
+    101); 2.2.0 finishes the job and exits with its normal code.
+
 ### Fixed
+
+- **`-dup` dropped the rest of its input after a short read.** It read each
+  buffer with one `read()` and took a short count for end of input, so a FIFO
+  as the input file, or `--chunk-buf` over the ~2 GiB one `read(2)` moves,
+  lost the tail of the file without an error. It now fills the buffer the
+  way the C++'s `fread` does.
 
 - **Unusual `-l`/`-c` values crashed the compressor with a Rust panic (exit
   101).** Found by a review of the Pascal port, which had the same bugs
@@ -105,9 +146,9 @@ what happened in 2.0.0.
   and `dup::decode` created that body file with `File::create`, write-only:
   the read failed with `Decode(Io(Os { code: 9, .. "Bad file descriptor" }))`
   (exit 3; code 5 under Windows). It hit any `-dup` archive, v5 or v4, decoded
-  with a small `-vmblock` (`-mem0 -vmblock=4k` on `text.bin` at `-b64k`), and
-  with the defaults any one carrying a match of 8 MB or more into an earlier
-  block. No data was written wrong; the archives were always sound. The body
+  with a small `-vmblock` (`-mem0 -vmblock=4k` on `text.bin` at `-b64k`). With
+  the default options it would take a match of 8 MB or more into an earlier
+  block, which deduplication normally absorbs; no such archive was found. No data was written wrong; the archives were always sound. The body
   file is now opened for reading and writing, as the plain decode path always
   did. The C++ 1.0.7 does not have the bug (its `srep_main` opens the output
   `"w+b"`) and decodes those archives, as does the Pascal port.
@@ -117,6 +158,30 @@ what happened in 2.0.0.
   bound. They now read eight bytes first, and when those are neither the v5
   magic nor the v1-v4 signatures, stop there with the same "Not an Omega SREP
   compressed file" they always gave. Every other answer is unchanged.
+
+- `-d` with a junk `-l`, `-c`, `-dl` or `-dc` above 4294967295 now stops with
+  the same "Invalid option" (exit 2) as compression; 2.1.2 ignored it when
+  decompressing.
+
+### Known issues
+
+Found while porting, present in 2.1.2 and in the C++ 1.0.7 alike, and fixed
+next in 2.2.1. All need non-default options; the defaults are not affected.
+
+- **Some non-default combinations write an archive that does not decompress,
+  with exit 0.** `-m3` with a power-of-two `-l` and a `-b` that is not a
+  multiple of the chunk (`-m3 -l8192 -b100kb`); `-m3` with `-c` smaller than
+  `-l` (`-l512 -c128`); CDC (`-m1`/`-m2`) with `-c` and an `-l` above 512
+  (`-m1 -c256 -l768`). Until then, check such archives with `osrep -d` before
+  deleting the input.
+- **On the 32-bit Windows build, `-b2g` or larger cannot work** (the two-block
+  ring does not fit in the address space): 2.1.2 panicked, 2.2.0 exits 4 with
+  an unhelpful "Range check error". It will say out of memory.
+- **With the default options, -m3/-m4/-m5 write different bytes than the C++
+  1.0.7 on some inputs** (about one file in ten in a sample of real files):
+  the C++ orders matches with equal sources the way libstdc++'s `std::sort`
+  happens to, the ports keep them in order. Both decode each other's
+  archives; this release keeps 2.1.2's bytes, and 2.3.0 will follow the C++.
 
 ## [2.1.2] — 2026-10-09
 
