@@ -3,7 +3,7 @@ program hashtool;
   lado a lado:  hashtool <algo> <seed-hex|none> <archivo>
   Imprime el digest en hex minuscula por stdout. }
 {$MODE OBJFPC}{$H+}
-uses Widths, OutRaw, Hashes, HashesKeyed, AES, Vmac, SysUtils, Classes;
+uses OsText, Widths, OutRaw, Hashes, HashesKeyed, AES, Vmac, SysUtils, Classes;
 
 function ReadAll(const Path: AnsiString): TBytes;
 var fs: TFileStream;
@@ -21,17 +21,17 @@ var algo, seed, path: AnsiString; data, k: TBytes; vk: TVmac;
 begin
   { Sin archivo: que implementacion de NH quedo compilada. Es la prueba de que
     el IFDEF de vmac.pas tomo la rama que se cree en cada target. }
-  if (ParamCount = 1) and (ParamStr(1) = 'vmac-impl') then
+  if (ArgCount = 1) and (ArgStr(1) = 'vmac-impl') then
   begin
     WriteOut(VmacNhImpl + #10);
     Halt(0);
   end;
-  if ParamCount < 3 then
+  if ArgCount < 3 then
   begin
     WriteErr('usage: hashtool <algo> <seed-hex|none> <input-file>' + #10);
     Halt(2);
   end;
-  algo := ParamStr(1); seed := ParamStr(2); path := ParamStr(3);
+  algo := ArgStr(1); seed := ArgStr(2); path := ArgStr(3);
   data := ReadAll(path);
   if algo = 'md5' then
     WriteOut(ToHex(MD5(data)) + #10)

@@ -16,7 +16,7 @@ program decodetool;
   y nunca se borra uno que ya estaba. Ninguna excepcion llega a ser un runtime
   error: antes, no poder abrir el archivo o crear la salida terminaba en 217. }
 {$MODE OBJFPC}{$H+}
-uses SysUtils, Classes, Widths, OutRaw, Hashes, Container, Decompress, FutureLz, DupWrap, DecFault;
+uses OsText, SysUtils, Classes, Widths, OutRaw, Hashes, Container, Decompress, FutureLz, DupWrap, DecFault;
 
 function ReadAll(const Path: AnsiString): TBytes;
 var fs: TFileStream;
@@ -89,18 +89,18 @@ var
   ok, created, dupFlag: Boolean;
   arc: TBytes;
 begin
-  if ParamCount < 2 then
+  if ArgCount < 2 then
   begin
     WriteErr('usage: decodetool <archivo.osr> <salida> [--mem=N] [--vmblock=N] [--maxsave=N]' + #10);
     Halt(2);
   end;
-  arcPath := ParamStr(1);
-  outPath := ParamStr(2);
+  arcPath := ArgStr(1);
+  outPath := ArgStr(2);
   DefaultFutureLzOptions(opts);
   dupFlag := False;
-  for i := 3 to ParamCount do
+  for i := 3 to ArgCount do
   begin
-    a := ParamStr(i);
+    a := ArgStr(i);
     { --dup: si el archivo es -dup, el post-paso (dup::decode); si no, sigue
       por el camino de siempre, como la CLI }
     if a = '--dup' then begin dupFlag := True; Continue; end;

@@ -5,7 +5,13 @@ unit OutRaw;
   LF a CRLF, y la salida de `--version`/`--help` tiene que ser byte a byte la
   misma en Linux y en Windows, porque `tests/pascal_cli_conformance.sh` la
   diffea contra el binario Rust. Escribiendo al handle directo no hay capa que
-  traduzca nada. }
+  traduzca nada.
+
+  Es texto, y en Windows sigue la regla del std del Rust: a una consola va
+  convertido a UTF-16 con WriteConsoleW (si no, un nombre no ASCII sale
+  como mojibake en la pagina de la consola), a un pipe o un archivo los
+  bytes UTF-8 tal cual (src/ostext.pas). Los datos comprimidos NUNCA pasan
+  por aca: osrep.lpr los escribe con FileWrite. }
 
 {$MODE OBJFPC}{$H+}
 interface
@@ -18,7 +24,7 @@ function ErrHandle: THandle;
 
 implementation
 
-uses SysUtils;   { FileWrite, THandle }
+uses SysUtils{$IFDEF WINDOWS}, OsText{$ENDIF};   { FileWrite, THandle }
 
 { En Unix son los descriptores de siempre. En Windows la RTL expone los handles
   como VARIABLES, fijadas al arrancar, asi que no pueden ir en un `const`: hay
@@ -39,6 +45,11 @@ begin
 end;
 
 procedure WriteRaw(Handle: THandle; const S: AnsiString);
+{$IFDEF WINDOWS}
+begin
+  WriteText(Handle, S);   { pipe cerrado: no hay nada que hacer }
+end;
+{$ELSE}
 var
   written, total: LongInt;
 begin
@@ -50,6 +61,7 @@ begin
     Inc(total, written);
   end;
 end;
+{$ENDIF}
 
 procedure WriteOut(const S: AnsiString); begin WriteRaw(OutHandle, S); end;
 procedure WriteErr(const S: AnsiString); begin WriteRaw(ErrHandle, S); end;

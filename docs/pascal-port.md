@@ -421,12 +421,59 @@ diferencias.
 * **El directorio temporal de FPC no es el de Rust.** En Unix, `GetTempDir`
   mira `TEMP`, después `TMP` y recién después `TMPDIR`. `std::env::temp_dir()`
   mira **solo** `TMPDIR` (o `/tmp`). Con `TEMP` apuntando a otro lado, el spill
-  del Pascal iba a otro disco o fallaba donde el Rust andaba. En Windows los dos
-  usan `GetTempPath`. Y el temporal se crea **en exclusiva** (`O_EXCL` /
+  del Pascal iba a otro disco o fallaba donde el Rust andaba. En Windows
+  **tampoco** era el mismo (esto decía que los dos usaban `GetTempPath`, y no):
+  el `GetTempDir` de FPC mira `TEMP` antes que `TMP`, en ANSI, y nada más; el
+  Rust llama a `GetTempPathW` (`TMP`, `TEMP`, `USERPROFILE`, el directorio de
+  Windows). Ahora `spillfile.pas` llama a `GetTempPathW`. Y el temporal se crea **en exclusiva** (`O_EXCL` /
   `CREATE_NEW`) con nombre `<pid>-<nanos>-<contador>`, como el Rust. Con
   `fmCreate` y un nombre predecible, un symlink plantado se seguía y el
   contenido descomprimido quedaba fuera del temporal. Todo eso vive en
   `spillfile.pas`, con la cadena de `$IF` terminada en `$FATAL`.
+* **En Windows, la RTL de FPC 3.2.2 habla ANSI, no Unicode.** `ParamStr` sale
+  de `GetCommandLineA`; `GetEnvironmentVariable(String)` de
+  `GetEnvironmentStringsA` (¡en la página OEM!); y un `AnsiString` se convierte
+  a UTF-16 con la página con la que está *etiquetado*, que por defecto es la
+  ANSI (cp1252, cp866, cp936...). Las llamadas de archivo terminan bien en
+  `CreateFileW`/`DeleteFileW` (`rtl/objpas/sysutils/filutil.inc`: la versión
+  `RawByteString` hace `UnicodeString(nombre)`), pero con el nombre ya
+  destruido: `osrep.exe ñandú_файл_文件.bin` daba «Can't open ?and?_????_??.bin
+  for read» con los dos .exe, y el Rust lo comprimía. Ninguna suite lo veía:
+  todas usaban nombres ASCII, y en Linux todo son bytes. El arreglo vive en
+  `src/ostext.pas`, que va **primera** en el `uses` de cada programa:
+    * al inicializar, `SetMultiByteConversionCodePage(CP_UTF8)` (y la del
+      sistema de archivos de la RTL): desde ahí cada `AnsiString` nuevo queda
+      etiquetado UTF-8 y la RTL lo pasa a UTF-16 con `MultiByteToWideChar`
+      (`CP_UTF8`). La unidad no usa `SysUtils` para inicializarse antes que
+      ella: un string creado antes del cambio queda etiquetado ANSI para
+      siempre. Sin esto, además, asignar un `UTF8String` a un `AnsiString` lo
+      convertía a ANSI en silencio.
+    * los argumentos salen de `GetCommandLineW` partidos con el parser del std
+      del Rust (`parse_lp_cmd_line`), **no** con `CommandLineToArgvW`: argv[0]
+      no tiene escapes (una comilla siempre conmuta), y las barras antes de
+      una comilla, `""` dentro de comillas y la comilla final abierta tienen
+      reglas propias. Una matriz de 52 líneas de comandos armadas a mano
+      (pasadas por `CreateProcessW` tal cual) da el mismo argv que el Rust.
+    * el Rust usa `env::args()`, que **entra en pánico** con un argumento que
+      no es UTF-16 válido (un surrogate suelto, que sí llega por
+      `CreateProcessW`): exit 101 y `thread 'main' panicked at
+      library\std\src\env.rs:837:51: ...`. El Pascal escribe lo mismo.
+    * el entorno (`OSREP_SEED_HEX`, `OSREP_CDC_POLY`) se lee con
+      `GetEnvironmentVariableW`: la conversión «best fit» a ANSI puede volver
+      hexadecimal lo que no lo es (U+FF41, la «a» de ancho completo, sale `a`).
+      Y `OSREP_CDC_POLY` definida y vacía cuenta como definida
+      (`var_os().is_none()`), también en Linux.
+    * a una **consola** se escribe con `WriteConsoleW` (UTF-8 a UTF-16), como el
+      std del Rust; a un pipe o un archivo van los bytes UTF-8 sin tocar. Los
+      datos comprimidos no pasan por ese camino: van con `FileWrite`.
+  Lo que wine **no** prueba: la consola real (bajo wine las salidas de las
+  suites son pipes, así que `WriteConsoleW` no se ejercita) ni una página ANSI
+  distinta de la de wine. Eso se mira en la VM Win7.
+  Y un bug del oráculo que apareció en el camino y **no** se copia: en
+  `args.rs`, `-d` parte cada pedazo con `split_at(part.len().min(1))`, que no
+  es un borde de carácter si el pedazo empieza fuera de ASCII: `osrep -dñ`
+  hace panic en el Rust (exit 101, en Linux también); el Pascal da
+  «Invalid option: -dñ» (exit 2). Pendiente de arreglar en el Rust.
 * **El oráculo también tiene bugs, y el port no los copia.** En la revisión de
   la 4b, el Rust publicado (2.1.0) hizo **panic** (exit 101) donde el Pascal
   falla limpio: 933 archivos corruptos en una sola de las campañas. Las

@@ -493,6 +493,100 @@ case "$PA" in *linux*)
     ;;
 esac
 
+# Nombres fuera de ASCII. En Linux son bytes y pasan tal cual; en Windows el
+# Pascal leia la linea con ParamStr (ANSI) y abria con la pagina ANSI, asi
+# que "ñandú_файл_文件.bin" llegaba como "?and?_????_??.bin" y no se abria
+# (docs/pascal-port.md, trampas). Con OSREP_PASCAL_BIN apuntando a un wrapper
+# de wine esto prueba el .exe: los nombres cruzan unix -> UTF-16 -> el .exe
+# -> UTF-16 -> unix, y tienen que volver los mismos bytes.
+# Windows no admite comillas dobles en un nombre de archivo, asi que con
+# wine el nombre con comillas lleva solo la simple.
+WINE=0
+if [ "$(head -c 2 "$PA")" = '#!' ] && grep -q wine "$PA"; then WINE=1; fi
+say "nombres no ASCII: archivos, directorios, -index=, -temp=, -dup, pipes y errores"
+U="$TMP/uni"
+UD='dír каталог 目录 😀'
+NAMES=('ñandú é.bin' 'файл.bin' '文件.bin' '😀 emoji.bin')
+if [ "$WINE" = 1 ]; then NAMES+=("it's a b.bin"); else NAMES+=("it's \"q\" a b.bin"); fi
+head -c 300000 tests/corpus/mixed.bin > "$TMP/uni.in"
+for side in r p; do mkdir -p "$U/$side/$UD" "$U/$side/tmp ñ文"; done
+# $1=r|p, el resto los argumentos; corre en el directorio no ASCII, con la
+# salida en <side>.o/.e/.rc
+urun() {
+    local side=$1 bin; shift
+    if [ "$side" = r ]; then bin="$RSX"; else bin="$PAX"; fi
+    local rc=0
+    (cd "$U/$side/$UD" && "$bin" "$@") <"${UIN:-/dev/null}" >"$U/$side.o" 2>"$U/$side.e" || rc=$?
+    echo "$rc" > "$U/$side.rc"
+}
+# los dos lados con los mismos argumentos; mismo codigo, y si fallo, el
+# mismo stderr byte a byte (con exito trae tiempos)
+uboth() {
+    urun r "$@"; urun p "$@"
+    local rrc prc; rrc=$(cat "$U/r.rc"); prc=$(cat "$U/p.rc")
+    [ "$rrc" = "$prc" ] || fail "no ASCII [$*]: exit $prc en Pascal, $rrc en Rust: $(cat "$U/p.e")"
+    if [ "$rrc" != 0 ]; then
+        cmp -s "$U/r.e" "$U/p.e" || fail "no ASCII [$*]: stderr difiere: '$(cat "$U/p.e")' vs '$(cat "$U/r.e")'"
+    fi
+    cmp -s "$U/r.o" "$U/p.o" || fail "no ASCII [$*]: stdout difiere"
+}
+usame() {  # el mismo archivo en los dos lados
+    [ -e "$U/r/$UD/$1" ] || fail "no ASCII: el Rust no escribio '$1'"
+    [ -e "$U/p/$UD/$1" ] || fail "no ASCII: el Pascal no escribio '$1'"
+    cmp -s "$U/r/$UD/$1" "$U/p/$UD/$1" || fail "no ASCII: '$1' difiere"
+}
+for n in "${NAMES[@]}"; do
+    for side in r p; do cp "$TMP/uni.in" "$U/$side/$UD/$n"; done
+    # un nombre solo: el archivo sale al lado, con .osr; y vuelve
+    uboth --seed=7 "$n"; usame "$n.osr"
+    uboth --verify "$n.osr"
+    cmp -s "$U/r.e" "$U/p.e" || fail "no ASCII: --verify '$n.osr' no dice lo mismo: '$(cat "$U/p.e")'"
+    uboth -i "$n.osr"
+    cmp -s "$U/r.e" "$U/p.e" || fail "no ASCII: -i '$n.osr' no dice lo mismo"
+    for side in r p; do mv "$U/$side/$UD/$n" "$U/$side/$UD/$n.orig"; done
+    uboth -d "$n.osr"; usame "$n"
+    cmp -s "$TMP/uni.in" "$U/p/$UD/$n" || fail "no ASCII: -d '$n.osr' no da la entrada"
+    # -dup, con los temporales del cuerpo
+    uboth --seed=7 -dup "$n" "dup $n.osr"; usame "dup $n.osr"
+    uboth -d "dup $n.osr" "dup $n.out"; usame "dup $n.out"
+    cmp -s "$TMP/uni.in" "$U/p/$UD/dup $n.out" || fail "no ASCII: -dup '$n' no vuelve"
+    # -index= en los dos sentidos
+    uboth --seed=7 --format=v4 -m3f "-index=índice $n.ix" "$n" "v4 $n.osr"
+    usame "v4 $n.osr"; usame "índice $n.ix"
+    uboth -d "-index=índice $n.ix" "v4 $n.osr" "v4 $n.out"; usame "v4 $n.out"
+    cmp -s "$TMP/uni.in" "$U/p/$UD/v4 $n.out" || fail "no ASCII: -index= '$n' no vuelve"
+    # -temp=: el spool de stdin con nombre no ASCII, en un directorio no ASCII
+    UIN="$TMP/uni.in" uboth --seed=7 "-temp=../tmp ñ文/spool $n" - "st $n.osr"; usame "st $n.osr"
+    cmp -s "$U/r/tmp ñ文/spool $n" "$U/p/tmp ñ文/spool $n" || fail "no ASCII: el spool de -temp= difiere"
+    # stdin a stdout: los bytes del archivo no pasan por ninguna conversion
+    UIN="$U/p/$UD/$n" uboth --seed=7 - -
+    UIN="$U/p/$UD/$n.osr" uboth -d - -
+    cmp -s "$TMP/uni.in" "$U/p.o" || fail "no ASCII: -d - - no da la entrada"
+    # los errores que nombran el archivo: el texto byte a byte
+    uboth --seed=7 "falta $n"
+    uboth -d "falta $n.osr"
+    uboth -i "falta $n"
+    uboth --verify "falta $n"
+    uboth --seed=7 "$n" "no hay dir ñ/$n.osr"
+    uboth --seed=7 --format=v4 -m3f "-index=no hay dir ñ/$n.ix" "$n" "x.osr"
+    uboth "$n" "ñ $n" "文 $n"
+    uboth "-ñ$n"
+    pass=$((pass + 1))
+done
+# los mismos nombres de los dos lados, ni uno de mas
+( cd "$U/r/$UD" && ls -A ) > "$U/r.ls"; ( cd "$U/p/$UD" && ls -A ) > "$U/p.ls"
+cmp -s "$U/r.ls" "$U/p.ls" || fail "no ASCII: los directorios no tienen los mismos nombres: $(diff "$U/r.ls" "$U/p.ls" | head -5)"
+pass=$((pass + 1))
+# $TMPDIR no ASCII: solo nativo (bajo wine el temporal sale del registro, no
+# de $TMPDIR; el .exe se prueba con TMP/TEMP desde adentro de Windows)
+if [ "$WINE" = 0 ]; then
+    for t in "$U/r/tmp ñ文" "$U/no existe ñ"; do
+        TMPDIR="$t" UIN="$U/p/$UD/${NAMES[0]}.osr" uboth -d - -
+        TMPDIR="$t" UIN="$TMP/uni.in" uboth --seed=7 - "tmpdir.osr"
+    done
+    pass=$((pass + 1))
+fi
+
 if [ "${OSREP_PASCAL_FULL:-0}" = "1" ]; then
     say "la puerta completa: rust_cli_conformance.sh sobre el Pascal"
     OSREP_PORT_BIN="$PA" bash tests/rust_cli_conformance.sh || fail "rust_cli_conformance.sh sobre el Pascal"
