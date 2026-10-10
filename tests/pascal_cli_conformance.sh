@@ -457,6 +457,77 @@ cd "$ROOT"
 say "$dpass comparaciones de stderr y codigo"
 pass=$((pass + dpass))
 
+say "los porcentajes: el mismo texto que el Rust, tambien en los empates"
+# El Rust imprime `format!("{:.2}")` de un f64: el decimal EXACTO del Double,
+# redondeado, y un empate exacto va al par. 861*100/12000 es 7.175 en los
+# racionales pero 7.17499999999999982... como Double, y sale "7.17"; el
+# FloatToStrF de FPC daba "7.18" (y el .exe de 32 bits, que calculaba en el x87
+# con precision Extended, a veces otro Double). Estos tamanos de text.bin estan
+# elegidos (barridos con el Rust) para que algun porcentaje caiga en un empate
+# racional: c = la linea final al comprimir, d = al descomprimir, i = la de -i,
+# s = el "% of file" de -i. La linea final trae segundos, que no se comparan.
+PS="$TMP/pct"; mkdir "$PS"
+head -c 16000 tests/corpus/text.bin > "$PS/src"
+pct_line() { tr '\r' '\n' < "$1" | grep -a ' -> ' | sed -E 's/  [0-9]+\.[0-9]{3} sec$//'; }
+is_tie() { [ "$2" -gt 0 ] && [ $(( (20000 * $1) % $2 )) -eq 0 ] && [ $(( (20000 * $1 / $2) % 2 )) -eq 1 ]; }
+ties=0
+while read -r n opts; do
+    [ -n "$n" ] || continue
+    head -c "$n" "$PS/src" > "$PS/in"
+    for w in r p; do
+        if [ "$w" = r ]; then bin="$RS"; else bin="$PA"; fi
+        rm -f "$PS/$w.osr" "$PS/$w.out"
+        "$bin" --seed=7 $opts "$PS/in" "$PS/$w.osr" >/dev/null 2>"$PS/$w.ce" \
+            || fail "pct $n [$opts]: $w no comprimio"
+        "$bin" -d "$PS/$w.osr" "$PS/$w.out" >/dev/null 2>"$PS/$w.de" \
+            || fail "pct $n [$opts]: $w no descomprimio"
+        "$bin" -i "$PS/$w.osr" >/dev/null 2>"$PS/$w.ie" || fail "pct $n [$opts]: -i de $w fallo"
+    done
+    cmp -s "$PS/r.osr" "$PS/p.osr" || fail "pct $n [$opts]: los archivos difieren"
+    cmp -s "$PS/in" "$PS/p.out" || fail "pct $n [$opts]: la vuelta no da la entrada"
+    for e in ce de; do
+        r=$(pct_line "$PS/r.$e"); p=$(pct_line "$PS/p.$e")
+        [ -n "$r" ] || fail "pct $n [$opts]: el Rust no imprimio la linea final ($e)"
+        [ "$r" = "$p" ] || fail "pct $n [$opts]: '$p' en Pascal, '$r' en Rust"
+    done
+    cmp -s "$PS/r.ie" "$PS/p.ie" || fail "pct $n [$opts]: -i difiere: '$(cat "$PS/p.ie")' vs '$(cat "$PS/r.ie")'"
+    # que el caso siga siendo un empate: si el encoder cambia los tamanos, la
+    # seccion pasaria sin probar nada
+    c=$(stat -c%s "$PS/r.osr")
+    s=$(tr -d ',' < "$PS/r.ie" | sed -n 's/.* = \([0-9]*\) bytes.*/\1/p')
+    if is_tie "$c" "$n" || is_tie "$n" "$c" || { [ -n "$s" ] && is_tie "$s" "$c"; }; then
+        ties=$((ties + 1))
+    fi
+    pass=$((pass + 1))
+done <<'PCT'
+256 -m3 -l0
+768 -m3 -l0
+1280 -m3 -l0
+4000 -m3 -l0
+5920 -m3 -l0
+12000 -m3 -l0
+136 -m3 -l0
+648 -m3 -l0
+1699 -m3 -l0
+1827 -m3 -l0
+1891 -m3 -l0
+4067 -m3 -l0
+5859 -m3 -l0
+6179 -m3 -l0
+9315 -m3 -l0
+10659 -m3 -l0
+14819 -m3 -l0
+256 --format=v4 -m3
+1280 --format=v4 -m3
+3840 --format=v4 -m3
+6400 --format=v4 -m3
+9472 --format=v4 -m3
+152 --format=v4 -m3
+2184 --format=v4 -m3
+PCT
+[ "$ties" -ge 20 ] || fail "solo $ties de los casos de porcentajes son empates: rebarrer los tamanos"
+say "$ties empates de porcentaje, el mismo texto"
+
 say "-delete borra la entrada solo si todo salio bien"
 cp "$IN" "$TMP/del.bin"
 "$PA" --seed=7 -delete "$TMP/del.bin" "$TMP/del.osr" >/dev/null 2>&1 || fail "-delete: la compresion fallo"

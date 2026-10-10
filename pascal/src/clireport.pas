@@ -33,8 +33,11 @@ type
 function Show3(N: QWord): AnsiString;
 { showMem (Common.cpp:268): la unidad mas grande que divide }
 function ShowMem(Mem: QWord; AddB: Boolean): AnsiString;
-{ un float con N decimales y punto, sin importar la configuracion regional }
+{ un float con N decimales y punto, byte por byte como el format! del Rust
+  con precision N: decimal exacto del Double, empates al par (fixedtext.pas) }
 function Fixed(X: Double; Decimals: LongInt): AnsiString;
+{ `num as f64 * 100.0 / den as f64` del Rust, y 0 si den es 0 }
+function PercentOf(Num, Den: QWord): Double;
 
 procedure BarInit(out B: TBar; Enabled: Boolean);
 procedure BarTick(var B: TBar; Done, Total: QWord);
@@ -48,15 +51,12 @@ procedure PrintInfo(const Prefix: AnsiString; MaxRam: QWord; HasMaximumSave: Boo
 
 implementation
 
-uses OutRaw;
+uses OutRaw, FixedText;
 
 const
   KB = QWord(1024);
   MB = QWord(1024) * 1024;
   GB = QWord(1024) * 1024 * 1024;
-
-var
-  Dot: TFormatSettings;
 
 function Show3(N: QWord): AnsiString;
 var digits: AnsiString; i, len: LongInt;
@@ -84,7 +84,12 @@ end;
 
 function Fixed(X: Double; Decimals: LongInt): AnsiString;
 begin
-  Result := FloatToStrF(X, ffFixed, 18, Decimals, Dot);
+  Result := FixedStr(X, Decimals);
+end;
+
+function PercentOf(Num, Den: QWord): Double;
+begin
+  if Den > 0 then Result := Percent(Num, Den) else Result := 0;
 end;
 
 procedure BarInit(out B: TBar; Enabled: Boolean);
@@ -129,9 +134,9 @@ begin
   S.Last := now_;
   if S.Last = 0 then S.Last := 1;
   S.LastDone := Done;
-  secs := (now_ - S.Started) / 1000.0;
+  secs := MsToSecs(now_ - S.Started);
   if Total > 0 then percents := Done * 100 div Total else percents := 100;
-  if secs > 0 then mbps := Done / secs / MB else mbps := 0;
+  if secs > 0 then mbps := MbPerSec(Done, secs) else mbps := 0;
   WriteErr(#13 + IntToStr(percents) + '%: ' + Show3(Done) + ' of ' + Show3(Total) +
            ': real ' + Fixed(mbps, 0) + ' mb/s (' + Fixed(secs, 3) + ' sec)');
 end;
@@ -141,8 +146,8 @@ procedure StatsFinish(var S: TStats; Read, Written: QWord);
 var ratio, secs: Double;
 begin
   if not S.Enabled then Exit;
-  if Read > 0 then ratio := Written * 100.0 / Read else ratio := 0;
-  secs := (GetTickCount64 - S.Started) / 1000.0;
+  ratio := PercentOf(Written, Read);
+  secs := MsToSecs(GetTickCount64 - S.Started);
   WriteErr(#13 + Show3(Read) + ' -> ' + Show3(Written) + ': ' + Fixed(ratio, 2) + '%.  ' +
            Fixed(secs, 3) + ' sec' + #10);
 end;
@@ -153,14 +158,10 @@ var withMs: AnsiString; perMatch: QWord; pct: Double;
 begin
   if HasMaximumSave then withMs := ' with -m' + ShowMem(MaximumSave, False) else withMs := '';
   if RoundMatches then perMatch := 3 * 4 else perMatch := 4 * 4;
-  if FileSize > 0 then pct := StatSize * 100.0 / FileSize else pct := 0;
+  pct := PercentOf(StatSize, FileSize);
   WriteErr(Prefix + 'Decompression memory' + withMs + ' is ' + IntToStr((MaxRam + MB - 1) div MB) +
            ' mb.  ' + Show3(StatSize div perMatch) + ' matches = ' + Show3(StatSize) +
            ' bytes = ' + Fixed(pct, 2) + '% of file');
 end;
 
-initialization
-  Dot := DefaultFormatSettings;
-  Dot.DecimalSeparator := '.';
-  Dot.ThousandSeparator := #0;
 end.
