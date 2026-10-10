@@ -64,7 +64,15 @@ impl SliceHash {
     pub fn new(filesize: u64, l: usize, min_match: usize, io_accelerator: i32) -> SliceHash {
         let slices_in_block = (32 / 4) as usize; // sizeof(entry)*CHAR_BIT/BITS
         let slice_size = l / slices_in_block;
-        let check_slices = (min_match as i64 - l as i64) / slice_size as i64 - io_accelerator as i64;
+        // With L below `slices_in_block` the slice is empty and the C++
+        // divides by zero here (SIGFPE). The CLI refuses every such L before
+        // it gets this far (`small_window` in `modes.rs`), so this only keeps
+        // a direct caller from panicking: no slice, no filter.
+        let check_slices = if slice_size == 0 {
+            0
+        } else {
+            (min_match as i64 - l as i64) / slice_size as i64 - io_accelerator as i64
+        };
         let memreq = if io_accelerator < 0 || check_slices <= 0 {
             0
         } else {
@@ -76,9 +84,11 @@ impl SliceHash {
         // chunk index). The C++ reads one `entry` past its `BigAlloc` there,
         // which lands in the allocation's page padding -- zero on the fresh
         // mmap this size produces -- so the port keeps that entry, zeroed.
+        // A second one covers a non-power-of-two `-c`, where the last chunk
+        // stored can be `filesize / L` itself (see `HashTable::new`).
         SliceHash {
             active: memreq != 0,
-            h: vec![0u32; memreq as usize + 1],
+            h: vec![0u32; memreq as usize + 2],
             l,
             slices_in_block,
             slice_size,
@@ -119,6 +129,23 @@ impl SliceHash {
     /// `SliceHash::check` (`hash_table.cpp:89-111`): true if the match *may*
     /// be large enough. `buf` is the block's containing buffer and `buf_off`
     /// the offset of the block inside it, matching the C++'s pointer arithmetic.
+    ///
+    /// `check_slices` is `(MIN_MATCH - L) / slice_size - 1`, and for `-m5`
+    /// (`L = rounddown_pow2(MIN_MATCH + 1) / 2`) that reaches 22 when
+    /// `MIN_MATCH` is just under a power of two (`-l1000`, `-l2000`), not
+    /// the 8 slices one `entry` holds. The walk then leaves the neighbouring
+    /// chunks: forward up to `3.9 * L` past the candidate, backward up to
+    /// `2.75 * L` before it, while the guard below only promises `2 * L` and
+    /// `L`. Inside the ring that is just other bytes -- the C++ reads the same
+    /// ones, and the archives agree -- but near the ring's ends the C++ reads
+    /// outside its allocation and the port used to panic (index out of
+    /// range). A slice that does not lie inside `buf` is now a mismatch:
+    /// that is what the C++ sees almost always (its stray bytes hash to the
+    /// stored nibble with probability 1/16), it is the output 1.0.7 produced
+    /// on every such input tried, and a false here only drops a candidate,
+    /// never a byte. The nibble shifts past the 8th slice are also the C++'s:
+    /// x86 masks a 32-bit shift count to 5 bits, so they are written as
+    /// wrapping shifts instead of relying on release-mode overflow.
     pub fn check(&self, chunk: usize, buf: &[u8], buf_off: usize, i: usize, block_size: usize) -> bool {
         if !self.active {
             return true;
@@ -126,6 +153,7 @@ impl SliceHash {
         if i < self.l || block_size - i < 2 * self.l {
             return true;
         }
+        let ss = self.slice_size;
         // The C++ indexes `h[chunk+1]`/`h[chunk-1]` -- the slices *around* the
         // candidate, in the neighbouring chunks.
         let p = buf_off + i; // offset of the candidate position in `buf`
@@ -135,7 +163,10 @@ impl SliceHash {
             if j as i64 == self.check_slices {
                 return true;
             }
-            if (checksum >> (j * 4)) & 0xF != Self::hash(buf, p + self.l + j * self.slice_size, self.slice_size) {
+            let slice = p + self.l + j * ss;
+            if slice + ss > buf.len()
+                || checksum.wrapping_shr((j * 4) as u32) & 0xF != Self::hash(buf, slice, ss)
+            {
                 break;
             }
             j += 1;
@@ -146,10 +177,9 @@ impl SliceHash {
             if (j + k) as i64 == self.check_slices {
                 return true;
             }
-            let slice = p - (k + 1) * self.slice_size;
-            if (checksum >> ((self.slices_in_block - (k + 1)) * 4)) & 0xF
-                != Self::hash(buf, slice, self.slice_size)
-            {
+            let back = (k + 1) * ss;
+            let shift = self.slices_in_block.wrapping_sub(k + 1).wrapping_mul(4) as u32;
+            if back > p || checksum.wrapping_shr(shift) & 0xF != Self::hash(buf, p - back, ss) {
                 break;
             }
             k += 1;
@@ -216,6 +246,20 @@ impl HashTable {
         let hash_mask = !chunknum_mask;
         let hashsize = roundup_to_power_of_two(min_hash_size(total_chunks));
         let slicehash = SliceHash::new(filesize, l, min_match, io_accelerator);
+        // One slot past the last whole chunk in `hasharr` and `digestarr`.
+        // When `L` does not divide the block size (`-l`/`-c` not a power of
+        // two, which only earns a warning), blocks after the first start
+        // mid-chunk and `add_hash`'s `(block_start + i) / L` reaches
+        // `total_chunks` itself on the file's last chunk: the C++ writes one
+        // `StoredHashValue` past its `BigAlloc` there and the port panicked
+        // (index out of range). Nothing can store a chunk beyond that one --
+        // the scan stops `2 * L` before the block's end and overshoots its
+        // chunk by at most three bytes -- and the extra slots are only ever
+        // read back after `add_hash` wrote them (`hasharr`) or as a zero
+        // digest that matches nothing (`digestarr`), so archives that did
+        // not panic are unchanged. `SliceHash::h` gets the same one extra for
+        // its `h[chunk + 1]`.
+        let slots = total_chunks as usize + 1;
         HashTable {
             round_matches,
             compare_digests,
@@ -231,7 +275,7 @@ impl HashTable {
             hasharr: if content_defined_chunking {
                 Vec::new()
             } else {
-                vec![0u32; total_chunks as usize]
+                vec![0u32; slots]
             },
             curchunk: 0,
             startarr: if content_defined_chunking {
@@ -241,7 +285,7 @@ impl HashTable {
             },
             slicehash,
             digestarr: if compare_digests {
-                vec![[0u8; DIGEST_SIZE]; total_chunks as usize]
+                vec![[0u8; DIGEST_SIZE]; slots]
             } else {
                 Vec::new()
             },

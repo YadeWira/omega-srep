@@ -222,7 +222,17 @@ pub fn compress<R: ReadSeek>(
             pairs.clear();
             while i < last_i {
                 for _ in 0..X {
-                    hash1.update(dict[buf_off + i], dict[buf_off + i + l]);
+                    // The batch runs in steps of X, so when X does not divide
+                    // `L` (`-l`/`-c` not a power of two) it overshoots
+                    // `next_chunk` by up to three bytes and the incoming byte
+                    // lies up to three bytes past the block. That is the next
+                    // ring slot -- except for a full block in the ring's last
+                    // slot, where the C++ reads past its allocation and the
+                    // port panicked (index out of range). Past the ring the
+                    // byte reads as zero: what a page-padded allocation holds
+                    // there, and what the Pascal port's ring tail holds.
+                    let incoming = dict.get(buf_off + i + l).copied().unwrap_or(0);
+                    hash1.update(dict[buf_off + i], incoming);
                     i += 1;
                     // prefetch_and_store_match (compress.cpp:28-35): only
                     // positions outside the previous match and before the

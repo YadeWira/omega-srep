@@ -349,6 +349,90 @@ for n in 0 8; do
     pass=$((pass + 1))
 done
 
+say "an -l that leaves the match finder an empty slice is a command-line error, not a panic"
+# Without -c, -l also sets the chunk L (srep.cpp:466-470): L = -l for -m1..-m4,
+# and for -m5 the power of two below -l+1, halved -- so -l8..-l14 give -m5 an
+# L of 4. Any L below 8 is the same division by zero as -c1..-c7 above: the
+# C++ dies with SIGFPE (exit 136) and the port panicked (exit 101, 2.1.2) or,
+# in Pascal, printed "Division by zero" (exit 4). Only the port is checked:
+# the oracle still crashes here.
+small_l_case() {
+    local m="$1" n="$2" least="$3"
+    rc=0; "$RS" --seed=7 "$m" "-l$n" tests/corpus/text.bin "$TMP/sl.osr" >"$TMP/sl.out" 2>"$TMP/sl.err" || rc=$?
+    [ "$rc" -eq 2 ] || fail "$m -l$n exited $rc, expected 2 (cmdline)"
+    local want="  ERROR! Invalid option: -l$n -- with ${m:0:3} the match length must be 0 (default) or at least $least bytes"
+    grep -qxF -- "$want" "$TMP/sl.err" || fail "$m -l$n: stderr is not '$want': $(cat "$TMP/sl.err")"
+    [ ! -s "$TMP/sl.osr" ] || fail "$m -l$n left an archive behind"
+    pass=$((pass + 1))
+}
+rm -f "$TMP/sl.osr"
+for n in 1 4 7; do
+    for m in -m1 -m2 -m3 -m4 -m3o -m4f; do small_l_case "$m" "$n" 8; done
+done
+for n in 1 4 8 12 14; do
+    for m in -m5 -m5o -m5f; do small_l_case "$m" "$n" 15; done
+done
+# The smallest -l each method takes, -m0 (no match finder) with any -l, and an
+# explicit -c (which sets L itself) must all still work and round-trip.
+for args in "-m4 -l8" "-m2 -l8" "-m5 -l15" "-m5o -l15" "-m0 -d4mb -l4" "-m5 -c8 -l4" "-m4 -c16 -l4"; do
+    rc=0; "$RS" --seed=7 $args tests/corpus/text.bin "$TMP/sl.osr" >/dev/null 2>"$TMP/sl.err" || rc=$?
+    [ "$rc" -eq 0 ] || fail "$args exited $rc, expected 0: $(tail -1 "$TMP/sl.err")"
+    "$RS" -d "$TMP/sl.osr" "$TMP/sl.dec" >/dev/null 2>&1 || fail "$args: archive does not decode"
+    cmp -s tests/corpus/text.bin "$TMP/sl.dec" || fail "$args: round trip differs"
+    rm -f "$TMP/sl.osr" "$TMP/sl.dec"
+    pass=$((pass + 1))
+done
+
+say "unusual -l/-c values keep the match finder inside its buffers"
+# Three reads that left their arrays in 2.1.2 (exit 101; the C++ reads or
+# writes outside its allocations instead, and the Pascal did the same without
+# noticing):
+#   * -m5 with an -l just under a power of two (-l1000 -> L 256): the slice
+#     check walks 22 slices, not the 8 one entry holds, so near the ends of the
+#     ring it hashed bytes outside it. Such a slice now counts as a mismatch.
+#   * -l/-c not a power of two (-l17 -m4, -c17 -m5): the last chunk number
+#     reached the end of hasharr, and the 4-byte batch read up to 3 bytes past
+#     a full block in the ring's last slot. Both arrays now have room.
+# The archives are pinned. The -m5 ones are also what 1.0.7 writes on the
+# x86-64 reference machine; the others differ from 1.0.7 like every archive
+# with a non-power-of-two L already did (the C++ warns that such an L "may be
+# corrupt").
+python3 - "$TMP" <<'PY'
+import os, random, sys
+# A 4 KiB unit repeated, with a short random run after ~5% of the copies:
+# periodic enough that the slice check passes slice after slice, broken
+# enough that candidates are probed up to the end of every block.
+r = random.Random(20261009)
+unit = bytes(r.randrange(256) for _ in range(4096))
+out = bytearray()
+while len(out) < 2 << 20:
+    out += unit
+    if r.random() < 0.05:
+        out += bytes(r.randrange(256) for _ in range(r.randint(1, 40)))
+open(os.path.join(sys.argv[1], "noisy2m.bin"), "wb").write(out[:2 << 20])
+PY
+while read -r want input args; do
+    rc=0; "$RS" --format=v4 --seed=7 $args "$input" "$TMP/ob.osr" >/dev/null 2>"$TMP/ob.err" || rc=$?
+    # -l17 with -m4 also earns the power-of-two warning, which is exit 1.
+    [ "$rc" -le 1 ] || fail "$args on $input exited $rc: $(grep -a -m1 -E 'panicked|ERROR' "$TMP/ob.err")"
+    got="$(md5sum < "$TMP/ob.osr" | cut -c1-32)"
+    [ "$got" = "$want" ] || fail "$args on $input: archive md5 $got, expected $want"
+    "$RS" -d "$TMP/ob.osr" "$TMP/ob.dec" >/dev/null 2>&1 || fail "$args on $input: archive does not decode"
+    cmp -s "$input" "$TMP/ob.dec" || fail "$args on $input: round trip differs"
+    rm -f "$TMP/ob.osr" "$TMP/ob.dec"
+    pass=$((pass + 1))
+done <<EOF
+2f2b286c8c0f85a7d06869935a93a6b3 tests/corpus/tiny.bin -m5 -l1000
+a1cf9353f86601ddb899f36aaf2353da tests/corpus/tiny.bin -m5o -l1000
+720fe49b06f40483a1389c5fb660318b tests/corpus/tiny.bin -m5f -l1000
+b4ed8daf9deaefbec2cbd9f18122e52d $TMP/noisy2m.bin -m5 -l1000 -b1mb
+e3a9a4e95ed57711cc8013d74db62746 $TMP/noisy2m.bin -m5o -l1000 -b1mb
+46b4ce95087359a552ee65b038e2ad85 $TMP/noisy2m.bin -m5f -l2000 -b1mb
+e96ad08392be4215b8e712cb5d43d581 tests/corpus/text.bin -m4 -l17 -b1mb
+e96ad08392be4215b8e712cb5d43d581 tests/corpus/text.bin -m5 -c17 -b1mb
+f6c1579ce5fac9a5c6fd42b29ddb9d6e tests/corpus/random.bin -m4 -l9
+EOF
+
 say "the options the port accepts and does not act on really are inert"
 # The man page and --help now say outright that -tN, -aN, -mmap/-nommap,
 # -ia-/-ia+, -slp and -pc have no effect here. That claim has to be checked,

@@ -11,6 +11,40 @@ what happened in 2.0.0.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Unusual `-l`/`-c` values crashed the compressor with a Rust panic (exit
+  101).** Found by a review of the Pascal port, which had the same bugs
+  without crashing. Every command line that used to work writes byte-identical
+  archives (checked before and after over ~13,000 combinations of input,
+  method, `-l`, `-c` and `-b`); the format is unchanged.
+  - **`-l` small enough to leave an empty slice.** Without `-c`, `-l` also sets
+    the match finder's chunk `L`: `-l` itself for `-m1`..`-m4`, half the power
+    of two below `-l`+1 for `-m5`. The slice filter divides by `L / 8`, so `L`
+    under 8 was a division by zero: `-l1`..`-l7` with `-m1`..`-m4` and
+    `-l1`..`-l14` with `-m5` panicked ("attempt to divide by zero"). The C++
+    1.0.7 dies with SIGFPE. They are now refused up front like `-c1`..`-c7`,
+    exit 2: "Invalid option: -l12 -- with -m5 the match length must be 0
+    (default) or at least 15 bytes". `-m0` builds no match finder and still
+    takes any `-l`.
+  - **`-m5` with an `-l` just under a power of two** (`-l1000`, `-l2000`,
+    `-l1022`). Its slice check then walks up to 22 slices around a candidate,
+    not the 8 its table holds, and near either end of the input ring it read
+    outside it: "range end index 16777230 out of range for slice of length
+    16777216" on a 16 MiB input, or a negative start on a 1 KiB one. The C++
+    reads outside its allocation there. A slice outside the ring now counts
+    as a mismatch, and the archives that gives are the ones 1.0.7 wrote in
+    every such case tried.
+  - **`-l`/`-c` not a power of two with `-m3`/`-m4`/`-m5`** (`-m4 -l17`,
+    `-m5 -c17`, on multi-block inputs). Blocks after the first then start in
+    the middle of a chunk, and the last chunk of the file could index one
+    past the hash table's `hasharr`, while the 4-byte scan read up to 3 bytes
+    past a full block in the ring's last slot. Both arrays now have room for
+    it, the bytes past the ring read as zero. With `-m3`/`-m4` such an `L`
+    still gets the "-l parameter should be power of 2" warning (exit 1), and
+    it is meant: `-m3` with one can write an archive that does not decode,
+    in 1.0.7 as well.
+
 ## [2.1.2] — 2026-10-09
 
 ### Fixed

@@ -378,9 +378,11 @@ begin
     entrega hasta que se escriben, que es exactamente el vec! del Rust. Crecer
     duplicando copiaba y tenia el viejo y el nuevo a la vez (1061 MB contra
     407 en -m0 sobre 256 MiB). Si el mapeo no se puede, crece como antes:
-    RingEnsure no hace nada sobre un anillo que ya mide ringSize. }
-  ZTryNew(Pointer(dict), ringSize, 1);
-  RingEnsure(dict, bufsize, ringSize);
+    RingEnsure no hace nada sobre un anillo que ya mide ringSize + RING_TAIL.
+    Esos RING_TAIL bytes de mas van en cero y nunca se escriben: ver
+    hashtable.pas. }
+  ZTryNew(Pointer(dict), ringSize + RING_TAIL, 1);
+  RingEnsure(dict, bufsize + RING_TAIL, ringSize + RING_TAIL);
 
   bufOffset := 0;
   nextPos := 0;
@@ -393,7 +395,7 @@ begin
   begin
     { lectura adelantada: llena la ranura siguiente }
     nextOffset := (bufOffset + bufsize) mod ringSize;
-    RingEnsure(dict, nextOffset + bufsize, ringSize);
+    RingEnsure(dict, nextOffset + bufsize + RING_TAIL, ringSize + RING_TAIL);
     nextFilled := ReadBlockAt(Input, nextPos, dict, nextOffset, bufsize);
 
     SetLength(header, BLOCK_HEADER_SIZE + storedHashSize);
