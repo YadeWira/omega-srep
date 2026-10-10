@@ -601,9 +601,13 @@ begin
           else
           begin
             if QWord(Length(cmpBuf)) < clen then SetLength(cmpBuf, clen);
-            fb.Seek(Int64(uniqueOff[uidx]), soBeginning);
-            ReadExact(fb, cmpBuf[0], clen);
-            fb.Seek(Int64(bodyPos), soBeginning);
+            try
+              fb.Seek(Int64(uniqueOff[uidx]), soBeginning);
+              ReadExact(fb, cmpBuf[0], clen);
+              fb.Seek(Int64(bodyPos), soBeginning);
+            except
+              on X: Exception do raise EDedup.CreateCode(DEDUP_ERR_INVAL);
+            end;
             if not CompareMem(@cmpBuf[0], @work[chunks.W[ci].S], clen) then isDup := False;
           end;
         end;
@@ -622,7 +626,13 @@ begin
           SetLength(uniqueLen, Length(uniqueLen) + 1);
           uniqueLen[High(uniqueLen)] := DWord(clen);
         end;
-        WriteAll(fb, work[chunks.W[ci].S], clen);
+        { write_all(..).map_err(|_| DEDUP_ERR_INVAL), como el Rust: con el
+          disco lleno es "dedup failed, rc=8" }
+        try
+          WriteAll(fb, work[chunks.W[ci].S], clen);
+        except
+          on X: Exception do raise EDedup.CreateCode(DEDUP_ERR_INVAL);
+        end;
         bodyPos := bodyPos + clen;
         Inc(uniqueCount);
         Inc(ci);
@@ -685,6 +695,17 @@ begin
   end;
 end;
 
+{ write_all(..).map_err(|_| DEDUP_ERR_INVAL): un disco lleno al armar la
+  salida es "dedup failed, rc=8" en el Rust, no un error de E/S suelto }
+procedure WriteOrInval(S: TStream; const Buf; N: LongInt);
+begin
+  try
+    S.WriteBuffer(Buf, N);
+  except
+    on X: Exception do raise EDedup.CreateCode(DEDUP_ERR_INVAL);
+  end;
+end;
+
 procedure DecodeStreaming(const Meta: TBytes; const BodyPath, OutPath: AnsiString);
 var
   recs: TRecs;
@@ -721,7 +742,7 @@ begin
           if take > QWord(Length(ioBuf)) then take := Length(ioBuf);
           if QWord(fb.Read(ioBuf[0], LongInt(take))) <> take then
             raise EDedup.CreateCode(DEDUP_ERR_TRUNCATED);
-          fo.WriteBuffer(ioBuf[0], LongInt(take));
+          WriteOrInval(fo, ioBuf[0], LongInt(take));
           Dec(need, take);
         end;
         if nslots >= QWord(Length(slotOff)) then
@@ -750,7 +771,7 @@ begin
           if QWord(fo.Read(ioBuf[0], LongInt(take))) <> take then
             raise EDedup.CreateCode(DEDUP_ERR_TRUNCATED);
           fo.Seek(Int64(writeAt), soBeginning);
-          fo.WriteBuffer(ioBuf[0], LongInt(take));
+          WriteOrInval(fo, ioBuf[0], LongInt(take));
           readAt := readAt + take;
           writeAt := writeAt + take;
           Dec(remaining, take);

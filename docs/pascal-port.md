@@ -206,10 +206,46 @@ round-trip**.
 | 5c | segunda pasada: Index-LZ (v4) y Future-LZ (v3) | **hecha** junto con la 5d: la segunda pasada de Rust arma los tres contenedores |
 | 5d | writer v5 | **hecha** (2026-10-09): 376 archivos byte-idénticos en Linux, i386 y x64 — toda la matriz de `encode_conformance.sh` más v5 con `-hash-`, siphash, sha512, `-b1mb` y `-d`, contra el Rust (308) y contra el C++ directo en v1–v4 (68). Win7 real: 108/108 en i386 y en x64. Velocidad, sin gate (como en Rust): x64 nativo 2,7–2,9× más lento que Rust en `-m3`/`-m4`, igual en `-m5`, más rápido en `-m0`/`-m1`; i386 1,5–1,7× más lento que x64 |
 | **6** | `-dup` y `--verify` | **hecha** (2026-10-09): `tests/pascal_dup_conformance.sh`, 797 comprobaciones en Linux, i386 y x64 — archivos `-dup` byte-idénticos al Rust (v5, con la meta adentro) y al C++ (v4, con el trailer ODUP) que vuelven a la entrada por el decoder del Pascal, y `--verify` con **la misma salida y el mismo código** que `osrep --verify` en archivos sanos, v1–v4, lo que no es un `.osr` y ~710 mutaciones. Verificado que atrapa tres bugs inyectados. Win7 real: 18/18 y 8/8 en i386 y en x64, sin temporales. **Sin cubrir todavía**: el corte Gear y `--dup-paranoid`, que son opciones de la CLI (`--chunk-*`) y no tienen oráculo hasta la fase 7 |
-| **7** | CLI completa | **hecha** (2026-10-09): `pascal/osrep.lpr` + `src/cliargs.pas` (args.rs), `src/clireport.pas` (report.rs) y `src/randbytes.pas`. La puerta del Rust entera, **`rust_cli_conformance.sh` con `OSREP_PORT_BIN` apuntando al Pascal: 225/225** — la capa byte a byte contra el C++ 1.0.7, pipes, `-index=`, `--verify`, `stderr_conformance` y las diez suites CLI. Además `tests/pascal_cli_conformance.sh`, 96 comprobaciones en Linux y bajo wine i386/x64: ~35 líneas de comandos con archivo e índice idénticos al Rust (incluye lo que la fase 6 no podía: Gear, `--dup-paranoid`, `--chunk-*`), pipes con y sin `-s`, ~37 errores con **el mismo código y el mismo stderr**, warnings, `OSREP_SEED_HEX`, nombres derivados, `-delete`, `-bar`. Verificado que atrapa siete bugs inyectados (después de agregar los casos para cinco que se escapaban). Win7 real: 170/170 en i386 y x64, sin temporales en `%TEMP%`. Encontró dos bugs que no eran del Pascal: el v5 por pipe del Rust (92b4a77) y el pánico de `-s` menor que la entrada (d267376). **Divergencia conocida**: los errores de los decoders llevan el mensaje (Display) y no el Debug del Rust; mismo código, otro texto |
+| **7** | CLI completa | **hecha** (2026-10-09): `pascal/osrep.lpr` + `src/cliargs.pas` (args.rs), `src/clireport.pas` (report.rs) y `src/randbytes.pas`. La puerta del Rust entera, **`rust_cli_conformance.sh` con `OSREP_PORT_BIN` apuntando al Pascal: 225/225** — la capa byte a byte contra el C++ 1.0.7, pipes, `-index=`, `--verify`, `stderr_conformance` y las diez suites CLI. Además `tests/pascal_cli_conformance.sh`, 96 comprobaciones en Linux y bajo wine i386/x64: ~35 líneas de comandos con archivo e índice idénticos al Rust (incluye lo que la fase 6 no podía: Gear, `--dup-paranoid`, `--chunk-*`), pipes con y sin `-s`, ~37 errores con **el mismo código y el mismo stderr**, warnings, `OSREP_SEED_HEX`, nombres derivados, `-delete`, `-bar`. Verificado que atrapa siete bugs inyectados (después de agregar los casos para cinco que se escapaban). Win7 real: 170/170 en i386 y x64, sin temporales en `%TEMP%`. Encontró dos bugs que no eran del Pascal: el v5 por pipe del Rust (92b4a77) y el pánico de `-s` menor que la entrada (d267376). |
 | **8** | Release: tres targets, verificación en Win7 real, tag | como 2.1.0 |
 
+Para la fase 8: el stderr de los errores ya es **el mismo, byte a byte**, que
+el del Rust, también el de los decoders, que el Rust imprime con Debug
+(`Container(Truncated)`, `BadData("v5 footer")`, `DigestMismatch { block: 0 }`,
+`Io(Os { .. })`, `Decode(..)` con `-dup`) y que hay consumidores que parsean.
+Lo arma `src/decfault.pas` (ver la trampa del Debug, abajo);
+`pascal_cli_conformance.sh` lo compara sobre ~500 archivos dañados y errores
+de E/S reales, y un barrido aparte de 41.295 mutaciones (×3 modos) dio cero
+diferencias.
+
 ## Trampas conocidas, para no redescubrirlas
+
+* **El stderr de un error de decoder es el `Debug` del Rust, no su
+  `Display`.** `modes.rs` hace `format!("{e:?}: {finame}")`: un archivo
+  truncado da `Container(Truncated)`, no `truncated structure`. Del texto
+  Display no se puede reconstruir el Debug (`UnsupportedVersion(5)` pierde el
+  número, un `io::Error` pierde su forma), así que cada sitio de error arma un
+  `TDecodeFault` con clase y datos (`src/decfault.pas`) y la CLI lo dibuja con
+  `FaultDebug`; `Msg` conserva el texto de siempre para las herramientas, que
+  sus suites comparan contra el Display de los harnesses. Un `io::Error` tiene
+  cuatro formas y cada una su Debug: `Os { code, kind, message }` (errno),
+  `Error { kind, message }` (el `read_exact`/`write_all` de std),
+  `Custom { kind, error }` (`io::Error::new`, el `Out of memory` y el slot del
+  spill) y `Kind(..)`. Las tablas de kind y mensaje de `Os` están **medidas**
+  con el Rust pinneado (errno 0..134 en Linux con el strerror de glibc;
+  0..15999 en Windows, el mensaje sale de `FormatMessageW` como en el Rust) y
+  un programa de prueba dio las mismas 135 y 1.400 líneas en Linux y bajo wine
+  x64/x86. Para tener el errno, las escrituras y lecturas de los decoders van
+  por `WriteAllOrFault`/`ReadExactOrFault` con `FileWrite`/`FileRead`
+  directos: `THandleStream.Write` convierte el -1 en 0 y se pierde el error.
+  Tres bordes que salieron del barrido, y que no son de los decoders: el
+  stdout del Rust es un `LineWriter` de 1024 bytes, así que un disco lleno al
+  comprimir a stdout da `Io` (rc 4) salvo que el archivo entero quepa en ese
+  buffer sin un `\n`, y entonces `Can't write to stdout` (rc 3); el `File::open`
+  del Rust abre un directorio en Unix y falla después (`Truncated`, `Io` o
+  `Io(Os { code: 21 .. })` según el sistema de archivos), y el `FileOpen` de
+  FPC lo rechaza antes; y toda falla de E/S del encoder es `Io` a secas
+  (`Encode(Io)` con `-dup`), como el `From<io::Error>` del Rust.
 
 * **`{$IFDEF}` con un símbolo mal escrito evalúa falso en silencio.** FPC no
   avisa. A ytool le costó **toda la vida de su port**: un `CPU64BITS` (que no

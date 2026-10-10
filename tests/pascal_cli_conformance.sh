@@ -162,9 +162,8 @@ for args in "" "--format=v4" "--format=v4 -m5f" "-m0" "-s$(stat -c%s "$IN")" "-s
 done
 
 say "los errores: el mismo codigo y el mismo texto"
-# Solo los que tienen un texto deterministico; los de los decoders salen con
-# el mismo codigo pero el Rust imprime su Debug (Io(Os { .. })) y el Pascal el
-# mensaje, y eso se compara por codigo nada mas, mas abajo.
+# Los que no dependen de un archivo danado; esos (el Debug de los decoders)
+# tienen su propia seccion, mas abajo.
 "$RS" --seed=7 "$IN" "$TMP/ok.osr" >/dev/null 2>&1
 while IFS= read -r args; do
     [ -n "$args" ] || continue
@@ -271,12 +270,192 @@ mv "$TMP/names/x.bin" "$TMP/names/orig.bin"
 cmp -s "$TMP/names/orig.bin" "$TMP/names/x.bin" || fail "osrep -d x.bin.osr no reconstruyo x.bin"
 pass=$((pass + 1))
 
-say "un archivo danado: el mismo codigo que el Rust"
-head -c 1000 "$TMP/ok.osr" > "$TMP/cut.osr"
-rrc=0; "$RS" -d "$TMP/cut.osr" "$TMP/r.cut" >/dev/null 2>&1 || rrc=$?
-prc=0; "$PA" -d "$TMP/cut.osr" "$TMP/p.cut" >/dev/null 2>&1 || prc=$?
-[ "$rrc" -eq "$prc" ] || fail "archivo cortado: exit $prc en Pascal, $rrc en Rust"
-pass=$((pass + 1))
+say "un archivo danado: el mismo stderr y el mismo codigo que el Rust, byte a byte"
+# La CLI del Rust imprime los errores de los decoders con Debug
+# (`format!("{e:?}: {finame}")`, modes.rs): Container(Truncated),
+# BadData("v5 footer"), DigestMismatch { block: 0 }, Io(Os { .. }), y con
+# -dup Decode(..). Hay consumidores que parsean ese stderr, asi que el Pascal
+# tiene que dar el mismo texto, no uno parecido (src/decfault.pas). Cada
+# contenedor, truncado en el header, la semilla, los bloques y el footer, y
+# con bytes cambiados en todos esos lugares; -d, --verify y -i. El barrido
+# grande (decenas de miles de mutaciones) se corre aparte; esto es la red
+# rapida, y al final exige haber visto cada forma del Debug, para que un
+# encoder que cambie los offsets no la deje vacia en silencio.
+D="$TMP/dmg"; mkdir "$D"
+python3 - "$D" <<'PY' || fail "no se pudo armar la entrada de los archivos danados"
+import os, random, sys
+d = sys.argv[1]
+random.seed(7)
+unit = bytes((i * 31 + 7) & 0xFF for i in range(4096))
+half = bytes(random.randrange(256) for _ in range(30000))
+open(os.path.join(d, "in.bin"), "wb").write(unit * 6 + half + unit * 6 + half + unit * 4)
+far = [bytes(random.randrange(256) for _ in range(64 * 1024)) for _ in range(16)]
+open(os.path.join(d, "far.bin"), "wb").write(b"".join(far) * 2)
+PY
+dmk() { # $1=nombre, el resto opciones del encoder (en $D, nombres relativos)
+    local name="$1"; shift
+    (cd "$D" && "$RSX" -v0 --seed=7 -b64k "$@" in.bin "$name.osr" >/dev/null 2>&1) \
+        || fail "no se pudo armar $name.osr"
+}
+dmk v5 -m3
+dmk v5dup -m3 -dup
+dmk v4 --format=v4 -m3
+dmk v4dup --format=v4 -m3 -dup
+dmk v3 --format=v4 -m3f
+dmk v3ix --format=v4 -m3f -index=v3ix.ix
+dmk v2ix --format=v4 -m5o -index=v2ix.ix
+dmk v1 --format=v4 -m3o
+(cd "$D" && "$RSX" -v0 --seed=7 -m5 -b64k far.bin far.osr >/dev/null 2>&1) || fail "no se pudo armar far.osr"
+: > "$D/empty.osr"
+printf 'this is not an archive\n%.0s' 1 2 3 4 5 6 > "$D/text.osr"
+: > "$D/seen"
+dpass=0
+# los dos, en $D, con los mismos argumentos: el mismo codigo y el mismo stderr.
+# Sin subshells ni cmp: con ~500 comparaciones, los forks eran mas de la mitad
+# del tiempo. `read -d ''` lee el archivo entero (stderr no trae NUL).
+cd "$D"
+same() {
+    local rrc=0 prc=0 re pe
+    "$RSX" "$@" </dev/null >/dev/null 2>r.e || rrc=$?
+    "$PAX" "$@" </dev/null >/dev/null 2>p.e || prc=$?
+    IFS= read -r -d '' re <r.e || true
+    IFS= read -r -d '' pe <p.e || true
+    [ "$rrc" -eq "$prc" ] || fail "[$*]: exit $prc en Pascal, $rrc en Rust
+      Rust:   $re
+      Pascal: $pe"
+    [ "$re" = "$pe" ] || fail "[$*]: stderr difiere
+      Rust:   $re
+      Pascal: $pe"
+    printf '%s' "$re" >> seen
+    dpass=$((dpass + 1))
+}
+check3() { # $1=archivo, el resto opciones de -d
+    local f="$1"; shift
+    same -v0 -d "$@" "$f" o.out
+    same -v0 --verify "$f"
+    same -v0 -i "$f"
+}
+# --verify y -i no decodifican: sobre un v1-v4 solo parsean el contenedor, y
+# eso lo cubren de sobra los truncados. Un byte cambiado se mira con -d.
+checkd() { # $1=archivo, el resto opciones de -d
+    local f="$1"; shift
+    case "$name" in v5*) check3 "$f" "$@" ;; *) same -v0 -d "$@" "$f" o.out ;; esac
+}
+# $1=origen $2=posicion $3=destino: el byte en $2 pasa a 0 (o a 0xFF si ya era 0)
+zap() {
+    local b v
+    cp "$1" "$3"
+    b=$(od -An -tu1 -j "$2" -N1 "$1" | tr -d ' ')
+    if [ "${b:-0}" -eq 0 ]; then v=255; else v=0; fi
+    printf "$(printf '\\%03o' "$v")" | dd of="$3" bs=1 seek="$2" conv=notrunc 2>/dev/null
+}
+for name in v5 v5dup v4 v4dup v3 v3ix v2ix v1; do
+    a="$D/$name.osr"; n=$(stat -c%s "$a")
+    ix=""; [ -e "$D/$name.ix" ] && ix="-index=$name.ix"
+    for c in 0 3 16 27 28 60 $((n / 2)) $((n - 32)) $((n - 24)) $((n - 1)); do
+        [ "$c" -ge 0 ] && [ "$c" -lt "$n" ] || continue
+        head -c "$c" "$a" > "$D/m.osr"
+        check3 m.osr $ix
+    done
+    for p in 0 4 5 6 8 10 12 20 24 40 89 105 $((n / 2)) \
+             $((n - 32)) $((n - 26)) $((n - 20)) $((n - 12)) $((n - 1)); do
+        [ "$p" -ge 0 ] && [ "$p" -lt "$n" ] || continue
+        zap "$a" "$p" "$D/m.osr"
+        checkd m.osr $ix
+    done
+    # el indice danado, con el archivo sano
+    if [ -n "$ix" ]; then
+        m=$(stat -c%s "$D/$name.ix")
+        for c in 0 4 $((m - 1)); do
+            head -c "$c" "$D/$name.ix" > "$D/m.ix"; same -v0 -d -index=m.ix "$name.osr" o.out
+        done
+        for p in 0 3 8 12 $((m / 2)); do
+            zap "$D/$name.ix" "$p" "$D/m.ix"; same -v0 -d -index=m.ix "$name.osr" o.out
+        done
+    fi
+done
+# el largo del footer de un v4 una unidad menos: la tabla de tamanos deja de
+# ser multiplo de 4, que es otro sitio de TableMismatch que el de arriba
+n=$(stat -c%s v4.osr)
+b=$(od -An -tu1 -j $((n - 16)) -N1 v4.osr | tr -d ' ')
+cp v4.osr m.osr
+printf "$(printf '\\%03o' $(( (b + 255) % 256 )))" | dd of=m.osr bs=1 seek=$((n - 16)) conv=notrunc 2>/dev/null
+same -v0 -d m.osr o.out
+grep -qF 'Container(TableMismatch)' r.e || fail "el footer de v4 recortado no dio TableMismatch: $(cat r.e)"
+check3 empty.osr
+check3 text.osr
+# por stdin: el nombre en el mensaje es "-"
+head -c 100 "$D/v4.osr" > "$D/m.osr"
+rrc=0; "$RSX" -v0 -d - o.out <m.osr >/dev/null 2>r.e || rrc=$?
+prc=0; "$PAX" -v0 -d - o.out <m.osr >/dev/null 2>p.e || prc=$?
+[ "$rrc" -eq "$prc" ] && cmp -s "$D/r.e" "$D/p.e" \
+    || fail "-d - de un archivo cortado: '$(cat "$D/p.e")' ($prc) vs '$(cat "$D/r.e")' ($rrc)"
+dpass=$((dpass + 1))
+
+# Errores de E/S de verdad: un disco lleno, un -vmfile= que no se puede abrir,
+# un directorio como entrada, un tope de tamano de archivo. Solo en el nativo:
+# el codigo y el mensaje de un Os { .. } son del sistema, y el .exe bajo wine
+# da los de Windows (y el Rust de referencia es el de Linux).
+case "$PA" in *linux*)
+    SP="-v0 -mem1mb -vmblock=128kb"
+    # far.osr tiene que derramar con $SP: si no, -vmfile= no se abre nunca. Lo
+    # asegura el NotFound que se exige al final (solo sale de ese caso).
+    mkdir "$D/adir"
+    same -v0 -d v5.osr /dev/full
+    same -v0 -d v4.osr /dev/full
+    same -v0 -d v1.osr /dev/full
+    same -v0 -d v5dup.osr /dev/full
+    same $SP -vmfile=/nonexistent/dir/vm -d far.osr o.out
+    same $SP -vmfile=adir -d far.osr o.out
+    same $SP -vmfile=/dev/full -d far.osr o.out
+    same -v0 -d adir o.out
+    same -v0 -d adir -
+    same -v0 -d -index=adir v3ix.osr o.out
+    same -v0 -d -index=/dev/null v2ix.osr o.out
+    same -v0 --seed=7 in.bin /dev/full
+    same -v0 --seed=7 --format=v4 -m3o in.bin /dev/full
+    same -v0 --seed=7 -dup in.bin /dev/full
+    for f in far.osr v4dup.osr; do
+        rrc=0; (ulimit -f 200 && trap '' XFSZ && "$RSX" -v0 -d "$f" o.out </dev/null >/dev/null 2>r.e) || rrc=$?
+        prc=0; (ulimit -f 200 && trap '' XFSZ && "$PAX" -v0 -d "$f" o.out </dev/null >/dev/null 2>p.e) || prc=$?
+        [ "$rrc" -eq "$prc" ] && cmp -s "$D/r.e" "$D/p.e" \
+            || fail "-d $f con ulimit -f: '$(cat "$D/p.e")' ($prc) vs '$(cat "$D/r.e")' ($rrc)"
+        cat "$D/r.e" >> "$D/seen"
+        dpass=$((dpass + 1))
+    done
+    # stdout lleno: el Rust escribe por un LineWriter, asi que un archivo que
+    # cabe entero en su buffer falla recien en el flush (otro mensaje)
+    printf 'x' > "$D/x.bin"
+    for f in in.bin x.bin; do
+        rrc=0; "$RSX" -v0 --seed=7 -hash- "$f" - </dev/null >/dev/full 2>r.e || rrc=$?
+        prc=0; "$PAX" -v0 --seed=7 -hash- "$f" - </dev/null >/dev/full 2>p.e || prc=$?
+        [ "$rrc" -eq "$prc" ] && cmp -s "$D/r.e" "$D/p.e" \
+            || fail "$f a un stdout lleno: '$(cat "$D/p.e")' ($prc) vs '$(cat "$D/r.e")' ($rrc)"
+        cat "$D/r.e" >> "$D/seen"
+        dpass=$((dpass + 1))
+    done
+    ;;
+esac
+# cada forma del Debug tiene que haber aparecido al menos una vez
+for want in 'Container(Truncated)' 'Container(NoFooter)' 'Container(NotAnOsrepFile)' \
+            'Container(UnsupportedVersion(' 'Container(FooterExceedsFile)' 'Container(TableMismatch)' \
+            'Container(UnsupportedFooterVersion(' \
+            'BadData("v5 footer")' 'BadData("v5 record")' 'BadData("future-lz' 'BadData("record does not fit' \
+            'DigestMismatch { block: ' 'Decode(' 'is damaged: Bad' 'Not an Omega SREP compressed file' \
+            'Io(Custom { kind: UnexpectedEof'; do
+    grep -qF "$want" "$D/seen" || fail "ningun caso dio '$want': la seccion ya no prueba esa forma"
+done
+case "$PA" in *linux*)
+    for want in 'Io(Os { code: 28, kind: StorageFull' 'Io(Os { code: 2, kind: NotFound' \
+                'Io(Os { code: 21, kind: IsADirectory' 'Io(Os { code: 27, kind: FileTooLarge' \
+                'dedup failed, rc=8' 'Encode(Io)' "Can't write to stdout"; do
+        grep -qF "$want" "$D/seen" || fail "ningun caso dio '$want': la seccion ya no prueba esa forma"
+    done
+    ;;
+esac
+cd "$ROOT"
+say "$dpass comparaciones de stderr y codigo"
+pass=$((pass + dpass))
 
 say "-delete borra la entrada solo si todo salio bien"
 cp "$IN" "$TMP/del.bin"
