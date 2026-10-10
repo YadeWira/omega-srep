@@ -22,6 +22,13 @@ const
   { slices_in_block (hash_table.cpp:32): el -c mas chico que le deja a
     SliceHash un slice distinto de cero }
   SLICES_IN_BLOCK = 8;
+  { El -l, -c, -dl o -dc mas grande: el C++ los guarda en un unsigned
+    (srep.cpp:292) y lo que pasa de ahi da la vuelta (-l4294967296 es -l0, el
+    default). El port lo tomaba entero, y en 32 bits lo truncaba como el C++,
+    asi que la misma linea daba archivos distintos en cada build; pasado 2^63
+    ademas desbordaba el 2 * L del match finder (Access violation; en el Rust
+    un panico) y el -l + 1 de -m5. args.rs, MAX_LENGTH_OPTION. }
+  MAX_LENGTH_OPTION = QWord(High(DWord));
   { srep.cpp:284: lo que supone la compresion desde stdin si -s no dice nada }
   DEFAULT_STDIN_FILESIZE = QWord(25) * GB;
 
@@ -348,14 +355,31 @@ begin
   O.Files[High(O.Files)] := F;
 end;
 
+{ -l, -c, -dl y -dc, con el tope MAX_LENGTH_OPTION (args.rs, length_option) }
+function LengthOption(const A: AnsiString; N: QWord; const What: AnsiString): QWord;
+begin
+  if N > MAX_LENGTH_OPTION then
+    raise ECmdLine.Create('Invalid option: ' + A + ' -- the ' + What + ' must be at most ' +
+                          IntToStr(MAX_LENGTH_OPTION) + ' bytes');
+  Result := AsUsize(N);
+end;
+
 procedure ParseDictPart(var O: TOptions; const Part: AnsiString);
 var head, tail: AnsiString; n: QWord; x: Int64; ok: Boolean;
 begin
   head := Copy(Part, 1, 1);
   tail := Copy(Part, 2, Length(Part));
   if head = 'a' then ok := ParseInt(tail, x)
-  else if head = 'c' then begin ok := ParseMem(tail, uB, n); if ok then O.DictChunk := AsUsize(n); end
-  else if head = 'l' then begin ok := ParseMem(tail, uB, n); if ok then O.DictMinMatch := AsUsize(n); end
+  else if head = 'c' then
+  begin
+    ok := ParseMem(tail, uB, n);
+    if ok then O.DictChunk := LengthOption('-d' + Part, n, 'dictionary chunk length');
+  end
+  else if head = 'l' then
+  begin
+    ok := ParseMem(tail, uB, n);
+    if ok then O.DictMinMatch := LengthOption('-d' + Part, n, 'dictionary match length');
+  end
   else if head = 'd' then begin ok := ParseMemOption(tail, uM, n); if ok then O.DictSize := n; end
   else if head = 'h' then begin ok := ParseMemOption(tail, uM, n); if ok then O.DictHashSize := n; end
   else begin ok := ParseMemOption(Part, uM, n); if ok then O.DictSize := n; end;
@@ -525,12 +549,12 @@ begin
     else if StartsWith(a, '-l') then
     begin
       if not ParseMem(After(a, '-l'), uB, n) then Bad(a);
-      O.MinMatch := AsUsize(n);
+      O.MinMatch := LengthOption(a, n, 'match length');
     end
     else if StartsWith(a, '-c') then
     begin
       if not ParseMem(After(a, '-c'), uB, n) then Bad(a);
-      O.L := AsUsize(n);
+      O.L := LengthOption(a, n, 'chunk length');
       { SliceHash divide por L / slices_in_block, que es 8: con L de 1 a 7
         eso es cero. El C++ muere con SIGFPE; aca es un error de linea de
         comandos. 0 es "no dado" y deja el default. }

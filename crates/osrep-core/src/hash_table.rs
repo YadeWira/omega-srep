@@ -393,6 +393,24 @@ impl HashTable {
         found
     }
 
+    /// The digest of the `L` bytes at `at` in the ring, for `-m3`'s candidate
+    /// check. The 4-byte batch overshoots its chunk by up to three positions
+    /// when 4 does not divide `L` (`-l`/`-c` not a power of two), so the
+    /// window can end up to three bytes past the block -- past the ring
+    /// itself for a full block in its last slot. The C++ reads past its
+    /// allocation there and the port panicked (range end out of range); like
+    /// the batch's incoming byte (`compress.rs`), those bytes read as zero,
+    /// which is also what the Pascal port's zeroed ring tail holds.
+    fn digest_at(&self, buf: &[u8], at: usize) -> [u8; DIGEST_SIZE] {
+        if at + self.l <= buf.len() {
+            return self.main_digest.compute(&buf[at..at + self.l]);
+        }
+        let mut window = vec![0u8; self.l];
+        let have = buf.len().saturating_sub(at).min(self.l);
+        window[..have].copy_from_slice(&buf[at..at + have]);
+        self.main_digest.compute(&window)
+    }
+
     /// `find_match0` (`hash_table.cpp:292-329`) for `!COMPARE_DIGESTS`:
     /// a candidate is accepted on the stored 32-bit hash plus, for `-m5`, the
     /// slice check; with `speed_opt` a failed check ends the probe outright.
@@ -424,9 +442,7 @@ impl HashTable {
                         // `-m3` (`hash_table.cpp:318-322`): compare the whole
                         // 20-byte chunk digest. A mismatch does *not* end the
                         // probe, unlike the -m5 slice check below.
-                        let dig = self
-                            .main_digest
-                            .compute(&buf[buf_off + i..buf_off + i + self.l]);
+                        let dig = self.digest_at(buf, buf_off + i);
                         if dig == self.digestarr[chunk as usize] {
                             return chunk;
                         }
@@ -647,7 +663,7 @@ impl<T: Read + Seek> ReadSeek for T {}
 
 /// One `pread`: read `buf.len()` bytes at `off` without disturbing the caller's
 /// position (the C++ seeks a dedicated handle).
-fn read_at<R: ReadSeek>(r: &mut R, off: u64, buf: &mut [u8]) -> usize {
+pub(crate) fn read_at<R: ReadSeek>(r: &mut R, off: u64, buf: &mut [u8]) -> usize {
     use std::io::SeekFrom;
     if r.seek(SeekFrom::Start(off)).is_err() {
         return 0;

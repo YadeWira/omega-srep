@@ -55,6 +55,28 @@ begin
   Result := True;
 end;
 
+{ Si un record redondeado (-m3 sin -d) del match de Len bytes desde el offset
+  Src del archivo hasta la posicion MatchStart del bloque descomprime a estos
+  mismos bytes aunque Src o Len no caigan en la grilla de B (BASE_LEN). El
+  decoder copia, hacia adelante y byte a byte, Len div B * B bytes (redondeado
+  desde B, DECODE_LZ_MATCH) desde dest div B * B - offset div B * B: eso da la
+  entrada exacta cuando el largo es entero y los bytes de ese origen son los
+  del destino. Se releen de la entrada, por el mismo handle que ya usan -m4 y
+  -m5 (compress.rs, decodes_as_is). }
+function DecodesAsIs(const Dict: TBytes; BufOff, BlockStart, MatchStart, Src: QWord;
+                     Len: DWord; B: QWord; Reread: TStream): Boolean;
+var dest, decodedSrc: QWord; old: TBytes;
+begin
+  Result := False;
+  if ((QWord(Len) mod B) <> 0) or (QWord(Len) < B) then Exit;
+  dest := BlockStart + MatchStart;
+  decodedSrc := dest div B * B - (dest - Src) div B * B;
+  if decodedSrc >= dest then Exit;
+  SetLength(old, Len);
+  if ReadAt(Reread, decodedSrc, old, Len) <> QWord(Len) then Exit;
+  Result := CompareByte(old[0], Dict[BufOff + MatchStart], Len) = 0;
+end;
+
 { record_match: mide el match del chunk K contra la posicion I y lo emite si
   llega a MinMatch. }
 function RecordMatch(const T: THashTableRec; const Dict: TBytes; BufOff, BlockSize,
@@ -62,7 +84,7 @@ function RecordMatch(const T: THashTableRec; const Dict: TBytes; BufOff, BlockSi
                      BaseLen: DWord; Reread: TStream; var Stat: TStatList;
                      LastMatchEnd: QWord; out MatchEnd: QWord; var LiteralBytes: DWord;
                      I: QWord; K: DWord): Boolean;
-var addLen, matchLen: DWord; matchStart, matchOffset: QWord;
+var addLen, matchLen: DWord; matchStart, matchOffset, b, src, skip, cut: QWord;
 begin
   MatchEnd := 0;
   matchLen := HtMatchLen(T, K, Dict, BufOff, BufOff + LastMatchEnd, BufOff + I,
@@ -72,6 +94,37 @@ begin
     matchStart := I - QWord(addLen);
     if RoundMatches then matchLen := DWord(QWord(matchLen) div L * L);
     matchOffset := BlockStart + I - QWord(K) * L;
+    { Un record redondeado guarda offset y largo en unidades de BASE_LEN, no
+      de L (el L1 de ENCODE_LZ_MATCH, srep.cpp:117), y el decoder rearma el
+      origen como dest div BASE_LEN * BASE_LEN - offset div BASE_LEN *
+      BASE_LEN y el largo como un numero entero de BASE_LEN. Eso es exacto si
+      el origen (K*L) y el largo son multiplos de BASE_LEN: siempre, cuando
+      BASE_LEN divide a L (el default). Con -c debajo de BASE_LEN (-m3 -c8
+      -l16) o un BASE_LEN que no divide a L (-m3 -c8 -l17, -m3 -dl17) el C++
+      escribia un archivo que no descomprime (exit 0: perdida de datos
+      silenciosa) o cortaba con "match len too small" (exit 4), y el port
+      igual.
+      Un record que no va a descomprimir a estos bytes ahora se corre al
+      proximo origen de la grilla de BASE_LEN y se recorta a unidades enteras
+      -- sigue adentro del match verificado, los bytes son los mismos -- o no
+      se toma si no queda ni una unidad. Uno que descomprime bien tal cual (uno
+      exacto, o uno con el origen corrido que por casualidad tiene los mismos
+      bytes, como en una entrada toda en cero) se escribe igual que antes: los
+      archivos que descomprimian no cambian (compress.rs, record_match). }
+    if RoundMatches then
+    begin
+      b := QWord(BaseLen);
+      src := QWord(K) * L;
+      if not (((src mod b) = 0) and ((QWord(matchLen) mod b) = 0) and (QWord(matchLen) >= b))
+         and not DecodesAsIs(Dict, BufOff, BlockStart, matchStart, src, matchLen, b, Reread) then
+      begin
+        skip := (b - src mod b) mod b;
+        if QWord(matchLen) > skip then cut := (QWord(matchLen) - skip) div b * b else cut := 0;
+        if cut < b then Exit(False);
+        matchStart := matchStart + skip;
+        matchLen := DWord(cut);
+      end;
+    end;
     Enc(Stat, RoundMatches, BaseLen, DWord(matchStart - LastMatchEnd), matchOffset, matchLen);
     MatchEnd := matchStart + QWord(matchLen);
     LiteralBytes := DWord(QWord(LiteralBytes) - QWord(matchLen));

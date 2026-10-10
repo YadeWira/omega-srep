@@ -433,6 +433,158 @@ e96ad08392be4215b8e712cb5d43d581 tests/corpus/text.bin -m5 -c17 -b1mb
 f6c1579ce5fac9a5c6fd42b29ddb9d6e tests/corpus/random.bin -m4 -l9
 EOF
 
+say "-m3's digest check stays inside the ring with an -l/-c that is not a power of two"
+# The 4-byte batch overshoots its chunk by up to three positions when 4 does
+# not divide L, and -m3 hashes the L bytes at each candidate: with a full block
+# in the ring's last slot (-b4kb, no -d: a two-block ring) that window ends up
+# to three bytes past the ring. 2.1.2 panicked there (exit 101, "range end
+# index ... out of range"); those bytes now read as zero, as the Pascal port's
+# zeroed ring tail always had them. The archives are pinned (Rust and Pascal
+# agree); they keep the power-of-two warning, exit 1, and like every -m3
+# archive with such an L they need not decode, in 1.0.7 as well.
+while read -r want args; do
+    rc=0; "$RS" --format=v4 --seed=7 $args tests/corpus/text.bin "$TMP/dg.osr" >/dev/null 2>"$TMP/dg.err" || rc=$?
+    [ "$rc" -eq 1 ] || fail "$args exited $rc, expected 1 (warning): $(grep -a -m1 -E 'panicked|ERROR' "$TMP/dg.err")"
+    got="$(md5sum < "$TMP/dg.osr" | cut -c1-32)"
+    [ "$got" = "$want" ] || fail "$args: archive md5 $got, expected $want"
+    rm -f "$TMP/dg.osr"
+    pass=$((pass + 1))
+done <<EOF
+387e7fe4d78c12e1f6d88f355beb43d0 -m3 -l17 -b4kb
+387e7fe4d78c12e1f6d88f355beb43d0 -m3 -c17 -b4kb
+d789362481825c2b275f53dd76feb45f -m3o -l17 -b4kb
+a11525e5883557e5236dc0f4897107f6 -m3f -l17 -b4kb
+EOF
+
+say "-l, -c, -dl and -dc above 4294967295 are refused, not wrapped or overflowed"
+# The C++ keeps all four in an unsigned (srep.cpp:292): -l4294967296 is -l0
+# there. 2.1.2 took them whole -- -l2^63 and up panicked in the match finder
+# (2 * L), -m5 -l2^64-1 overflowed -l + 1 to an L of 0 and divided by zero --
+# and the i686 build truncated them to 32 bits, so the two builds wrote
+# different archives. The largest value still works.
+big_case() {
+    local want="$1"; shift
+    rc=0; "$RS" --seed=7 "$@" tests/corpus/tiny.bin "$TMP/bg.osr" >/dev/null 2>"$TMP/bg.err" || rc=$?
+    [ "$rc" -eq 2 ] || fail "$* exited $rc, expected 2 (cmdline)"
+    grep -qxF -- "  ERROR! $want" "$TMP/bg.err" || fail "$*: stderr is not '$want': $(cat "$TMP/bg.err")"
+    [ ! -s "$TMP/bg.osr" ] || fail "$* left an archive behind"
+    rm -f "$TMP/bg.osr"
+    pass=$((pass + 1))
+}
+big_case "Invalid option: -l9223372036854775808 -- the match length must be at most 4294967295 bytes" -m3 -l9223372036854775808
+big_case "Invalid option: -l18446744073709551615 -- the match length must be at most 4294967295 bytes" -m5 -l18446744073709551615
+big_case "Invalid option: -l4294967296 -- the match length must be at most 4294967295 bytes" -m4 -l4294967296
+big_case "Invalid option: -c4294967296 -- the chunk length must be at most 4294967295 bytes" -m4 -c4294967296
+big_case "Invalid option: -dl4294967296 -- the dictionary match length must be at most 4294967295 bytes" -m0 -d1mb:l4294967296
+big_case "Invalid option: -dc99999999999 -- the dictionary chunk length must be at most 4294967295 bytes" -m0 -dc99999999999
+for args in "-m5 -l4294967295" "-m4 -l4294967295" "-m4 -c4294967295" "-m0 -d1mb:l4294967295" "-m0 -d1mb:c4294967295"; do
+    rc=0; "$RS" --seed=7 $args tests/corpus/tiny.bin "$TMP/bg.osr" >/dev/null 2>"$TMP/bg.err" || rc=$?
+    [ "$rc" -le 1 ] || fail "$args exited $rc: $(tail -1 "$TMP/bg.err")"
+    "$RS" -d "$TMP/bg.osr" "$TMP/bg.dec" >/dev/null 2>&1 || fail "$args: archive does not decode"
+    cmp -s tests/corpus/tiny.bin "$TMP/bg.dec" || fail "$args: round trip differs"
+    rm -f "$TMP/bg.osr" "$TMP/bg.dec"
+    pass=$((pass + 1))
+done
+
+say "an in-memory dictionary chunk of zero is a command-line error, not a division by zero"
+# The dictionary hashes -dc chunks, -dl/8 without -dc, and sizes its table by
+# dictsize/chunk: -dl1..-dl7 without -dc divided by zero whenever the
+# dictionary is on (-m0, or -d with -m3..-m5). The C++ dies with SIGFPE, 2.1.2
+# panicked, the Pascal printed "Division by zero" (exit 4).
+for args in "-m0 -dl4" "-m3 -d1mb:l7" "-m5 -d1mb:c0:l1" "-m4f -d4mb:l4"; do
+    rc=0; "$RS" --seed=7 $args tests/corpus/tiny.bin "$TMP/dw.osr" >/dev/null 2>"$TMP/dw.err" || rc=$?
+    [ "$rc" -eq 2 ] || fail "$args exited $rc, expected 2 (cmdline)"
+    n="$(printf '%s' "$args" | grep -o 'l[0-9]*$')"
+    want="  ERROR! Invalid option: -d$n -- without -dc the dictionary match length must be 0 (default) or at least 8 bytes"
+    grep -qxF -- "$want" "$TMP/dw.err" || fail "$args: stderr is not '$want': $(cat "$TMP/dw.err")"
+    rm -f "$TMP/dw.osr"
+    pass=$((pass + 1))
+done
+# With -dc, or without a dictionary (-dl then only sets the record base), any
+# -dl still works.
+for args in "-m0 -d1mb:c1:l4" "-m0 -dc8 -dl4" "-m4 -dl4" "-m0 -dl8"; do
+    rc=0; "$RS" --seed=7 $args tests/corpus/text.bin "$TMP/dw.osr" >/dev/null 2>"$TMP/dw.err" || rc=$?
+    [ "$rc" -eq 0 ] || fail "$args exited $rc, expected 0: $(tail -1 "$TMP/dw.err")"
+    "$RS" -d "$TMP/dw.osr" "$TMP/dw.dec" >/dev/null 2>&1 || fail "$args: archive does not decode"
+    cmp -s tests/corpus/text.bin "$TMP/dw.dec" || fail "$args: round trip differs"
+    rm -f "$TMP/dw.osr" "$TMP/dw.dec"
+    pass=$((pass + 1))
+done
+
+say "-m5 with an -c that is not a power of two warns and exits 1, like the C++"
+# srep.cpp:476 tests the final L: always a power of two for -m5 without -c,
+# but -c sets it directly. 2.1.2 skipped the test for -m5 altogether and
+# exited 0 in silence.
+# Against the C++ where it survives the run (it dies with SIGBUS on other odd
+# -c values with this input), and on the expected exit and warning otherwise.
+for args in "-m5 -c17" "-m5 -c16" "-m5 -l17" "-m5 -c16 -l17"; do
+    rc_c=0; ./bin/osrep $args tests/corpus/tiny.bin "$TMP/w5c.osr" >/dev/null 2>"$TMP/w5c.err" || rc_c=$?
+    rc=0; "$RS" --seed=7 $args tests/corpus/tiny.bin "$TMP/w5.osr" >/dev/null 2>"$TMP/w5.err" || rc=$?
+    [ "$rc" -eq "$rc_c" ] || fail "$args exited $rc, the C++ $rc_c"
+    w_c="$(grep -ac 'power of 2' "$TMP/w5c.err" || true)"
+    w="$(grep -ac 'power of 2' "$TMP/w5.err" || true)"
+    [ "$w" = "$w_c" ] || fail "$args: $w power-of-two warnings, the C++ printed $w_c"
+    rm -f "$TMP/w5c.osr" "$TMP/w5.osr"
+    pass=$((pass + 1))
+done
+for args in "-m5 -c100" "-m5f -c24" "-m5o -c4100"; do
+    rc=0; "$RS" --seed=7 $args tests/corpus/text.bin "$TMP/w5.osr" >/dev/null 2>"$TMP/w5.err" || rc=$?
+    [ "$rc" -eq 1 ] || fail "$args exited $rc, expected 1 (warning)"
+    grep -qxF "Warning: -l parameter should be power of 2, otherwise compressed file may be corrupt" "$TMP/w5.err" \
+        || fail "$args: no power-of-two warning"
+    rm -f "$TMP/w5.osr"
+    pass=$((pass + 1))
+done
+
+say "-m3 with a BASE_LEN that does not divide the chunk writes archives that decode"
+# Without -d, -m3 stores offsets and lengths in units of BASE_LEN (min(-l,
+# -dl)), not of the chunk L (ENCODE_LZ_MATCH's L1, srep.cpp:117). With -c
+# below BASE_LEN (-c8 -l16), or a BASE_LEN that does not divide L (-c8 -l17,
+# -dl17), 1.0.7 and 2.1.2 wrote archives that exit 0 and do not decode, or
+# stopped with "match len too small" (exit 4) -- every -l from 17 to 498 with
+# -m3 -c8 did one or the other on the inputs tried. A match is now moved to
+# the BASE_LEN grid and cut to whole units; matches that already were exact
+# (BASE_LEN dividing L, the default) are untouched, so -c512 -l1024 keeps the
+# archive it always had.
+python3 - "$TMP" <<'PY'
+import os, random, sys
+text = open("tests/corpus/text.bin", "rb").read()
+r = random.Random(20261010)
+b = bytearray(text[:200 << 10])
+for _ in range(len(b) // 300):
+    b[r.randrange(len(b))] = r.randrange(256)
+open(os.path.join(sys.argv[1], "txtmut200k"), "wb").write(b)
+PY
+while read -r want input args; do
+    rc=0; "$RS" --format=v4 --seed=7 $args "$input" "$TMP/bl.osr" >/dev/null 2>"$TMP/bl.err" || rc=$?
+    [ "$rc" -eq 0 ] || fail "$args on $input exited $rc, expected 0: $(grep -a -m1 -E 'panicked|ERROR' "$TMP/bl.err")"
+    "$RS" -d "$TMP/bl.osr" "$TMP/bl.dec" >/dev/null 2>&1 || fail "$args on $input: archive does not decode"
+    cmp -s "$input" "$TMP/bl.dec" || fail "$args on $input: round trip differs"
+    got="$(md5sum < "$TMP/bl.osr" | cut -c1-32)"
+    [ "$got" = "$want" ] || fail "$args on $input: archive md5 $got, expected $want"
+    rm -f "$TMP/bl.osr" "$TMP/bl.dec"
+    pass=$((pass + 1))
+done <<EOF
+5b700950d763e29419d7d867b5a32944 tests/corpus/text.bin -m3 -c8 -l16
+4f8be3b7a76a7cab06e78af7e60571a7 tests/corpus/text.bin -m3 -c8 -l17
+4422307111a512d5deef0976c5f29834 tests/corpus/text.bin -m3 -dl17
+48287a053ebc239bd64dd9ddd3b2f6a1 tests/corpus/text.bin -m3 -c256 -l1024
+48287a053ebc239bd64dd9ddd3b2f6a1 tests/corpus/text.bin -m3 -c512 -l1024
+2761d42870348cf2c44f69dfd005ef40 tests/corpus/text.bin -m3f -c8 -l24
+5c972e778a39918e764050fe440c5bd1 tests/corpus/mixed.bin -m3o -c8 -l16
+359c59db0e1ac1cd62233c72ee3c6510 $TMP/txtmut200k -m3 -c8 -b4kb -l17
+2a7800ab8a72d5a064168742eb402a10 $TMP/txtmut200k -m3 -c8 -b4kb -l100
+EOF
+# The v5 default container takes the same matches.
+for l in 16 17 24 100 498; do
+    rc=0; "$RS" --seed=7 -m3 -c8 -b4kb "-l$l" "$TMP/txtmut200k" "$TMP/bl.osr" >/dev/null 2>"$TMP/bl.err" || rc=$?
+    [ "$rc" -eq 0 ] || fail "-m3 -c8 -b4kb -l$l (v5) exited $rc: $(grep -a -m1 -E 'panicked|ERROR' "$TMP/bl.err")"
+    "$RS" -d "$TMP/bl.osr" "$TMP/bl.dec" >/dev/null 2>&1 || fail "-m3 -c8 -b4kb -l$l (v5): archive does not decode"
+    cmp -s "$TMP/txtmut200k" "$TMP/bl.dec" || fail "-m3 -c8 -b4kb -l$l (v5): round trip differs"
+    rm -f "$TMP/bl.osr" "$TMP/bl.dec"
+    pass=$((pass + 1))
+done
+
 say "the options the port accepts and does not act on really are inert"
 # The man page and --help now say outright that -tN, -aN, -mmap/-nommap,
 # -ia-/-ia+, -slp and -pc have no effect here. That claim has to be checked,
