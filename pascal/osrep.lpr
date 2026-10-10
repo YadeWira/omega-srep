@@ -189,7 +189,7 @@ begin
   try
     SetLength(buf, 1 shl 20);
     repeat
-      n := FileRead(InHandle, buf[0], Length(buf));
+      n := OsRead(InHandle, buf[0], Length(buf));
       if n < 0 then Fail(ERROR_IO, 'Can''t read from input file');
       { el std::io::copy del Rust falla igual al leer o al escribir, y los dos
         dan el mismo texto: con el disco lleno tambien es "Can't read" }
@@ -228,7 +228,7 @@ begin
   used := 0;
   while used < 8 do
   begin
-    n := FileRead(H, B[used], 8 - used);
+    n := OsRead(H, B[used], 8 - used);
     if n < 0 then Exit;
     if n = 0 then Break;
     Inc(used, n);
@@ -247,7 +247,7 @@ begin
     room := Length(B) - used;
     { FileRead toma LongInt: pasado 2 GiB la cuenta truncada saldria negativa }
     if room > SizeInt(IO_SLICE) then room := SizeInt(IO_SLICE);
-    n := FileRead(H, B[used], LongInt(room));
+    n := OsRead(H, B[used], LongInt(room));
     if n < 0 then Exit;
     Inc(used, n);
   until n = 0;
@@ -775,7 +775,7 @@ begin
       try
         SetLength(buf, 1 shl 20);
         repeat
-          n := FileRead(f.Handle, buf[0], Length(buf));
+          n := OsRead(f.Handle, buf[0], Length(buf));
           if n < 0 then Fail(ERROR_IO, 'Can''t write to stdout');
           off := 0;
           while off < n do

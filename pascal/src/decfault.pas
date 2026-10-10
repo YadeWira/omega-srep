@@ -136,7 +136,7 @@ uses
 {$ELSE}
   {$FATAL decfault.pas: no hay implementacion para esta plataforma}
 {$ENDIF}
-  ;
+  , StreamIO;
 
 const
   SLICE = QWord(1) shl 30;   { el conteo de Read/Write es un LongInt }
@@ -677,7 +677,7 @@ function RawRead(S: TStream; var Buf; N: LongInt): LongInt;
 begin
   ClearOsError;
   if S is THandleStream then
-    Result := FileRead(THandleStream(S).Handle, Buf, N)
+    Result := OsRead(THandleStream(S).Handle, Buf, N)
   else
     Result := S.Read(Buf, N);
 end;

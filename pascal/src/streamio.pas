@@ -56,6 +56,12 @@ function HandleSize(H: THandle): QWord;
 { std::fs::metadata(path).len(), unwrap_or(0): sin abrir el archivo (abrir un
   FIFO para leer se bloquea hasta que aparezca un escritor) }
 function PathSize(const Path: AnsiString): QWord;
+{ FileRead, salvo que en Windows el fin de un pipe anonimo es 0 y no -1: el
+  ReadFile del lado que lee falla con ERROR_BROKEN_PIPE cuando el escritor
+  cierra, y el FileRead de FPC devuelve -1 por cualquier falla. El Rust
+  (Handle::read) lo toma por Ok(0). Sin esto `type x | osrep.exe - -` daba
+  "Can't read from input file" en un Windows real (wine no lo muestra). }
+function OsRead(H: THandle; var Buf; N: LongInt): LongInt;
 
 implementation
 
@@ -181,6 +187,18 @@ begin
 {$ENDIF}
   if h = THandle(-1) then Exit(nil);
   Result := TRawFileStream.Create(h);
+end;
+
+function OsRead(H: THandle; var Buf; N: LongInt): LongInt;
+begin
+  Result := FileRead(H, Buf, N);
+{$IF DEFINED(WINDOWS)}
+  if (Result < 0) and (GetLastError = ERROR_BROKEN_PIPE) then
+  begin
+    SetLastError(0);
+    Result := 0;
+  end;
+{$ENDIF}
 end;
 
 function Slice(N: QWord): LongInt; inline;
