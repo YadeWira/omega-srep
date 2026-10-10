@@ -247,6 +247,23 @@ diferencias.
   FPC lo rechaza antes; y toda falla de E/S del encoder es `Io` a secas
   (`Encode(Io)` con `-dup`), como el `From<io::Error>` del Rust.
 
+* **Un número con decimales no se imprime con `FloatToStrF`.** El Rust hace
+  `format!("{:.2}")` de un `f64`: el decimal *exacto* del Double, redondeado
+  al par en un empate exacto. `861*100/12000` es 7,175 en los racionales y
+  7,17499999999999982… como Double, así que el Rust dice `7.17`; el
+  `FloatToStrF` de FPC decía `7.18`, y en un barrido de 1,1 M corridas ~1,5 %
+  de los porcentajes salían con otro último dígito. Además el i386 de FPC
+  calcula en el x87 con precisión Extended, y redondear a 64 bits de mantisa y
+  después a 53 da a veces otro Double que la división del Rust (296 de 2,75 M
+  porcentajes medidos). `src/fixedtext.pas` hace las dos cosas como el Rust:
+  la cuenta en Double con SSE2 también en i386 (`{$FPUTYPE SSE2}`, con un
+  `$FATAL` que prueba que la rama está activa; verificado en el assembly:
+  `mulsd`/`divsd`) y la conversión de `QWord` a mano, y el texto con un entero
+  grande, sin floats. Probado contra el Rust pinneado con 5,3 M valores
+  (patrones de bits al azar, `a*100/b` hasta 2^40 y 2^64, empates construidos,
+  acarreos como 9,995) en Linux y bajo wine x64/x86: cero diferencias.
+  `pascal_cli_conformance.sh` tiene la red rápida, con tamaños de `text.bin`
+  barridos para caer en empates.
 * **`{$IFDEF}` con un símbolo mal escrito evalúa falso en silencio.** FPC no
   avisa. A ytool le costó **toda la vida de su port**: un `CPU64BITS` (que no
   existe; el correcto es `CPU64`) hizo que *toda* build de 64 bits tomara la

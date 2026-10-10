@@ -867,7 +867,7 @@ begin
     respuesta en su header, asi que lleva la misma linea }
   if (ai.Mode = 'Index-LZ') or (ai.Mode = 'v5') then
   begin
-    if ai.OrigSize > 0 then pct := ai.CompSize * 100.0 / ai.OrigSize else pct := 0;
+    pct := PercentOf(ai.CompSize, ai.OrigSize);
     WriteErr('.  ' + Show3(ai.OrigSize) + ' -> ' + Show3(ai.CompSize) + ': ' + Fixed(pct, 2) + '%' + #10);
     { el C++ reporta el pico de RAM que necesitaria su derrame; el port no
       mide un pico, asi que ese campo es un marcador. El resto es real. }
