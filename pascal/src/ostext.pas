@@ -372,7 +372,7 @@ begin
   SetLength(w, n);
   Move(buf[0], w[1], n * SizeOf(WideChar));
   { un surrogate suelto no tiene UTF-8: el Rust lo llevaria en WTF-8, aca
-    queda vacio y la creacion del temporal falla }
+    queda vacio y CreateTempExclusive (spillfile.pas) lo toma por falla }
   if not Utf16ToUtf8(w, Result) then Result := '';
 end;
 

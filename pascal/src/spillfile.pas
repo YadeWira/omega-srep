@@ -116,12 +116,21 @@ end;
 
 function CreateTempExclusive(const Prefix: AnsiString;
                              out Path: AnsiString): TOwnedHandleStream;
-var h: THandle; n: QWord;
+var h: THandle; n: QWord; dir: AnsiString;
 begin
   Result := nil;
+  dir := RustTempDir;
+{$IFDEF WINDOWS}
+  { GetTempPathW nunca da vacio (cae al directorio de Windows): vacio es que
+    fallo o que trae un surrogate suelto sin UTF-8. Sin este corte el nombre
+    quedaba relativo y el temporal se creaba en el directorio actual; el Rust
+    falla ("Can't allocate a unique tempfile"). En Unix un TMPDIR vacio SI es
+    relativo, como en el Rust. }
+  if dir = '' then begin Path := ''; Exit; end;
+{$ENDIF}
   n := Counter;
   Inc(Counter);
-  Path := RustTempDir + Prefix + '-' + IntToStr(GetProcessID) + '-' +
+  Path := dir + Prefix + '-' + IntToStr(GetProcessID) + '-' +
           IntToStr(NowNanos) + '-' + IntToStr(n);
   h := OpenExclusive(Path);
   if h = feInvalidHandle then Exit;
