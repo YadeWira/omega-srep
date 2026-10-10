@@ -159,13 +159,25 @@ begin
   if (A <> 0) and (B > 1) then Result := ((A - 1) div B) * B + B else Result := A;
 end;
 
+{ seek(..)? del encoder: falla solo si falla la llamada al sistema (una
+  entrada que es un FIFO o un pipe), y entonces es EncodeError::Io. La
+  posicion no se compara con nada, como en el Rust. }
+function EncSeek(S: TStream; Off: Int64; Origin: TSeekOrigin): QWord;
+var r: Int64;
+begin
+  r := S.Seek(Off, Origin);
+  if r < 0 then raise EEncode.Create('Io');
+  Result := QWord(r);
+end;
+
 { Un fread en un offset explicito. El offset no sobra: match_len re-lee el
   MISMO stream en cualquier posicion, asi que las lecturas secuenciales se
   re-anclan cada vez. }
 function ReadBlockAt(S: TStream; Off: QWord; var B: TBytes; At, Len: QWord): QWord;
 begin
   Result := 0;
-  S.Seek(Int64(Off), soBeginning);
+  if Off > QWord(High(Int64)) then raise EEncode.Create('Io');
+  EncSeek(S, Int64(Off), soBeginning);
   if Len > 0 then Result := ReadUpTo(S, B[At], Len);
 end;
 
@@ -247,7 +259,7 @@ var
   storedHashSize, futurelzBaseLen: QWord;
   v5h: TV5Header;
   blocks: TCompressedBlocks;
-  nblocks, actual: QWord;
+  nblocks, actual, headerLen: QWord;
 begin
   if not HashByName(Opts.Hash, info) then
     raise EEncode.Create('UnknownHash("' + Opts.Hash + '")');
@@ -318,8 +330,8 @@ begin
 
   { -sBYTES gana sobre la medicion: es lo que el C++ usa con stdin, y decide
     la cantidad de bloques y el tamano del match finder }
-  fileSize := QWord(Input.Seek(0, soEnd));
-  Input.Seek(0, soBeginning);
+  fileSize := EncSeek(Input, 0, soEnd);
+  EncSeek(Input, 0, soBeginning);
   if Opts.HasDeclaredSize then
   begin
     { el match finder se dimensiona con lo declarado: una entrada mas larga
@@ -342,8 +354,8 @@ begin
     { del largo REAL de la entrada, no de fileSize: con stdin y sin -s,
       fileSize es el default de 25 GiB y el header no coincidia con el footer
       (el bug de 2.0.0-2.1.1 en el Rust, arreglado en los dos a la vez) }
-    actual := QWord(Input.Seek(0, soEnd));
-    Input.Seek(0, soBeginning);
+    actual := EncSeek(Input, 0, soEnd);
+    EncSeek(Input, 0, soBeginning);
     v5h.BlockCount := DWord((actual + bufsize - 1) div bufsize);
     v5h.OriginalSize := actual;
     hb := EncodeV5Header(v5h);
@@ -352,6 +364,8 @@ begin
     hb := EncodeArchiveHeader(ah);
   Output.WriteBuffer(hb[0], Length(hb));
   if Length(seed) > 0 then Output.WriteBuffer(seed[0], Length(seed));
+  { donde empieza lo que escribe la segunda pasada (hb se reusa abajo) }
+  headerLen := QWord(Length(hb)) + QWord(Length(seed));
   SetLength(blocks, 0);
   nblocks := 0;
 
@@ -488,7 +502,8 @@ begin
   { Future-LZ, Index-LZ y v5 re-emiten la lista de cada bloque (srep.cpp:820) }
   if not ioLz then
     RunSecondPass(blocks, nblocks, Input, Output, roundMatches, DWord(baseLen),
-                  DWord(futurelzBaseLen), futureLz, indexLz, v5, Opts.DupMeta, Opts.Index);
+                  DWord(futurelzBaseLen), futureLz, indexLz, v5, Opts.DupMeta, Opts.Index,
+                  headerLen);
   finally
     ZFree(Pointer(dict));
     DcFree(inmem);

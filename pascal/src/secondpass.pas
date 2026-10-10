@@ -30,11 +30,15 @@ type
   TCompressedBlocks = array of TCompressedBlock;
 
 { RoundMatches/BaseLen describen los records de la PRIMERA pasada; los que
-  se re-emiten usan FuturelzBaseLen. Input se relee desde el principio. }
+  se re-emiten usan FuturelzBaseLen. Input se relee desde el principio.
+  BaseOffset es lo que ya se escribio en Output antes de esta pasada (la
+  cabecera y la semilla): el offset de la meta de -dup se cuenta desde ahi,
+  como el Rust, y no se le pregunta a Output.Position, que en un FIFO o un
+  pipe no existe (daba -1 y el footer salia con un offset de 2^64-1). }
 procedure RunSecondPass(const Blocks: TCompressedBlocks; NBlocks: QWord; Input, Output: TStream;
                         RoundMatches: Boolean; BaseLen, FuturelzBaseLen: DWord;
                         FutureLz, IndexLz, V5: Boolean; const DupMeta: TBytes;
-                        Index: TStream = nil);
+                        Index: TStream; BaseOffset: QWord);
 
 implementation
 
@@ -119,7 +123,7 @@ end;
 procedure RunSecondPass(const Blocks: TCompressedBlocks; NBlocks: QWord; Input, Output: TStream;
                         RoundMatches: Boolean; BaseLen, FuturelzBaseLen: DWord;
                         FutureLz, IndexLz, V5: Boolean; const DupMeta: TBytes;
-                        Index: TStream = nil);
+                        Index: TStream; BaseOffset: QWord);
 var
   matches: TMatches;
   bi, at, used, blockPos, i, savedI, src, len, statSize, totalStat, inPos, lit, vn, got: QWord;
@@ -129,7 +133,16 @@ var
   header, listBytes, blockBuf, outb, v5bytes, foot: TBytes;
   outN: QWord;
   f: TV5Footer;
+  emitted: QWord;   { lo escrito en Output por esta pasada: el compsize del Rust }
+
+  procedure Emit(const B: TBytes; N: QWord);
+  begin
+    WriteBytes(Output, B, N);
+    Inc(emitted, N);
+  end;
+
 begin
+  emitted := 0;
   { 1. juntar los matches de todos los bloques (srep.cpp:863-878) }
   matches.N := 0;
   bi := 0;
@@ -156,7 +169,9 @@ begin
   totalStat := 0;
   stat.N := 0;
   i := 0;
-  Input.Seek(0, soBeginning);       { los literales de Future-LZ se releen, en orden }
+  { los literales de Future-LZ se releen, en orden; el seek(Start(0))? del
+    Rust: si falla, EncodeError::Io }
+  if Input.Seek(0, soBeginning) < 0 then raise EEncode.Create('Io');
   bi := 0;
   while bi < NBlocks do
   begin
@@ -211,14 +226,14 @@ begin
       { block->header[2] = stat_size: la primera pasada lo dejo en cero }
       header := Copy(Blocks[bi].Header);
       PutLE32(header, 8, DWord(statSize));
-      WriteBytes(Output, header, Length(header));
+      Emit(header, Length(header));
     end;
 
     { la lista se arma una vez y va al sink que la tenga (el archivo, o el
       -index=), asi los dos destinos no pueden separarse }
     if V5 then
     begin
-      if Index <> nil then WriteBytes(Index, v5bytes, vn) else WriteBytes(Output, v5bytes, vn);
+      if Index <> nil then WriteBytes(Index, v5bytes, vn) else Emit(v5bytes, vn);
     end
     else
     begin
@@ -226,7 +241,7 @@ begin
       at := 0;
       while at < stat.N do begin PutLE32(listBytes, at * 4, stat.W[at]); Inc(at); end;
       if Index <> nil then WriteBytes(Index, listBytes, stat.N * 4)
-      else WriteBytes(Output, listBytes, stat.N * 4);
+      else Emit(listBytes, stat.N * 4);
     end;
 
     table[bi] := DWord(statSize);
@@ -265,7 +280,7 @@ begin
         Move(blockBuf[inPos], outb[outN], Blocks[bi].Size - inPos);
         outN := outN + (Blocks[bi].Size - inPos);
       end;
-      WriteBytes(Output, outb, outN);
+      Emit(outb, outN);
     end;
     Inc(bi);
   end;
@@ -276,9 +291,9 @@ begin
     SetLength(foot, NBlocks * 4);
     bi := 0;
     while bi < NBlocks do begin PutLE32(foot, bi * 4, table[bi]); Inc(bi); end;
-    WriteBytes(Output, foot, NBlocks * 4);
+    Emit(foot, NBlocks * 4);
     foot := EncodeFooterHead(totalStat, DWord(NBlocks));
-    WriteBytes(Output, foot, Length(foot));
+    Emit(foot, Length(foot));
   end;
   if V5 then
   begin
@@ -294,15 +309,15 @@ begin
       if (Length(DupMeta) < 24) or (DupMeta[0] <> Ord('D')) or (DupMeta[1] <> Ord('U')) or
          (DupMeta[2] <> Ord('P')) or (DupMeta[3] <> Ord('R')) or (DupMeta[4] <> 1) then
         raise EEncode.Create('BadDupMeta');
-      f.MetaOffset := QWord(Output.Position);
+      f.MetaOffset := BaseOffset + emitted;
       SetLength(foot, Length(DupMeta) + 4);
       Move(DupMeta[0], foot[0], Length(DupMeta));
       PutLE32(foot, Length(DupMeta), Crc32c(DupMeta, 0, Length(DupMeta)));
-      WriteBytes(Output, foot, Length(foot));
+      Emit(foot, Length(foot));
       f.MetaSize := DWord(Length(foot));
     end;
     foot := EncodeV5Footer(f);
-    WriteBytes(Output, foot, Length(foot));
+    Emit(foot, Length(foot));
   end;
 end;
 

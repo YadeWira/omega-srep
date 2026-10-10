@@ -160,20 +160,10 @@ begin
   {$ENDIF}
 end;
 
+{ std::fs::metadata(path).len() con unwrap_or(0): sin abrir el archivo }
 function FileSizeOf(const Path: AnsiString): QWord;
-var fs: TFileStream;
 begin
-  Result := 0;
-  try
-    fs := TFileStream.Create(Path, fmOpenRead or fmShareDenyNone);
-    try
-      Result := QWord(fs.Size);
-    finally
-      fs.Free;
-    end;
-  except
-    Result := 0;
-  end;
+  Result := PathSize(Path);
 end;
 
 { un temporal unico en $TMPDIR/%TEMP%, como TempFile::new; el que llama lo borra }
@@ -212,43 +202,72 @@ begin
   end;
 end;
 
-function ReadAllStdin: TBytes;
-var n: LongInt; used, room: SizeInt;
+{ Todo el archivo, para -i y --verify, que lo parsean en memoria (el
+  read_archive de modes.rs). Primero los 8 bytes del principio: un archivo
+  empieza con la magia de v5 o con las dos firmas de v1-v4, y si no, los dos
+  lo rechazan con el mismo mensaje sea lo que sea lo que sigue. Ahi se corta:
+  una entrada sin fin (/dev/zero, un pipe que no se cierra) no se lee hasta
+  agotar la memoria. Lo demas se lee hasta el EOF, sin preguntar el largo: un
+  FIFO, <(cmd) o un archivo de /proc no lo saben (THandleStream.Size daba -1
+  o 0) y el Rust los lee igual. False si falla una lectura. }
+function SlurpArchive(H: THandle; out B: TBytes): Boolean;
+var used, room: SizeInt; n: LongInt;
+
+  function Word32(At: LongInt): DWord;
+  begin
+    Result := DWord(B[At]) or (DWord(B[At + 1]) shl 8) or (DWord(B[At + 2]) shl 16) or
+              (DWord(B[At + 3]) shl 24);
+  end;
+
 begin
-  SetLength(Result, 1 shl 20);
+  Result := False;
+  SetLength(B, 8);
   used := 0;
+  while used < 8 do
+  begin
+    n := FileRead(H, B[used], 8 - used);
+    if n < 0 then Exit;
+    if n = 0 then Break;
+    Inc(used, n);
+  end;
+  if used < 8 then
+  begin
+    SetLength(B, used);
+    Exit(True);
+  end;
+  if not ((Word32(0) = V5_MAGIC) or
+          ((Word32(0) = BULAT_SIGNATURE) and (Word32(4) = SREP_SIGNATURE))) then
+    Exit(True);
+  SetLength(B, 1 shl 16);
   repeat
-    if used = Length(Result) then SetLength(Result, Length(Result) * 2);
+    if used = Length(B) then SetLength(B, Length(B) * 2);
+    room := Length(B) - used;
     { FileRead toma LongInt: pasado 2 GiB la cuenta truncada saldria negativa }
-    room := Length(Result) - used;
     if room > SizeInt(IO_SLICE) then room := SizeInt(IO_SLICE);
-    n := FileRead(InHandle, Result[used], LongInt(room));
-    if n < 0 then Fail(ERROR_IO, 'Can''t read from stdin');
+    n := FileRead(H, B[used], LongInt(room));
+    if n < 0 then Exit;
     Inc(used, n);
   until n = 0;
-  SetLength(Result, used);
-end;
-
-function ReadAllFile(const Path: AnsiString): TBytes;
-var fs: TFileStream;
-begin
-  try
-    fs := TFileStream.Create(Path, fmOpenRead or fmShareDenyNone);
-    try
-      SetLength(Result, fs.Size);
-      if fs.Size > 0 then ReadExact(fs, Result[0], QWord(fs.Size));
-    finally
-      fs.Free;
-    end;
-  except
-    on X: ERun do raise;
-    on X: Exception do Fail(ERROR_IO, 'Can''t open ' + Path + ' for read');
-  end;
+  SetLength(B, used);
+  Result := True;
 end;
 
 function ReadArchive(const FiName: AnsiString): TBytes;
+var s: TRawFileStream; ok: Boolean;
 begin
-  if FiName = '-' then Result := ReadAllStdin else Result := ReadAllFile(FiName);
+  if FiName = '-' then
+  begin
+    if not SlurpArchive(InHandle, Result) then Fail(ERROR_IO, 'Can''t read from stdin');
+    Exit;
+  end;
+  s := OpenReadRaw(FiName);
+  if s = nil then Fail(ERROR_IO, 'Can''t open ' + FiName + ' for read');
+  try
+    ok := SlurpArchive(s.Handle, Result);
+  finally
+    s.Free;
+  end;
+  if not ok then Fail(ERROR_IO, 'Can''t open ' + FiName + ' for read');
 end;
 
 { ----------------------------------------------------------- progress --- }
@@ -461,8 +480,9 @@ var
   spoolOwned, hasDeclared: Boolean;
   declared, read_, written: QWord;
   enc: TEncodeOptions;
-  indexS: TFileStream;
-  inS, outS: TFileStream;
+  indexS, outS: TRawFileStream;
+  inS: TFileStream;
+  endPos: Int64;
   cw: TCountWriter;
   dp: TDupParams;
   dm: TDupMode;
@@ -520,11 +540,9 @@ begin
     try
       if O.IndexFile <> '' then
       begin
-        try
-          indexS := TFileStream.Create(O.IndexFile, fmCreate);
-        except
+        indexS := CreateWriteRaw(O.IndexFile);
+        if indexS = nil then
           Fail(ERROR_IO, 'Can''t open index file ' + O.IndexFile + ' for write');
-        end;
         enc.Index := indexS;
       end;
 
@@ -533,13 +551,12 @@ begin
         if O.Format = fmtV5 then dm := dmV5 else dm := dmV4;
         dp := O.Chunk;
         try
-          DupEncode(inputPath, FoutName, enc, KindOf(O), ContainerOf(O), dp, O.DupParanoid, dm,
-                    @OnProgress);
+          written := DupEncode(inputPath, FoutName, enc, KindOf(O), ContainerOf(O), dp,
+                               O.DupParanoid, dm, @OnProgress);
         except
           on X: ERun do raise;
           on X: Exception do DupFail(X);
         end;
-        written := FileSizeOf(FoutName);
       end
       else
       begin
@@ -572,18 +589,21 @@ begin
         end
         else
         begin
-          try
-            outS := TFileStream.Create(FoutName, fmCreate);
-          except
-            Fail(ERROR_IO, 'Can''t open ' + FoutName + ' for write');
-          end;
+          { File::create: O_WRONLY, sin el open previo de TFileStream que se
+            bloqueaba sobre un FIFO }
+          outS := CreateWriteRaw(FoutName);
+          if outS = nil then Fail(ERROR_IO, 'Can''t open ' + FoutName + ' for write');
           try
             Encode(inS, outS, enc, KindOf(O), ContainerOf(O), @OnProgress);
           except
             on X: ERun do raise;
             on X: Exception do Fail(ERROR_COMPRESSION, EncodeErrorText(X));
           end;
-          written := QWord(outS.Seek(0, soEnd));
+          { out.seek(End(0)).map_err(..): sobre un FIFO o un pipe el archivo
+            ya se escribio entero, y lo que falla es medirlo }
+          endPos := outS.Seek(0, soEnd);
+          if endPos < 0 then Fail(ERROR_IO, 'Can''t write the archive');
+          written := QWord(endPos);
         end;
       end;
     finally
@@ -619,72 +639,20 @@ begin
   D.VmFile := O.VmFile;
 end;
 
-{$IFDEF UNIX}
-{ Un directorio como entrada de -d. El FileOpen de FPC rechaza los
-  directorios; el File::open del Rust en Unix no: abre, y lo que falla despues
-  es el seek o el read, con un error distinto segun el sistema de archivos
-  (ext4 da un largo enorme al seek, tmpfs da EINVAL, /proc da 0). Se recorre
-  el mismo camino que el Rust con las mismas llamadas, para dar su error: el
-  sniff de -dup (dup.rs: Io si falla el seek, Truncated si falla el read) y
-  despues archive::decode (el Io(Os ..) del seek o del read). }
-procedure DirectoryInput(const O: TOptions; const FiName, FoutName: AnsiString);
-var fd: cint; len: Int64; b: array[0..15] of Byte; seekErr, readErr: LongInt;
-    t: TFileStream;
-begin
-  fd := fpOpen(PChar(FiName), O_RDONLY);
-  if fd < 0 then Exit;            { tampoco el Rust lo abre: el camino de siempre }
-  len := fpLseek(fd, 0, Seek_End);
-  seekErr := 0;
-  if len < 0 then seekErr := fpgeterrno;
-  readErr := 0;
-  if len >= 0 then
-  begin
-    fpLseek(fd, 0, Seek_Set);
-    if fpRead(fd, b[0], SizeOf(b)) < 0 then readErr := fpgeterrno;
-  end;
-  fpClose(fd);
-  if readErr = 0 then readErr := 21;   { EISDIR, lo que da todo read de un directorio }
-  if FoutName <> '-' then
-  begin
-    { dup::decode: seek(End)? es Io; con 12 bytes o mas lee la cola (read_exact_at,
-      que da Truncated) }
-    if len < 0 then Fail(ERROR_IO, 'Io');
-    if len >= 12 then Fail(ERROR_IO, 'Truncated');
-    try
-      t := TFileStream.Create(FoutName, fmCreate);
-      t.Free;
-    except
-      Fail(ERROR_IO, 'Can''t open ' + FoutName + ' for write');
-    end;
-  end;
-  if O.IndexFile <> '' then
-    if not (FileExists(O.IndexFile) or DirectoryExists(O.IndexFile)) then
-      Fail(ERROR_IO, 'Can''t open index file ' + O.IndexFile + ' for read');
-  if len < 0 then Fail(ERROR_COMPRESSION, FaultDebug(FaultOs(seekErr)) + ': ' + FiName);
-  Fail(ERROR_COMPRESSION, FaultDebug(FaultOs(readErr)) + ': ' + FiName);
-end;
-{$ENDIF}
-
 function Decompress(const O: TOptions; const FiName, FoutName: AnsiString): LongInt;
 var
   opts: TFutureLzOptions;
   isDup: Boolean;
   inputPath, sinkPath, stdinSpool, stdoutSpool: AnsiString;
   err: TDecodeFault;
-  inS, sink, f: TFileStream;
-  indexS: TStream;
-{$IFDEF UNIX}
-  ixfd: cint;
-{$ENDIF}
+  inS, indexS, sink, f: TRawFileStream;
   total, decoded: QWord;
+  endPos: Int64;
   ok: Boolean;
   buf: array of Byte;
   n, off, w: LongInt;
 begin
   DecodeOptionsOf(O, opts);
-{$IFDEF UNIX}
-  if (FiName <> '-') and DirectoryExists(FiName) then DirectoryInput(O, FiName, FoutName);
-{$ENDIF}
 
   { -dup primero: el C++ lo detecta en cada descompresion, con o sin la
     opcion. Reescribe la cola del archivo, asi que necesita dos archivos de
@@ -720,12 +688,14 @@ begin
     end
     else inputPath := FiName;
 
-    try
-      inS := TFileStream.Create(inputPath, fmOpenRead or fmShareDenyNone);
-    except
-      Fail(ERROR_IO, 'Can''t open ' + FiName + ' for read');
-    end;
-    total := QWord(inS.Size);
+    { File::open: el open crudo, que abre lo que abre el Rust (un directorio
+      en Unix tambien; falla despues, con el errno que le toque, en el seek o
+      el read del decoder, como en el Rust). Asi no hacen falta casos
+      especiales para directorios, FIFOs ni /proc: los seeks y las lecturas
+      de los decoders llevan el errno a su Io(Os ..). }
+    inS := OpenReadRaw(inputPath);
+    if inS = nil then Fail(ERROR_IO, 'Can''t open ' + FiName + ' for read');
+    total := HandleSize(inS.Handle);
 
     BarInit(GBar, O.Bar);
     StatsInit(GStats, O.Verbosity > 0);
@@ -739,33 +709,18 @@ begin
       sinkPath := stdoutSpool;
     end
     else sinkPath := FoutName;
-    try
-      sink := TFileStream.Create(sinkPath, fmCreate);
-    except
-      Fail(ERROR_IO, 'Can''t open ' + FoutName + ' for write');
-    end;
+    sink := CreateRaw(sinkPath);
+    if sink = nil then Fail(ERROR_IO, 'Can''t open ' + FoutName + ' for write');
 
     { -index= de vuelta: las listas salen del archivo nombrado }
+    { un directorio: el File::open del Rust lo abre y falla al leerlo (un
+      Io(Os) con EISDIR), o no lo lee nunca si el archivo no usa el indice }
     if O.IndexFile <> '' then
-      try
-      begin
-{$IFDEF UNIX}
-        { un directorio: el File::open del Rust lo abre y falla al leerlo
-          (un Io(Os) con EISDIR), o no lo lee nunca si el archivo no usa el
-          indice. FileOpen lo rechazaria antes. }
-        if DirectoryExists(O.IndexFile) then
-        begin
-          ixfd := fpOpen(PChar(O.IndexFile), O_RDONLY);
-          if ixfd < 0 then raise EFOpenError.Create(O.IndexFile);
-          indexS := TOwnedHandleStream.Create(ixfd);
-        end
-        else
-{$ENDIF}
-        indexS := TFileStream.Create(O.IndexFile, fmOpenRead or fmShareDenyNone);
-      end
-      except
+    begin
+      indexS := OpenReadRaw(O.IndexFile);
+      if indexS = nil then
         Fail(ERROR_IO, 'Can''t open index file ' + O.IndexFile + ' for read');
-      end;
+    end;
 
     { un rechazo es una salida limpia distinta de cero: nunca un crash ni un
       cuelgue, que es lo que asertan los tests de corrupcion }
@@ -777,16 +732,24 @@ begin
     end;
     (* el Debug del DecodeError, como modes.rs: `format!("{e:?}: {finame}")` *)
     if not ok then Fail(ERROR_COMPRESSION, FaultDebug(err) + ': ' + FiName);
-    decoded := QWord(sink.Seek(0, soEnd));
+    { sink.seek(End(0)).map_err(..): falla solo si falla el seek. Con un
+      archivo sin bloques a un pipe es lo primero que lo prueba. }
+    endPos := sink.Seek(0, soEnd);
+    if endPos < 0 then Fail(ERROR_IO, 'Can''t write the output');
+    decoded := QWord(endPos);
     FreeAndNil(sink);
 
     if stdoutSpool <> '' then
     begin
-      f := TFileStream.Create(stdoutSpool, fmOpenRead or fmShareDenyNone);
+      { File::open(..).map_err(|_| "tempfile") y despues el io::copy, que
+        falla igual al leer o al escribir: "Can't write to stdout" }
+      f := OpenReadRaw(stdoutSpool);
+      if f = nil then Fail(ERROR_IO, 'tempfile');
       try
         SetLength(buf, 1 shl 20);
         repeat
-          n := f.Read(buf[0], Length(buf));
+          n := FileRead(f.Handle, buf[0], Length(buf));
+          if n < 0 then Fail(ERROR_IO, 'Can''t write to stdout');
           off := 0;
           while off < n do
           begin
@@ -924,6 +887,12 @@ var
   a: AnsiString;
   o: TOptions;
 begin
+{$IFDEF UNIX}
+  { el runtime del Rust ignora SIGPIPE antes de main: un lector que se va
+    (`osrep -d x.osr - | head`) es un EPIPE en el write y un error del
+    programa, no una muerte por senal (rc 141) a mitad de la salida }
+  fpSignal(SIGPIPE, signalhandler(SIG_IGN));
+{$ENDIF}
   SetLength(argv, ParamCount);
   for i := 1 to ParamCount do argv[i - 1] := ParamStr(i);
 

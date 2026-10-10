@@ -115,6 +115,17 @@ procedure ClearOsError;
   EINVAL en Unix, ERROR_NEGATIVE_SEEK en Windows }
 function FaultNegativeSeek: TDecodeFault;
 
+{ el seek del Rust: falla SOLO si falla la llamada al sistema, con su errno,
+  y devuelve lo que ella devuelve. La posicion no se compara con la pedida:
+  lseek sobre /dev/null devuelve 0 y el Rust sigue (y la lectura que viene
+  da EOF); sobre un pipe falla con ESPIPE, y ahi el Rust corta. Leer de un
+  pipe sin haber podido hacer el seek era el cuelgue: el sink abierto en
+  lectura-escritura se esperaba a si mismo. }
+function SeekOrFault(S: TStream; Off: Int64; Origin: TSeekOrigin): QWord;
+{ SeekFrom::Start(off) con un u64: lo que no entra en un i64 es el error que
+  da el Rust ahi (FaultNegativeSeek) }
+function SeekToOrFault(S: TStream; Off: QWord): QWord;
+
 implementation
 
 uses
@@ -522,12 +533,49 @@ begin
 {$ENDIF}
 end;
 
+{ Que excepcion llega aca, y que se imprime:
+    * EDecodeFault: el error ya armado, el caso normal.
+    * EOutOfMemory: un SetLength que no pudo; el Rust reserva con try_reserve
+      y da out_of_memory().
+    * EOSError con codigo: trae el errno / GetLastError de verdad, y el Rust
+      ahi tiene un Os(code).
+    * cualquier otra (un EReadError de un TStream, un range check): en el
+      Rust no existe, es un bug del port. Toda la E/S de los decoders va por
+      los helpers de esta unidad (ReadExactOrFault, WriteAllOrFault,
+      SeekOrFault...), que lanzan EDecodeFault, asi que esto no deberia pasar
+      nunca. Si pasa, sale con forma de io::Error del Rust (para no romper a
+      quien parsea el stderr) pero con la clase de FPC adentro, para que se
+      vea que es del port: Io(Custom { kind: Other, error: "EReadError: .." }).
+      El texto de las herramientas (Msg) sigue siendo el mensaje solo. }
 function FaultOfException(X: Exception): TDecodeFault;
 begin
   if X is EDecodeFault then Exit(EDecodeFault(X).Fault);
-  { SetLength que no pudo: el Rust reserva con try_reserve y da out_of_memory() }
   if X is EOutOfMemory then Exit(FaultOutOfMemory);
-  Result := FaultIo(ioRaw, '', X.Message);
+  if (X is EOSError) and (EOSError(X).ErrorCode <> 0) then
+    Exit(FaultOs(LongInt(EOSError(X).ErrorCode)));
+  Result := FaultIo(ioCustom, 'Other', X.ClassName + ': ' + X.Message);
+  Result.Msg := X.Message;
+end;
+
+function SeekOrFault(S: TStream; Off: Int64; Origin: TSeekOrigin): QWord;
+var r: Int64; f: TDecodeFault;
+begin
+  ClearOsError;
+  r := S.Seek(Off, Origin);
+  if r < 0 then
+  begin
+    { -1 sin errno no lo da ningun sistema; si un stream propio lo devuelve,
+      es el EINVAL de un seek invalido }
+    if LastOsCode <> 0 then f := LastOsFault else f := FaultNegativeSeek;
+    raise EDecodeFault.CreateFault(f);
+  end;
+  Result := QWord(r);
+end;
+
+function SeekToOrFault(S: TStream; Off: QWord): QWord;
+begin
+  if Off > QWord(High(Int64)) then raise EDecodeFault.CreateFault(FaultNegativeSeek);
+  Result := SeekOrFault(S, Int64(Off), soBeginning);
 end;
 
 function IsIoException(X: Exception): Boolean;

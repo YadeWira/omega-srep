@@ -436,6 +436,98 @@ case "$PA" in *linux*)
     done
     ;;
 esac
+# Archivos raros como entrada o salida: /dev/null, pipes, FIFOs, <(cmd),
+# /proc, /dev/zero. El Rust solo falla donde falla una llamada al sistema (un
+# seek sobre un pipe da ESPIPE, uno sobre /dev/null da 0 y sigue), y el Pascal
+# tiene que dar lo mismo: el mismo codigo, el mismo stderr y la misma salida,
+# y nunca colgarse. Antes de la rama perf8-io, -d a /dev/null de un v5 de
+# varios bloques fallaba con "Success"; a un pipe, v3/v4 salian bien con
+# basura y v1 y -dup se colgaban leyendo su propio pipe; un FIFO como salida
+# se colgaba en el open; desde un FIFO, <(cmd) o /proc daba NotAnOsrepFile;
+# -i/--verify no leian un pipe; y un lector que se iba mataba al proceso con
+# SIGPIPE. Solo en el nativo: bajo wine esos dispositivos no existen.
+# Cada caso con timeout: un cuelgue es un fallo, no una espera.
+case "$PA" in *linux*)
+    # $1=descripcion, $2=bash que corre "$B"; compara codigo, stderr y stdout
+    samesh() {
+        local rrc=0 prc=0
+        B="$RSX" timeout 30 bash -c "set -o pipefail; $2" </dev/null >r.o 2>r.e || rrc=$?
+        B="$PAX" timeout 30 bash -c "set -o pipefail; $2" </dev/null >p.o 2>p.e || prc=$?
+        [ "$prc" -ne 124 ] || fail "$1: el Pascal se colgo"
+        [ "$rrc" -ne 124 ] || fail "$1: el Rust se colgo"
+        [ "$rrc" -eq "$prc" ] || fail "$1: exit $prc en Pascal, $rrc en Rust
+      Rust:   $(cat r.e)
+      Pascal: $(cat p.e)"
+        cmp -s r.e p.e || fail "$1: stderr difiere
+      Rust:   $(cat r.e)
+      Pascal: $(cat p.e)"
+        cmp -s r.o p.o || fail "$1: stdout difiere"
+        cat r.e >> seen
+        dpass=$((dpass + 1))
+    }
+    : > e.bin
+    "$RSX" -v0 --seed=7 e.bin e5.osr >/dev/null 2>&1 || fail "no se pudo armar e5.osr"
+    "$RSX" -v0 --seed=7 --format=v4 e.bin e4.osr >/dev/null 2>&1 || fail "no se pudo armar e4.osr"
+    # el caso de /dev/null solo muerde con mas de un bloque (el seek al
+    # segundo devuelve 0 y no lo que se pidio)
+    nb=$("$RSX" --verify v5.osr 2>&1 | sed -n 's/.*intact\. \([0-9]*\) blocks.*/\1/p')
+    [ "${nb:-0}" -ge 2 ] || fail "v5.osr tiene ${nb:-0} bloques; el caso de /dev/null necesita 2 o mas"
+    for f in v5 v4 v3 v1 v5dup v4dup; do
+        # /dev/null: lseek devuelve 0 sin error; el Rust sigue
+        samesh "-d $f a /dev/null" '"$B" -v0 -d '$f'.osr /dev/null'
+        # una salida que no admite seek: ESPIPE en el Rust, para todas las versiones
+        samesh "-d $f a /dev/stdout por un pipe" '"$B" -v0 -d '$f'.osr /dev/stdout | od -c | tail -3'
+        samesh "-d $f a >(cmd)" '"$B" -v0 -d '$f'.osr >(cat >/dev/null)'
+        samesh "-d $f a un FIFO" 'rm -f fo; mkfifo fo; (timeout 5 cat fo >/dev/null) & "$B" -v0 -d '$f'.osr fo; r=$?; wait; rm -f fo; exit $r'
+        # una entrada que no admite seek
+        samesh "-d <(cat $f) a un archivo" '"$B" -v0 -d <(cat '$f'.osr) o.out; r=$?; rm -f o.out; exit $r'
+        samesh "-d <(cat $f) a stdout" '"$B" -v0 -d <(cat '$f'.osr) - | od -c | tail -3'
+        samesh "-d de un FIFO ($f)" 'rm -f fi; mkfifo fi; (timeout 5 cat '$f'.osr >fi) & "$B" -v0 -d fi o.out; r=$?; wait; rm -f fi o.out; exit $r'
+        # -i y --verify leen el pipe entero, como el Rust
+        samesh "-i <(cat $f)" '"$B" -v0 -i <(cat '$f'.osr)'
+        samesh "--verify <(cat $f)" '"$B" -v0 --verify <(cat '$f'.osr)'
+        samesh "--verify de un FIFO ($f)" 'rm -f fi; mkfifo fi; (timeout 5 cat '$f'.osr >fi) & "$B" -v0 --verify fi; r=$?; wait; rm -f fi; exit $r'
+        samesh "-i - por un pipe ($f)" 'cat '$f'.osr | "$B" -v0 -i -'
+    done
+    # sin bloques, nada hace seek hasta medir la salida: "Can't write the output"
+    samesh "-d de un v5 vacio a un pipe" '"$B" -v0 -d e5.osr /dev/stdout | cat'
+    samesh "-d de un v4 vacio a un pipe" '"$B" -v0 -d e4.osr /dev/stdout | cat'
+    # /proc: el seek al final da EINVAL
+    samesh "-d /proc/self/status a stdout" '"$B" -v0 -d /proc/self/status - | cat'
+    samesh "-d /proc/self/status a un archivo" '"$B" -v0 -d /proc/self/status o.out; r=$?; rm -f o.out; exit $r'
+    samesh "-i /proc/self/status" '"$B" -v0 -i /proc/self/status'
+    samesh "--verify /proc/self/status" '"$B" -v0 --verify /proc/self/status'
+    samesh "-d /dev/null" '"$B" -v0 -d /dev/null - | cat'
+    # /dev/zero: el Rust 2.1.2 lo leia entero antes de mirar la magia. Con el
+    # espacio de direcciones limitado, volver a eso es un fallo y no un OOM.
+    for m in -i --verify; do
+        samesh "$m /dev/zero" '(ulimit -v 1048576; "$B" -v0 '$m' /dev/zero)'
+        samesh "$m - </dev/zero" '(ulimit -v 1048576; "$B" -v0 '$m' - </dev/zero)'
+    done
+    # el lector que se va: EPIPE y "Can't write to stdout", no SIGPIPE (141).
+    # far.osr da 2 MiB, mas que el buffer de un pipe: el corte es seguro.
+    samesh "-d a un pipe que se cierra" '"$B" -v0 -d far.osr - | head -c 10 >/dev/null'
+    # comprimir a un FIFO o a un pipe: el archivo sale entero y despues falla
+    # el seek que lo mide (o, con -dup, mide 0); antes se colgaba en el open
+    for c in "" "--format=v4" "-m3f --format=v4" "-dup" "-dup --format=v4" "-m0"; do
+        samesh "comprimir $c a un FIFO" 'rm -f fo; mkfifo fo; (timeout 5 md5sum <fo >fo.sum) & "$B" -v0 --seed=7 '"$c"' in.bin fo; r=$?; wait; cat fo.sum; rm -f fo fo.sum; exit $r'
+        samesh "comprimir $c a /dev/stdout" '"$B" -v0 --seed=7 '"$c"' in.bin /dev/stdout | md5sum'
+        samesh "comprimir $c desde un FIFO" 'rm -f fi; mkfifo fi; (timeout 5 cat in.bin >fi) & "$B" -v0 --seed=7 '"$c"' fi o.out; r=$?; wait; md5sum <o.out; rm -f fi o.out; exit $r'
+    done
+    # un -dup con matches que caen en un bloque anterior: el Rust 2.1.2 abria
+    # el cuerpo solo para escribir y fallaba con EBADF al releerlo
+    for f in v5dup v4dup; do
+        same -v0 -d -mem0 -vmblock=4k "$f.osr" o.out
+        "$PAX" -v0 -d -mem0 -vmblock=4k "$f.osr" o.out >/dev/null 2>&1 \
+            && cmp -s in.bin o.out || fail "-d -mem0 -vmblock=4k $f.osr no reconstruyo la entrada"
+    done
+    ;;
+esac
+# ningun texto de una excepcion de FPC llega al usuario (decfault.pas,
+# FaultOfException): todo error de E/S sale con la forma del Rust
+if grep -qE 'Stream (read|write) error|EReadError|EWriteError|EStreamError|Access violation' seen; then
+    fail "un mensaje de FPC llego al stderr: $(grep -E 'Stream|Error:|violation' seen | head -3)"
+fi
 # cada forma del Debug tiene que haber aparecido al menos una vez
 for want in 'Container(Truncated)' 'Container(NoFooter)' 'Container(NotAnOsrepFile)' \
             'Container(UnsupportedVersion(' 'Container(FooterExceedsFile)' 'Container(TableMismatch)' \

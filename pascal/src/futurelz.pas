@@ -90,6 +90,8 @@ function DecodeArchive(Input, Sink: TStream; const Opts: TFutureLzOptions; Index
 
 implementation
 
+uses StreamIO;
+
 const
   INVALID_INDEX      = DWord(0);
   CHUNK_SIZE         = QWord(64);
@@ -522,14 +524,29 @@ begin
   if Len > 0 then ReadExactOrFault(S, B[Off], Len);
 end;
 
-{ THandleStream.Seek no lanza: con un offset que no entra en un Int64 devuelve
-  -1 y deja la posicion donde estaba, y lo que se lea despues sale de otro
-  lado. El Rust falla ahi (EINVAL). Solo es alcanzable con -vmblock enorme. }
+{ THandleStream.Seek no lanza: devuelve -1 y deja la posicion donde estaba,
+  y lo que se lea despues sale de otro lado. Aca un -1 es el Io(Os) del Rust.
+  Solo eso: la posicion devuelta NO se compara con la pedida, porque el Rust
+  ignora lo que devuelve el seek y lseek sobre /dev/null da 0 (un -d a
+  /dev/null fallaba aca con "Success", y el Rust termina bien). }
 procedure SeekExact(S: TStream; Off: QWord);
 begin
   if Off > QWord(High(Int64)) then Fail(deIo, FaultNegativeSeek);
-  ClearOsError;
-  if S.Seek(Int64(Off), soBeginning) <> Int64(Off) then Fail(deIo, LastOsFault);
+  try
+    SeekToOrFault(S, Off);
+  except
+    on X: EDecodeFault do Fail(deIo, X.Fault);
+  end;
+end;
+
+{ seek(SeekFrom::End(0))?: el largo que contesta el sistema }
+function SeekEnd(S: TStream): QWord;
+begin
+  try
+    Result := SeekOrFault(S, 0, soEnd);
+  except
+    on X: EDecodeFault do Fail(deIo, X.Fault);
+  end;
 end;
 
 procedure WriteZeros(S: TStream; N: QWord);
@@ -645,7 +662,7 @@ begin
   { en el orden del Rust: primero el seek (que puede fallar con EINVAL), despues
     la lectura (que falla si el slot no esta entero) }
   SeekExact(f, off);
-  if (VM.VmBlock > QWord(High(Int64)) - off) or (QWord(f.Size) < off + VM.VmBlock) then
+  if (VM.VmBlock > QWord(High(Int64)) - off) or (HandleSize(f.Handle) < off + VM.VmBlock) then
     Fail(deIo, FaultEofCustom);   { io::Error::new(UnexpectedEof, ..) }
   VM.TotalRead := VM.TotalRead + VM.VmBlock;
   VmPushFreeBlock(VM, blk);       { DESPUES de leer }
@@ -760,7 +777,7 @@ begin
     if (m.Len >= MaximumSave) and (m.Src < BlockStart) then
     begin
       { demasiado grande para guardarlo: se relee de la salida ya escrita }
-      Sink.Seek(Int64(m.Src), soBeginning);
+      SeekExact(Sink, m.Src);
       StreamReadExact(Sink, OutBuf, outPos, QWord(m.Len));
     end
     else if m.Index <> INVALID_INDEX then
@@ -890,8 +907,8 @@ begin
     try
       if Assigned(Progress) then
       begin
-        total := QWord(Input.Seek(0, soEnd));
-        Input.Seek(0, soBeginning);
+        total := SeekEnd(Input);
+        SeekExact(Input, 0);
       end;
 
       ReadOrTruncated(Input, hdr, ARCHIVE_HEADER_SIZE);
@@ -925,9 +942,9 @@ begin
       if isV4 then
       begin
         { [cabecera][semilla][bloques][listas][tabla][footer de 24] }
-        filesize := QWord(Input.Seek(0, soEnd));
+        filesize := SeekEnd(Input);
         if filesize < QWord(INDEX_LZ_FOOTER_SIZE) then Fail(deContainer, FaultContainer(ckTruncated));
-        Input.Seek(Int64(filesize - QWord(INDEX_LZ_FOOTER_SIZE)), soBeginning);
+        SeekExact(Input, filesize - QWord(INDEX_LZ_FOOTER_SIZE));
         SetLength(footer, INDEX_LZ_FOOTER_SIZE);
         StreamReadExact(Input, footer, 0, INDEX_LZ_FOOTER_SIZE);
         if (LE32(footer, 16) <> SREP_SIGNATURE_INV) or (LE32(footer, 20) <> BULAT_SIGNATURE_INV) then
@@ -946,7 +963,7 @@ begin
         if footerSize < QWord(INDEX_LZ_FOOTER_SIZE) then
           Fail(deContainer, FaultContainer(ckFooterExceedsFile));
         tableSize := footerSize - QWord(INDEX_LZ_FOOTER_SIZE);
-        Input.Seek(Int64(filesize - footerSize), soBeginning);
+        SeekExact(Input, filesize - footerSize);
         { con la suma de arriba envuelta, footerSize puede superar al archivo:
           no reservar lo que dice, leer lo que hay }
         if ReadExactOrEof(Input, tableBytes, tableSize) <> rrOK then
@@ -960,7 +977,7 @@ begin
           table[k] := LE32(tableBytes, k * 4);
           Inc(k);
         end;
-        Input.Seek(Int64(filesize - footerSize - statSize), soBeginning);
+        SeekExact(Input, filesize - footerSize - statSize);
         if ReadExactOrEof(Input, statBytes, statSize) <> rrOK then
           Fail(deIo, FaultReadExact);
         if (statSize mod 4) <> 0 then
@@ -972,7 +989,7 @@ begin
           stats[k] := LE32(statBytes, k * 4);
           Inc(k);
         end;
-        Input.Seek(Int64(fahs), soBeginning);
+        SeekExact(Input, fahs);
       end;
 
       { Se crean DESPUES de parsear el footer: un footer roto nunca toca el VM. }
@@ -1056,7 +1073,7 @@ begin
         end;
 
         { recien con el digest aprobado se escribe }
-        Sink.Seek(Int64(blockStart), soBeginning);
+        SeekExact(Sink, blockStart);
         SinkWrite(Sink, outbuf, QWord(osz));
         blockStart := blockEnd;
         Inc(blocks);
@@ -1172,7 +1189,7 @@ begin
     try
       { El footer es lo ultimo del archivo, y con meta de -dup es lo unico que
         dice donde terminan los bloques: se lee primero. }
-      fileLen := QWord(Input.Seek(0, soEnd));
+      fileLen := SeekEnd(Input);
       if fileLen < QWord(V5_HEADER_SIZE + V5_FOOTER_SIZE) then
         Fail(deContainer, FaultContainer(ckTruncated));
       SeekExact(Input, fileLen - QWord(V5_FOOTER_SIZE));
@@ -1282,7 +1299,7 @@ end;
 function DecodeArchive(Input, Sink: TStream; const Opts: TFutureLzOptions; Index: TStream;
                        out Err: TDecodeFault; Progress: TFlzProgress): Boolean;
 var
-  len: Int64;
+  len: QWord;
   head: TBytes;
   h: TArchiveHeader;
   ce: TContainerError;
@@ -1293,8 +1310,9 @@ var
 begin
   Err := NoFault;
   try
-    len := Input.Seek(0, soEnd);
-    Input.Seek(0, soBeginning);
+    { archive::decode: los dos seeks con `?`, el largo tal cual lo da el sistema }
+    len := SeekOrFault(Input, 0, soEnd);
+    SeekOrFault(Input, 0, soBeginning);
     if len >= V5_HEADER_SIZE then
     begin
       { read_exact_or_eof: un pedazo es Truncated; nada, ceros que no son la
@@ -1307,7 +1325,7 @@ begin
         Exit(False);
       end;
       if got = 0 then FillChar(head[0], V5_HEADER_SIZE, 0);
-      Input.Seek(0, soBeginning);
+      SeekOrFault(Input, 0, soBeginning);
       if IsV5(head) then
         Exit(DecodeV5(Input, Sink, Opts, fst, Err, Progress) = deOK);
     end;
@@ -1319,7 +1337,7 @@ begin
       Err := FaultContainer(ckTruncated);
       Exit(False);
     end;
-    Input.Seek(0, soBeginning);
+    SeekOrFault(Input, 0, soBeginning);
     ce := DecodeArchiveHeader(head, h);
     if ce = ceNotAnOsrepFile then begin Err := FaultContainer(ckNotAnOsrepFile); Exit(False); end;
     if ce <> ceOK then begin Err := FaultContainer(ckUnsupportedVersion, h.Version); Exit(False); end;
