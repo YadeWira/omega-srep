@@ -14,9 +14,12 @@
 # BadBlockRecord, a partial archive on disk). 1.0.7 and 2.1.x had all three.
 #
 # Such a record is now checked against the bytes the decoder will copy and,
-# if it would not reproduce them, rebuilt from the chunk's real position. An
-# archive that decoded keeps its bytes, so the second table pins archives
-# 2.2.0 already wrote. Run by tests/rust_cli_conformance.sh against the Rust
+# if it would not reproduce them, rebuilt from the chunk's real position and
+# measured from there to the end of the block (measuring only as far as the
+# digest walk over the wrong chunks went, usually one chunk, took period-69
+# text with -b1000001b from 0.02 s to 12.7 s and to 2.9 MB of 4 MB; the third
+# table bounds those sizes). An archive that decoded keeps its bytes, so the
+# second table pins archives 2.2.0 already wrote. Run by tests/rust_cli_conformance.sh against the Rust
 # and (OSREP_PORT_BIN) the Pascal build; both write these same archives.
 #
 #   OSREP_BIN=<osrep> bash tests/m3_grid_regress.sh
@@ -74,6 +77,7 @@ check() {
     local got
     got="$(md5sum < "$TMP/g.osr" | cut -c1-32)"
     [ "$got" = "$want" ] || fail "$* on $input: archive md5 $got, expected $want"
+    size="$(wc -c < "$TMP/g.osr")"
     rm -f "$TMP/g.osr" "$TMP/g.dec"
     pass=$((pass + 1))
 }
@@ -84,21 +88,21 @@ while read -r rc want input args; do
 done <<'EOF'
 0 c7da8437e1a472aa4b51b63d6e508fb4 craftB -m3 -l8 -b20b
 0 e195f565f2d084882e4c96c251bc316e rep3000 -m3 -b1025b
-0 039fbb3984872e4957c56a19b90a0ea8 t300k -m3 -b65537b
-0 c489f519b642ec4c4ea292987c4fd3ff t300k -m3 -b65537b -hash-
-0 4282058d38f8f28d26687d0df82143a3 t300k -m3 -b65537b -d1mb
-0 4dff9f35d438d18b0b976ba89dea26ac t300k -m3 -b1025b -d64kb
-0 69a74d1b69b2aaf44f5aa711c83a393a t300k -m3 -l8192 -b100kb
-0 69a74d1b69b2aaf44f5aa711c83a393a t300k -m3f -l8192 -b100kb
-0 c7af17d716050f3a702af3dbfa8f2754 t300k -m3o -l8192 -b100kb --format=v4
-0 c35d621435260685e99c6e5cbf6b220b t300k -m3 -l16384 -b40kb
-1 5efa95a10682cf34774008d19bdcb4e0 t300k -m3 -l128 -c300 -b117kb
+0 19b7305637d04f8ed0539f6ed6c76a6e t300k -m3 -b65537b
+0 32e278c2c15c0cacb3c250eb99cbbaba t300k -m3 -b65537b -hash-
+0 b6f3042bfc195839dc3bb577a98896ad t300k -m3 -b65537b -d1mb
+0 b66609678ad43f4f3557f106414c3195 t300k -m3 -b1025b -d64kb
+0 f26f693aee7966fe027d859e00f76d3a t300k -m3 -l8192 -b100kb
+0 f26f693aee7966fe027d859e00f76d3a t300k -m3f -l8192 -b100kb
+0 1c0bf14d160e39d5e992bdc2fb1c31ea t300k -m3o -l8192 -b100kb --format=v4
+0 118be04477917236efa9ce93ce02b38e t300k -m3 -l16384 -b40kb
+1 74c1f456b282320006dfcd3c52c36ba9 t300k -m3 -l128 -c300 -b117kb
 0 8a96c3a1993719a09cabaccc69acd621 cr1b -m3 -l16 -b1000b
 0 1fab6dfe267b1b20de74cf8800bde493 cr1b -m3 -l16 -b1000b --format=v4
 1 d694b1099b653ea5ef410c8a4cdac986 z66 -m3 -l9
 1 d694b1099b653ea5ef410c8a4cdac986 z66 -m3o -l9
-1 1f6cdef0864d9eca955f902840223f14 text.bin -m3 -l17 -b4kb --format=v4
-1 e9c51fc2cba2472c464cdd8011b5e746 text.bin -m3f -l17 -b4kb --format=v4
+1 4ea55e35c3093cd75cfd0085a05a8d66 text.bin -m3 -l17 -b4kb --format=v4
+1 3af8578e4c2492c3b949083fb3661110 text.bin -m3f -l17 -b4kb --format=v4
 EOF
 
 # Archives that already decoded keep their bytes (these are 2.2.0's).
@@ -111,12 +115,26 @@ done <<'EOF'
 0 b83a7cbb98aaae938f9bd280e6bb011a t300k -m3 -l8192 -b100kb -d1mb
 EOF
 
+# Periodic text with -b off the grid compresses about as well as with an
+# aligned -b (text.bin: 1282 bytes with -b1mb, 3922 with -b64kb). Records
+# cut to the digest walk left most of it as literals: 2936114, 1591700,
+# 80661 and 2702690 bytes.
+while read -r rc want max input args; do
+    check "$rc" "$want" "$input" $args
+    [ "$size" -le "$max" ] || fail "$args on $input: archive is $size bytes, expected at most $max"
+done <<'EOF'
+0 a2b33d6835108c9a02686a7e32587b04 8000 text.bin -m3 -b1000001b
+0 bccf87152797f89d3d8ae6a631a28f72 80000 text.bin -m3 -b65537b
+0 19b7305637d04f8ed0539f6ed6c76a6e 8000 t300k -m3 -b65537b
+1 4ea55e35c3093cd75cfd0085a05a8d66 200000 text.bin -m3 -l17 -b4kb --format=v4
+EOF
+
 # Through a pipe (-s given) the fix rereads the same bytes: same archive.
 rc=0
 "$OSREP" --seed=7 -s300000 -m3 -b65537b - - < "$TMP/t300k" > "$TMP/p.osr" 2>"$TMP/p.err" || rc=$?
 [ "$rc" -eq 0 ] || fail "-m3 -b65537b from a pipe exited $rc"
 got="$(md5sum < "$TMP/p.osr" | cut -c1-32)"
-[ "$got" = 039fbb3984872e4957c56a19b90a0ea8 ] || fail "-m3 -b65537b from a pipe: archive md5 $got"
+[ "$got" = 19b7305637d04f8ed0539f6ed6c76a6e ] || fail "-m3 -b65537b from a pipe: archive md5 $got"
 "$OSREP" -d - - < "$TMP/p.osr" > "$TMP/p.dec" 2>/dev/null || fail "-m3 -b65537b from a pipe: does not decode"
 cmp -s "$TMP/t300k" "$TMP/p.dec" || fail "-m3 -b65537b from a pipe: round trip differs"
 pass=$((pass + 1))

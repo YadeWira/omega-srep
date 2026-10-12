@@ -704,6 +704,13 @@ diferencias.
   cada bloque, `HtChunkPos` da la posición real, y `RecordMatch` primero arma
   el record de la 2.2.0; si hay algún bloque corrido o el record se pasa del
   bloque, relee lo que copiaría el decoder y, solo si no coincide, lo rearma
-  desde `HtChunkPos` recortado a los bytes que de verdad coinciden. La lección
+  desde `HtChunkPos`, medido desde ahí hasta el fin del bloque (no hasta donde
+  llegó la extensión por digests, que en un bloque corrido comparó los chunks
+  equivocados y suele dar un solo chunk: texto de período 69 con `-b1000001b`
+  pasaba de 0.02 s a 12.7 s y de 4 KB a 2.9 MB) y recortado a los bytes que de
+  verdad coinciden. `CommonPrefix` relee de a pedazos de 4 a 64 KiB y corta en
+  la primera diferencia, para que una prueba fallida no relea el resto del
+  bloque (cuadrático). La lista de bloques solo guarda entradas desde el
+  primer bloque corrido: con un `-b` alineado no ocupa nada. La lección
   es la de `BASE_LEN` otra vez, con otra cara: el C++, el Rust y el Pascal
   daban el mismo archivo roto, y solo un barrido que descomprime lo vio.

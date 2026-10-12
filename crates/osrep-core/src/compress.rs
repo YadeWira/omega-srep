@@ -129,9 +129,24 @@ fn record_match<R: ReadSeek>(
             } else {
                 grid_src
             };
+            // Measured from the true source up to the end of the block, not
+            // capped by `match_len`: in a shifted block that came from the
+            // digests of the wrong (grid) chunks, so it is usually a single
+            // chunk, and a record cut to it left most of a long repeat to be
+            // probed again chunk by chunk (period-69 text with `-m3
+            // -b1000001b`: 12.7 s and 2.9 MB of 4 MB, against 0.02 s and 4 KB
+            // with `-b1mb`). The record only covers bytes that equal the
+            // source, so it decodes whatever its length.
             let dest = block_start + match_start as u64;
-            let mut len = match_len.min((block_size - match_start) as u32);
-            len = common_prefix(dict, buf_off, match_start, true_src, dest, len, reread);
+            let mut len = common_prefix(
+                dict,
+                buf_off,
+                match_start,
+                true_src,
+                dest,
+                (block_size - match_start) as u32,
+                reread,
+            );
             if round_matches {
                 len = len / l as u32 * l as u32;
             }
@@ -214,6 +229,11 @@ fn fit_base_len_grid<R: ReadSeek>(
 /// at `match_start` (file offset `dest`), reread from the input; 0 unless
 /// `src` comes before `dest`. The decoder copies forward byte by byte, so an
 /// overlapping source (`src + len > dest`) is compared the same way.
+///
+/// The input is reread in pieces of 4 KiB growing to 64 KiB and the compare
+/// stops at the first difference, so a probe that fails early reads one piece
+/// and not the whole `len` (up to the rest of the block): reading it all
+/// would make the scan quadratic in the block size.
 fn common_prefix<R: ReadSeek>(
     dict: &[u8],
     buf_off: usize,
@@ -223,13 +243,30 @@ fn common_prefix<R: ReadSeek>(
     len: u32,
     reread: &mut R,
 ) -> u32 {
+    const FIRST_PIECE: usize = 4096;
+    const MAX_PIECE: usize = 65536;
     if src >= dest {
         return 0;
     }
-    let mut old = vec![0u8; len as usize];
-    let got = read_at(reread, src, &mut old);
-    let cur = &dict[buf_off + match_start..buf_off + match_start + len as usize];
-    old[..got].iter().zip(cur).take_while(|(a, b)| a == b).count() as u32
+    let len = len as usize;
+    let cur = &dict[buf_off + match_start..buf_off + match_start + len];
+    let mut old = vec![0u8; FIRST_PIECE.min(len)];
+    let mut piece = FIRST_PIECE;
+    let mut n = 0usize;
+    while n < len {
+        let want = piece.min(len - n);
+        if old.len() < want {
+            old.resize(want, 0);
+        }
+        let got = read_at(reread, src + n as u64, &mut old[..want]);
+        let same = old[..got].iter().zip(&cur[n..n + got]).take_while(|(a, b)| a == b).count();
+        n += same;
+        if same < want {
+            break;
+        }
+        piece = (piece * 2).min(MAX_PIECE);
+    }
+    n as u32
 }
 
 /// Whether a rounded (`-m3`, no `-d`) record for the match of `len` bytes from
@@ -259,11 +296,10 @@ fn decodes_as_is<R: ReadSeek>(
     if decoded_src >= dest {
         return false;
     }
-    let mut old = vec![0u8; len as usize];
-    if read_at(reread, decoded_src, &mut old) != old.len() {
-        return false;
-    }
-    old[..] == dict[buf_off + match_start..buf_off + match_start + len as usize]
+    // Compared in pieces, like `common_prefix`: the same answer as one read
+    // of `len` bytes (a short read is a difference), without a buffer as long
+    // as the match.
+    common_prefix(dict, buf_off, match_start, decoded_src, dest, len, reread) == len
 }
 
 /// `compress<ACCELERATOR == 0>` (`compress.cpp:54-212`).

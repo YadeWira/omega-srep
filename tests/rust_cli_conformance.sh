@@ -491,10 +491,10 @@ while read -r want args; do
     rm -f "$TMP/dg.osr" "$TMP/dg.dec"
     pass=$((pass + 1))
 done <<EOF
-1f6cdef0864d9eca955f902840223f14 -m3 -l17 -b4kb
-1f6cdef0864d9eca955f902840223f14 -m3 -c17 -b4kb
-210b8d6cee3f1f598588256fbe597b40 -m3o -l17 -b4kb
-e9c51fc2cba2472c464cdd8011b5e746 -m3f -l17 -b4kb
+4ea55e35c3093cd75cfd0085a05a8d66 -m3 -l17 -b4kb
+4ea55e35c3093cd75cfd0085a05a8d66 -m3 -c17 -b4kb
+3b4754052081adf90e4274ddd624abc5 -m3o -l17 -b4kb
+3af8578e4c2492c3b949083fb3661110 -m3f -l17 -b4kb
 EOF
 
 say "-l, -c, -dl and -dc above 4294967295 are refused, not wrapped or overflowed"
