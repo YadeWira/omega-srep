@@ -231,11 +231,21 @@ impl CdcChunkHasher {
 /// Emits the block's match records through `stat` and the literal total through
 /// `literal_bytes`, exactly like the single-threaded reading of the C++'s
 /// stripe pool.
+///
+/// `base_len` is the archive's BASE_LEN (`min(min_match, dict_min_match)`, the
+/// value in the header that the decoder adds back to every match length). The
+/// C++ encodes CDC lengths against its own clamped `min_match` instead
+/// (`compress_cdc.cpp:208`), which writes undecodable archives whenever the two
+/// differ (`-c` with `-l` above 512, `-dl` below the CDC minimum, `-l` below
+/// 16). The clamped `min_match` stays the acceptance threshold; since
+/// `base_len <= min_match <= len` the stored value never underflows, and when
+/// the two agree the bytes are the C++'s.
 #[allow(clippy::too_many_arguments)]
 pub fn compress_cdc(
     zpaq: bool,
     l: usize,
     min_match_in: usize,
+    base_len: usize,
     block_start: u64,
     h: &mut HashTable,
     buf: &[u8],
@@ -293,7 +303,7 @@ pub fn compress_cdc(
                 lz::encode_lz_match(
                     stat,
                     false,
-                    min_match as u32,
+                    base_len as u32,
                     (last_chunk - last_match) as u32,
                     match_offset,
                     len as u32,

@@ -24,8 +24,9 @@ const
   WINSIZE = QWord(48);
   MINIMAL_MIN_MATCH = QWord(16);
 
-{ compress_CDC sobre el bloque B[At..At+BlockSize). }
-procedure CompressCdc(Zpaq: Boolean; L, MinMatchIn, BlockStart: QWord;
+{ compress_CDC sobre el bloque B[At..At+BlockSize). BaseLen es la BASE_LEN de la
+  cabecera: la base de cada largo de match que se escribe. }
+procedure CompressCdc(Zpaq: Boolean; L, MinMatchIn, BaseLen, BlockStart: QWord;
                       var T: THashTableRec; const B: TBytes; At, BlockSize: QWord;
                       out LiteralBytes: DWord; var Stat: TStatList; const ChunkKey: TVmac);
 
@@ -247,7 +248,7 @@ begin
   end;
 end;
 
-procedure CompressCdc(Zpaq: Boolean; L, MinMatchIn, BlockStart: QWord;
+procedure CompressCdc(Zpaq: Boolean; L, MinMatchIn, BaseLen, BlockStart: QWord;
                       var T: THashTableRec; const B: TBytes; At, BlockSize: QWord;
                       out LiteralBytes: DWord; var Stat: TStatList; const ChunkKey: TVmac);
 var
@@ -302,9 +303,14 @@ begin
       matchOffset := HtFindMatchCdc(T, BlockStart + lastChunk, len, vh, idx * 32);
       if (matchOffset <> 0) and (len >= minMatch) then
       begin
-        if not EncodeLzMatch(Stat, False, DWord(minMatch), DWord(lastChunk - lastMatch),
+        { la base es la BASE_LEN de la cabecera (min(min_match, dict_min_match)),
+          la que el decodificador suma; el C++ usa aqui su minMatch recortado
+          (compress_cdc.cpp:208) y escribe archivos que no se decodifican cuando
+          difieren. minMatch sigue siendo el umbral de aceptacion; como
+          BaseLen <= minMatch <= len no hay desborde }
+        if not EncodeLzMatch(Stat, False, DWord(BaseLen), DWord(lastChunk - lastMatch),
                              matchOffset, DWord(len)) then
-          MatchTooSmall(DWord(len), DWord(minMatch));
+          MatchTooSmall(DWord(len), DWord(BaseLen));
         lastMatch := mark;
       end
       else
