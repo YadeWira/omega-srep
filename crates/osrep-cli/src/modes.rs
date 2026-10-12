@@ -326,6 +326,38 @@ fn small_dict_window(o: &Options) -> Option<String> {
     ))
 }
 
+/// The `-dup` chunker needs `--chunk-avg` and `--chunk-min` of at least 1 and
+/// a `--chunk-max` no smaller than `--chunk-min` (`dedup::Params::valid`).
+/// The encoder only found out after the command had started and reported
+/// "dedup failed, rc=8" (exit 4); it is a command-line error like any other.
+/// Without `-dup` the `--chunk-*` options are not used and are not checked.
+fn bad_chunk_params(o: &Options) -> Option<String> {
+    if !o.dup {
+        return None;
+    }
+    let c = &o.chunk;
+    if c.avg == 0 {
+        return Some(
+            "Invalid option: --chunk-avg=0 -- the average chunk size must be at least 1 byte"
+                .to_string(),
+        );
+    }
+    if c.min_chunk == 0 {
+        return Some(
+            "Invalid option: --chunk-min=0 -- the minimum chunk size must be at least 1 byte"
+                .to_string(),
+        );
+    }
+    if c.max_chunk < c.min_chunk {
+        return Some(format!(
+            "Invalid option: --chunk-max={} -- the maximum chunk size must be at least \
+             --chunk-min ({} bytes)",
+            c.max_chunk, c.min_chunk
+        ));
+    }
+    None
+}
+
 fn compress(o: &Options, finame: &str, foutname: &str) -> Result<i32, RunError> {
     if o.dup && (o.method == 1 || o.method == 2) {
         eprintln!(
@@ -353,6 +385,9 @@ fn compress(o: &Options, finame: &str, foutname: &str) -> Result<i32, RunError> 
         return Err(err(ERROR_CMDLINE, msg));
     }
     if let Some(msg) = small_dict_window(o) {
+        return Err(err(ERROR_CMDLINE, msg));
+    }
+    if let Some(msg) = bad_chunk_params(o) {
         return Err(err(ERROR_CMDLINE, msg));
     }
 

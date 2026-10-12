@@ -79,6 +79,12 @@ begin
     if HashSizeHint <> 0 then hint := HashSizeHint
     else hint := MinHashSize(8 * (InmemDictSize div L));
     hashsize := RoundupToPowerOfTwo(hint);
+    { al menos una casilla de 8 bytes. -dh1b..-dh4b redondean a 1-4 bytes:
+      una tabla sin casillas cuya mascara daba la vuelta a todos unos, y el
+      primer acceso caia fuera (Access violation). Ahora tienen la casilla de
+      -dh5b..-dh8b y el archivo de -dh8b; una entrada demasiado chica para
+      llegar a un acceso ya escribia ese archivo (inmem.rs, new) }
+    if hashsize < 8 then hashsize := 8;
     { hashsize cuenta BYTES en el C++; la tabla son elementos de 8 }
     D.HashMask := hashsize div 8 - 1;
     { en paginas en cero sin tocar, como el Rust (zeropages.pas); DcFree }

@@ -496,6 +496,26 @@ begin
             IntToStr(SLICES_IN_BLOCK) + ' bytes';
 end;
 
+{ El chunker de -dup necesita --chunk-avg y --chunk-min de al menos 1 y un
+  --chunk-max no menor que --chunk-min (ParamsValid). El encoder recien se
+  enteraba con el comando ya en marcha y decia "dedup failed, rc=8" (exit 4);
+  es un error de linea de comandos como cualquier otro. Sin -dup las
+  --chunk-* no se usan y no se chequean. Devuelve '' si sirven (modes.rs,
+  bad_chunk_params). }
+function BadChunkParams(const O: TOptions): AnsiString;
+begin
+  Result := '';
+  if not O.Dup then Exit;
+  if O.Chunk.Avg = 0 then
+    Exit('Invalid option: --chunk-avg=0 -- the average chunk size must be at least 1 byte');
+  if O.Chunk.MinChunk = 0 then
+    Exit('Invalid option: --chunk-min=0 -- the minimum chunk size must be at least 1 byte');
+  if O.Chunk.MaxChunk < O.Chunk.MinChunk then
+    Exit('Invalid option: --chunk-max=' + IntToStr(O.Chunk.MaxChunk) +
+         ' -- the maximum chunk size must be at least --chunk-min (' +
+         IntToStr(O.Chunk.MinChunk) + ' bytes)');
+end;
+
 function Compress(const O: TOptions; const FiName, FoutName: AnsiString): LongInt;
 var
   warnings: LongInt;
@@ -521,6 +541,7 @@ begin
     Fail(ERROR_CMDLINE, 'Incompatible options: -m' + IntToStr(O.Method) + ' -d' + ShowMem(O.DictSize, True));
   if SmallWindow(O) <> '' then Fail(ERROR_CMDLINE, SmallWindow(O));
   if SmallDictWindow(O) <> '' then Fail(ERROR_CMDLINE, SmallDictWindow(O));
+  if BadChunkParams(O) <> '' then Fail(ERROR_CMDLINE, BadChunkParams(O));
 
   { srep.cpp:459-462: la ventana tiene que ser potencia de dos. Es -c si se
     dio, -l si no. CDC nunca falla la prueba, y -m5 sin -c tampoco: su ventana

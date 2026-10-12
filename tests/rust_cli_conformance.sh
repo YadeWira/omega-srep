@@ -570,6 +570,49 @@ for args in "-m0 -d1mb:c1:l4" "-m0 -dc8 -dl4" "-m4 -dl4" "-m0 -dl8"; do
     pass=$((pass + 1))
 done
 
+say "an in-memory dictionary hash table under 8 bytes gets one slot, not a crash"
+# -dh is in bytes, rounded up to a power of two, and the table holds
+# hashsize/8 eight-byte slots: -dh1b..-dh4b gave a table of zero slots whose
+# mask wrapped to all ones. The C++ dies with SIGSEGV, 2.2.0's Rust panicked
+# (exit 101) and its Pascal printed "Access violation" (exit 4). They now get
+# the single slot -dh5b..-dh8b get, so they write -dh8b's archive.
+for args in "-m0 -dh1b" "-m0 -dh4b" "-m3 -d64kb -dh2b" "-m5 -d1mb -dh3b" "-dup -m4 -d1mb -dh1b"; do
+    ref="${args% -dh*} -dh8b"
+    "$RS" --seed=7 $ref tests/corpus/text.bin "$TMP/dh8.osr" >/dev/null 2>&1 || fail "$ref failed"
+    rc=0; "$RS" --seed=7 $args tests/corpus/text.bin "$TMP/dh.osr" >/dev/null 2>"$TMP/dh.err" || rc=$?
+    [ "$rc" -eq 0 ] || fail "$args exited $rc, expected 0: $(tail -1 "$TMP/dh.err")"
+    cmp -s "$TMP/dh8.osr" "$TMP/dh.osr" || fail "$args: archive differs from $ref"
+    rm -f "$TMP/dh.dec"
+    "$RS" -d "$TMP/dh.osr" "$TMP/dh.dec" >/dev/null 2>&1 || fail "$args: archive does not decode"
+    cmp -s tests/corpus/text.bin "$TMP/dh.dec" || fail "$args: round trip differs"
+    rm -f "$TMP/dh.osr" "$TMP/dh8.osr" "$TMP/dh.dec"
+    pass=$((pass + 1))
+done
+
+say "-dup with --chunk-* the chunker cannot use is a command-line error"
+# avg 0, min 0 or max below min used to start the run and fail inside the
+# encoder with "dedup failed, rc=8" (exit 4).
+dup_bad() {
+    local want="$1"; shift
+    rc=0; "$RS" --seed=7 "$@" tests/corpus/text.bin "$TMP/cb.osr" >/dev/null 2>"$TMP/cb.err" || rc=$?
+    [ "$rc" -eq 2 ] || fail "$* exited $rc, expected 2 (cmdline): $(tail -1 "$TMP/cb.err")"
+    grep -qxF -- "  ERROR! $want" "$TMP/cb.err" || fail "$*: stderr is not '$want': $(cat "$TMP/cb.err")"
+    [ ! -s "$TMP/cb.osr" ] || fail "$* left an archive behind"
+    rm -f "$TMP/cb.osr"
+    pass=$((pass + 1))
+}
+dup_bad "Invalid option: --chunk-avg=0 -- the average chunk size must be at least 1 byte" -dup --chunk-avg=0
+dup_bad "Invalid option: --chunk-min=0 -- the minimum chunk size must be at least 1 byte" -dup -m3 --chunk-min=0
+dup_bad "Invalid option: --chunk-max=10 -- the maximum chunk size must be at least --chunk-min (20 bytes)" \
+    -dup --chunk-min=20 --chunk-max=10
+dup_bad "Invalid option: --chunk-max=16384 -- the maximum chunk size must be at least --chunk-min (20000 bytes)" \
+    -dup --dup-paranoid --chunk-min=20000
+# Without -dup the --chunk-* options are not used, and are still accepted.
+rc=0; "$RS" --seed=7 -m3 --chunk-avg=0 --chunk-min=0 tests/corpus/text.bin "$TMP/cb.osr" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 0 ] || fail "--chunk-avg=0 without -dup exited $rc, expected 0"
+rm -f "$TMP/cb.osr"
+pass=$((pass + 1))
+
 say "-m5 with an -c that is not a power of two warns and exits 1, like the C++"
 # srep.cpp:476 tests the final L: always a power of two for -m5 without -c,
 # but -c sets it directly. 2.1.2 skipped the test for -m5 altogether and
@@ -813,7 +856,7 @@ say "stderr_conformance: $(printf '%s' "$out" | tail -1)"
 pass=$((pass + 1))
 
 for s in roundtrip mode_suffix_hash_matrix dup_roundtrip dup_native_roundtrip \
-         dup_corruption_fuzz dup_concurrency dup_ref_oob_regression \
+         dup_corruption_fuzz dup_concurrency dup_ref_oob_regression dup_length_regression \
          vm_options_regression vm_tempfile_leak_regression futurelz_race_regression; do
     if ! out=$(OSREP_BIN="$RS" FUTURELZ_RACE_RUNS="${FUTURELZ_RACE_RUNS:-20}" bash "tests/$s.sh" 2>&1); then
         printf '%s\n' "$out" >&2

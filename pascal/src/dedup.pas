@@ -605,21 +605,23 @@ begin
         k1 := ChunkHash(work, chunks.W[ci].S, clen);
         k2 := ChunkHashAlt(work, chunks.W[ci].S, clen);
         isDup := SeenGet(seen, k1, k2, uidx);
+        { Los hashes rellenan con ceros la cola de 0-7 bytes y no mezclan el
+          largo, asi que un chunk y el mismo chunk seguido de 1-7 bytes cero
+          dan la misma clave. Un acierto de otro largo es un chunk unico nuevo,
+          con o sin --dup-paranoid: tomarlo como ref reconstruia una salida
+          del tamano equivocado (en silencio, exit 0). }
+        if isDup and (QWord(uniqueLen[uidx]) <> clen) then isDup := False;
         if Paranoid and isDup then
         begin
-          if QWord(uniqueLen[uidx]) <> clen then isDup := False
-          else
-          begin
-            if QWord(Length(cmpBuf)) < clen then SetLength(cmpBuf, clen);
-            try
-              SeekOrInval(fb, uniqueOff[uidx]);
-              ReadExact(fb, cmpBuf[0], clen);
-              SeekOrInval(fb, bodyPos);
-            except
-              on X: Exception do raise EDedup.CreateCode(DEDUP_ERR_INVAL);
-            end;
-            if not CompareMem(@cmpBuf[0], @work[chunks.W[ci].S], clen) then isDup := False;
+          if QWord(Length(cmpBuf)) < clen then SetLength(cmpBuf, clen);
+          try
+            SeekOrInval(fb, uniqueOff[uidx]);
+            ReadExact(fb, cmpBuf[0], clen);
+            SeekOrInval(fb, bodyPos);
+          except
+            on X: Exception do raise EDedup.CreateCode(DEDUP_ERR_INVAL);
           end;
+          if not CompareMem(@cmpBuf[0], @work[chunks.W[ci].S], clen) then isDup := False;
         end;
         if isDup then
         begin
@@ -629,13 +631,17 @@ begin
         end;
         SeenPut(seen, k1, k2, uniqueCount);
         RecPush(recs, TAG_UNIQUE, clen);
-        if Paranoid then
+        { uniqueLen siempre (lo usa el chequeo de largo de arriba),
+          uniqueOff solo con Paranoid. Crecen al doble: SetLength(+1) por
+          chunk copiaba el arreglo entero cada vez, cuadratico. }
+        if uniqueCount >= QWord(Length(uniqueLen)) then
         begin
-          SetLength(uniqueOff, Length(uniqueOff) + 1);
-          uniqueOff[High(uniqueOff)] := bodyPos;
-          SetLength(uniqueLen, Length(uniqueLen) + 1);
-          uniqueLen[High(uniqueLen)] := DWord(clen);
+          if Length(uniqueLen) < 256 then SetLength(uniqueLen, 256)
+          else SetLength(uniqueLen, Length(uniqueLen) * 2);
+          if Paranoid then SetLength(uniqueOff, Length(uniqueLen));
         end;
+        uniqueLen[uniqueCount] := DWord(clen);
+        if Paranoid then uniqueOff[uniqueCount] := bodyPos;
         { write_all(..).map_err(|_| DEDUP_ERR_INVAL), como el Rust: con el
           disco lleno es "dedup failed, rc=8" }
         try

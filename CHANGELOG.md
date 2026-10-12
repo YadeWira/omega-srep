@@ -39,6 +39,37 @@ what happened in 2.0.0.
   byte-identically**, and existing archives read as before. If you kept an
   archive written with one of these options, run `osrep -d` on it: it either
   decodes correctly or fails, never returns wrong bytes.
+- **`-dup` could write an archive that decompresses to the wrong size, with
+  exit 0 everywhere (silent data loss).** The dedup pass keyed each chunk on
+  a hash that pads the last 1-7 bytes with zeros and leaves the length out,
+  so a chunk and the same chunk followed by 1-7 zero bytes looked identical,
+  and the second was stored as a reference to the first. `-d` and `--verify`
+  then exited 0 too, with an output a few bytes longer or shorter than the
+  input. Affected: `-dup` archives, without `--dup-paranoid`, of inputs where
+  such a pair of chunks occurs, which is mostly runs of zeros: 2049 zero
+  bytes with the default options (2050 bytes back), a random header followed
+  by zeros with `-m3 -dup`, a disk image with `--chunk-min=64
+  --chunk-avg=256` (one byte too many). `--dup-paranoid` already compared the
+  length and was never affected. Present in every release with `-dup`, and in
+  the C++ 1.0.7. A match of a different length is now a new unique chunk;
+  the format is unchanged, and every `-dup` archive that decoded correctly
+  before is byte-identical now (checked before and after over ~21,000 `-dup`
+  command lines). An affected archive cannot be repaired: compress the input
+  again.
+- **`-dh1b` to `-dh4b` crashed the compressor** whenever the in-memory
+  dictionary was in use (`-m0`, or `-d` with `-m3`..`-m5`) and the input
+  reached a lookup: the hash table had zero slots. 2.2.0 failed with "Access
+  violation" (exit 4), 2.1.x with a Rust panic (exit 101), the C++ 1.0.7 with
+  SIGSEGV. The table now has at least one 8-byte slot, as `-dh5b`..`-dh8b`
+  already had, so these write the archive `-dh8b` writes. Inputs too small
+  to reach a lookup (empty, a few bytes) worked before and give the same
+  archive as before.
+- **`-dup` with `--chunk-avg=0`, `--chunk-min=0` or a `--chunk-max` below
+  `--chunk-min` failed with "dedup failed, rc=8" (exit 4)** after starting the
+  run. It is now a command-line error (exit 2) naming the option, for example
+  "Invalid option: --chunk-max=10 -- the maximum chunk size must be at least
+  --chunk-min (20 bytes)". Without `-dup` the `--chunk-*` options are unused
+  and still accepted.
 
 ## [2.2.0] — 2026-10-10
 
