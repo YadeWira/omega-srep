@@ -688,3 +688,22 @@ diferencias.
   lección: comparar archivos contra el oráculo prueba que el port copia, no
   que el formato aguanta; los barridos de opciones tienen que hacer la ida y
   vuelta.
+* **El número de un chunk de `-m3` no es su posición en el archivo.**
+  `HtPrepareBuffer` numera los chunks del bloque desde `Offset div L` pero los
+  digiere y hashea en `Offset + m*L`, y `RecordMatch` escribía el origen como
+  `K * L`. Si `-b` no es múltiplo de `L` (`-b65537b`, `-l8192 -b100kb`, `-l17`)
+  todo bloque después del primero empieza fuera de esa grilla y el origen sale
+  corrido `Offset mod L`: `-m4`/`-m5` releen los bytes en `K * L` y solo pierden
+  matches, pero `-m3` confía en los digests y nunca relee, así que el record
+  salía sin control (exit 0, `-d` da DigestMismatch o, con `-hash-`, otros
+  bytes). Dos variantes del mismo hueco: la extensión por digests pasa de un
+  bloque en la grilla al siguiente, corrido, y con un `L` que 4 no divide el
+  primer chunk del match termina hasta 3 bytes pasado el bloque
+  (BadBlockRecord). El arreglo **no toca lo que se hashea** (eso cambiaría
+  archivos que funcionan): `HtPrepareBuffer` guarda (primer chunk, inicio) de
+  cada bloque, `HtChunkPos` da la posición real, y `RecordMatch` primero arma
+  el record de la 2.2.0; si hay algún bloque corrido o el record se pasa del
+  bloque, relee lo que copiaría el decoder y, solo si no coincide, lo rearma
+  desde `HtChunkPos` recortado a los bytes que de verdad coinciden. La lección
+  es la de `BASE_LEN` otra vez, con otra cara: el C++, el Rust y el Pascal
+  daban el mismo archivo roto, y solo un barrido que descomprime lo vio.

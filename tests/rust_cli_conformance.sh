@@ -477,20 +477,24 @@ say "-m3's digest check stays inside the ring with an -l/-c that is not a power 
 # to three bytes past the ring. 2.1.2 panicked there (exit 101, "range end
 # index ... out of range"); those bytes now read as zero, as the Pascal port's
 # zeroed ring tail always had them. The archives are pinned (Rust and Pascal
-# agree); they keep the power-of-two warning, exit 1, and like every -m3
-# archive with such an L they need not decode, in 1.0.7 as well.
+# agree); they keep the power-of-two warning, exit 1. Through 2.2.0 they did
+# not decode (-b4kb is not a multiple of 17, so the blocks after the first
+# start off the chunk grid, as in 1.0.7); now they do -- see
+# tests/m3_grid_regress.sh below.
 while read -r want args; do
     rc=0; "$RS" --format=v4 --seed=7 $args tests/corpus/text.bin "$TMP/dg.osr" >/dev/null 2>"$TMP/dg.err" || rc=$?
     [ "$rc" -eq 1 ] || fail "$args exited $rc, expected 1 (warning): $(grep -a -m1 -E 'panicked|ERROR' "$TMP/dg.err")"
     got="$(md5sum < "$TMP/dg.osr" | cut -c1-32)"
     [ "$got" = "$want" ] || fail "$args: archive md5 $got, expected $want"
-    rm -f "$TMP/dg.osr"
+    "$RS" -d "$TMP/dg.osr" "$TMP/dg.dec" >/dev/null 2>&1 || fail "$args: archive does not decode"
+    cmp -s tests/corpus/text.bin "$TMP/dg.dec" || fail "$args: round trip differs"
+    rm -f "$TMP/dg.osr" "$TMP/dg.dec"
     pass=$((pass + 1))
 done <<EOF
-387e7fe4d78c12e1f6d88f355beb43d0 -m3 -l17 -b4kb
-387e7fe4d78c12e1f6d88f355beb43d0 -m3 -c17 -b4kb
-d789362481825c2b275f53dd76feb45f -m3o -l17 -b4kb
-a11525e5883557e5236dc0f4897107f6 -m3f -l17 -b4kb
+1f6cdef0864d9eca955f902840223f14 -m3 -l17 -b4kb
+1f6cdef0864d9eca955f902840223f14 -m3 -c17 -b4kb
+210b8d6cee3f1f598588256fbe597b40 -m3o -l17 -b4kb
+e9c51fc2cba2472c464cdd8011b5e746 -m3f -l17 -b4kb
 EOF
 
 say "-l, -c, -dl and -dc above 4294967295 are refused, not wrapped or overflowed"
@@ -621,6 +625,19 @@ for l in 16 17 24 100 498; do
     rm -f "$TMP/bl.osr" "$TMP/bl.dec"
     pass=$((pass + 1))
 done
+
+say "-m3 with blocks off the chunk grid writes archives that decode"
+# Any -b that is not a multiple of the chunk L (-b65537b, -l8192 -b100kb,
+# -l17 ...) left every block after the first off the grid -m3 assumed for a
+# match's source: exit 0 and an archive -d refused, or decoded to other bytes
+# with -hash-. Through 2.2.0, and in 1.0.7. The cases, and the archives that
+# must not move, are in their own script.
+if ! out=$(OSREP_BIN="$RS" bash tests/m3_grid_regress.sh 2>&1); then
+    printf '%s\n' "$out" >&2
+    fail "tests/m3_grid_regress.sh failed with OSREP_BIN=$RS"
+fi
+say "$(printf '%s' "$out" | tail -1 | sed 's/^ *//')"
+pass=$((pass + 1))
 
 say "the options the port accepts and does not act on really are inert"
 # The man page and --help now say outright that -tN, -aN, -mmap/-nommap,
