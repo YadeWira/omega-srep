@@ -99,6 +99,8 @@ wrong bytes.
 - **With the default options, -m3/-m4/-m5 write different bytes than the C++
   1.0.7 on some inputs** (tie order in the C++'s `std::sort`; see 2.2.0). Both
   decode each other's archives; 2.3.0 will follow the C++.
+- **When compression fails with exit 4, the partial output file is left on
+  disk**, as in every earlier release and in the C++.
 
 ## [2.2.0] — 2026-10-10
 
