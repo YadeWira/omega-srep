@@ -444,7 +444,7 @@ begin
           DcCompress(inmem, dict, ringSize, bufOffset, filled, hashptr, literalBytes, stat);
         end;
       ekCdc, ekCdcZpaq:
-        CompressCdc(Kind = ekCdcZpaq, l, minMatch, blockStart, table, dict, bufOffset, filled,
+        CompressCdc(Kind = ekCdcZpaq, l, minMatch, baseLen, blockStart, table, dict, bufOffset, filled,
                     literalBytes, stat, chunkKey);
     else
       begin

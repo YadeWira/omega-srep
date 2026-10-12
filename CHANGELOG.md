@@ -24,6 +24,21 @@ what happened in 2.0.0.
 - **A `-d` option part starting with a non-ASCII character** (`-dñ`) made the
   Rust panic (exit 101); it is "Invalid option", exit 2, as in the Pascal
   binary and the C++.
+- **Some `-m1`/`-m2` (CDC) archives exited 0 and could not be
+  decompressed.** CDC stored each match length relative to its own minimum
+  match, while the archive header and the decoder use the smaller of `-l` and
+  `-dl`. In three cases the two differ, and every archive with a CDC match
+  then failed at `-d` (usually "future-lz literal run does not fill the
+  block"; `--verify` said `BadMeta`): `-c` with an `-l` above 512 (`-m1 -c256 -l768`,
+  `-m2 -c512 -l1536`), a `-dl` below CDC's minimum match (`-m1 -dl16`,
+  `-m1 -c64 -l100 -dl64`), and an `-l` below 16 (`-m1 -c64 -l8`). The default
+  options were not affected. Present since the C++ 1.0.7 and in every release
+  up to 2.2.0, in v4 and v5 alike; the bytes were never silently wrong, the
+  archive just did not decode. Lengths now count from the header's value, so
+  these archives decode; **every archive that already decoded is written
+  byte-identically**, and existing archives read as before. If you kept an
+  archive written with one of these options, run `osrep -d` on it: it either
+  decodes correctly or fails, never returns wrong bytes.
 
 ## [2.2.0] — 2026-10-10
 
@@ -185,8 +200,7 @@ next in 2.2.1. All need non-default options; the defaults are not affected.
 - **Some non-default combinations write an archive that does not decompress,
   with exit 0.** `-m3` with a power-of-two `-l` and a `-b` that is not a
   multiple of the chunk (`-m3 -l8192 -b100kb`); `-m3` with `-c` smaller than
-  `-l` (`-l512 -c128`); CDC (`-m1`/`-m2`) with `-c` and an `-l` above 512
-  (`-m1 -c256 -l768`). Until then, check such archives with `osrep -d` before
+  `-l` (`-l512 -c128`). Until then, check such archives with `osrep -d` before
   deleting the input.
 - **With the default options, -m3/-m4/-m5 write different bytes than the C++
   1.0.7 on some inputs** (about one file in ten in a sample of real files):

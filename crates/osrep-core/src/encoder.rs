@@ -552,6 +552,7 @@ pub fn encode<R: Read + Seek, W: Write>(
                     kind == Kind::CdcZpaq,
                     l,
                     min_match,
+                    base_len,
                     block_start,
                     table.as_mut().unwrap(),
                     &dict[buf_offset..],

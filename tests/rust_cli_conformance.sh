@@ -644,6 +644,59 @@ for l in 16 17 24 100 498; do
     pass=$((pass + 1))
 done
 
+say "CDC (-m1/-m2) match lengths use the header's BASE_LEN, so the archives decode"
+# The decoder adds BASE_LEN = min(-l, -dl) (the v4 FUTURELZ_BASE_LEN) back to
+# every match length, but CDC encoded them against its own min match, raised
+# to 16 (compress_cdc.cpp:208). Whenever the two differ -- -c with an -l above
+# 512 (the dictionary's -dl then stays 512), a -dl below CDC's min match, an
+# -l below 16 -- 1.0.7, 2.1.2 and 2.2.0 wrote archives that exit 0 and stop
+# at -d with "literal run does not fill the block". The lengths now count
+# from BASE_LEN; where it already was the min match nothing changes, so the
+# controls at the end keep the bytes 2.2.0 wrote. The fixed archives are
+# pinned (Rust and Pascal agree); the C++ still writes the broken ones.
+python3 - "$TMP" <<'PY'
+import os, random, sys
+d = sys.argv[1]
+r = random.Random(20261012)
+for unit, k in ((300, 4), (2000, 3), (20000, 3)):
+    u = bytes(r.randrange(256) for _ in range(unit))
+    open(os.path.join(d, "cdc_u%dx%d" % (unit, k)), "wb").write(u * k)
+open(os.path.join(d, "cdc_t300k"), "wb").write(open("tests/corpus/text.bin", "rb").read()[:300000])
+open(os.path.join(d, "cdc_z1m"), "wb").write(bytes(1 << 20))
+PY
+while read -r want input args; do
+    rc=0; "$RS" --seed=7 $args "$TMP/$input" "$TMP/cb.osr" >/dev/null 2>"$TMP/cb.err" || rc=$?
+    [ "$rc" -eq 0 ] || fail "$args on $input exited $rc, expected 0: $(grep -a -m1 -E 'panicked|ERROR' "$TMP/cb.err")"
+    rc=0; "$RS" -d "$TMP/cb.osr" "$TMP/cb.dec" >/dev/null 2>"$TMP/cb.err" || rc=$?
+    [ "$rc" -eq 0 ] || fail "$args on $input: archive does not decode (exit $rc): $(tail -1 "$TMP/cb.err")"
+    cmp -s "$TMP/$input" "$TMP/cb.dec" || fail "$args on $input: round trip differs"
+    case " $args " in *" --format=v4 "*) ;; *)
+        "$RS" --verify "$TMP/cb.osr" >/dev/null 2>&1 || fail "$args on $input: --verify rejects the archive" ;;
+    esac
+    got="$(md5sum < "$TMP/cb.osr" | cut -c1-32)"
+    [ "$got" = "$want" ] || fail "$args on $input: archive md5 $got, expected $want"
+    rm -f "$TMP/cb.osr" "$TMP/cb.dec"
+    pass=$((pass + 1))
+done <<EOF
+a5de3ae088ccfbf4d052cdd9f3bdf79e cdc_u300x4 -m1 -c64 -l8
+b524c3d98fc45504728bbd23bda93638 cdc_u300x4 -m2 -c64 -l8 --format=v4
+a5de3ae088ccfbf4d052cdd9f3bdf79e cdc_u300x4 -m1o -c64 -l8
+70e21360fcdf42120f0fe484bd637bab cdc_u20000x3 -m1 -dl16
+b30a63bad32c44c1ec181852a4682071 cdc_u20000x3 -m1 -dl16 --format=v4
+6ded0c041446fbae96ac113219b079d3 cdc_u20000x3 -m2f -dl24
+bfe9358c21e0d646ae17646b3ed7509a cdc_u300x4 -m1 -c64 -l100 -dl64
+fa338c1cf020f2e8a4d7d0b1837aed0f cdc_t300k -m1 -c256 -l768
+8102defdf2cdabc0ca6262b4649ba7e7 cdc_u2000x3 -m2 -c64 -l600 --format=v4
+8388359a339f58a4bd81616b5960cd6f cdc_u2000x3 -m1 -c64 -l600
+1f96c037f642a3757af061ff79cc76c9 cdc_z1m -m2 -c512 -l1536
+d1fe91c313ddb8f7773a584ba0175fbc cdc_t300k -m1 -dl32
+fa338c1cf020f2e8a4d7d0b1837aed0f cdc_t300k -m1 -c64 -l768 -dl768
+d1fe91c313ddb8f7773a584ba0175fbc cdc_t300k -m1
+d1fe91c313ddb8f7773a584ba0175fbc cdc_t300k -m2
+70e21360fcdf42120f0fe484bd637bab cdc_u20000x3 -m1
+83ddf5a7fbf852bbdf1c913c36a4e9c9 cdc_u2000x3 -m2 -c64 -l512
+EOF
+
 say "the options the port accepts and does not act on really are inert"
 # The man page and --help now say outright that -tN, -aN, -mmap/-nommap,
 # -ia-/-ia+, -slp and -pc have no effect here. That claim has to be checked,

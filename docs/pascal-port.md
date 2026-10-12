@@ -688,3 +688,16 @@ diferencias.
   lección: comparar archivos contra el oráculo prueba que el port copia, no
   que el formato aguanta; los barridos de opciones tienen que hacer la ida y
   vuelta.
+* **CDC (`-m1`/`-m2`) tiene dos minimos y el formato solo guarda uno.** El
+  encoder sube `min_match` a 16 (`MINIMAL_MIN_MATCH`) para aceptar un chunk,
+  pero la cabecera y el decoder usan `BASE_LEN` = min(`-l`, `-dl`) calculado
+  con el `min_match` SIN subir (512 de `-dl` si no se da). El C++ 1.0.7
+  restaba el minimo subido (`compress_cdc.cpp:208`), y cuando no coinciden
+  (`-c` con `-l` > 512, `-dl` debajo del minimo de CDC, `-l` < 16) cada match
+  de CDC se decodificaba con otro largo: exit 0 al comprimir y "literal run
+  does not fill the block" al descomprimir. Ahora `CompressCdc` recibe
+  `BaseLen` y resta ese; el minimo subido sigue siendo el umbral. Como
+  `BaseLen <= minMatch <= len` no hay desborde, y donde ya coincidian los
+  bytes son los mismos (barrido de 8313 lineas: ningun archivo que
+  descomprimia cambio). Misma leccion que la de arriba: el numero que se
+  escribe y el que se lee tienen que salir de la misma variable.
