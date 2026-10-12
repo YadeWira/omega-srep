@@ -98,7 +98,7 @@ say "aes, contra el LibTomCrypt vendorizado y no solo contra FIPS-197"
 for n in 16 32 64 4096; do
     head -c "$n" /dev/urandom > "$TMP/blk-$n"
     c=$(./bin/hash_test aes "$SEED32_A" "$TMP/blk-$n")
-    p=$("${PA%hashtool}aesblk" "$SEED32_A" "$TMP/blk-$n" 2>/dev/null) || continue
+    p=$("$PA" aes "$SEED32_A" "$TMP/blk-$n") || fail "aes: el Pascal fallo con $n bytes"
     [ "$c" = "$p" ] || fail "aes con $n bytes: oraculo $c, Pascal $p"
     pass=$((pass + 1))
 done

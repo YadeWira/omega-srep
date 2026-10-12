@@ -17,7 +17,8 @@ begin
   end;
 end;
 
-var algo, seed, path: AnsiString; data, k: TBytes; vk: TVmac;
+var algo, seed, path: AnsiString; data, k, blk, outb, acc: TBytes; vk: TVmac;
+    ak: TAesKey; i: LongInt;
 begin
   { Sin archivo: que implementacion de NH quedo compilada. Es la prueba de que
     el IFDEF de vmac.pas tomo la rama que se cree en cada target. }
@@ -51,6 +52,21 @@ begin
     end;
     VmacSetKey(k, vk);
     WriteOut(ToHex(VmacCompute(vk, data)) + #10);
+  end
+  else if algo = 'aes' then
+  begin
+    { el cifrado de bloque suelto, como `hash_test aes`: cada bloque entero de
+      16 bytes cifrado con la clave, concatenados (la cola se ignora) }
+    AesSetKey(FromHex(seed), ak);
+    SetLength(acc, 0);
+    for i := 0 to Length(data) div 16 - 1 do
+    begin
+      blk := Copy(data, i * 16, 16);
+      SetLength(outb, 16);
+      AesEncryptBlock(ak, blk, outb);
+      acc := Concat(acc, outb);
+    end;
+    WriteOut(ToHex(acc) + #10);
   end
   else
   begin
