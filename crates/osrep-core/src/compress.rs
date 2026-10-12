@@ -66,49 +66,101 @@ fn record_match<R: ReadSeek>(
     );
 
     if match_len as usize >= min_match {
-        let mut match_start = i - add_len as usize;
+        let match_start = i - add_len as usize;
         // `if (ROUND_MATCHES) match_len = match_len/L*L` (compress.cpp:15-16).
-        let mut match_len = if round_matches {
+        let rounded_len = if round_matches {
             match_len / l as u32 * l as u32
         } else {
             match_len
         };
-        let match_offset = block_start + i as u64 - k as u64 * l as u64;
-        if round_matches {
-            // A rounded record stores the offset and the length in units of
-            // BASE_LEN, not of L (`ENCODE_LZ_MATCH`'s `L1`, srep.cpp:117), and
-            // the decoder rebuilds the source as `dest/BASE_LEN*BASE_LEN -
-            // offset/BASE_LEN*BASE_LEN` and the length as a whole number of
-            // BASE_LENs. That is exact when the source (`k*L`) and the length
-            // are multiples of BASE_LEN -- always so when BASE_LEN divides L,
-            // the default (BASE_LEN = min(-l, 512), L = -l). With `-c` below
-            // BASE_LEN (`-m3 -c8 -l16`), or a BASE_LEN that does not divide L
-            // (`-m3 -c8 -l17`, `-m3 -dl17`), the C++ wrote archives that do not
-            // decode (exit 0: silent data loss) or stopped with "match len too
-            // small" (exit 4), and the port did the same.
-            //
-            // A record that will not decode to these bytes is now moved up to
-            // the next source on the BASE_LEN grid and cut to whole units --
-            // still inside the verified match, so the bytes are the same -- or
-            // not taken when less than one unit is left. One that decodes
-            // right as it is (an exact one, or an inexact source that happens
-            // to hold the same bytes, as on all-zero input) is written exactly
-            // as before, so every archive that used to decode keeps its bytes.
-            let b = base_len as u64;
-            let src = k as u64 * l as u64;
-            let len = match_len as u64;
-            if !(src % b == 0 && len % b == 0 && len >= b)
-                && !decodes_as_is(dict, buf_off, block_start, match_start, src, match_len, b, reread)
-            {
-                let skip = (b - src % b) % b;
-                let cut = (match_len as u64).saturating_sub(skip) / b * b;
-                if cut < b {
-                    return Ok(false);
-                }
-                match_start += skip as usize;
-                match_len = cut as u32;
+        let b = base_len as u64;
+        let grid_src = k as u64 * l as u64;
+        let mut match_offset = block_start + i as u64 - grid_src;
+
+        // First the record 2.2.0 wrote, which assumes chunk `k` sits at `k*L`.
+        let Some((old_start, old_len)) = fit_base_len_grid(
+            dict, buf_off, block_start, round_matches, b, grid_src, match_start, rounded_len,
+            reread,
+        ) else {
+            return Ok(false);
+        };
+
+        // `k*L` is where chunk `k`'s bytes really are only while every block
+        // started on the `L` grid: one that starts at a `block_start` that is
+        // not a multiple of `L` (any `-b` that is not a multiple of `L`)
+        // numbers its chunks from `block_start / L` but digests and hashes
+        // them at `block_start + m*L`. `-m4`/`-m5` reread the bytes at `k*L`,
+        // so for them that only loses matches; `-m3` trusts the digests and
+        // never rereads, so the record went out with a source off by
+        // `block_start % L` (exit 0, `-d` fails or returns other bytes). The
+        // digest walk can also cross from a block on the grid into the next,
+        // shifted one, whose chunks are not contiguous with it. And when `L`
+        // is not a multiple of 4 the scan probes windows that end up to three
+        // bytes past the block, and `match_len` counts that first chunk
+        // whole, so the record ran past the block (exit 4, BadBlockRecord).
+        //
+        // Such a record is checked against the bytes the decoder will copy.
+        // If it decodes to these bytes and fits in the block it is written
+        // exactly as before, so every archive that decoded keeps its bytes;
+        // otherwise it is rebuilt from the chunk's true source, cut to the
+        // bytes that really match. Archives where every block starts on the
+        // `L` grid and no record overruns take the first branch untouched.
+        let overrun = old_start + old_len as usize > block_size;
+        let shifted = h.compare_digests && h.any_shifted;
+        let keep_old = if !shifted && !overrun {
+            true
+        } else if overrun {
+            false
+        } else {
+            let dest = block_start + old_start as u64;
+            let decoded_src = if round_matches {
+                (dest / b * b).wrapping_sub(match_offset / b * b)
+            } else {
+                dest.wrapping_sub(match_offset)
+            };
+            common_prefix(dict, buf_off, old_start, decoded_src, dest, old_len, reread) == old_len
+        };
+
+        let (match_start, match_len) = if keep_old {
+            (old_start, old_len)
+        } else {
+            let true_src = if h.compare_digests {
+                h.chunk_pos(k as usize)
+            } else {
+                grid_src
+            };
+            // Measured from the true source up to the end of the block, not
+            // capped by `match_len`: in a shifted block that came from the
+            // digests of the wrong (grid) chunks, so it is usually a single
+            // chunk, and a record cut to it left most of a long repeat to be
+            // probed again chunk by chunk (period-69 text with `-m3
+            // -b1000001b`: 12.7 s and 2.9 MB of 4 MB, against 0.02 s and 4 KB
+            // with `-b1mb`). The record only covers bytes that equal the
+            // source, so it decodes whatever its length.
+            let dest = block_start + match_start as u64;
+            let mut len = common_prefix(
+                dict,
+                buf_off,
+                match_start,
+                true_src,
+                dest,
+                (block_size - match_start) as u32,
+                reread,
+            );
+            if round_matches {
+                len = len / l as u32 * l as u32;
             }
-        }
+            if len == 0 || (len as usize) < min_match {
+                return Ok(false);
+            }
+            match_offset = dest - true_src;
+            match fit_base_len_grid(
+                dict, buf_off, block_start, round_matches, b, true_src, match_start, len, reread,
+            ) {
+                Some(r) => r,
+                None => return Ok(false),
+            }
+        };
         lz::encode_lz_match(
             stat,
             round_matches,
@@ -122,6 +174,99 @@ fn record_match<R: ReadSeek>(
         return Ok(true);
     }
     Ok(false)
+}
+
+/// The BASE_LEN-grid adjustment of a rounded record whose source is `src`.
+///
+/// A rounded record stores the offset and the length in units of BASE_LEN
+/// (`b`), not of L (`ENCODE_LZ_MATCH`'s `L1`, srep.cpp:117), and the decoder
+/// rebuilds the source as `dest/BASE_LEN*BASE_LEN - offset/BASE_LEN*BASE_LEN`
+/// and the length as a whole number of BASE_LENs. That is exact when the
+/// source and the length are multiples of BASE_LEN -- always so when BASE_LEN
+/// divides L, the default (BASE_LEN = min(-l, 512), L = -l). With `-c` below
+/// BASE_LEN (`-m3 -c8 -l16`), or a BASE_LEN that does not divide L (`-m3 -c8
+/// -l17`, `-m3 -dl17`), the C++ wrote archives that do not decode (exit 0:
+/// silent data loss) or stopped with "match len too small" (exit 4), and the
+/// port did the same.
+///
+/// A record that will not decode to these bytes is moved up to the next source
+/// on the BASE_LEN grid and cut to whole units -- still inside the verified
+/// match, so the bytes are the same -- or not taken (`None`) when less than
+/// one unit is left. One that decodes right as it is (an exact one, or an
+/// inexact source that happens to hold the same bytes, as on all-zero input)
+/// is kept, so every archive that used to decode keeps its bytes. Returns the
+/// record's `(match_start, match_len)`; unrounded records pass through.
+#[allow(clippy::too_many_arguments)]
+fn fit_base_len_grid<R: ReadSeek>(
+    dict: &[u8],
+    buf_off: usize,
+    block_start: u64,
+    round_matches: bool,
+    b: u64,
+    src: u64,
+    match_start: usize,
+    match_len: u32,
+    reread: &mut R,
+) -> Option<(usize, u32)> {
+    if !round_matches {
+        return Some((match_start, match_len));
+    }
+    let len = match_len as u64;
+    if !(src % b == 0 && len % b == 0 && len >= b)
+        && !decodes_as_is(dict, buf_off, block_start, match_start, src, match_len, b, reread)
+    {
+        let skip = (b - src % b) % b;
+        let cut = len.saturating_sub(skip) / b * b;
+        if cut < b {
+            return None;
+        }
+        return Some((match_start + skip as usize, cut as u32));
+    }
+    Some((match_start, match_len))
+}
+
+/// How many of the `len` bytes at file offset `src` equal the block's bytes
+/// at `match_start` (file offset `dest`), reread from the input; 0 unless
+/// `src` comes before `dest`. The decoder copies forward byte by byte, so an
+/// overlapping source (`src + len > dest`) is compared the same way.
+///
+/// The input is reread in pieces of 4 KiB growing to 64 KiB and the compare
+/// stops at the first difference, so a probe that fails early reads one piece
+/// and not the whole `len` (up to the rest of the block): reading it all
+/// would make the scan quadratic in the block size.
+fn common_prefix<R: ReadSeek>(
+    dict: &[u8],
+    buf_off: usize,
+    match_start: usize,
+    src: u64,
+    dest: u64,
+    len: u32,
+    reread: &mut R,
+) -> u32 {
+    const FIRST_PIECE: usize = 4096;
+    const MAX_PIECE: usize = 65536;
+    if src >= dest {
+        return 0;
+    }
+    let len = len as usize;
+    let cur = &dict[buf_off + match_start..buf_off + match_start + len];
+    let mut old = vec![0u8; FIRST_PIECE.min(len)];
+    let mut piece = FIRST_PIECE;
+    let mut n = 0usize;
+    while n < len {
+        let want = piece.min(len - n);
+        if old.len() < want {
+            old.resize(want, 0);
+        }
+        let got = read_at(reread, src + n as u64, &mut old[..want]);
+        let same = old[..got].iter().zip(&cur[n..n + got]).take_while(|(a, b)| a == b).count();
+        n += same;
+        if same < want {
+            break;
+        }
+        piece = (piece * 2).min(MAX_PIECE);
+    }
+    n as u32
 }
 
 /// Whether a rounded (`-m3`, no `-d`) record for the match of `len` bytes from
@@ -151,11 +296,10 @@ fn decodes_as_is<R: ReadSeek>(
     if decoded_src >= dest {
         return false;
     }
-    let mut old = vec![0u8; len as usize];
-    if read_at(reread, decoded_src, &mut old) != old.len() {
-        return false;
-    }
-    old[..] == dict[buf_off + match_start..buf_off + match_start + len as usize]
+    // Compared in pieces, like `common_prefix`: the same answer as one read
+    // of `len` bytes (a short read is a difference), without a buffer as long
+    // as the match.
+    common_prefix(dict, buf_off, match_start, decoded_src, dest, len, reread) == len
 }
 
 /// `compress<ACCELERATOR == 0>` (`compress.cpp:54-212`).

@@ -55,6 +55,41 @@ begin
   Result := True;
 end;
 
+{ Cuantos de los Len bytes en el offset Src del archivo son iguales a los del
+  bloque en MatchStart (offset Dest), releidos de la entrada; 0 salvo que Src
+  este antes de Dest. El decoder copia hacia adelante byte a byte, asi que un
+  origen que se solapa (Src + Len > Dest) se compara igual. La entrada se
+  relee de a pedazos de 4 KiB que crecen hasta 64 KiB y se corta en la primera
+  diferencia: una prueba que falla enseguida lee un pedazo y no todo Len (que
+  puede ser el resto del bloque); leerlo entero haria el escaneo cuadratico en
+  el largo del bloque (compress.rs, common_prefix). }
+function CommonPrefix(const Dict: TBytes; BufOff, MatchStart, Src, Dest: QWord; Len: DWord;
+                      Reread: TStream): DWord;
+const FIRST_PIECE = 4096; MAX_PIECE = 65536;
+var old: TBytes; got, n, want, same, piece, base: QWord;
+begin
+  if Src >= Dest then Exit(0);
+  if Len = 0 then Exit(0);
+  if QWord(Len) < FIRST_PIECE then SetLength(old, Len) else SetLength(old, FIRST_PIECE);
+  piece := FIRST_PIECE;
+  n := 0;
+  base := BufOff + MatchStart;
+  while n < QWord(Len) do
+  begin
+    want := QWord(Len) - n;
+    if want > piece then want := piece;
+    if QWord(Length(old)) < want then SetLength(old, want);
+    got := ReadAt(Reread, Src + n, old, want);
+    same := 0;
+    while (same < got) and (old[same] = Dict[base + n + same]) do Inc(same);
+    n := n + same;
+    if same < want then Break;
+    piece := piece * 2;
+    if piece > MAX_PIECE then piece := MAX_PIECE;
+  end;
+  Result := DWord(n);
+end;
+
 { Si un record redondeado (-m3 sin -d) del match de Len bytes desde el offset
   Src del archivo hasta la posicion MatchStart del bloque descomprime a estos
   mismos bytes aunque Src o Len no caigan en la grilla de B (BASE_LEN). El
@@ -65,16 +100,52 @@ end;
   -m5 (compress.rs, decodes_as_is). }
 function DecodesAsIs(const Dict: TBytes; BufOff, BlockStart, MatchStart, Src: QWord;
                      Len: DWord; B: QWord; Reread: TStream): Boolean;
-var dest, decodedSrc: QWord; old: TBytes;
+var dest, decodedSrc: QWord;
 begin
   Result := False;
   if ((QWord(Len) mod B) <> 0) or (QWord(Len) < B) then Exit;
   dest := BlockStart + MatchStart;
   decodedSrc := dest div B * B - (dest - Src) div B * B;
   if decodedSrc >= dest then Exit;
-  SetLength(old, Len);
-  if ReadAt(Reread, decodedSrc, old, Len) <> QWord(Len) then Exit;
-  Result := CompareByte(old[0], Dict[BufOff + MatchStart], Len) = 0;
+  { de a pedazos, como CommonPrefix: la misma respuesta que una sola lectura de
+    Len bytes (una lectura corta es una diferencia), sin un buffer del largo
+    del match }
+  Result := CommonPrefix(Dict, BufOff, MatchStart, decodedSrc, dest, Len, Reread) = Len;
+end;
+
+{ El ajuste a la grilla de BASE_LEN (B) de un record redondeado con origen
+  Src. Un record redondeado guarda offset y largo en unidades de BASE_LEN, no
+  de L (el L1 de ENCODE_LZ_MATCH, srep.cpp:117), y el decoder rearma el origen
+  como dest div BASE_LEN * BASE_LEN - offset div BASE_LEN * BASE_LEN y el
+  largo como un numero entero de BASE_LEN. Eso es exacto si el origen y el
+  largo son multiplos de BASE_LEN: siempre, cuando BASE_LEN divide a L (el
+  default). Con -c debajo de BASE_LEN (-m3 -c8 -l16) o un BASE_LEN que no
+  divide a L (-m3 -c8 -l17, -m3 -dl17) el C++ escribia un archivo que no
+  descomprime (exit 0: perdida de datos silenciosa) o cortaba con "match len
+  too small" (exit 4), y el port igual.
+  Un record que no va a descomprimir a estos bytes se corre al proximo origen
+  de la grilla de BASE_LEN y se recorta a unidades enteras -- sigue adentro
+  del match verificado, los bytes son los mismos -- o no se toma (False) si
+  no queda ni una unidad. Uno que descomprime bien tal cual (uno exacto, o uno
+  con el origen corrido que por casualidad tiene los mismos bytes, como en una
+  entrada toda en cero) queda igual: los archivos que descomprimian no cambian.
+  Los records sin redondear pasan tal cual (compress.rs, fit_base_len_grid). }
+function FitBaseLenGrid(const Dict: TBytes; BufOff, BlockStart: QWord; RoundMatches: Boolean;
+                        B, Src: QWord; var MatchStart: QWord; var MatchLen: DWord;
+                        Reread: TStream): Boolean;
+var skip, cut: QWord;
+begin
+  Result := True;
+  if not RoundMatches then Exit;
+  if not (((Src mod B) = 0) and ((QWord(MatchLen) mod B) = 0) and (QWord(MatchLen) >= B))
+     and not DecodesAsIs(Dict, BufOff, BlockStart, MatchStart, Src, MatchLen, B, Reread) then
+  begin
+    skip := (B - Src mod B) mod B;
+    if QWord(MatchLen) > skip then cut := (QWord(MatchLen) - skip) div B * B else cut := 0;
+    if cut < B then Exit(False);
+    MatchStart := MatchStart + skip;
+    MatchLen := DWord(cut);
+  end;
 end;
 
 { record_match: mide el match del chunk K contra la posicion I y lo emite si
@@ -84,7 +155,9 @@ function RecordMatch(const T: THashTableRec; const Dict: TBytes; BufOff, BlockSi
                      BaseLen: DWord; Reread: TStream; var Stat: TStatList;
                      LastMatchEnd: QWord; out MatchEnd: QWord; var LiteralBytes: DWord;
                      I: QWord; K: DWord): Boolean;
-var addLen, matchLen: DWord; matchStart, matchOffset, b, src, skip, cut: QWord;
+var addLen, matchLen, oldLen, len: DWord;
+    matchStart, oldStart, matchOffset, b, gridSrc, trueSrc, dest, decodedSrc: QWord;
+    overrun, shifted, keepOld: Boolean;
 begin
   MatchEnd := 0;
   matchLen := HtMatchLen(T, K, Dict, BufOff, BufOff + LastMatchEnd, BufOff + I,
@@ -92,38 +165,72 @@ begin
   if QWord(matchLen) >= MinMatch then
   begin
     matchStart := I - QWord(addLen);
-    if RoundMatches then matchLen := DWord(QWord(matchLen) div L * L);
-    matchOffset := BlockStart + I - QWord(K) * L;
-    { Un record redondeado guarda offset y largo en unidades de BASE_LEN, no
-      de L (el L1 de ENCODE_LZ_MATCH, srep.cpp:117), y el decoder rearma el
-      origen como dest div BASE_LEN * BASE_LEN - offset div BASE_LEN *
-      BASE_LEN y el largo como un numero entero de BASE_LEN. Eso es exacto si
-      el origen (K*L) y el largo son multiplos de BASE_LEN: siempre, cuando
-      BASE_LEN divide a L (el default). Con -c debajo de BASE_LEN (-m3 -c8
-      -l16) o un BASE_LEN que no divide a L (-m3 -c8 -l17, -m3 -dl17) el C++
-      escribia un archivo que no descomprime (exit 0: perdida de datos
-      silenciosa) o cortaba con "match len too small" (exit 4), y el port
-      igual.
-      Un record que no va a descomprimir a estos bytes ahora se corre al
-      proximo origen de la grilla de BASE_LEN y se recorta a unidades enteras
-      -- sigue adentro del match verificado, los bytes son los mismos -- o no
-      se toma si no queda ni una unidad. Uno que descomprime bien tal cual (uno
-      exacto, o uno con el origen corrido que por casualidad tiene los mismos
-      bytes, como en una entrada toda en cero) se escribe igual que antes: los
-      archivos que descomprimian no cambian (compress.rs, record_match). }
-    if RoundMatches then
+    b := QWord(BaseLen);
+    gridSrc := QWord(K) * L;
+    matchOffset := BlockStart + I - gridSrc;
+
+    { Primero el record que escribia la 2.2.0, que supone el chunk K en K*L. }
+    oldStart := matchStart;
+    if RoundMatches then oldLen := DWord(QWord(matchLen) div L * L) else oldLen := matchLen;
+    if not FitBaseLenGrid(Dict, BufOff, BlockStart, RoundMatches, b, gridSrc, oldStart,
+                          oldLen, Reread) then Exit(False);
+
+    { K*L es donde estan de verdad los bytes del chunk K solo mientras todos
+      los bloques hayan empezado en la grilla de L: uno que empieza en un
+      BlockStart que no es multiplo de L (cualquier -b que no sea multiplo de
+      L) numera sus chunks desde BlockStart div L pero los digiere y hashea en
+      BlockStart + m*L. -m4/-m5 releen los bytes en K*L, asi que ahi solo se
+      pierden matches; -m3 confia en los digests y no relee, y el record salia
+      con un origen corrido BlockStart mod L (exit 0, -d falla o da otros
+      bytes). La extension por digests ademas puede pasar de un bloque en la
+      grilla al siguiente, corrido, cuyos chunks no siguen a los del primero.
+      Y si L no es multiplo de 4 el escaneo prueba ventanas que terminan hasta
+      3 bytes pasado el bloque, y HtMatchLen cuenta ese primer chunk entero:
+      el record se pasaba del bloque (exit 4, BadBlockRecord).
+      Ese record se compara con los bytes que va a copiar el decoder. Si
+      descomprime a estos bytes y entra en el bloque se escribe igual que
+      antes, asi que los archivos que descomprimian no cambian; si no, se
+      rearma desde el origen verdadero del chunk, recortado a los bytes que de
+      verdad coinciden. Los archivos con todos los bloques en la grilla de L y
+      ningun record pasado del bloque van por la primera rama sin cambios
+      (compress.rs, record_match). }
+    overrun := oldStart + QWord(oldLen) > BlockSize;
+    shifted := T.CompareDigests and T.AnyShifted;
+    if not shifted and not overrun then keepOld := True
+    else if overrun then keepOld := False
+    else
     begin
-      b := QWord(BaseLen);
-      src := QWord(K) * L;
-      if not (((src mod b) = 0) and ((QWord(matchLen) mod b) = 0) and (QWord(matchLen) >= b))
-         and not DecodesAsIs(Dict, BufOff, BlockStart, matchStart, src, matchLen, b, Reread) then
-      begin
-        skip := (b - src mod b) mod b;
-        if QWord(matchLen) > skip then cut := (QWord(matchLen) - skip) div b * b else cut := 0;
-        if cut < b then Exit(False);
-        matchStart := matchStart + skip;
-        matchLen := DWord(cut);
-      end;
+      dest := BlockStart + oldStart;
+      if RoundMatches then decodedSrc := dest div b * b - matchOffset div b * b
+      else decodedSrc := dest - matchOffset;
+      keepOld := CommonPrefix(Dict, BufOff, oldStart, decodedSrc, dest, oldLen, Reread) = oldLen;
+    end;
+
+    if keepOld then
+    begin
+      matchStart := oldStart;
+      matchLen := oldLen;
+    end
+    else
+    begin
+      if T.CompareDigests then trueSrc := HtChunkPos(T, K) else trueSrc := gridSrc;
+      { Se mide desde el origen verdadero hasta el fin del bloque, sin el tope
+        de matchLen: en un bloque corrido ese salio de los digests de los
+        chunks equivocados (los de la grilla) y suele ser un solo chunk; un
+        record cortado ahi dejaba casi toda una repeticion larga para volver a
+        probarla chunk por chunk (texto de periodo 69 con -m3 -b1000001b: 12.7
+        s y 2.9 MB de 4 MB, contra 0.02 s y 4 KB con -b1mb). El record cubre
+        solo bytes iguales al origen, asi que descomprime con cualquier largo
+        (compress.rs, record_match). }
+      dest := BlockStart + matchStart;
+      len := CommonPrefix(Dict, BufOff, matchStart, trueSrc, dest, DWord(BlockSize - matchStart),
+                          Reread);
+      if RoundMatches then len := DWord(QWord(len) div L * L);
+      if (len = 0) or (QWord(len) < MinMatch) then Exit(False);
+      matchOffset := dest - trueSrc;
+      if not FitBaseLenGrid(Dict, BufOff, BlockStart, RoundMatches, b, trueSrc, matchStart,
+                            len, Reread) then Exit(False);
+      matchLen := len;
     end;
     Enc(Stat, RoundMatches, BaseLen, DWord(matchStart - LastMatchEnd), matchOffset, matchLen);
     MatchEnd := matchStart + QWord(matchLen);

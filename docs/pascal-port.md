@@ -724,3 +724,29 @@ diferencias.
   ahora al menos una casilla, como `-dh5b`..`-dh8b`. Y un rechazo va donde no
   rompe nada que funcionaba: las `--chunk-*` inválidas se rechazan en
   `Compress` y solo con `-dup`, porque sin `-dup` no se usan.
+* **El número de un chunk de `-m3` no es su posición en el archivo.**
+  `HtPrepareBuffer` numera los chunks del bloque desde `Offset div L` pero los
+  digiere y hashea en `Offset + m*L`, y `RecordMatch` escribía el origen como
+  `K * L`. Si `-b` no es múltiplo de `L` (`-b65537b`, `-l8192 -b100kb`, `-l17`)
+  todo bloque después del primero empieza fuera de esa grilla y el origen sale
+  corrido `Offset mod L`: `-m4`/`-m5` releen los bytes en `K * L` y solo pierden
+  matches, pero `-m3` confía en los digests y nunca relee, así que el record
+  salía sin control (exit 0, `-d` da DigestMismatch o, con `-hash-`, otros
+  bytes). Dos variantes del mismo hueco: la extensión por digests pasa de un
+  bloque en la grilla al siguiente, corrido, y con un `L` que 4 no divide el
+  primer chunk del match termina hasta 3 bytes pasado el bloque
+  (BadBlockRecord). El arreglo **no toca lo que se hashea** (eso cambiaría
+  archivos que funcionan): `HtPrepareBuffer` guarda (primer chunk, inicio) de
+  cada bloque, `HtChunkPos` da la posición real, y `RecordMatch` primero arma
+  el record de la 2.2.0; si hay algún bloque corrido o el record se pasa del
+  bloque, relee lo que copiaría el decoder y, solo si no coincide, lo rearma
+  desde `HtChunkPos`, medido desde ahí hasta el fin del bloque (no hasta donde
+  llegó la extensión por digests, que en un bloque corrido comparó los chunks
+  equivocados y suele dar un solo chunk: texto de período 69 con `-b1000001b`
+  pasaba de 0.02 s a 12.7 s y de 4 KB a 2.9 MB) y recortado a los bytes que de
+  verdad coinciden. `CommonPrefix` relee de a pedazos de 4 a 64 KiB y corta en
+  la primera diferencia, para que una prueba fallida no relea el resto del
+  bloque (cuadrático). La lista de bloques solo guarda entradas desde el
+  primer bloque corrido: con un `-b` alineado no ocupa nada. La lección
+  es la de `BASE_LEN` otra vez, con otra cara: el C++, el Rust y el Pascal
+  daban el mismo archivo roto, y solo un barrido que descomprime lo vio.

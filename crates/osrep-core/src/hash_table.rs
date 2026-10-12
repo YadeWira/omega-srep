@@ -220,6 +220,16 @@ pub struct HashTable {
     /// (`PrepDigest`) only because two threads may hash at once; the port runs
     /// one, and both would share a key anyway.
     main_digest: VDigest,
+    /// `(first chunk index, block start)` of every block `prepare_buffer` has
+    /// seen from the first one off the `L` grid on, in file order (the blocks
+    /// before it are on the grid, where `chunk_pos`'s `k*L` is right). A block
+    /// that starts off the `L` grid (a `-b` that is not a multiple of `L`)
+    /// numbers its chunks from `block_start / L` but digests and hashes them
+    /// at `block_start + m*L`, so the chunk number alone does not give the
+    /// bytes' file offset; `chunk_pos` does.
+    block_grid: Vec<(usize, u64)>,
+    /// Whether some block started off the `L` grid (`block_start % L != 0`).
+    pub any_shifted: bool,
 }
 
 impl HashTable {
@@ -290,6 +300,8 @@ impl HashTable {
                 Vec::new()
             },
             main_digest: VDigest::new(),
+            block_grid: Vec::new(),
+            any_shifted: false,
         }
     }
 
@@ -303,6 +315,14 @@ impl HashTable {
     pub fn prepare_buffer(&mut self, buf: &[u8], buf_off: usize, block_len: usize, offset: u64) {
         let curchunk = (offset / self.l as u64) as usize;
         let nchunks = block_len / self.l;
+        // Blocks before the first shifted one are on the grid, where `k*L`
+        // (`chunk_pos`'s fallback) is right: an aligned `-b` stores nothing.
+        if offset % self.l as u64 != 0 {
+            self.any_shifted = true;
+        }
+        if self.any_shifted {
+            self.block_grid.push((curchunk, offset));
+        }
         if self.precompute_digests {
             self.prepare_digests_range(buf, buf_off, curchunk, curchunk + nchunks);
         }
@@ -323,6 +343,18 @@ impl HashTable {
             let at = buf_off + (curchunk - chunk_start) * self.l;
             self.digestarr[curchunk] = self.main_digest.compute(&buf[at..at + self.l]);
         }
+    }
+
+    /// The file offset of the bytes chunk `k` was digested and hashed from:
+    /// `block_start + (k - first_chunk) * L` of the block that numbered it.
+    /// Equal to `k * L` whenever every block so far started on the `L` grid.
+    pub fn chunk_pos(&self, k: usize) -> u64 {
+        let idx = self.block_grid.partition_point(|&(c, _)| c <= k);
+        if idx == 0 {
+            return k as u64 * self.l as u64;
+        }
+        let (c0, bs) = self.block_grid[idx - 1];
+        bs + (k - c0) as u64 * self.l as u64
     }
 
     /// `chunkarr_value` (`hash_table.cpp:244`).

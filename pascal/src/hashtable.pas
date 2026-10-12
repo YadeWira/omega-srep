@@ -43,6 +43,11 @@ const
   RING_TAIL      = 4;
 
 type
+  { (primer chunk, inicio) de un bloque: ver THashTableRec.Grid }
+  TGridEntry = record
+    Chunk, Start: QWord;
+  end;
+
   TSliceHash = record
     Active: Boolean;
     H: array of DWord;
@@ -62,6 +67,16 @@ type
     CurChunk: DWord;             { CDC numera los chunks a medida que aparecen }
     StartArr: array of QWord;    { CDC: offset de cada chunk }
     Digest: TVmac;               { el VDigest con clave cero }
+    { (primer chunk, inicio) de cada bloque que vio HtPrepareBuffer desde el
+      primero fuera de la grilla de L, en orden; los anteriores estan en la
+      grilla, donde K*L (lo que devuelve HtChunkPos sin entrada) es correcto,
+      asi que un -b alineado no guarda nada. Un bloque que empieza fuera de la
+      grilla de L (un -b que no es multiplo de L) numera sus chunks desde
+      Offset div L pero los digiere y hashea en Offset + m*L: el numero de
+      chunk solo no da el offset de sus bytes en el archivo, HtChunkPos si. }
+    Grid: array of TGridEntry;
+    GridN: QWord;
+    AnyShifted: Boolean;         { algun bloque con Offset mod L <> 0 }
   end;
 
 procedure HtInit(out T: THashTableRec; RoundMatches, CompareDigests, PrecomputeDigests,
@@ -78,6 +93,12 @@ procedure HtPrepareBuffer(var T: THashTableRec; const Buf: TBytes; BufOff, Block
 
 function HtAddHash(var T: THashTableRec; Index: QWord; StoredValue: DWord;
                    CurChunk: QWord): DWord;
+
+{ El offset en el archivo de los bytes de los que se saco el digest y el hash
+  del chunk K: inicio + (K - primer chunk) * L del bloque que lo numero. Es
+  K * L mientras todos los bloques hayan empezado en la grilla de L
+  (hash_table.rs, chunk_pos). }
+function HtChunkPos(const T: THashTableRec; K: QWord): QWord;
 
 function HtFindMatch(const T: THashTableRec; const Buf: TBytes; BufOff, I, BlockSize,
                      Index: QWord; StoredValue: DWord): DWord;
@@ -308,6 +329,9 @@ begin
   if CompareDigests then
     ZNew(Pointer(T.DigestArr), TypeInfo(T.DigestArr), (T.TotalChunks + 1) * DIGEST_SIZE, 1)
   else SetLength(T.DigestArr, 0);
+  SetLength(T.Grid, 0);
+  T.GridN := 0;
+  T.AnyShifted := False;
   SetLength(key, VMAC_KEY_LEN_BYTES);                { clave cero: ver VDigestCompute }
   VmacSetKey(key, T.Digest);
 end;
@@ -327,6 +351,16 @@ var cur, n, c: QWord;
 begin
   cur := Offset div T.L;
   n := BlockLen div T.L;
+  if (Offset mod T.L) <> 0 then T.AnyShifted := True;
+  if T.AnyShifted then
+  begin
+    { crece la mitad mas cada vez: amortizado, y el pico al realocar es 2.5
+      veces la lista y no 3 }
+    if T.GridN = QWord(Length(T.Grid)) then SetLength(T.Grid, T.GridN + T.GridN div 2 + 16);
+    T.Grid[T.GridN].Chunk := cur;
+    T.Grid[T.GridN].Start := Offset;
+    Inc(T.GridN);
+  end;
   if T.PrecomputeDigests then
   begin
     c := cur;
@@ -337,6 +371,21 @@ begin
     end;
   end;
   SlicePrepareRange(T.Slice, Buf, BufOff, cur, cur + n);
+end;
+
+function HtChunkPos(const T: THashTableRec; K: QWord): QWord;
+var lo, hi, mid: QWord;
+begin
+  { busqueda binaria: lo = cuantos bloques tienen primer chunk <= K }
+  lo := 0;
+  hi := T.GridN;
+  while lo < hi do
+  begin
+    mid := lo + (hi - lo) div 2;
+    if T.Grid[mid].Chunk <= K then lo := mid + 1 else hi := mid;
+  end;
+  if lo = 0 then Exit(K * T.L);
+  Result := T.Grid[lo - 1].Start + (K - T.Grid[lo - 1].Chunk) * T.L;
 end;
 
 function ChunkarrValue(const T: THashTableRec; Hash: QWord; Chunk: DWord): DWord; inline;
