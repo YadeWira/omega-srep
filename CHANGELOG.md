@@ -9,10 +9,33 @@ Versions follow `<major>.<minor>.<patch>` for stable releases and
 written by the new default cannot be read by the previous release, which is
 what happened in 2.0.0.
 
-## [Unreleased]
+## [2.2.1] — 2026-10-12
+
+Data-loss fixes. Every one needs non-default options (`-dup` on runs of zeros
+comes closest to the defaults), every one is present in 2.1.x and in the C++
+1.0.7 too, and **every archive that decoded correctly before is written
+byte-identically** by 2.2.1 (checked by compressing with 2.2.0 and 2.2.1 and
+decoding both, over more than 150,000 command lines). The format is
+unchanged and existing archives read as before. If you kept an archive made
+with one of the options below, run `osrep -d` on it before deleting the
+input: except where noted, a bad one fails to decode instead of returning
+wrong bytes.
 
 ### Fixed
 
+- **`-m3` with a `-b` that is not a multiple of the chunk wrote archives that
+  did not decompress.** With `-m3` (also `-m3f`/`-m3o`, either container) and
+  a block size the chunk `L` does not divide -- `-m3 -b65537b`, `-b1025b`,
+  `-l8192 -b100kb`, or an `-l`/`-c` such as 17 or 300 with any `-b` -- every
+  block after the first started off the grid the encoder assumed for a
+  match's source. The archive was written with exit 0 (or exit 1 with the
+  power-of-two warning), and `-d` failed with `DigestMismatch`; with
+  `-hash-` it **decoded to different bytes with exit 0**. With an `-l`/`-c`
+  that 4 does not divide, a short input could also stop with exit 4
+  (`BadBlockRecord`) and leave a partial archive (`-m3 -l9` on a few zero
+  bytes). These archives now decode. `-m3` archives whose `-b` is a multiple
+  of the chunk (the default) are unchanged, in bytes and in speed; an odd
+  `-b` now costs some ratio, because only verified matches are written.
 - **`-b2g` or larger on the 32-bit Windows build** said "Range check error"
   (2.2.0) or panicked (2.1.2): the two-block ring cannot fit a 32-bit address
   space. Both builds now stop with "ERROR! OutOfMemory", exit 4, as they do
@@ -70,6 +93,12 @@ what happened in 2.0.0.
   "Invalid option: --chunk-max=10 -- the maximum chunk size must be at least
   --chunk-min (20 bytes)". Without `-dup` the `--chunk-*` options are unused
   and still accepted.
+
+### Known issues
+
+- **With the default options, -m3/-m4/-m5 write different bytes than the C++
+  1.0.7 on some inputs** (tie order in the C++'s `std::sort`; see 2.2.0). Both
+  decode each other's archives; 2.3.0 will follow the C++.
 
 ## [2.2.0] — 2026-10-10
 
@@ -238,6 +267,12 @@ next in 2.2.1. All need non-default options; the defaults are not affected.
   the C++ orders matches with equal sources the way libstdc++'s `std::sort`
   happens to, the ports keep them in order. Both decode each other's
   archives; this release keeps 2.1.2's bytes, and 2.3.0 will follow the C++.
+
+_Note added in 2.2.1:_ the `-l512 -c128` case above was in fact already fixed
+in 2.2.0 (by the `-c` below BASE_LEN fix listed under Fixed); the `-b` case
+was wider than written (any `-b` that is not a multiple of the chunk, the
+default `-l` included), and is fixed in 2.2.1 with the CDC `-c`/`-l` case
+and the `-dup` cases found by the same sweep.
 
 ## [2.1.2] — 2026-10-09
 
