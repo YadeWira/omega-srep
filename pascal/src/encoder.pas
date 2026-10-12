@@ -395,8 +395,17 @@ begin
     RingEnsure no hace nada sobre un anillo que ya mide ringSize + RING_TAIL.
     Esos RING_TAIL bytes de mas van en cero y nunca se escriben: ver
     hashtable.pas. }
+  { EncodeError::OutOfMemory: el anillo no entra en el espacio de direcciones
+    (-b2g en i386). Antes salia "Range check error" del SetLength y el Rust
+    i686 hacia panic; los dos dicen lo mismo ahora. }
+  if (ringSize < bufsize) or (ringSize + RING_TAIL > QWord(High(SizeInt))) then
+    raise EEncode.Create('OutOfMemory');
   ZTryNew(Pointer(dict), ringSize + RING_TAIL, 1);
-  RingEnsure(dict, bufsize + RING_TAIL, ringSize + RING_TAIL);
+  try
+    RingEnsure(dict, bufsize + RING_TAIL, ringSize + RING_TAIL);
+  except
+    on EOutOfMemory do raise EEncode.Create('OutOfMemory');
+  end;
 
   bufOffset := 0;
   nextPos := 0;
@@ -409,7 +418,11 @@ begin
   begin
     { lectura adelantada: llena la ranura siguiente }
     nextOffset := (bufOffset + bufsize) mod ringSize;
-    RingEnsure(dict, nextOffset + bufsize + RING_TAIL, ringSize + RING_TAIL);
+    try
+      RingEnsure(dict, nextOffset + bufsize + RING_TAIL, ringSize + RING_TAIL);
+    except
+      on EOutOfMemory do raise EEncode.Create('OutOfMemory');
+    end;
     nextFilled := ReadBlockAt(Input, nextPos, dict, nextOffset, bufsize);
 
     SetLength(header, BLOCK_HEADER_SIZE + storedHashSize);

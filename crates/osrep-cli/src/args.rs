@@ -443,7 +443,10 @@ pub fn parse(args: &[String]) -> Result<Options, CmdLineError> {
         } else if let Some(v) = a.strip_prefix("-d") {
             let mut err: Option<CmdLineError> = None;
             for part in v.split(':') {
-                let (head, tail) = part.split_at(part.len().min(1));
+                // Split after the first *character*: `-dñ` used to split
+                // inside the two-byte `ñ` and panic (exit 101).
+                let first = part.char_indices().nth(1).map_or(part.len(), |(i, _)| i);
+                let (head, tail) = part.split_at(first);
                 let parsed = match head {
                     "a" => parse_int(tail).map(|_| ()),
                     "c" => match parse_mem(tail, Unit::B) {

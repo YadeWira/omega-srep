@@ -101,6 +101,10 @@ pub enum EncodeError {
     /// is sized from the declared value, so a longer input overruns it: the
     /// C++ hangs there and this used to panic (2.0.0-2.1.1).
     DeclaredSizeTooSmall { declared: u64, actual: u64 },
+    /// The dictionary ring (`-b` blocks plus `-d`) does not fit the address
+    /// space or cannot be allocated: `-b2g` on a 32-bit build. Before 2.2.1
+    /// the size wrapped to 0 there and the first block read panicked.
+    OutOfMemory,
 }
 
 impl From<std::io::Error> for EncodeError {
@@ -474,10 +478,12 @@ pub fn encode<R: Read + Seek, W: Write>(
     // even with `-d0` (then it is just the two headroom blocks); `MAX_DIST`
     // stays the *unrounded* `-d` value, and the in-memory pass runs only when
     // it is non-zero.
-    let ring_size =
-        (round_up(opts.dictsize, bufsize as u64) + (BUFFERS as u64) * bufsize as u64) as usize;
+    let ring_size = round_up(opts.dictsize, bufsize as u64)
+        .checked_add((BUFFERS as u64) * bufsize as u64)
+        .and_then(|n| usize::try_from(n).ok())
+        .ok_or(EncodeError::OutOfMemory)?;
     let use_dict = opts.dictsize != 0;
-    let mut dict = vec![0u8; ring_size];
+    let mut dict = zeroed_vec(ring_size).ok_or(EncodeError::OutOfMemory)?;
     let mut inmem = DictionaryCompressor::new(
         opts.dictsize,
         opts.dict_hashsize,
@@ -727,6 +733,28 @@ fn write_literals<W: Write>(
     }
     output.write_all(&dict[buf_offset + in_pos..buf_offset + filled])?;
     Ok((filled - in_pos) as u64)
+}
+
+/// `vec![0u8; n]` that reports an allocation failure instead of aborting.
+/// It keeps `vec!`'s lazy zeroed pages (`alloc_zeroed`, calloc), so a huge
+/// `-b` on a 64-bit build still costs only what is written.
+fn zeroed_vec(n: usize) -> Option<Vec<u8>> {
+    if n == 0 {
+        return Some(Vec::new());
+    }
+    let layout = std::alloc::Layout::array::<u8>(n).ok()?;
+    // SAFETY: `layout` is non-zero-sized; the pointer comes from the global
+    // allocator with exactly this layout, which is what `Vec::from_raw_parts`
+    // requires for a `Vec<u8>` of capacity `n`, and the bytes are initialized
+    // (zeroed).
+    unsafe {
+        let p = std::alloc::alloc_zeroed(layout);
+        if p.is_null() {
+            None
+        } else {
+            Some(Vec::from_raw_parts(p, n, n))
+        }
+    }
 }
 
 /// `roundUp` (`Common.h:692`) for the base the ring uses.

@@ -460,6 +460,14 @@ fn compress(o: &Options, finame: &str, foutname: &str) -> Result<i32, RunError> 
             )
             .map_err(dup_error)?
         } else {
+            // A directory opens fine on Unix, and then its "size" (i64::MAX on
+            // ext4) sized the match finder: the allocation aborted (exit 134),
+            // and -m0 failed later with "Io". The Pascal port, whose open
+            // rejects directories, says this; so does Windows, where the open
+            // itself fails.
+            if Path::new(&input_path).is_dir() {
+                return Err(err(ERROR_IO, format!("Can't open {finame} for read")));
+            }
             let mut input = File::open(&input_path)
                 .map_err(|_| err(ERROR_IO, format!("Can't open {finame} for read")))?;
             // `-` means stdout, not a file called "-".

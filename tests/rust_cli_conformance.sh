@@ -185,6 +185,28 @@ if ./bin/osrep -m4 --seed=7 -bogus tests/corpus/text.bin "$TMP/a.osr" >/dev/null
 fi
 pass=$((pass + 1))
 
+say "a directory as the input is \"Can't open\", not an allocation abort"
+# A directory opens on Unix and reports a huge size (i64::MAX on ext4), which
+# sized the match finder: 2.2.0 aborted with exit 134 ("memory allocation of
+# ... bytes failed"), and -m0 said "Io".
+mkdir -p "$TMP/adir"
+for m in -m3 -m0 -m1; do
+    rc=0; "$RS" --seed=7 $m "$TMP/adir" "$TMP/dir.osr" 2>"$TMP/dir.err" >/dev/null || rc=$?
+    [ "$rc" -eq 3 ] || fail "$m on a directory exited $rc, not 3"
+    grep -q "Can't open $TMP/adir for read" "$TMP/dir.err" || fail "$m on a directory: $(cat "$TMP/dir.err")"
+done
+pass=$((pass + 1))
+
+say "a non-ASCII -d part is an invalid option, not a panic"
+# -d's parts were split after their first BYTE: "-dñ" cut the two-byte ñ in
+# half and panicked (exit 101).
+for a in "-dñ" "-d1m:ñ" "-dé5"; do
+    rc=0; "$RS" "$a" tests/corpus/tiny.bin "$TMP/n.osr" 2>"$TMP/n.err" >/dev/null || rc=$?
+    [ "$rc" -eq 2 ] || fail "$a exited $rc, not 2"
+    grep -q "Invalid option: " "$TMP/n.err" || fail "$a: $(cat "$TMP/n.err")"
+done
+pass=$((pass + 1))
+
 say "-dup: an archive the C++ can read, and the same payload inside v5"
 for m in m3 m4 m5; do
     ./bin/osrep -dup -$m --seed=7 "$TMP/dup1m.bin" "$TMP/cpp.osr" >/dev/null 2>&1 \

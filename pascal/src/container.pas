@@ -167,8 +167,10 @@ end;
 
 procedure PutLE32(var B: TBytes; At: QWord; V: DWord); inline;
 begin
-  B[At]   := Byte(V);         B[At+1] := Byte(V shr 8);
-  B[At+2] := Byte(V shr 16);  B[At+3] := Byte(V shr 24);
+  { las mascaras no cambian nada: evitan que FPC avise "range check error"
+    cuando inlinea esto con una constante y pliega el Byte() }
+  B[At]   := Byte(V and $FF);          B[At+1] := Byte((V shr 8) and $FF);
+  B[At+2] := Byte((V shr 16) and $FF); B[At+3] := Byte((V shr 24) and $FF);
 end;
 
 procedure PutLE64(var B: TBytes; At: QWord; V: QWord); inline;

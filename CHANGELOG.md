@@ -11,6 +11,20 @@ what happened in 2.0.0.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`-b2g` or larger on the 32-bit Windows build** said "Range check error"
+  (2.2.0) or panicked (2.1.2): the two-block ring cannot fit a 32-bit address
+  space. Both builds now stop with "ERROR! OutOfMemory", exit 4, as they do
+  whenever that ring cannot be allocated.
+- **Compressing a directory** (`osrep somedir out.osr`) made the Rust abort
+  with exit 134 ("memory allocation of ... bytes failed": a directory reports
+  a huge size on ext4), or say "Io" with `-m0`. It is now "Can't open somedir
+  for read", exit 3, as the released Pascal binary already said.
+- **A `-d` option part starting with a non-ASCII character** (`-dñ`) made the
+  Rust panic (exit 101); it is "Invalid option", exit 2, as in the Pascal
+  binary and the C++.
+
 ## [2.2.0] — 2026-10-10
 
 ### Changed
@@ -174,9 +188,6 @@ next in 2.2.1. All need non-default options; the defaults are not affected.
   `-l` (`-l512 -c128`); CDC (`-m1`/`-m2`) with `-c` and an `-l` above 512
   (`-m1 -c256 -l768`). Until then, check such archives with `osrep -d` before
   deleting the input.
-- **On the 32-bit Windows build, `-b2g` or larger cannot work** (the two-block
-  ring does not fit in the address space): 2.1.2 panicked, 2.2.0 exits 4 with
-  an unhelpful "Range check error". It will say out of memory.
 - **With the default options, -m3/-m4/-m5 write different bytes than the C++
   1.0.7 on some inputs** (about one file in ten in a sample of real files):
   the C++ orders matches with equal sources the way libstdc++'s `std::sort`
