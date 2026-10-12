@@ -548,29 +548,22 @@ for args in "-m0 -d1mb:c1:l4" "-m0 -dc8 -dl4" "-m4 -dl4" "-m0 -dl8"; do
     pass=$((pass + 1))
 done
 
-say "an in-memory dictionary hash table under 8 bytes is a command-line error, not a crash"
+say "an in-memory dictionary hash table under 8 bytes gets one slot, not a crash"
 # -dh is in bytes, rounded up to a power of two, and the table holds
 # hashsize/8 eight-byte slots: -dh1b..-dh4b gave a table of zero slots whose
 # mask wrapped to all ones. The C++ dies with SIGSEGV, 2.2.0's Rust panicked
-# (exit 101) and its Pascal printed "Access violation" (exit 4).
+# (exit 101) and its Pascal printed "Access violation" (exit 4). They now get
+# the single slot -dh5b..-dh8b get, so they write -dh8b's archive.
 for args in "-m0 -dh1b" "-m0 -dh4b" "-m3 -d64kb -dh2b" "-m5 -d1mb -dh3b" "-dup -m4 -d1mb -dh1b"; do
-    rc=0; "$RS" --seed=7 $args tests/corpus/text.bin "$TMP/dh.osr" >/dev/null 2>"$TMP/dh.err" || rc=$?
-    [ "$rc" -eq 2 ] || fail "$args exited $rc, expected 2 (cmdline)"
-    n="$(printf '%s' "$args" | grep -o 'dh[0-9]*b$')"
-    want="  ERROR! Invalid option: -$n -- the dictionary hash size must be 0 (default) or at least 8 bytes"
-    grep -qxF -- "$want" "$TMP/dh.err" || fail "$args: stderr is not '$want': $(cat "$TMP/dh.err")"
-    [ ! -s "$TMP/dh.osr" ] || fail "$args left an archive behind"
-    rm -f "$TMP/dh.osr"
-    pass=$((pass + 1))
-done
-# -dh5b..-dh7b round up to one slot and work; without a dictionary -dh is not
-# read at all and any value is still accepted.
-for args in "-m0 -dh5b" "-m0 -dh8b" "-m3 -d64kb -dh7b" "-m3 -dh1b" "-m4 -dh4b"; do
+    ref="${args% -dh*} -dh8b"
+    "$RS" --seed=7 $ref tests/corpus/text.bin "$TMP/dh8.osr" >/dev/null 2>&1 || fail "$ref failed"
     rc=0; "$RS" --seed=7 $args tests/corpus/text.bin "$TMP/dh.osr" >/dev/null 2>"$TMP/dh.err" || rc=$?
     [ "$rc" -eq 0 ] || fail "$args exited $rc, expected 0: $(tail -1 "$TMP/dh.err")"
+    cmp -s "$TMP/dh8.osr" "$TMP/dh.osr" || fail "$args: archive differs from $ref"
+    rm -f "$TMP/dh.dec"
     "$RS" -d "$TMP/dh.osr" "$TMP/dh.dec" >/dev/null 2>&1 || fail "$args: archive does not decode"
     cmp -s tests/corpus/text.bin "$TMP/dh.dec" || fail "$args: round trip differs"
-    rm -f "$TMP/dh.osr" "$TMP/dh.dec"
+    rm -f "$TMP/dh.osr" "$TMP/dh8.osr" "$TMP/dh.dec"
     pass=$((pass + 1))
 done
 

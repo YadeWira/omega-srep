@@ -705,7 +705,9 @@ diferencias.
   cero.** `-dh` es la tabla del diccionario en bytes; `-dh1b`..`-dh4b`
   redondean a 1-4 y la tabla tiene `hashsize div 8` = 0 casillas, con la
   máscara `0 - 1` = todos unos: el primer acceso caía fuera (access violation
-  aquí, panic en Rust, SIGSEGV en C++). Igual que `-dl1`..`-dl7`, se rechaza
-  en `Compress` y no al parsear, porque sin diccionario `-dh` no se lee y
-  esos comandos andaban. Lo mismo las `--chunk-*` inválidas: solo importan
-  con `-dup`.
+  aquí, panic en Rust, SIGSEGV en C++). No se rechaza: con una entrada vacía
+  o de pocos bytes no hay acceso y esos comandos andaban (un barrido lo
+  mostró: 160 líneas que hacían ida y vuelta se habrían roto). La tabla tiene
+  ahora al menos una casilla, como `-dh5b`..`-dh8b`. Y un rechazo va donde no
+  rompe nada que funcionaba: las `--chunk-*` inválidas se rechazan en
+  `Compress` y solo con `-dup`, porque sin `-dup` no se usan.

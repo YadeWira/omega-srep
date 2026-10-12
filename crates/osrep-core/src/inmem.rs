@@ -62,9 +62,12 @@ impl DictionaryCompressor {
             } else {
                 min_hash_size(8 * (inmem_dictsize / l as u64))
             };
-            // Under 8 bytes the table would have no slot and the mask would
-            // wrap to all ones. The CLI refuses -dh1b..-dh4b
-            // (`small_dict_hash`); this keeps library callers in bounds.
+            // At least one 8-byte slot. `-dh1b`..`-dh4b` round to 1-4 bytes, a
+            // table of zero slots whose mask wrapped to all ones, and the
+            // first lookup indexed out of bounds (a panic here, SIGSEGV in
+            // the C++). They now get the one slot `-dh5b`..`-dh8b` get, and
+            // the archive `-dh8b` writes; an input too small to reach a
+            // lookup wrote that archive before too.
             let hashsize = roundup_to_power_of_two(hint).max(8);
             hashmask = hashsize / 8 - 1;
             // `BigAllocZero(hashsize)` zeroes hashsize bytes, i.e. hashsize/8

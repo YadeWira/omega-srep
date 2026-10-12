@@ -31,12 +31,13 @@ what happened in 2.0.0.
   command lines). An affected archive cannot be repaired: compress the input
   again.
 - **`-dh1b` to `-dh4b` crashed the compressor** whenever the in-memory
-  dictionary was in use (`-m0`, or `-d` with `-m3`..`-m5`): the hash table
-  had zero slots. 2.2.0 failed with "Access violation" (exit 4), 2.1.x with a
-  Rust panic (exit 101), the C++ 1.0.7 with SIGSEGV. They are refused up
-  front, exit 2: "Invalid option: -dh4b -- the dictionary hash size must be 0
-  (default) or at least 8 bytes". `-dh5b` and up work as before, and without
-  a dictionary `-dh` is still not read.
+  dictionary was in use (`-m0`, or `-d` with `-m3`..`-m5`) and the input
+  reached a lookup: the hash table had zero slots. 2.2.0 failed with "Access
+  violation" (exit 4), 2.1.x with a Rust panic (exit 101), the C++ 1.0.7 with
+  SIGSEGV. The table now has at least one 8-byte slot, as `-dh5b`..`-dh8b`
+  already had, so these write the archive `-dh8b` writes. Inputs too small
+  to reach a lookup (empty, a few bytes) worked before and give the same
+  archive as before.
 - **`-dup` with `--chunk-avg=0`, `--chunk-min=0` or a `--chunk-max` below
   `--chunk-min` failed with "dedup failed, rc=8" (exit 4)** after starting the
   run. It is now a command-line error (exit 2) naming the option, for example

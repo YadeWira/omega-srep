@@ -496,24 +496,6 @@ begin
             IntToStr(SLICES_IN_BLOCK) + ' bytes';
 end;
 
-{ -dh mide en bytes la tabla hash del diccionario en memoria, redondeada a
-  potencia de dos, y la tabla tiene hashsize div 8 casillas de 8 bytes
-  (compress_inmem.cpp:28-29). -dh1b..-dh4b redondean a 1-4 bytes: una tabla
-  de cero casillas cuya mascara da la vuelta a todos unos, y el primer acceso
-  caia fuera. El C++ muere con SIGSEGV, el Rust entraba en panico (exit 101) y
-  aca salia "Access violation" (exit 4). -dh5b..-dh7b redondean a 8, una
-  casilla, y andan. Sin diccionario -dh no se lee y acepta cualquier valor.
-  Devuelve '' si sirve (modes.rs, small_dict_hash). }
-function SmallDictHash(const O: TOptions): AnsiString;
-begin
-  Result := '';
-  if not ((O.Method = 0) or (O.DictSize <> 0)) then Exit;
-  if (O.DictHashSize = 0) or (O.DictHashSize > 4) then Exit;
-  Result := 'Invalid option: -dh' + IntToStr(O.DictHashSize) +
-            'b -- the dictionary hash size must be 0 (default) or at least ' +
-            IntToStr(SLICES_IN_BLOCK) + ' bytes';
-end;
-
 { El chunker de -dup necesita --chunk-avg y --chunk-min de al menos 1 y un
   --chunk-max no menor que --chunk-min (ParamsValid). El encoder recien se
   enteraba con el comando ya en marcha y decia "dedup failed, rc=8" (exit 4);
@@ -559,7 +541,6 @@ begin
     Fail(ERROR_CMDLINE, 'Incompatible options: -m' + IntToStr(O.Method) + ' -d' + ShowMem(O.DictSize, True));
   if SmallWindow(O) <> '' then Fail(ERROR_CMDLINE, SmallWindow(O));
   if SmallDictWindow(O) <> '' then Fail(ERROR_CMDLINE, SmallDictWindow(O));
-  if SmallDictHash(O) <> '' then Fail(ERROR_CMDLINE, SmallDictHash(O));
   if BadChunkParams(O) <> '' then Fail(ERROR_CMDLINE, BadChunkParams(O));
 
   { srep.cpp:459-462: la ventana tiene que ser potencia de dos. Es -c si se

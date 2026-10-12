@@ -153,11 +153,11 @@ status 2.
 Its hash table size,
 .BI -dh N
 (megabytes unless suffixed; default sized from the dictionary), is rounded
-up to a power of two and must then hold at least one 8-byte slot:
+up to a power of two and to at least one 8-byte slot, so
 .B -dh1b
 to
-.B -dh4b
-are refused with exit status 2 while the dictionary is in use.
+.B -dh8b
+all give the same table.
 .TP
 \fB-b\fIBYTES\fR
 Compression block size. Default 8 MB.

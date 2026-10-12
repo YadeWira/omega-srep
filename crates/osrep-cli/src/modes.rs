@@ -326,26 +326,6 @@ fn small_dict_window(o: &Options) -> Option<String> {
     ))
 }
 
-/// `-dh` sizes the in-memory dictionary's hash table in bytes, rounded up to
-/// a power of two, and the table holds `hashsize / 8` eight-byte slots
-/// (`compress_inmem.cpp:28-29`). `-dh1b`..`-dh4b` round to 1-4 bytes, a table
-/// of zero slots whose mask wraps to all ones, so the first lookup indexed
-/// out of bounds: the C++ dies with SIGSEGV, the Rust panicked (exit 101) and
-/// the Pascal failed with "Access violation" (exit 4). `-dh5b`..`-dh7b` round
-/// to 8, one slot, and work. Without a dictionary `-dh` is never read and any
-/// value is accepted, as before.
-fn small_dict_hash(o: &Options) -> Option<String> {
-    let inmem = o.method == 0 || o.dictsize != 0;
-    if !inmem || o.dict_hashsize == 0 || o.dict_hashsize > 4 {
-        return None;
-    }
-    Some(format!(
-        "Invalid option: -dh{}b -- the dictionary hash size must be 0 (default) or at least {} bytes",
-        o.dict_hashsize,
-        args::SLICES_IN_BLOCK
-    ))
-}
-
 /// The `-dup` chunker needs `--chunk-avg` and `--chunk-min` of at least 1 and
 /// a `--chunk-max` no smaller than `--chunk-min` (`dedup::Params::valid`).
 /// The encoder only found out after the command had started and reported
@@ -405,9 +385,6 @@ fn compress(o: &Options, finame: &str, foutname: &str) -> Result<i32, RunError> 
         return Err(err(ERROR_CMDLINE, msg));
     }
     if let Some(msg) = small_dict_window(o) {
-        return Err(err(ERROR_CMDLINE, msg));
-    }
-    if let Some(msg) = small_dict_hash(o) {
         return Err(err(ERROR_CMDLINE, msg));
     }
     if let Some(msg) = bad_chunk_params(o) {
