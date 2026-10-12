@@ -688,3 +688,24 @@ diferencias.
   lección: comparar archivos contra el oráculo prueba que el port copia, no
   que el formato aguanta; los barridos de opciones tienen que hacer la ida y
   vuelta.
+* **Una clave de dedup que no mezcla el largo confunde un chunk con el mismo
+  chunk más 1-7 ceros.** `ChunkHash`/`ChunkHashAlt` leen de a 8 bytes y
+  suman la cola de 0-7 bytes como una palabra rellena con ceros: `X` y
+  `X` + `00 00 00` dan las mismas dos claves. Solo la ruta `--dup-paranoid`
+  comparaba el largo guardado; la normal tomaba el primer acierto como ref, y
+  como nada aguas abajo mide el tamaño reconstruido, `-d` y `--verify` salían
+  con 0 sobre una salida de un byte de más o de menos (2049 bytes en cero con
+  `-dup` y opciones por defecto). El arreglo compara el largo en las dos
+  rutas, así que `uniqueLen` se guarda siempre (4 bytes por chunk único) y
+  crece al doble: el `SetLength(+1)` por chunk que tenía la ruta paranoica
+  copiaba todo el arreglo cada vez. Un archivo bueno no cambia: en él todo
+  acierto tenía el mismo largo. Para probarlo, `--dup-paranoid` es el control:
+  con el arreglo, `-dup` y `-dup --dup-paranoid` escriben el mismo archivo.
+* **Un tamaño que se redondea a potencia de dos y después se divide puede dar
+  cero.** `-dh` es la tabla del diccionario en bytes; `-dh1b`..`-dh4b`
+  redondean a 1-4 y la tabla tiene `hashsize div 8` = 0 casillas, con la
+  máscara `0 - 1` = todos unos: el primer acceso caía fuera (access violation
+  aquí, panic en Rust, SIGSEGV en C++). Igual que `-dl1`..`-dl7`, se rechaza
+  en `Compress` y no al parsear, porque sin diccionario `-dh` no se lee y
+  esos comandos andaban. Lo mismo las `--chunk-*` inválidas: solo importan
+  con `-dup`.

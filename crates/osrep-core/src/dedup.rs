@@ -798,23 +798,29 @@ pub fn encode_streaming(
             let key = (chunk_hash(cp), chunk_hash_alt(cp));
             let mut is_dup = seen.get(&key).copied();
 
+            // The hashes zero-pad the 0-7 byte tail and never mix in the
+            // length, so a chunk and the same chunk followed by 1-7 zero
+            // bytes share a key. A hit of a different length is a new unique
+            // chunk, with or without --dup-paranoid; taking it as a ref would
+            // rebuild an output of the wrong size (silent, exit 0).
+            if let Some(uidx) = is_dup {
+                if unique_len[uidx as usize] as usize != clen {
+                    is_dup = None;
+                }
+            }
+
             if paranoid {
                 if let Some(uidx) = is_dup {
                     let off = unique_off[uidx as usize];
-                    let ulen = unique_len[uidx as usize];
-                    if ulen as usize != clen {
+                    if cmp_buf.len() < clen {
+                        cmp_buf.resize(clen, 0);
+                    }
+                    fb.flush().map_err(|_| DEDUP_ERR_INVAL)?;
+                    fb.seek(SeekFrom::Start(off)).map_err(|_| DEDUP_ERR_INVAL)?;
+                    fb.read_exact(&mut cmp_buf[..clen]).map_err(|_| DEDUP_ERR_INVAL)?;
+                    fb.seek(SeekFrom::Start(body_pos)).map_err(|_| DEDUP_ERR_INVAL)?;
+                    if cmp_buf[..clen] != *cp {
                         is_dup = None;
-                    } else {
-                        if cmp_buf.len() < clen {
-                            cmp_buf.resize(clen, 0);
-                        }
-                        fb.flush().map_err(|_| DEDUP_ERR_INVAL)?;
-                        fb.seek(SeekFrom::Start(off)).map_err(|_| DEDUP_ERR_INVAL)?;
-                        fb.read_exact(&mut cmp_buf[..clen]).map_err(|_| DEDUP_ERR_INVAL)?;
-                        fb.seek(SeekFrom::Start(body_pos)).map_err(|_| DEDUP_ERR_INVAL)?;
-                        if cmp_buf[..clen] != *cp {
-                            is_dup = None;
-                        }
                     }
                 }
             }
@@ -827,8 +833,8 @@ pub fn encode_streaming(
             records.push(Rec { tag: TAG_UNIQUE, payload: clen as u64 });
             if paranoid {
                 unique_off.push(body_pos);
-                unique_len.push(clen as u32);
             }
+            unique_len.push(clen as u32);
             fb.write_all(cp).map_err(|_| DEDUP_ERR_INVAL)?;
             body_pos += clen as u64;
             unique_count += 1;
@@ -938,4 +944,37 @@ pub fn decode_streaming(meta: &[u8], body_path: &Path, out_path: &Path) -> Resul
     }
     fo.flush().map_err(|_| DEDUP_ERR_INVAL)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A chunk and the same chunk plus 1-7 zero bytes share both hashes; the
+    /// streaming encoder must not take one for the other. 2049 zero bytes
+    /// with the default FNV chunker are 1025 + 1024 bytes, and the 1024-byte
+    /// chunk used to become a ref to the 1025-byte one.
+    #[test]
+    fn streaming_hit_of_another_length_is_unique() {
+        let dir = std::env::temp_dir().join(format!("osrep-dedup-len-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cases = [("z2049", 2049, DEFAULT_MIN), ("z4099", 4099, DEFAULT_MIN), ("z3", 3, 1)];
+        for (name, len, min_chunk) in cases {
+            let data = vec![0u8; len];
+            let input = dir.join(name);
+            std::fs::write(&input, &data).unwrap();
+            let p = Params { min_chunk, ..Params::default() };
+            let mut metas = Vec::new();
+            for paranoid in [false, true] {
+                let body = dir.join(format!("{name}.{paranoid}.body"));
+                let out = dir.join(format!("{name}.{paranoid}.out"));
+                let meta = encode_streaming(&input, &body, p, paranoid).unwrap();
+                decode_streaming(&meta, &body, &out).unwrap();
+                assert_eq!(std::fs::read(&out).unwrap(), data, "{name} paranoid={paranoid}");
+                metas.push(meta);
+            }
+            assert_eq!(metas[0], metas[1], "{name}: the default and paranoid metas differ");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

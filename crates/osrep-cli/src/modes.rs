@@ -326,6 +326,58 @@ fn small_dict_window(o: &Options) -> Option<String> {
     ))
 }
 
+/// `-dh` sizes the in-memory dictionary's hash table in bytes, rounded up to
+/// a power of two, and the table holds `hashsize / 8` eight-byte slots
+/// (`compress_inmem.cpp:28-29`). `-dh1b`..`-dh4b` round to 1-4 bytes, a table
+/// of zero slots whose mask wraps to all ones, so the first lookup indexed
+/// out of bounds: the C++ dies with SIGSEGV, the Rust panicked (exit 101) and
+/// the Pascal failed with "Access violation" (exit 4). `-dh5b`..`-dh7b` round
+/// to 8, one slot, and work. Without a dictionary `-dh` is never read and any
+/// value is accepted, as before.
+fn small_dict_hash(o: &Options) -> Option<String> {
+    let inmem = o.method == 0 || o.dictsize != 0;
+    if !inmem || o.dict_hashsize == 0 || o.dict_hashsize > 4 {
+        return None;
+    }
+    Some(format!(
+        "Invalid option: -dh{}b -- the dictionary hash size must be 0 (default) or at least {} bytes",
+        o.dict_hashsize,
+        args::SLICES_IN_BLOCK
+    ))
+}
+
+/// The `-dup` chunker needs `--chunk-avg` and `--chunk-min` of at least 1 and
+/// a `--chunk-max` no smaller than `--chunk-min` (`dedup::Params::valid`).
+/// The encoder only found out after the command had started and reported
+/// "dedup failed, rc=8" (exit 4); it is a command-line error like any other.
+/// Without `-dup` the `--chunk-*` options are not used and are not checked.
+fn bad_chunk_params(o: &Options) -> Option<String> {
+    if !o.dup {
+        return None;
+    }
+    let c = &o.chunk;
+    if c.avg == 0 {
+        return Some(
+            "Invalid option: --chunk-avg=0 -- the average chunk size must be at least 1 byte"
+                .to_string(),
+        );
+    }
+    if c.min_chunk == 0 {
+        return Some(
+            "Invalid option: --chunk-min=0 -- the minimum chunk size must be at least 1 byte"
+                .to_string(),
+        );
+    }
+    if c.max_chunk < c.min_chunk {
+        return Some(format!(
+            "Invalid option: --chunk-max={} -- the maximum chunk size must be at least \
+             --chunk-min ({} bytes)",
+            c.max_chunk, c.min_chunk
+        ));
+    }
+    None
+}
+
 fn compress(o: &Options, finame: &str, foutname: &str) -> Result<i32, RunError> {
     if o.dup && (o.method == 1 || o.method == 2) {
         eprintln!(
@@ -353,6 +405,12 @@ fn compress(o: &Options, finame: &str, foutname: &str) -> Result<i32, RunError> 
         return Err(err(ERROR_CMDLINE, msg));
     }
     if let Some(msg) = small_dict_window(o) {
+        return Err(err(ERROR_CMDLINE, msg));
+    }
+    if let Some(msg) = small_dict_hash(o) {
+        return Err(err(ERROR_CMDLINE, msg));
+    }
+    if let Some(msg) = bad_chunk_params(o) {
         return Err(err(ERROR_CMDLINE, msg));
     }
 

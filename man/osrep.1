@@ -150,6 +150,14 @@ of 1 to 7 needs an explicit
 .BR -dc :
 its default chunk would be 0 bytes. Those values are refused with exit
 status 2.
+Its hash table size,
+.BI -dh N
+(megabytes unless suffixed; default sized from the dictionary), is rounded
+up to a power of two and must then hold at least one 8-byte slot:
+.B -dh1b
+to
+.B -dh4b
+are refused with exit status 2 while the dictionary is in use.
 .TP
 \fB-b\fIBYTES\fR
 Compression block size. Default 8 MB.
@@ -253,13 +261,19 @@ Eliminates the 64-bit hash collision window (≈ 1e-7 per million chunks)
 at the cost of one disk seek per hit. RAM overhead negligible.
 .TP
 \fB--chunk-avg=\fIN\fR
-CDC average chunk size in bytes. Default 4096.
+CDC average chunk size in bytes. Default 4096. At least 1.
 .TP
 \fB--chunk-min=\fIN\fR
-CDC minimum chunk size. Default 1024.
+CDC minimum chunk size. Default 1024. At least 1.
 .TP
 \fB--chunk-max=\fIN\fR
-CDC maximum chunk size. Default 16384.
+CDC maximum chunk size. Default 16384. At least
+.BR --chunk-min .
+With
+.BR -dup ,
+values outside these limits are refused with exit status 2; without it the
+.B --chunk-*
+options are not used.
 .TP
 \fB--chunk-buf=\fIN\fR
 Buffer-bounded CDC: rolling hash resets every

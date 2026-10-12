@@ -79,6 +79,10 @@ begin
     if HashSizeHint <> 0 then hint := HashSizeHint
     else hint := MinHashSize(8 * (InmemDictSize div L));
     hashsize := RoundupToPowerOfTwo(hint);
+    { con menos de 8 bytes la tabla no tendria casillas y la mascara daria
+      la vuelta a todos unos; la CLI rechaza -dh1b..-dh4b (SmallDictHash),
+      esto es para quien llame a la unidad directo }
+    if hashsize < 8 then hashsize := 8;
     { hashsize cuenta BYTES en el C++; la tabla son elementos de 8 }
     D.HashMask := hashsize div 8 - 1;
     { en paginas en cero sin tocar, como el Rust (zeropages.pas); DcFree }
