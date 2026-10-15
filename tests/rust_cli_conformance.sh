@@ -107,6 +107,32 @@ def nearcopies(seed, unit_len):
             out += bytes(r.randrange(256) for _ in range(r.randint(1, 7)))
     return bytes(out[:65536])
 open(os.path.join(d, "smalll.bin"), "wb").write(nearcopies(2, 4096) + nearcopies(3, 1024))
+# The scan's edge cases, each checked straight against the C++ below:
+# zruns.bin, random runs between runs of zeros, is where the accelerated
+# scan's LOOKAHEAD (it filters through bitarr in batches of up to 256
+# positions) matters; nearcopy.bin, 64 KiB at random and three copies with
+# 200 bytes changed in each, gives -d's in-memory pass matches close
+# together, and the scan only stores candidates between the end of the last
+# match and the start of the next one that pass found; a33929.bin and
+# a200k.bin, one byte repeated, give -m3 blocks that are not a whole number
+# of chunks, where its digest test reads the next block's first chunk.
+r = random.Random(20261015)
+out = bytearray()
+while len(out) < 240000:
+    out += bytes(r.randrange(256) for _ in range(r.randint(500, 3000)))
+    out += bytes(r.randint(1000, 5000))
+open(os.path.join(d, "zruns.bin"), "wb").write(out)
+r = random.Random(7)
+base = bytes(r.randrange(256) for _ in range(65536))
+out = bytearray(base)
+for _ in range(3):
+    c = bytearray(base)
+    for _ in range(200):
+        c[r.randrange(len(c))] = r.randrange(256)
+    out += c
+open(os.path.join(d, "nearcopy.bin"), "wb").write(out)
+open(os.path.join(d, "a33929.bin"), "wb").write(b"A" * 33929)
+open(os.path.join(d, "a200k.bin"), "wb").write(b"A" * 200000)
 PY
 
 pass=0
@@ -205,6 +231,51 @@ for case in "-m4o -l32 -a3|-m4o -l32 -a0" "-m4 -l32 -a5|-m4 -l32 -a0" \
         rm -f "$TMP/fb.osr" "$TMP/pl.osr" "$TMP/fb.dec" "$TMP/fb.cdec"
         pass=$((pass + 1))
     done
+done
+
+say "the scan's edges and -m3's read-ahead digest, straight against the C++"
+# The inputs are described where they are generated. The C++ runs with -t1:
+# its background thread computes the next block's digests while block k is
+# being compressed (io.cpp:250-265), and with -t2 and up (the default on a
+# multi-core machine) it does that through a worker pool that, with the tiny
+# blocks of the a33929/a200k cases, was measured to finish after the main
+# thread has read the next block's first digest, so the C++'s own archive
+# there depends on -t. -t1 is the order the ports follow; the other cases give
+# the same bytes at any -t. A later -aN without /M resets the scan variant to
+# its default (srep.cpp:345-346). -l130 and -c130 earn the power-of-two
+# warning, exit 1, on both sides. Each case failed on some build the gate
+# above let through: the a33929/a200k ones on the ports without the
+# read-ahead, zruns with LOOKAHEAD 128, nearcopy with the store window's end
+# included, and the -a ones with a Pascal CLI that kept the old /M.
+diff_case_t1() {
+    local input="$1" rc
+    shift
+    rc=0
+    "$CXX_BIN/osrep" -t1 "$@" --seed=7 "$input" "$TMP/cpp.osr" >/dev/null 2>"$TMP/cpp.err" || rc=$?
+    [ "$rc" -le 1 ] || fail "cpp -t1 $* on $(basename "$input") exited $rc: $(tail -1 "$TMP/cpp.err")"
+    rc=0
+    "$RS" "$@" --format=v4 --seed=7 "$input" "$TMP/rs.osr" >/dev/null 2>"$TMP/rs.err" || rc=$?
+    [ "$rc" -le 1 ] || fail "port $* on $(basename "$input") exited $rc: $(tail -1 "$TMP/rs.err")"
+    cmp -s "$TMP/cpp.osr" "$TMP/rs.osr" \
+        || fail "$* on $(basename "$input"): archives differ from the C++ -t1 ($(stat -c%s "$TMP/cpp.osr") vs $(stat -c%s "$TMP/rs.osr") bytes)"
+    "$RS" -d "$TMP/rs.osr" "$TMP/rs.dec" >/dev/null 2>&1 \
+        || fail "$* on $(basename "$input"): the port could not decode its archive"
+    "$CXX_BIN/osrep" -d "$TMP/rs.osr" "$TMP/cpp.dec" >/dev/null 2>&1 \
+        || fail "$* on $(basename "$input"): the C++ could not decode the port's archive"
+    cmp -s "$input" "$TMP/rs.dec" || fail "$* on $(basename "$input"): round trip differs"
+    cmp -s "$input" "$TMP/cpp.dec" || fail "$* on $(basename "$input"): C++ decode differs"
+    rm -f "$TMP/cpp.osr" "$TMP/rs.osr" "$TMP/rs.dec" "$TMP/cpp.dec"
+    pass=$((pass + 1))
+}
+for case in "zruns.bin|-m3 -l130" "zruns.bin|-m3 -c130" \
+            "nearcopy.bin|-m4 -l40 -d1mb" "nearcopy.bin|-m4o -l16 -d1mb" \
+            "smalll.bin|-m4 -l16 -a1/2 -a1" "smalll.bin|-m4 -l32 -a2/4 -a2" \
+            "a33929.bin|-m3 -l130 -b261b" "a33929.bin|-m3 -l130 -b261b -a0" \
+            "a200k.bin|-m3 -l130 -b392b" "a200k.bin|-m3o -l130 -b392b" \
+            "a200k.bin|-m3f -l130 -b392b"; do
+    IFS='|' read -r f o <<<"$case"
+    # shellcheck disable=SC2086
+    diff_case_t1 "$TMP/$f" $o
 done
 
 say "the second pass orders matches with one shared source the way the C++ does"
@@ -862,16 +933,17 @@ say "$(printf '%s' "$out" | tail -1 | sed 's/^ *//')"
 pass=$((pass + 1))
 
 say "the options the port accepts and does not act on really are inert"
-# --help says that -tN, -aN, -mmap/-nommap, -ia-/-ia+, -slp and -pc have no
+# --help says that -tN, -mmap/-nommap, -ia-/-ia+, -slp and -pc have no
 # effect here. That claim has to be checked, not asserted: each one must be
 # accepted AND leave the archive byte-identical to the same run without it. If
 # one ever starts mattering, this fails and the prose has to be corrected with
-# the code. -aN is no longer inert in general (since 2.3.0 it sizes bitarr
-# and picks the scan, like the C++: see the small -l section above), but with
-# the default -l it still leaves this archive alone, which is what is checked.
+# the code. -aN is not in that list since 2.3.0 (it sizes bitarr and picks the
+# scan, like the C++: see the small -l section above, and --help says it
+# changes the archive); -a4/4 stays here because it is what -m3's default -l
+# resolves to, so spelling it out must not move the archive.
 "$RS" --seed=7 -m3 tests/corpus/text.bin "$TMP/inert_base.osr" >/dev/null 2>&1 \
     || fail "could not write the baseline archive"
-for opt in -t1 -t8 -a2 -a4/4 -mmap -nommap -ia- -ia+ -slp -slp- -slp+ -pc -pc16; do
+for opt in -t1 -t8 -a4/4 -mmap -nommap -ia- -ia+ -slp -slp- -slp+ -pc -pc16; do
     rc=0
     "$RS" --seed=7 -m3 "$opt" tests/corpus/text.bin "$TMP/inert.osr" >/dev/null 2>&1 || rc=$?
     [ "$rc" -eq 0 ] || fail "$opt was rejected (exit $rc); the docs say it is accepted"

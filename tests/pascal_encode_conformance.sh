@@ -94,6 +94,32 @@ def nearcopies(seed, unit_len):
             out += bytes(r.randrange(256) for _ in range(r.randint(1, 7)))
     return bytes(out[:65536])
 open(os.path.join(d, "smalll.bin"), "wb").write(nearcopies(2, 4096) + nearcopies(3, 1024))
+# Los bordes del escaneo, cada uno directo contra el C++ mas abajo:
+# zruns.bin (tramos al azar entre tramos de ceros) es donde importa el
+# LOOKAHEAD del escaneo acelerado (filtra por bitarr en tandas de hasta 256
+# posiciones); nearcopy.bin (64 KiB al azar y tres copias con 200 bytes
+# cambiados en cada una) le da a la pasada en memoria de -d matches cercanos,
+# y el escaneo guarda candidatos solo entre el final del ultimo match y el
+# comienzo del siguiente que encontro esa pasada; a33929.bin y a200k.bin (un
+# solo byte repetido) dan bloques de -m3 que no son un numero entero de
+# chunks, donde el test de digest lee el primer chunk del bloque siguiente.
+r = random.Random(20261015)
+out = bytearray()
+while len(out) < 240000:
+    out += bytes(r.randrange(256) for _ in range(r.randint(500, 3000)))
+    out += bytes(r.randint(1000, 5000))
+open(os.path.join(d, "zruns.bin"), "wb").write(out)
+r = random.Random(7)
+base = bytes(r.randrange(256) for _ in range(65536))
+out = bytearray(base)
+for _ in range(3):
+    c = bytearray(base)
+    for _ in range(200):
+        c[r.randrange(len(c))] = r.randrange(256)
+    out += c
+open(os.path.join(d, "nearcopy.bin"), "wb").write(out)
+open(os.path.join(d, "a33929.bin"), "wb").write(b"A" * 33929)
+open(os.path.join(d, "a200k.bin"), "wb").write(b"A" * 200000)
 PY
 
 # enc <entrada> <modo> <opciones...>: los dos encoders, --seed=7, cmp.
@@ -317,6 +343,43 @@ if [ -x "$CPP" ] || make_cxx bin/osrep >/dev/null 2>&1; then
                 || fail "-$m $o sobre $(basename "$input"): distinto del C++ (el orden de los empates de la segunda pasada?)"
             pass=$((pass + 1))
         done
+    done
+    # Los bordes del escaneo y el digest de -m3 leido por adelantado (las
+    # entradas se describen donde se generan). El C++ corre con -t1: su hilo
+    # de fondo calcula los digests del bloque siguiente mientras se comprime
+    # el actual (io.cpp:250-265), y con -t2 o mas (lo normal en una maquina
+    # con varios nucleos) lo hace con un pool que, con los bloques diminutos
+    # de a33929/a200k, se midio que termina despues de que el hilo principal
+    # leyo el primer digest del bloque siguiente: ahi el archivo del C++
+    # depende de -t. Los ports siguen el orden de -t1; los demas casos dan los
+    # mismos bytes con cualquier -t. Un -aN posterior sin /M vuelve la
+    # variante a su valor por defecto (srep.cpp:345-346); encodetool tiene su
+    # propio parser, asi que el de la CLI lo prueba rust_cli_conformance con
+    # OSREP_PORT_BIN. -l130 y -c130 le dan al C++ el aviso de potencia de dos,
+    # exit 1. Cada caso fallaba con alguna build que lo de arriba dejaba pasar:
+    # a33929/a200k sin la lectura adelantada, zruns con LOOKAHEAD 128 y
+    # nearcopy con el fin de la ventana de candidatos incluido. El -b en bytes
+    # del C++ lleva sufijo b (-b261 son MB); el de encodetool, no (el sufijo
+    # b no lo entiende y queda el -b por defecto).
+    for case in "zruns.bin|m3|-l130" "zruns.bin|m3|-c130" \
+                "nearcopy.bin|m4|-l40 -d1mb" "nearcopy.bin|m4o|-l16 -d1mb" \
+                "smalll.bin|m4|-l16 -a1/2 -a1" "smalll.bin|m4|-l32 -a2/4 -a2" \
+                "a33929.bin|m3|-l130 -b261b" "a33929.bin|m3|-l130 -b261b -a0" \
+                "a200k.bin|m3|-l130 -b392b" "a200k.bin|m3o|-l130 -b392b" \
+                "a200k.bin|m3f|-l130 -b392b"; do
+        IFS='|' read -r f m o <<<"$case"
+        eo="$(sed -E 's/-b([0-9]+)b/-b\1/' <<<"$o")"
+        rc=0
+        # shellcheck disable=SC2086
+        "$CPP" -t1 "-$m" $o --seed=7 "$TMP/$f" "$TMP/cpp.osr" >/dev/null 2>&1 || rc=$?
+        [ "$rc" -le 1 ] || fail "el C++ fallo en -t1 -$m $o sobre $f (exit $rc)"
+        # shellcheck disable=SC2086
+        "$ET" "$m" $eo --seed=7 "$TMP/$f" "$TMP/pa.osr" >/dev/null 2>&1 \
+            || fail "el Pascal fallo en $m $o sobre $f"
+        cmp -s "$TMP/cpp.osr" "$TMP/pa.osr" \
+            || fail "-$m $o sobre $f: distinto del C++ -t1"
+        rm -f "$TMP/cpp.osr" "$TMP/pa.osr"
+        pass=$((pass + 1))
     done
 fi
 

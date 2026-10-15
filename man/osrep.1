@@ -125,8 +125,9 @@ or
 .B -a-
 is the plain scan with no bit array; so are the values 1.0.7 has no defined
 behaviour for (a \fIY\fR that is not 1, 2, 4, 8, 16, 32 or 64, or is larger
-than the chunk, and \fB-a0/\fIY\fR), where it crashes or writes a block
-that does not decode. A very large \fIX\fR can run out of memory (exit 4).
+than the chunk, and \fB-a0/\fIY\fR), where it crashes, writes a block
+that does not decode, or (a \fIY\fR larger than the chunk) reads before its
+block buffer. A very large \fIX\fR can run out of memory (exit 4).
 .TP
 \fB-t\fIN\fR
 Accepted and \fBnot acted on\fR. The shipped implementation is single-threaded

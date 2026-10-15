@@ -55,6 +55,10 @@ begin
     LF +
     'Common options:' + LF +
     '  -lN, -cN          minimum-match / chunk-size tuning' + LF +
+    '  -aN[/M]           match-finder accelerator (-m3/-m4/-m5): N bytes' + LF +
+    '                    of bit array per chunk, and the scan variant M' + LF +
+    '                    (default N, at most 16); -a0 turns it off.' + LF +
+    '                    Like -l/-c, it changes the archive.' + LF +
     '  -bN               buffer size (default 8mb)' + LF +
     '  -dBYTES           dictionary size for -m0' + LF +
     '  -hash=NAME        select hash (vmac, sha1, ...)' + LF +
@@ -90,7 +94,6 @@ begin
     'Accepted and not acted on:' + LF +
     '  -tN               the implementation is single-threaded per block,' + LF +
     '                    so there is no worker count to set' + LF +
-    '  -aN[/M]           accelerator sizing; allocates nothing here' + LF +
     '  -mmap, -nommap    mmap reads' + LF +
     '  -ia-, -ia+        I/O acceleration' + LF +
     '  -slp, -slp-       large-page mode' + LF +

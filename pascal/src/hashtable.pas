@@ -114,6 +114,13 @@ procedure HtFree(var T: THashTableRec);
 procedure HtPrepareBuffer(var T: THashTableRec; const Buf: TBytes; BufOff, BlockLen,
                           Offset: QWord);
 
+{ El prepare_buffer del bloque SIGUIENTE que el hilo de fondo del C++ ya
+  corrio antes de que se comprima este (io.cpp:250-265): digests y slices de
+  sus chunks, sin la grilla (eso lo hace su propio HtPrepareBuffer). Ver
+  HashTable::prepare_ahead en el Rust. }
+procedure HtPrepareAhead(var T: THashTableRec; const Buf: TBytes; BufOff, BlockLen,
+                         Offset: QWord);
+
 function HtAddHash(var T: THashTableRec; Index: QWord; StoredValue: DWord;
                    CurChunk: QWord): DWord;
 
@@ -395,10 +402,9 @@ end;
 
 procedure HtPrepareBuffer(var T: THashTableRec; const Buf: TBytes; BufOff, BlockLen,
                           Offset: QWord);
-var cur, n, c: QWord;
+var cur: QWord;
 begin
   cur := Offset div T.L;
-  n := BlockLen div T.L;
   if (Offset mod T.L) <> 0 then T.AnyShifted := True;
   if T.AnyShifted then
   begin
@@ -409,6 +415,15 @@ begin
     T.Grid[T.GridN].Start := Offset;
     Inc(T.GridN);
   end;
+  HtPrepareAhead(T, Buf, BufOff, BlockLen, Offset);
+end;
+
+procedure HtPrepareAhead(var T: THashTableRec; const Buf: TBytes; BufOff, BlockLen,
+                         Offset: QWord);
+var cur, n, c: QWord;
+begin
+  cur := Offset div T.L;
+  n := BlockLen div T.L;
   if T.PrecomputeDigests then
   begin
     c := cur;

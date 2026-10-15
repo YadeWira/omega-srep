@@ -311,7 +311,14 @@ begin
       escribe un bloque roto;
     * -a0/N (o -a- despues de -aN/M) desreferencia un bitarr nulo;
     * una variante mas ancha que el chunk (-l16 -a1/32) le da a hash1 una
-      ventana negativa (L - OFFSET): el C++ aborta o escribe basura. }
+      ventana negativa (L - OFFSET): el C++ lee antes del buffer del bloque
+      (comportamiento indefinido). Medido, casi siempre termina normal con
+      un archivo que decodifica pero distinto del de los ports, y a veces
+      aborta o da segfault.
+    Cuando el escaneo cae asi, tampoco se reserva bitarr (solo lo lee el
+    escaneo filtrado): un -aN enorme sin escaneo detras (-m4 -a999999999/3)
+    corre, como en la 2.2.1, en vez de quedarse sin espacio de direcciones
+    en win32. }
   if Opts.Accel = 9000 then
   begin
     if l div 32 > 4 then accel := 4
@@ -416,6 +423,7 @@ begin
   try
   { COMPARE_DIGESTS = metodo <= -m3; PRECOMPUTE_DIGESTS = -m3; io_accelerator 1.
     -m0 no tiene tabla. }
+  if accelerator = 0 then bitarrAccelerator := 0;   { sin escaneo filtrado, sin bitarr }
   if Kind <> ekInmem then
     try
       HtInit(table, roundMatches, Kind in [ekInmem, ekCdc, ekCdcZpaq, ekDigest],
@@ -476,7 +484,14 @@ begin
     if HasherCompute(hasher, dict, bufOffset, filled, digest) then
       Move(digest[0], header[BLOCK_HEADER_SIZE], Length(digest));
 
-    if Kind <> ekInmem then HtPrepareBuffer(table, dict, bufOffset, filled, blockStart);
+    if Kind <> ekInmem then
+    begin
+      HtPrepareBuffer(table, dict, bufOffset, filled, blockStart);
+      { el hilo de fondo del C++ ya preparo el bloque siguiente
+        (io.cpp:250-265): ver HtPrepareAhead }
+      if nextFilled > 0 then
+        HtPrepareAhead(table, dict, nextOffset, nextFilled, blockStart + filled);
+    end;
 
     StatClear(stat);
     StatClear(inStat);

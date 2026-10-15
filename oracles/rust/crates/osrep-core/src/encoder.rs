@@ -352,7 +352,14 @@ pub fn encode<R: Read + Seek, W: Write>(
     //   `-l96`..`-l127`) the C++ skips the scan and writes a broken block;
     // * `-a0/N` (or `-a-` after `-aN/M`) dereferences a null `bitarr`;
     // * a variant wider than the chunk (`-l16 -a1/32`) gives `hash1` a
-    //   negative window (`L - OFFSET`): the C++ aborts or writes garbage.
+    //   negative window (`L - OFFSET`): the C++ reads before the block
+    //   buffer (undefined behaviour). Measured, it mostly exits normally with
+    //   a decodable archive that differs from the ports', and sometimes
+    //   aborts or segfaults.
+    // When the scan falls back this way, `bitarr` is not allocated either
+    // (it is only read by the filtered scan): a huge `-aN` with no scan
+    // behind it (`-m4 -a999999999/3`) then runs, as in 2.2.1, instead of
+    // running out of address space on a 32-bit build.
     let accel = if opts.accel == 9000 {
         ((l / 32).max(1)).min(4) as u32
     } else {
@@ -501,7 +508,8 @@ pub fn encode<R: Read + Seek, W: Write>(
             );
             let precompute_digests = kind == Kind::Digest;
             // `None` when `bitarr` does not fit (a huge `-aN`): the C++'s
-            // "Can't allocate memory", exit 4 here.
+            // "Can't allocate memory", exit 4 here. No `bitarr` at all when
+            // the scan fell back to `compress<0>` (see `accelerator` above).
             Some(
                 HashTable::new(
                     round_matches,
@@ -511,7 +519,7 @@ pub fn encode<R: Read + Seek, W: Write>(
                     l,
                     min_match,
                     1,
-                    bitarr_accelerator,
+                    if accelerator == 0 { 0 } else { bitarr_accelerator },
                     filesize,
                 )
                 .ok_or(EncodeError::OutOfMemory)?,
@@ -573,6 +581,11 @@ pub fn encode<R: Read + Seek, W: Write>(
 
         if let Some(t) = table.as_mut() {
             t.prepare_buffer(&dict, buf_offset, filled, block_start);
+            // The C++'s background thread has already prepared the next block
+            // (`io.cpp:250-265`); see `HashTable::prepare_ahead`.
+            if next_filled > 0 {
+                t.prepare_ahead(&dict, next_offset, next_filled, block_start + filled as u64);
+            }
         }
 
         let mut stat: Vec<u32> = Vec::new();

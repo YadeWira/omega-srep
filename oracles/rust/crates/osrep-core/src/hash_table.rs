@@ -338,7 +338,6 @@ impl HashTable {
     /// `block_len / L` whole chunks the block starts at `offset`.
     pub fn prepare_buffer(&mut self, buf: &[u8], buf_off: usize, block_len: usize, offset: u64) {
         let curchunk = (offset / self.l as u64) as usize;
-        let nchunks = block_len / self.l;
         // Blocks before the first shifted one are on the grid, where `k*L`
         // (`chunk_pos`'s fallback) is right: an aligned `-b` stores nothing.
         if offset % self.l as u64 != 0 {
@@ -347,6 +346,29 @@ impl HashTable {
         if self.any_shifted {
             self.block_grid.push((curchunk, offset));
         }
+        self.prepare_ahead(buf, buf_off, block_len, offset);
+    }
+
+    /// The background thread's read-ahead (`io.cpp:250-265`): it runs
+    /// `prepare_buffer` on block k+1 before the main thread compresses
+    /// block k, so the digest and slice fingerprint of the next block's
+    /// first chunk are already there when block k's last `add_hash` reads
+    /// them. That chunk index is `(block_start + filled) / L`, which block k
+    /// itself never fills when `filled` is not a multiple of L, and the `-m3`
+    /// digest test there compared against zeros without this. Called for
+    /// the next block right after `prepare_buffer` of this one; the grid
+    /// bookkeeping is left to that block's own `prepare_buffer`, which
+    /// recomputes the same values.
+    ///
+    /// In the C++ this is a data race: the background thread prepares block
+    /// k+1 while the main thread compresses block k. With `-t1` it runs
+    /// inline there and wins in practice; with `-t2` and up (the default on a
+    /// multi-core machine) it goes through a worker pool, and with tiny blocks
+    /// (`-m3 -l130 -b261b`) the main thread was measured to get there first
+    /// and read the zeros. The ports follow `-t1`.
+    pub fn prepare_ahead(&mut self, buf: &[u8], buf_off: usize, block_len: usize, offset: u64) {
+        let curchunk = (offset / self.l as u64) as usize;
+        let nchunks = block_len / self.l;
         if self.precompute_digests {
             self.prepare_digests_range(buf, buf_off, curchunk, curchunk + nchunks);
         }
