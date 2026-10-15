@@ -9,125 +9,94 @@ Versions follow `<major>.<minor>.<patch>` for stable releases and
 written by the new default cannot be read by the previous release, which is
 what happened in 2.0.0.
 
-## [Unreleased]
+## [2.3.0] — 2026-10-15
+
+**Byte-exact with the C++ 1.0.7 again, also with the default options.** Behaviours of
+the C++ that every 2.x missed are now followed by the Pascal (and by the Rust
+oracle), chiefly the order libstdc++'s `std::sort` leaves matches
+with the same source in, and the bit-array-filtered match scan the C++ runs by
+default. **Compressing the same input with 2.2.1 and with 2.3.0 can give
+different archives**, with the default options too. Every one of them decodes
+with either release, the format is unchanged, and existing archives read as
+before. Over a survey of 238 real files (10 of them 10 to 40 MB) and 82 option
+sets, every archive the C++ writes deterministically and can decode itself is
+now matched byte for byte (v4), and the Pascal equals the Rust (v4 and v5)
+everywhere, on Linux and with both Windows builds. In v5, 6,188 of the
+survey's 19,516 archives differ from 2.2.1's, in every mode but `-m1`/`-m2`.
+The default modes are also faster: 1.2x to 2.1x on two ~38 MB real files.
 
 ### Changed
 
-- **-m3/-m4/-m5 with a small chunk now write exactly what the C++ 1.0.7
-  writes, and `-aN[/M]` is honoured.** Two mistakes in the ports' first pass,
-  present in every 2.x (the Rust oracle had them too):
-  the match table replaced an entry on an equal stored hash alone, where the
-  C++ with `-m3` also requires equal chunk digests (`hash_table.cpp:268-276`),
-  so `-m3` lost matches against chunks that differ only in their last bytes;
-  and the ports always ran the C++'s plain scan (`compress<0>`), while the
-  C++ runs, by default, a scan that only looks up positions whose hash passes
-  a bit-array filter (`compress<accel>`, `accel = min(max(L/32, 1), 4)`,
-  `srep.cpp:631-634`). With the default `-l` the filter rarely decides
-  anything. With a chunk of about 16 to 128 bytes it does: **`-m3`/`-m4`
-  with `-l16`..`-l128` or a small `-c`, and `-m5` with a small `-c`, in every
-  container (`o`, `f`, v4 and the default v5), can now give different bytes
-  than 2.2.1** for the same input (as decodable, by either release; existing
-  archives read as before). `-aN[/M]` used to be parsed and ignored; it now
-  sizes the bit array (`N` bytes per chunk) and picks the scan (`M`, default
-  `N` capped at 16), as in the C++, so `-a` with a small chunk changes the
-  archive too. Where 1.0.7 has no defined behaviour the plain scan of 2.2.1
-  stays, and every option 2.2.1 accepted is still accepted: a scan with no
-  instance in the C++ (`-a3`, `-a5`, `-aN/3`, and the default `accel` 3 of
-  `-l96`..`-l127`/`-c96`..`-c127`, where 1.0.7's behaviour is undefined: it
-  exits 3, aborts, or writes a block that does not decode), `-a0/N` or `-aN/M` followed by `-a-` (1.0.7 segfaults),
+- **Matches with the same source are ordered as in the C++.** The second
+  pass sorts the match list by source alone with `std::sort`
+  (`srep.cpp:899`), which is not stable, and the order it leaves ties in is
+  part of the archive. 2.2.1 kept them in collection order, on the false
+  premise that two matches never share a source; in a sample of 220 real
+  files, 22 differed (same size) in at least one of `-m0`, `-m3`, `-m4`,
+  `-m5`, `-m3f`..`-m5f`. The Pascal now transcribes libstdc++'s algorithm for
+  that sort (checked against the real `std::sort` of g++, clang and MinGW,
+  32 and 64 bit, on 210,000 arrays). `-mNo` never sorts.
+- **The first pass runs the C++'s filtered scan, and `-aN[/M]` is honoured.**
+  The C++ by default only looks up positions whose hash passes a bit-array
+  filter (`compress<accel>`, `accel = min(max(L/32, 1), 4)`), where the ports
+  always ran the plain scan (`compress<0>`). With the default `-l` it rarely
+  decides anything (one 39 MB text file moved with the default `-m4`, now
+  528 bytes larger, as in the C++); with a chunk of about 16 to 128 bytes
+  (`-l16`..`-l128`, a small `-c`) it often does. `-aN[/M]` used to be parsed
+  and ignored; it now sizes the bit array and picks the scan, as in the C++,
+  and `--help` lists it among the common options. Where 1.0.7 has no defined
+  behaviour, 2.2.1's plain scan stays and every option 2.2.1 accepted is
+  still accepted: `-a3`, `-a5`, `-aN/3` and the default accel 3 of
+  `-l96`..`-l127` (no such instance in the C++), `-a0/N` (1.0.7 segfaults),
   and a scan wider than the chunk (`-l16 -a1/32`, where 1.0.7 reads before
-  the block buffer, undefined behaviour: measured, it mostly exits normally
-  with a decodable archive that differs from the ports', and sometimes aborts
-  or segfaults). A fallback scan allocates no bit array, so a huge `-aN`
-  behind one (`-m4 -a999999999/3`) runs as in 2.2.1, also on win32; a huge
-  `-aN` with a real scan can now stop with `OutOfMemory`, exit 4, like
-  1.0.7's "Can't allocate memory". When a block is not a whole number of
-  chunks, `-m3`'s digest test at its end can read the digest of the next
-  block's first chunk, and the scan reads a few bytes of the next block; in
-  the C++ both are written by its reading thread while the compressing
-  thread runs (`io.cpp:250-265`), with nothing ordering the two, at every
-  `-t` (`-t1` included). With big blocks the reading thread is usually done
-  first; with tiny ones (`-m3 -l130 -b261b`, `-b392b`) 1.0.7 was measured to
-  write another archive now and then (up to 5 runs in 762), so its output
-  there is not a function of its input. The ports always take the next
-  block fully read and prepared before this one is compressed, which is the
-  C++'s archive in the other runs; the gates pin those cases to it instead
-  of comparing with a live C++ run. Only that one digest is computed ahead,
-  so the default `-m3` does not digest every block twice (64 MB of real
-  files: 4% to 10% faster than with the whole next block prepared ahead).
-  Measured: on 220 real files with 55 small-chunk and `-a` option
-  sets (`-m3o`..`-m5` with `-l16`..`-l128`, `-c16`..`-c64`, `-a1`..`-a16` and
-  `/N`), all 11,880 cases where the C++ is defined match it byte for byte
-  (Rust and Pascal, v4), and the Pascal matches the Rust in v5; 20 of them
-  with 67 option sets give the same bytes with both Windows builds under
-  wine. **Archives with the default options can move too.** In a survey of
-  238 files (10 of them 10 to 40 MB), the default `-m4`, `-m4f` and `-m4o`
-  changed from the filtered scan on some files (a 39 MB text file: now the
-  C++'s bytes, 528 bytes larger than 2.2.1's); the default `-m3` and `-m5`
-  moved only by the tie order below. In v5, 6,188 of the survey's 19,516
-  archives differ from 2.2.1's, in every mode but `-m1`/`-m2`; 2.2.1 decodes
-  all of them, and this release decodes 2.2.1's. The default `-m3`/`-m4`/`-m5` got
-  faster (Pascal, two ~38 MB real files: 1.2x to 1.9x on Linux x64, 1.2x to
-  1.7x under wine x64, 1.2x to 2.1x on win32); a small `-l` runs between
-  0.83x and 1.16x the 2.2.1 speed on those files, and 1.4x to 2.4x slower on
-  an all-zero file, where the C++'s filtered scan is also 1.5x to 2.7x slower
-  than its plain one. Pinned archives that moved, all because their chunk
-  is 9 or 17 bytes: `-m4 -l17 -b1mb` and `-m5 -c17 -b1mb` on `text.bin`
-  (now 1.0.7's bytes), the `-m3`/`-m3o`/`-m3f -l17 -b4kb` ones (in both CLI
-  suites), and `z66 -m3`/`-m3o -l9` in `tests/m3_grid_regress.sh`. The
-  encode and CLI conformance suites now check a generated near-copy input
-  against the C++, and the fallback values against the plain scan. `--help`
-  no longer lists `-aN[/M]` among the options that are not acted on: it is
-  under the common options now, as the match-finder accelerator, and says
-  that it changes the archive.
-- **`-ia-` is honoured.** In the C++ 1.0.7 it sets `io_accelerator` to -1
-  (`srep.cpp:349-352`), which turns off the slice filter: a fingerprint of
-  the bytes around each chunk that `-m5`, and `-m4` with a `-c` well below
-  `-l`, use to reject candidate matches that cannot reach `-l` bytes
-  (`hash_table.cpp:29-36`). The ports parsed `-ia-`/`-ia+` and then always
-  passed 1, and `--help` and the man page listed them among the options not
-  acted on. They now pass it through, so `-ia-` changes the archive as in
-  1.0.7, sometimes by a lot: `text.bin -m5 -l1000` is 4,194,408 bytes with
-  the filter and 189 with `-ia-`, in the C++ and now in both ports (v4, byte
-  for byte; the archives decode). `-ia+` is the default and `-m3` never reads
-  the filter, so those archives do not move. `--help` (identical in both
-  ports) and the man page list it under the common options now, and the CLI
-  gates check `-ia-`/`-ia+` against the C++ directly (`-m5`, `-m5o -c128`,
-  `-m4 -c128`, `-m3`, and the last of two `-ia` winning).
-- **-m3/-m4/-m5 (the default -m3 included, and -m0) now order matches that
-  share one source exactly as the C++ 1.0.7 does.**
-  The C++ sorts the second-pass match list by source alone with libstdc++'s
-  `std::sort` (`srep.cpp:899`), which is not stable, and the order it leaves
-  equal sources in is part of the archive. 2.2.1 and the Rust oracle kept them
-  in collection order, on the false premise that no two matches share a
-  source; in a sample of 220 real files, 22 came out with different bytes
-  (same size) in at least one of these modes. The Pascal and the Rust oracle
-  now transcribe libstdc++'s algorithm for that one sort, so all 220, in
-  `-m0 -m3 -m4 -m5 -m3f -m4f -m5f` and the default, are byte-identical to the
-  C++ on Linux, and so are a 40-file subset (the 22 included) with both
-  Windows builds under wine. **v5 archives (the default container)
-  of such inputs change bytes too**: they are as decodable as before, by
-  2.2.x and by this release alike, and every archive written before reads as
-  before (the decoders never depended on that order). What changes is only
-  that compressing the same input with 2.2.1 and with this release can give
-  different files (two archives pinned in `tests/rust_cli_conformance.sh` moved
-  this way). `-mNo` never sorts; `-m1`/`-m2` had no ties in the sample.
-  The gate is `tests/cxx_sort_tie_divergence.sh`, and the tie inputs are in the
-  standard encode gates too.
-- **The C++ oracle's `-m1`/`-m2` is deterministic.** 1.0.7 keyed the two VMAC
-  chunk hashers of the CDC modes from a fresh random key on every run, and
-  part of each hash is the hash-table index, so which matches survived a full
-  probe chain changed from run to run (on a 1.3 GB tar, 12 runs gave 12
-  different archives, all decodable). The oracle in `oracles/cxx/` now uses an
-  all-zero key, as the Rust and the Pascal always did, and writes exactly
-  their archives. No change to `osrep` itself.
-- **The C++ and Rust oracles moved under `oracles/`**: the C++ 1.0.7
-  (`Compression/`, `Makefile`, `CMakeLists.txt` and its test tools) is now in
-  `oracles/cxx/`, and the Rust workspace (`Cargo.toml`, `crates/`,
-  `rust-toolchain.toml`, `.cargo/`) in `oracles/rust/`, so the root holds the
-  shipped Pascal in `pascal/`, the tests and the docs. Build with
-  `make -C oracles/cxx bin/osrep` and `cd oracles/rust && cargo build ...`;
-  see `oracles/README.md`. The shipped binaries and the format are unchanged.
+  its buffer). A fallback scan allocates no bit array, so `-m4
+  -a999999999/3` still works on win32; a huge `-aN` with a real scan can stop
+  with `OutOfMemory`, exit 4, as 1.0.7 does.
+- **`-m3` replaces a match-table entry only when the chunk digests are
+  equal too**, as the C++ does (`hash_table.cpp:268-276`). The ports compared
+  the stored hash alone and lost matches against chunks that differ only in
+  their last bytes, mostly with a small `-l`.
+- **`-ia-` is honoured.** In 1.0.7 it turns off the slice filter that `-m5`,
+  and `-m4` with `-l` well above `-c`, use to reject candidates
+  (`hash_table.cpp:29-36`); the ports ignored it. It can change the archive a
+  lot: `text.bin -m5 -l1000` is 4,194,408 bytes, and 189 with `-ia-`, in the
+  C++ and now in `osrep`. `--help` and the man page list it among the common
+  options.
+- **Speed.** The default `-m3`/`-m4`/`-m5` is 1.2x to 2.1x faster (Pascal,
+  Linux x64 and both Windows builds under wine). A small `-l` runs between
+  0.83x and 1.16x the 2.2.1 speed, and is 1.4x to 2.4x slower on an all-zero
+  file, where the C++'s filtered scan is slower than its plain one too.
+- **Gates.** The encode and CLI conformance suites now compare tie-heavy,
+  near-copy, small-chunk, `-a` and `-ia` cases directly against the C++, and
+  `tests/cxx_sort_tie_divergence.sh` checks the tie order on Linux and both
+  Windows builds. Archives pinned in the suites that moved, all with a chunk of
+  8 to 17 bytes: `-m4 -l17 -b1mb` and `-m5 -c17 -b1mb` on `text.bin` (now
+  1.0.7's bytes), `-m3`/`-m3o`/`-m3f -l17 -b4kb`, `-m3 -c8 -b4kb -l17` and
+  `-l100`, and `z66 -m3`/`-m3o -l9`.
+- **Repository layout.** The C++ 1.0.7 oracle moved to `oracles/cxx/` and the
+  Rust oracle to `oracles/rust/`; the root holds the shipped Pascal in
+  `pascal/`, the tests and the docs. See `oracles/README.md`.
+- **The C++ oracle's `-m1`/`-m2` is deterministic.** 1.0.7 keyed its CDC
+  chunk hashers from a fresh random key on every run, and part of each hash
+  indexes the match table, so `-m1`/`-m2` archives varied between runs (a
+  1.3 GB tar: 12 runs, 12 archives, all decodable). The oracle now uses an
+  all-zero key, as the ports always did, and writes exactly their archives.
+  `osrep` itself does not change here.
+
+### Known issues
+
+- With tiny blocks (`-b` of a few hundred bytes) and a chunk that does not
+  divide them, 1.0.7's own output is not a function of its input: its
+  reading and compressing threads race, at every `-t` (`-m3 -l130 -b261b`:
+  another archive in up to 5 runs of 762). `osrep` always writes the
+  archive of the other runs; the gates pin those cases.
+- 1.0.7 writes archives it cannot decode for some options (`-m3` with an
+  off-grid `-b` and a small `-l`, the BASE_LEN cases fixed in 2.2.1), and
+  with `-l` below `-c` and a `-c/8` that is not a power of two it runs a
+  slice filter through undefined arithmetic. There `osrep` cannot match it
+  and does not try.
+- When compression fails with exit 4, the partial output file is left on
+  disk, as in every earlier release.
 
 ## [2.2.1] — 2026-10-12
 
