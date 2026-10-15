@@ -40,15 +40,20 @@ procedure RunSecondPass(const Blocks: TCompressedBlocks; NBlocks: QWord; Input, 
                         FutureLz, IndexLz, V5: Boolean; const DupMeta: TBytes;
                         Index: TStream; BaseOffset: QWord);
 
-implementation
-
-uses FixedCompress, StreamIO;
-
 type
+  { La lista de matches de todos los bloques: N validos en W, que crece. }
   TMatches = record
     W: array of TLzMatch;
     N: QWord;
   end;
+
+{ Ordena M.W[0..N) por Src como el std::sort de libstdc++ (srep.cpp:899).
+  Publica para encodetool sortfixture, que la compara con el std::sort real. }
+procedure SortBySrc(var M: TMatches);
+
+implementation
+
+uses FixedCompress, StreamIO;
 
 procedure MPush(var M: TMatches; const V: TLzMatch);
 begin
@@ -60,34 +65,183 @@ begin
   Inc(M.N);
 end;
 
-{ Orden estable por Src (merge sort). El C++ usa std::sort, que no es
-  estable, pero el comparador es estricto en src y el encoder nunca emite dos
-  matches con el mismo origen: estable es la eleccion reproducible, la misma
-  que hace el Rust. }
+{ Orden por Src con el MISMO desempate que el C++: transcripcion del
+  std::sort de libstdc++ (bits/stl_algo.h __sort/__introsort_loop/
+  __final_insertion_sort, y bits/stl_heap.h para el corte por profundidad).
+  No es estable, pero como rompe los empates es funcion pura del orden de
+  entrada, y los matches con el mismo origen son comunes (todas las copias
+  de un bloque que el buscador resuelve a la misma aparicion anterior).
+  Hasta la 2.2.1 era un merge sort estable, sobre la premisa (falsa) de que
+  el encoder nunca emite dos matches con el mismo origen: ~1 archivo real de
+  cada 10 salia con otros bytes que el C++. El test de la transcripcion esta
+  en second_pass.rs (libstdcxx_sort_matches_std_sort); esta es la misma
+  transcripcion paso por paso, y la prueba `encodetool sortfixture` contra el
+  std::sort real (tests/pascal_encode_conformance.sh).
+  Indices Int64 y bucles while: nada de SizeInt ni de for con 64 bits. }
 procedure SortBySrc(var M: TMatches);
-var tmp: array of TLzMatch;
-  procedure MergeSort(lo, hi: QWord);
-  var mid, i, j, k: QWord;
+const Threshold = 16;   { _S_threshold }
+
+  function Less(const a, b: TLzMatch): Boolean; inline;
   begin
-    if hi - lo < 2 then Exit;
-    mid := lo + (hi - lo) div 2;
-    MergeSort(lo, mid);
-    MergeSort(mid, hi);
-    i := lo; j := mid; k := lo;
-    while (i < mid) and (j < hi) do
-    begin
-      if M.W[j].Src < M.W[i].Src then begin tmp[k] := M.W[j]; Inc(j); end
-      else begin tmp[k] := M.W[i]; Inc(i); end;
-      Inc(k);
-    end;
-    while i < mid do begin tmp[k] := M.W[i]; Inc(i); Inc(k); end;
-    while j < hi do begin tmp[k] := M.W[j]; Inc(j); Inc(k); end;
-    k := lo;
-    while k < hi do begin M.W[k] := tmp[k]; Inc(k); end;   { QWord: no va en un for en i386 }
+    Result := a.Src < b.Src;
   end;
+
+  procedure Swap(i, j: Int64);
+  var t: TLzMatch;
+  begin
+    t := M.W[i]; M.W[i] := M.W[j]; M.W[j] := t;
+  end;
+
+  procedure UnguardedLinearInsert(last: Int64);
+  var val: TLzMatch; next: Int64;
+  begin
+    val := M.W[last];
+    next := last - 1;
+    while Less(val, M.W[next]) do
+    begin
+      M.W[last] := M.W[next];
+      last := next;
+      Dec(next);
+    end;
+    M.W[last] := val;
+  end;
+
+  procedure InsertionSort(first, last: Int64);
+  var i, k: Int64; val: TLzMatch;
+  begin
+    if first = last then Exit;
+    i := first + 1;
+    while i < last do
+    begin
+      if Less(M.W[i], M.W[first]) then
+      begin
+        val := M.W[i];
+        k := i;
+        while k > first do begin M.W[k] := M.W[k - 1]; Dec(k); end;
+        M.W[first] := val;
+      end
+      else
+        UnguardedLinearInsert(i);
+      Inc(i);
+    end;
+  end;
+
+  procedure AdjustHeap(base, hole, len: Int64; const value: TLzMatch);
+  var top, second, parent: Int64;
+  begin
+    top := hole;
+    second := hole;
+    while second < (len - 1) div 2 do
+    begin
+      second := 2 * (second + 1);
+      if Less(M.W[base + second], M.W[base + second - 1]) then Dec(second);
+      M.W[base + hole] := M.W[base + second];
+      hole := second;
+    end;
+    if ((len and 1) = 0) and (second = (len - 2) div 2) then
+    begin
+      second := 2 * (second + 1);
+      M.W[base + hole] := M.W[base + second - 1];
+      hole := second - 1;
+    end;
+    { __push_heap }
+    while hole > top do
+    begin
+      parent := (hole - 1) div 2;
+      if not Less(M.W[base + parent], value) then Break;
+      M.W[base + hole] := M.W[base + parent];
+      hole := parent;
+    end;
+    M.W[base + hole] := value;
+  end;
+
+  { std::__partial_sort(first, last, last): __make_heap + __sort_heap }
+  procedure HeapSort(first, last: Int64);
+  var len, parent, en: Int64; value: TLzMatch;
+  begin
+    len := last - first;
+    if len >= 2 then
+    begin
+      parent := (len - 2) div 2;
+      while True do
+      begin
+        value := M.W[first + parent];
+        AdjustHeap(first, parent, len, value);
+        if parent = 0 then Break;
+        Dec(parent);
+      end;
+    end;
+    en := last;
+    while en - first > 1 do
+    begin
+      Dec(en);
+      value := M.W[en];
+      M.W[en] := M.W[first];
+      AdjustHeap(first, 0, en - first, value);
+    end;
+  end;
+
+  procedure MoveMedianToFirst(result, a, b, c: Int64);
+  var pick: Int64;
+  begin
+    if Less(M.W[a], M.W[b]) then
+    begin
+      if Less(M.W[b], M.W[c]) then pick := b
+      else if Less(M.W[a], M.W[c]) then pick := c
+      else pick := a;
+    end
+    else if Less(M.W[a], M.W[c]) then pick := a
+    else if Less(M.W[b], M.W[c]) then pick := c
+    else pick := b;
+    Swap(result, pick);
+  end;
+
+  function UnguardedPartition(first, last, pivot: Int64): Int64;
+  begin
+    while True do
+    begin
+      while Less(M.W[first], M.W[pivot]) do Inc(first);
+      Dec(last);
+      while Less(M.W[pivot], M.W[last]) do Dec(last);
+      if not (first < last) then Exit(first);
+      Swap(first, last);
+      Inc(first);
+    end;
+  end;
+
+  procedure IntrosortLoop(first, last, depth: Int64);
+  var cut: Int64;
+  begin
+    while last - first > Threshold do
+    begin
+      if depth = 0 then
+      begin
+        HeapSort(first, last);
+        Exit;
+      end;
+      Dec(depth);
+      MoveMedianToFirst(first, first + 1, first + (last - first) div 2, last - 1);
+      cut := UnguardedPartition(first + 1, last, first);
+      IntrosortLoop(cut, last, depth);
+      last := cut;
+    end;
+  end;
+
+var n, lg, i: Int64;
 begin
-  SetLength(tmp, M.N);
-  MergeSort(0, M.N);
+  n := Int64(M.N);
+  if n = 0 then Exit;
+  lg := -1; i := n;
+  while i > 0 do begin Inc(lg); i := i shr 1; end;   { std::__lg }
+  IntrosortLoop(0, n, 2 * lg);
+  if n > Threshold then
+  begin
+    InsertionSort(0, Threshold);
+    i := Threshold;
+    while i < n do begin UnguardedLinearInsert(i); Inc(i); end;
+  end
+  else
+    InsertionSort(0, n);
 end;
 
 procedure PutVarint(var B: TBytes; var N: QWord; V: QWord);
@@ -161,7 +315,7 @@ begin
     Inc(bi);
   end;
 
-  { 2. ordenar por origen (srep.cpp:882) }
+  { 2. ordenar por origen (srep.cpp:899), con el desempate del std::sort del C++ }
   SortBySrc(matches);
 
   { 3. recorrer los bloques, re-emitiendo los matches que empiezan en cada uno }

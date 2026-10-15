@@ -278,6 +278,21 @@ diferencias.
   Windows de fábrica.** A ytool le pasó con `-mflac`: `LoadLibrary` fallaba y
   el encoder nunca corría. Se arregló con `-static-libgcc`.
 * **i686 no habilita SSE2 por defecto** (x86-64 sí). Hay que pasarlo explícito.
+* **Un `std::sort` del C++ con un comparador parcial es parte del formato.**
+  La segunda pasada (`srep.cpp:899`) ordena los matches por `src` solo, y
+  matches con el mismo `src` son comunes (todas las copias de un bloque que el
+  buscador resuelve a la misma aparición anterior, típico después de una
+  inserción que desalinea los chunks). El Rust y el Pascal usaron un orden
+  estable creyendo que no había empates: ~1 archivo real de cada 10 salía con
+  otros bytes (mismo tamaño, todos decodificables) hasta la 2.3.0. Las suites
+  no lo veían porque libstdc++ ordena 16 elementos o menos con una inserción,
+  que es estable, y las entradas repetitivas de los harnesses dan un match
+  largo por bloque, no uno por copia. Ahora `SortBySrc` transcribe el
+  `std::sort` de libstdc++ (introsort + heapsort de respaldo + inserción
+  final), `encodetool sortfixture` lo compara con el real
+  (`oracles/cxx/tools/stdsort_fixture.cpp`) y `tests/cxx_sort_tie_divergence.sh`
+  es el gate. Antes de reemplazar un `std::sort` del C++ por otro orden,
+  probar con entradas de muchos empates y más de 16 elementos.
 * **Los records de Future-LZ no son «literales y después match».** `lit_len` es
   el hueco hasta el *origen* del próximo match, el match se copia *hacia
   adelante* a `src + distance`, y el cursor avanza al origen, no más allá del

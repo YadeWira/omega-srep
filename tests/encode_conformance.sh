@@ -55,6 +55,25 @@ open(os.path.join(d, "dup4m.bin"), "wb").write(unit * 8)
 open(os.path.join(d, "dup20m.bin"), "wb").write(unit * 40)  # 20 MiB: wraps a -d2mb/-b1mb ring
 open(os.path.join(d, "empty.bin"), "wb").write(b"")
 open(os.path.join(d, "tiny.bin"), "wb").write(b"osrep")
+# Ties in the second pass: many matches with one shared source, which the
+# C++'s std::sort (srep.cpp:899) leaves in an order of its own. tie10k is the
+# minimal input (512 random bytes x2, one byte, x18); noisy* is the reviewer's
+# shape (a 4 KiB unit with 1-40 random bytes after ~5% of the copies). 2.2.1
+# wrote other bytes than the C++ on all three in -m3/-m4/-m5 and f (noisy2m
+# in -m0 too); see tests/cxx_sort_tie_divergence.sh.
+import random
+r = random.Random(1)
+u = bytes(r.randrange(256) for _ in range(512))
+open(os.path.join(d, "tie10k.bin"), "wb").write(u * 2 + bytes([r.randrange(256)]) + u * 18)
+r = random.Random(20261009)
+u = bytes(r.randrange(256) for _ in range(4096))
+out = bytearray()
+while len(out) < 2 << 20:
+    out += u
+    if r.random() < 0.05:
+        out += bytes(r.randrange(256) for _ in range(r.randint(1, 40)))
+open(os.path.join(d, "noisy512k.bin"), "wb").write(out[:512 << 10])
+open(os.path.join(d, "noisy2m.bin"), "wb").write(out[:2 << 20])
 PY
 
 pass=0
@@ -132,6 +151,18 @@ for input in tests/corpus/mixed.bin tests/corpus/text.bin tests/corpus/random.bi
     enc "$input" -m3f m3f
     enc "$input" -m4f m4f
     enc "$input" -m5f m5f
+done
+
+say "the second pass with tied sources: std::sort's order, not a stable one"
+for input in "$TMP/tie10k.bin" "$TMP/noisy512k.bin" "$TMP/noisy2m.bin"; do
+    enc "$input" -m3 m3
+    enc "$input" -m4 m4
+    enc "$input" -m5 m5
+    enc "$input" -m3f m3f
+    enc "$input" -m4f m4f
+    enc "$input" -m5f m5f
+    enc "$input" -m4 m4 -b1mb
+    enc "$input" -m0 m0 -d16mb
 done
 
 say "-m1/-m2 (content-defined chunking) vs the C++ encoder"

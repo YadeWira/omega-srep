@@ -60,6 +60,12 @@ bin/hash_test: Makefile tools/hash_test.cpp Compression/SREP/hashes.cpp
 	mkdir -p -v bin
 	$(CXX) $(CPPFLAGS) $(CFLAGS) -Wno-unused-result tools/hash_test.cpp $(LDFLAGS) -o bin/hash_test
 
+# libstdc++'s std::sort on the arrays of the Rust `libstdcxx_sort` test and
+# `encodetool sortfixture`: the tie order the second pass (srep.cpp:899) gets.
+bin/stdsort_fixture: Makefile tools/stdsort_fixture.cpp
+	mkdir -p -v bin
+	$(CXX) -O2 tools/stdsort_fixture.cpp -o bin/stdsort_fixture
+
 # Opt-in 32-bit (i686) Windows cross-build (see docs/32bit-support.md).
 # The primary target stays bin/osrep (host arch); this one produces the 32-bit
 # Windows artifact via the mingw-w64 i686 cross compiler -- the same binary the
@@ -98,7 +104,7 @@ bin/osrep32: Makefile $(DEPS)
 	  $(CXXSOURCES) -lpthread -lstdc++ $(STATIC) -o bin/osrep32
 
 clean:
-	rm -f -v bin/osrep bin/dedup_test bin/hash_test bin/osrep32 bin/osrep32.exe
+	rm -f -v bin/osrep bin/dedup_test bin/hash_test bin/stdsort_fixture bin/osrep32 bin/osrep32.exe
 	rm -rf -v bin/win32-shim
 
 all: bin/osrep bin/dedup_test

@@ -13,6 +13,25 @@ what happened in 2.0.0.
 
 ### Changed
 
+- **-m3/-m4/-m5 (the default -m3 included, and -m0) now write the same bytes
+  as the C++ 1.0.7 on every input, also where many matches share one source.**
+  The C++ sorts the second-pass match list by source alone with libstdc++'s
+  `std::sort` (`srep.cpp:899`), which is not stable, and the order it leaves
+  equal sources in is part of the archive. 2.2.1 and the Rust oracle kept them
+  in collection order, on the false premise that no two matches share a
+  source; in a sample of 220 real files, 22 came out with different bytes
+  (same size) in at least one of these modes. The Pascal and the Rust oracle
+  now transcribe libstdc++'s algorithm for that one sort, so all 220, in
+  `-m0 -m3 -m4 -m5 -m3f -m4f -m5f` and the default, are byte-identical to the
+  C++ on Linux, and so are a 40-file subset (the 22 included) with both
+  Windows builds under wine. **v5 archives (the default container)
+  of such inputs change bytes too**: they are as decodable as before, by
+  2.2.x and by this release alike, and every archive written before reads as
+  before (the decoders never depended on that order). What changes is only
+  that compressing the same input with 2.2.1 and with this release can give
+  different files (two archives pinned in `tests/rust_cli_conformance.sh` moved
+  this way). `-mNo` never sorts; `-m1`/`-m2` had no ties in the sample. The gate is `tests/cxx_sort_tie_divergence.sh`, and the
+  tie inputs are in the standard encode gates too.
 - **The C++ and Rust oracles moved under `oracles/`**: the C++ 1.0.7
   (`Compression/`, `Makefile`, `CMakeLists.txt` and its test tools) is now in
   `oracles/cxx/`, and the Rust workspace (`Cargo.toml`, `crates/`,

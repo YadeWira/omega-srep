@@ -9,7 +9,96 @@ program encodetool;
   trailer ODUP del v4 por defecto. Salida: 0 ok; 1 error (con "ERROR! ..."
   como el Rust); 2 linea de comandos; 3 combinacion no soportada. }
 {$MODE OBJFPC}{$H+}
-uses OsText, SysUtils, Classes, Widths, OutRaw, Hashes, Encoder, FixedCompress, Dedup, DupWrap;
+uses OsText, SysUtils, Classes, Widths, OutRaw, Hashes, Encoder, FixedCompress, Dedup, DupWrap,
+     LzCodec, SecondPass;
+
+{ encodetool sortfixture: el orden de SortBySrc (el std::sort de libstdc++
+  transcripto) sobre los arreglos de oracles/cxx/tools/stdsort_fixture.cpp,
+  impreso igual que ese programa, que corre el std::sort real. El generador
+  (SplitMix64, las ocho formas, los tamanos) es el mismo, y el del test Rust. }
+{$PUSH}{$Q-}{$R-}
+procedure PrintSortFixture;
+const
+  NSIZES = 46;
+  SIZES: array[0..NSIZES - 1] of DWord = (
+    0, 1, 2, 3, 4, 5, 8, 15, 16, 17, 18, 19, 20, 24, 31, 32, 33, 34, 40, 48,
+    63, 64, 65, 100, 127, 128, 129, 200, 255, 256, 257, 300, 500, 511, 512, 513,
+    777, 1000, 1023, 1024, 1025, 1500, 1999, 2000, 2047, 2048);
+  NKINDS = 8;
+var
+  kind, si, col: LongInt;
+  n, i: DWord;
+  s, r, z, k: QWord;
+  m, keys: TMatches;
+  h: DWord;
+  b: LongInt;
+  line: AnsiString;
+begin
+  WriteOut('const STDSORT_EXPECTED: [[u32; ' + IntToStr(NSIZES) + ']; ' + IntToStr(NKINDS) + '] = [' + #10);
+  for kind := 0 to NKINDS - 1 do
+  begin
+    line := '    [';
+    col := 0;
+    for si := 0 to NSIZES - 1 do
+    begin
+      n := SIZES[si];
+      s := QWord(kind) * 1000003 + n;
+      keys.N := n;
+      SetLength(keys.W, n);
+      i := 0;
+      while i < n do
+      begin
+        s := s + QWord($9E3779B97F4A7C15);
+        z := s;
+        z := (z xor (z shr 30)) * QWord($BF58476D1CE4E5B9);
+        z := (z xor (z shr 27)) * QWord($94D049BB133111EB);
+        r := z xor (z shr 31);
+        case kind of
+          0: k := r mod (QWord(n div 8) + 1);
+          1: k := r mod 3;
+          2, 3: k := r mod (QWord(n) + 1);
+          4: if i < n - i then k := i else k := n - i;
+          5: k := r shr 24;
+          6: k := 0;
+        else
+          if Odd(i) then k := (i div 2) div 3 else k := (n - i div 2) div 3;
+        end;
+        keys.W[i].Src := k;
+        Inc(i);
+      end;
+      { las formas 2 y 3 van ordenadas; con claves solas cualquier orden
+        correcto da la misma secuencia }
+      if (kind = 2) or (kind = 3) then SortBySrc(keys);
+      m.N := n;
+      SetLength(m.W, n);
+      i := 0;
+      while i < n do
+      begin
+        if kind = 3 then m.W[i].Src := keys.W[n - 1 - i].Src else m.W[i].Src := keys.W[i].Src;
+        m.W[i].Dest := i;            { el id: la posicion original }
+        Inc(i);
+      end;
+      SortBySrc(m);
+      h := 2166136261;
+      i := 0;
+      while i < n do
+      begin
+        for b := 0 to 3 do
+        begin
+          h := h xor DWord((m.W[i].Dest shr (8 * b)) and $FF);
+          h := DWord((QWord(h) * 16777619) and $FFFFFFFF);
+        end;
+        Inc(i);
+      end;
+      if col mod 7 = 0 then line := line + #10 + '        ' else line := line + ' ';
+      line := line + '0x' + LowerCase(IntToHex(h, 8)) + ',';
+      Inc(col);
+    end;
+    WriteOut(line + #10 + '    ],' + #10);
+  end;
+  WriteOut('];' + #10);
+end;
+{$POP}
 
 { parseMem (Common.h), con los sufijos que usa el harness, igual que el Rust:
   digitos invalidos dan 0. }
@@ -83,6 +172,11 @@ begin
     Halt(2);
   end;
   mode := ArgStr(1);
+  if mode = 'sortfixture' then
+  begin
+    PrintSortFixture;
+    Halt(0);
+  end;
   DefaultEncodeOptions(opts);
   SetLength(files, 0);
   for i := 2 to ArgCount do

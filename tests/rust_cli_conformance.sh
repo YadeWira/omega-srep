@@ -69,6 +69,21 @@ d = sys.argv[1]
 # A duplicate-heavy input: tests/corpus is blind to the CDC modes.
 unit = bytes((i * 31 + 7) & 0xFF for i in range(1 << 16))
 open(os.path.join(d, "dup1m.bin"), "wb").write(unit * 16)
+# Ties in the second pass (see the section below and
+# tests/cxx_sort_tie_divergence.sh).
+import random
+r = random.Random(1)
+u = bytes(r.randrange(256) for _ in range(512))
+open(os.path.join(d, "tie10k.bin"), "wb").write(u * 2 + bytes([r.randrange(256)]) + u * 18)
+r = random.Random(20261009)
+u = bytes(r.randrange(256) for _ in range(4096))
+out = bytearray()
+while len(out) < 2 << 20:
+    out += u
+    if r.random() < 0.05:
+        out += bytes(r.randrange(256) for _ in range(r.randint(1, 40)))
+open(os.path.join(d, "noisy512k.bin"), "wb").write(out[:512 << 10])
+open(os.path.join(d, "noisy2m.bin"), "wb").write(out[:2 << 20])
 PY
 
 pass=0
@@ -124,6 +139,22 @@ diff_case tests/corpus/text.bin -m0 -d16mb
 diff_case tests/corpus/text.bin -m3 -dl256
 diff_case tests/corpus/text.bin -m4 -m64kb          # -mBYTES, the maximum-save form
 diff_case tests/corpus/text.bin -m4 -t8 -v0         # accepted and ignored
+
+say "the second pass orders matches with one shared source the way the C++ does"
+# srep.cpp:899 sorts the match list by `src` alone with libstdc++'s std::sort,
+# which is not stable; the order of the ties is in the archive. tie10k (the
+# smallest input found that shows it with default options) and noisy* (the
+# reviewer's: a 4 KiB unit, 1-40 random bytes after ~5% of the copies) gave
+# different bytes than 1.0.7 in every one of these with 2.2.1, Rust and Pascal
+# alike; 2.3.0 transcribes std::sort. No -m2 here: the C++ -m2 is not
+# deterministic on every input.
+for input in "$TMP/tie10k.bin" "$TMP/noisy512k.bin" "$TMP/noisy2m.bin"; do
+    for m in "" -m3 -m4 -m5 -m3f -m4f -m5f; do
+        diff_case "$input" $m
+    done
+    diff_case "$input" -m4 -b1mb
+done
+diff_case "$TMP/noisy2m.bin" -m0
 
 say "stdin/stdout: '-' is a pipe, not a file called '-'"
 for m in m0 m3 m4 m4f m5o; do
@@ -653,7 +684,10 @@ say "-m3 with a BASE_LEN that does not divide the chunk writes archives that dec
 # -m3 -c8 did one or the other on the inputs tried. A match is now moved to
 # the BASE_LEN grid and cut to whole units; matches that already were exact
 # (BASE_LEN dividing L, the default) are untouched, so -c512 -l1024 keeps the
-# archive it always had.
+# archive it always had. The two txtmut200k pins moved in 2.3.0 (-l17 was
+# 359c59db0e1ac1cd62233c72ee3c6510, -l100 was 2a7800ab8a72d5a064168742eb402a10):
+# their second pass has matches with equal sources, now ordered as libstdc++'s
+# std::sort orders them. Same sizes; Rust and Pascal agree.
 python3 - "$TMP" <<'PY'
 import os, random, sys
 text = open("tests/corpus/text.bin", "rb").read()
@@ -680,8 +714,8 @@ done <<EOF
 48287a053ebc239bd64dd9ddd3b2f6a1 tests/corpus/text.bin -m3 -c512 -l1024
 2761d42870348cf2c44f69dfd005ef40 tests/corpus/text.bin -m3f -c8 -l24
 5c972e778a39918e764050fe440c5bd1 tests/corpus/mixed.bin -m3o -c8 -l16
-359c59db0e1ac1cd62233c72ee3c6510 $TMP/txtmut200k -m3 -c8 -b4kb -l17
-2a7800ab8a72d5a064168742eb402a10 $TMP/txtmut200k -m3 -c8 -b4kb -l100
+c805e2c10d95ab8585977dfb3e50cf46 $TMP/txtmut200k -m3 -c8 -b4kb -l17
+124da8db254b1cc36b5a7d7f2d1993eb $TMP/txtmut200k -m3 -c8 -b4kb -l100
 EOF
 # The v5 default container takes the same matches.
 for l in 16 17 24 100 498; do

@@ -51,6 +51,25 @@ import random
 random.seed(1)
 blk = bytes(random.randrange(256) for _ in range(1 << 20))
 open(os.path.join(d, "rnd16.bin"), "wb").write(blk * 16)
+# Empates en la segunda pasada: muchos matches con el mismo origen, que el
+# std::sort del C++ (srep.cpp:899) deja en un orden propio. tie10k es la
+# entrada minima (512 bytes al azar x2, un byte, x18) y noisy* la forma del
+# revisor (una unidad de 4 KiB con 1-40 bytes al azar despues de ~5% de las
+# copias). Con las tres la 2.2.1 (Rust y Pascal) escribia otros bytes que el
+# C++ en -m3/-m4/-m5 y f (noisy2m tambien en -m0); ver
+# tests/cxx_sort_tie_divergence.sh.
+r = random.Random(1)
+u = bytes(r.randrange(256) for _ in range(512))
+open(os.path.join(d, "tie10k.bin"), "wb").write(u * 2 + bytes([r.randrange(256)]) + u * 18)
+r = random.Random(20261009)
+u = bytes(r.randrange(256) for _ in range(4096))
+out = bytearray()
+while len(out) < 2 << 20:
+    out += u
+    if r.random() < 0.05:
+        out += bytes(r.randrange(256) for _ in range(r.randint(1, 40)))
+open(os.path.join(d, "noisy512k.bin"), "wb").write(out[:512 << 10])
+open(os.path.join(d, "noisy2m.bin"), "wb").write(out[:2 << 20])
 PY
 
 # enc <entrada> <modo> <opciones...>: los dos encoders, --seed=7, cmp.
@@ -123,6 +142,16 @@ for input in $C/mixed.bin $C/text.bin $C/random.bin "$TMP/dup4m.bin" "$TMP/dup20
     enc "$input" m4f
     enc "$input" m5f
 done
+
+say "la segunda pasada con empates de origen (el orden del std::sort del C++)"
+for input in "$TMP/tie10k.bin" "$TMP/noisy512k.bin"; do
+    for m in m3 m4 m5 m3f m4f m5f m3v m4v m5v; do
+        enc "$input" "$m"
+    done
+    enc "$input" m4 -b1mb
+done
+enc "$TMP/noisy2m.bin" m0 -d16mb
+enc "$TMP/noisy2m.bin" m0v -d16mb
 
 say "-m1/-m2 (chunking por contenido)"
 for input in $C/mixed.bin "$TMP/dup4m.bin" "$TMP/dup20m.bin"; do
@@ -207,6 +236,39 @@ if [ -x "$CPP" ] || make_cxx bin/osrep >/dev/null 2>&1; then
             pass=$((pass + 1))
         done
     done
+    # Los empates del orden por origen, directo contra el C++ (sin -m2: el
+    # -m2 del C++ no es determinista en todas las entradas).
+    for input in "$TMP/tie10k.bin" "$TMP/noisy512k.bin" "$TMP/noisy2m.bin"; do
+        for case in "m3|" "m4|" "m5|" "m3f|" "m4f|" "m5f|" "m4|-b1mb" "m0|-d16mb"; do
+            IFS='|' read -r m o <<<"$case"
+            # shellcheck disable=SC2086
+            "$CPP" "-$m" $o --seed=7 "$input" "$TMP/cpp.osr" >/dev/null 2>&1 \
+                || fail "el C++ fallo en -$m $o"
+            # shellcheck disable=SC2086
+            "$ET" "$m" $o --seed=7 "$input" "$TMP/pa.osr" >/dev/null 2>&1 \
+                || fail "el Pascal fallo en $m $o"
+            cmp -s "$TMP/cpp.osr" "$TMP/pa.osr" \
+                || fail "-$m $o sobre $(basename "$input"): distinto del C++ (el orden de los empates de la segunda pasada?)"
+            pass=$((pass + 1))
+        done
+    done
+fi
+
+say "el desempate del orden por origen, contra el std::sort de libstdc++"
+# SortBySrc transcribe el std::sort de libstdc++, que no es estable. encodetool
+# sortfixture la corre sobre los arreglos de oracles/cxx/tools/stdsort_fixture.cpp
+# (muchos empates, ordenados, al reves, organ pipe, 0..2048 elementos, con el
+# corte a heapsort por profundidad) y tiene que imprimir lo mismo que el
+# std::sort real. Con OSREP_PASCAL_ENCODETOOL apuntando a un wrapper de wine
+# prueba las builds de Windows.
+if [ -x "$CXX_BIN/stdsort_fixture" ] || make_cxx bin/stdsort_fixture >/dev/null 2>&1; then
+    "$CXX_BIN/stdsort_fixture" > "$TMP/sort.cpp" || fail "stdsort_fixture fallo"
+    "$ET" sortfixture | tr -d '\r' > "$TMP/sort.pa" || fail "encodetool sortfixture fallo"
+    cmp -s "$TMP/sort.cpp" "$TMP/sort.pa" \
+        || fail "SortBySrc no deja los empates como el std::sort de libstdc++"
+    pass=$((pass + 1))
+else
+    fail "no compila $CXX_BIN/stdsort_fixture"
 fi
 
 echo "  pascal_encode_conformance: passed=$pass mismatches=0 not_ported=$notported"
