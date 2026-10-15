@@ -48,10 +48,12 @@ fn next_hash_slot(h: u64) -> u64 {
 
 /// The `SliceHash` filter (`hash_table.cpp:19-112`): 4-bit fingerprints of the
 /// slices around a candidate chunk, used by `-m5` to reject ~90% of the
-/// positions that cannot extend to `MIN_MATCH`. `-m4` leaves it empty
-/// (`memreq == 0`), which makes `check` always true.
+/// positions that cannot extend to `MIN_MATCH`. It is empty (`memreq == 0`,
+/// `check` always true) unless `(MIN_MATCH-L)/slice_size - 1 > 0`: `-m5`, or
+/// `-m4`/`-m5` with `-l` at least about 1.25 x `-c`; `-ia-` turns it off.
 pub struct SliceHash {
-    /// `memreq != 0`: `-m4` leaves the filter empty and `check` always true.
+    /// `memreq != 0`; when false (`-m4` with its default `-c`, or `-ia-`)
+    /// `check` is always true.
     active: bool,
     h: Vec<u32>,
     l: usize,

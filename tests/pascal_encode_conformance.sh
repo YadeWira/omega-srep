@@ -396,7 +396,7 @@ say "el digest de -m3 leido por adelantado: fijado, porque el C++ tiene una carr
 # incluido), asi que el archivo de la 1.0.7 cambia de una corrida a otra.
 # Medido con -t1, 762 corridas del C++ por caso (180 en fila, el resto de a 8
 # o de a 48 a la vez; -m3f 800 mas, de a 64), el archivo fijado salio en:
-#   a33929 -m3 -l130 -b261b       758 de 762 (las otras 4: un mismo archivo)
+#   a33929 -m3 -l130 -b261b       757 de 762 (las otras 5: un mismo archivo)
 #   a33929 -m3 -l130 -b261b -a0   759 de 762 (las otras 3: ese mismo otro)
 #   a200k  -m3 -l130 -b392b       761 de 762
 #   a200k  -m3o -l130 -b392b      761 de 762

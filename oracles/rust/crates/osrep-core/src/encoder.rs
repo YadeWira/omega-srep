@@ -5,11 +5,11 @@
 //! a two-slot ring and two events. The port runs the same steps sequentially,
 //! in one fixed order: block k+1 fully read and prepared before block k is
 //! compressed. In the C++ that order is a race its background thread usually
-//! wins; with big blocks it always does (the 4c-0 `-t1`/`-t8` experiment in
-//! `docs/rust-port.md` found the output byte-identical), with small ones
-//! (`-b` of a few hundred bytes) it sometimes loses, at any `-t`, and 1.0.7's
-//! archive then varies between runs (see `HashTable::prepare_ahead`). The
-//! block layout written here is `save_data`'s
+//! wins; with big blocks it practically always does (the 4c-0 `-t1`/`-t8`
+//! experiment in `docs/rust-port.md` found the output byte-identical), with
+//! small ones (`-b` of a few hundred bytes) it sometimes loses, at any `-t`,
+//! and 1.0.7's archive then varies between runs (see
+//! `HashTable::prepare_ahead`). The block layout written here is `save_data`'s
 //! (`io.cpp:282-307`): block header, digest, match list, then the literal runs
 //! the records interleave with.
 //!

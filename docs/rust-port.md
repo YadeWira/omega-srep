@@ -485,10 +485,10 @@ with the binary in phase 5.
   header as a block. The harnesses pass `None`, so nothing but the CLI could
   have caught it.
 * **What the CLI accepts and does not act on**: `-t` (the port is single-threaded
-  per block), `-ia`/`-slp`/`-pc`/`-mmap`/`-nommap`/`-rem` -- all proven
-  output-neutral by the phase 4c pre-port experiments. `-a` was on this list
-  until 2.3.0, on the strength of a measurement made only with the default
-  `-l` (see the table above); it is honoured now. `-mem` and `-vmblock=`
+  per block), `-slp`/`-pc`/`-mmap`/`-nommap`/`-rem` -- all proven
+  output-neutral by the phase 4c pre-port experiments. `-a` and `-ia-` were on
+  this list until 2.3.0, on the strength of measurements made only with the
+  default `-l`/`-c` and modes (see the table above); they are honoured now. `-mem` and `-vmblock=`
   map onto the spill budget, and `-vmfile=` names the spill file.
 * **`-index=` is implemented** (it was the last refusal to go). It routes the
   per-block match lists to a second file: I/O-LZ writes them in the first

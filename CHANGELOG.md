@@ -48,7 +48,7 @@ what happened in 2.0.0.
   thread runs (`io.cpp:250-265`), with nothing ordering the two, at every
   `-t` (`-t1` included). With big blocks the reading thread is usually done
   first; with tiny ones (`-m3 -l130 -b261b`, `-b392b`) 1.0.7 was measured to
-  write another archive now and then (up to 4 runs in 762), so its output
+  write another archive now and then (up to 5 runs in 762), so its output
   there is not a function of its input. The ports always take the next
   block fully read and prepared before this one is compressed, which is the
   C++'s archive in the other runs; the gates pin those cases to it instead

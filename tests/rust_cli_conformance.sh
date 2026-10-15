@@ -295,7 +295,7 @@ say "-m3's read-ahead digest: pinned, because the C++ races there"
 # included), so 1.0.7's archive here changes between runs. Measured at -t1,
 # 762 C++ runs per case (180 one after another, the rest 8 or 48 at a time;
 # -m3f 800 more, 64 at a time), the pinned archive came out in:
-#   a33929 -m3 -l130 -b261b       758 of 762 (the other 4: one other archive)
+#   a33929 -m3 -l130 -b261b       757 of 762 (the other 5: one other archive)
 #   a33929 -m3 -l130 -b261b -a0   759 of 762 (the other 3: that same one)
 #   a200k  -m3 -l130 -b392b       761 of 762
 #   a200k  -m3o -l130 -b392b      761 of 762

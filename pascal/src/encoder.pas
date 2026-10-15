@@ -5,8 +5,8 @@ unit Encoder;
   por un anillo de dos ranuras; aca se corre en secuencia, en un orden fijo:
   el bloque k+1 leido y preparado entero antes de comprimir el k. En el C++
   ese orden es una carrera que su hilo de fondo suele ganar; con bloques
-  grandes siempre (medido: -t1 contra -t8, mismos bytes), con bloques chicos
-  (un -b de unos cientos de bytes) a veces la pierde, con cualquier -t, y el
+  grandes casi siempre (medido: -t1 contra -t8, mismos bytes), con bloques
+  chicos (un -b de unos cientos de bytes) a veces la pierde, con cualquier -t, y el
   archivo de la 1.0.7 cambia de una corrida a otra (ver HtPrepareAhead).
 
   La lectura adelantada no es solo velocidad: compress lee unos bytes pasado

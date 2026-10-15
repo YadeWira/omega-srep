@@ -242,7 +242,9 @@ begin
   S.Active := memreq <> 0;
   { Una entrada de mas: check lee h[chunk+1], y el escaneo puede llegar al
     ultimo chunk del archivo (el avance de a cuatro se pasa de next_chunk).
-    El C++ lee ahi el relleno de pagina de su BigAlloc, que es cero. Otra
+    El C++ lee ahi lo que haya despues de su BigAlloc: cero cuando malloc
+    lo mapea como paginas nuevas (un archivo grande); con uno chico es memoria
+    del heap. El port deja esa entrada en cero. Otra
     mas para un -c que no es potencia de dos, donde el ultimo chunk guardado
     puede ser FileSize div L justo (ver HtInit). }
   ZNew(Pointer(S.H), TypeInfo(S.H), memreq + 2, SizeOf(DWord));
