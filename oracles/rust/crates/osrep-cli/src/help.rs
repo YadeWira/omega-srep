@@ -45,6 +45,9 @@ pub fn help() -> String {
          \x20                   of bit array per chunk, and the scan variant M\n\
          \x20                   (default N, at most 16); -a0 turns it off.\n\
          \x20                   Like -l/-c, it changes the archive.\n\
+         \x20 -ia-, -ia+        -ia- turns off the slice filter of -m5 (and of\n\
+         \x20                   -m4 with -c well below -l); -ia+, the default,\n\
+         \x20                   keeps it. Like -l/-c, it changes the archive.\n\
          \x20 -bN               buffer size (default 8mb)\n\
          \x20 -dBYTES           dictionary size for -m0\n\
          \x20 -hash=NAME        select hash (vmac, sha1, ...)\n\
@@ -81,7 +84,6 @@ pub fn help() -> String {
          \x20 -tN               the implementation is single-threaded per block,\n\
          \x20                   so there is no worker count to set\n\
          \x20 -mmap, -nommap    mmap reads\n\
-         \x20 -ia-, -ia+        I/O acceleration\n\
          \x20 -slp, -slp-       large-page mode\n\
          \x20 -pc[N]            progress counters\n\
          \x20 These are parsed and validated so scripts written against the\n\

@@ -2,10 +2,14 @@
 //! per-mode compressors, and what `io.cpp`'s background thread does for it.
 //!
 //! The C++ overlaps reading a block with compressing the previous one through
-//! a two-slot ring and two events. Both orderings produce the same bytes — the
-//! 4c-0 `-t1`/`-t8` experiment in `docs/rust-port.md` is what established that
-//! the interleaving is output-invisible — so the port runs the same steps
-//! sequentially. The block layout written here is `save_data`'s
+//! a two-slot ring and two events. The port runs the same steps sequentially,
+//! in one fixed order: block k+1 fully read and prepared before block k is
+//! compressed. In the C++ that order is a race its background thread usually
+//! wins; with big blocks it always does (the 4c-0 `-t1`/`-t8` experiment in
+//! `docs/rust-port.md` found the output byte-identical), with small ones
+//! (`-b` of a few hundred bytes) it sometimes loses, at any `-t`, and 1.0.7's
+//! archive then varies between runs (see `HashTable::prepare_ahead`). The
+//! block layout written here is `save_data`'s
 //! (`io.cpp:282-307`): block header, digest, match list, then the literal runs
 //! the records interleave with.
 //!
@@ -13,7 +17,7 @@
 //! bytes past the block end (the batch of four can overshoot `next_chunk`,
 //! compress.cpp:178-183), and in the C++ those bytes are the next ring slot --
 //! which the background thread has usually already filled with the following
-//! block. Reading one block ahead reproduces that deterministically.
+//! block. Reading one block ahead gives the ports those bytes every time.
 //!
 //! Only the single-pass I/O-LZ path is driven (format v2 through the `o`
 //! suffix); the Future/Index-LZ second pass lands with phase 4c-5 and the
@@ -172,6 +176,11 @@ pub struct EncodeOptions {
     /// `-aN/M` (`ACCELERATOR`): 9000 = not given, `min(accel, 16)`
     /// (`srep.cpp:634`). Picks the `compress<ACCELERATOR>` variant.
     pub accelerator: u32,
+    /// `-ia-`/`-ia+` (`io_accelerator`, `srep.cpp:349-352`): -1 or 1,
+    /// default 1. -1 turns the slice filter off (`SliceHash`,
+    /// `hash_table.cpp:33-36`), which `-m4`/`-m5` run when `-l` is well
+    /// above the chunk; that changes the archive.
+    pub io_accelerator: i32,
 }
 
 impl Default for EncodeOptions {
@@ -190,6 +199,7 @@ impl Default for EncodeOptions {
             dup_meta: None,
             accel: 9000,
             accelerator: 9000,
+            io_accelerator: 1,
         }
     }
 }
@@ -492,13 +502,16 @@ pub fn encode<R: Read + Seek, W: Write>(
         0
     };
 
-    // The match finder, for the modes that have one. `-m4` leaves the slice
-    // filter empty (its `check_slices` is <= 0), `-m5` fills it.
+    // The match finder, for the modes that have one. The slice filter is
+    // empty unless `-l` is far enough above the chunk (`check_slices > 0`:
+    // `-m5`, and `-m4` with a `-c` below `-l`) and `-ia-` is not given; only
+    // `-m4`/`-m5` read it.
     let mut table = match kind {
         Kind::Inmem => None,
         Kind::Cdc | Kind::CdcZpaq | Kind::Fixed | Kind::FixedExhaustive | Kind::Digest => {
-            // `io_accelerator` defaults to 1 (srep.cpp:291). `-m3` is the one
-            // mode that precomputes and compares per-chunk digests.
+            // `io_accelerator` is 1 unless `-ia-` (srep.cpp:295, 349-352).
+            // `-m3` is the one mode that precomputes and compares per-chunk
+            // digests.
             // `COMPARE_DIGESTS = (method <= -m3)` and
             // `PRECOMPUTE_DIGESTS = (method == -m3)` (`srep.cpp:441-442`):
             // `-m1`/`-m2` *compare* chunk digests but do not precompute them.
@@ -518,7 +531,7 @@ pub fn encode<R: Read + Seek, W: Write>(
                     cdc,
                     l,
                     min_match,
-                    1,
+                    opts.io_accelerator,
                     if accelerator == 0 { 0 } else { bitarr_accelerator },
                     filesize,
                 )
@@ -581,8 +594,9 @@ pub fn encode<R: Read + Seek, W: Write>(
 
         if let Some(t) = table.as_mut() {
             t.prepare_buffer(&dict, buf_offset, filled, block_start);
-            // The C++'s background thread has already prepared the next block
-            // (`io.cpp:250-265`); see `HashTable::prepare_ahead`.
+            // Block k+1 prepared before block k is compressed, as the C++'s
+            // background thread (`io.cpp:250-265`) usually manages: only the
+            // one digest block k reads, see `HashTable::prepare_ahead`.
             if next_filled > 0 {
                 t.prepare_ahead(&dict, next_offset, next_filled, block_start + filled as u64);
             }

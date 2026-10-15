@@ -411,6 +411,7 @@ begin
   E.L := O.L;
   E.Accel := O.Accel;
   E.Accelerator := O.Accelerator;
+  E.IoAccelerator := O.IoAccelerator;
   if O.HasHash then E.Hash := O.Hash else E.Hash := 'vmac';
   E.HasDeclaredSize := HasDeclared;
   E.DeclaredSize := Declared;

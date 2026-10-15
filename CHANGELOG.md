@@ -42,12 +42,19 @@ what happened in 2.0.0.
   behind one (`-m4 -a999999999/3`) runs as in 2.2.1, also on win32; a huge
   `-aN` with a real scan can now stop with `OutOfMemory`, exit 4, like
   1.0.7's "Can't allocate memory". When a block is not a whole number of
-  chunks, `-m3`'s digest test at its end reads the digest of the next
-  block's first chunk, which the C++'s background thread computes ahead
-  (`io.cpp:250-265`); the ports compute it ahead too. That is a data race in
-  the C++: with `-t2` and up (its default on a multi-core machine) and tiny
-  blocks (`-m3 -l130 -b261b`) its main thread was measured to get there
-  first, so its archive there depends on `-t`; the ports match `-t1`.
+  chunks, `-m3`'s digest test at its end can read the digest of the next
+  block's first chunk, and the scan reads a few bytes of the next block; in
+  the C++ both are written by its reading thread while the compressing
+  thread runs (`io.cpp:250-265`), with nothing ordering the two, at every
+  `-t` (`-t1` included). With big blocks the reading thread is usually done
+  first; with tiny ones (`-m3 -l130 -b261b`, `-b392b`) 1.0.7 was measured to
+  write another archive now and then (up to 4 runs in 762), so its output
+  there is not a function of its input. The ports always take the next
+  block fully read and prepared before this one is compressed, which is the
+  C++'s archive in the other runs; the gates pin those cases to it instead
+  of comparing with a live C++ run. Only that one digest is computed ahead,
+  so the default `-m3` does not digest every block twice (64 MB of real
+  files: 4% to 10% faster than with the whole next block prepared ahead).
   Measured: on 220 real files with 55 small-chunk and `-a` option
   sets (`-m3o`..`-m5` with `-l16`..`-l128`, `-c16`..`-c64`, `-a1`..`-a16` and
   `/N`), all 11,880 cases where the C++ is defined match it byte for byte
@@ -73,6 +80,20 @@ what happened in 2.0.0.
   no longer lists `-aN[/M]` among the options that are not acted on: it is
   under the common options now, as the match-finder accelerator, and says
   that it changes the archive.
+- **`-ia-` is honoured.** In the C++ 1.0.7 it sets `io_accelerator` to -1
+  (`srep.cpp:349-352`), which turns off the slice filter: a fingerprint of
+  the bytes around each chunk that `-m5`, and `-m4` with a `-c` well below
+  `-l`, use to reject candidate matches that cannot reach `-l` bytes
+  (`hash_table.cpp:29-36`). The ports parsed `-ia-`/`-ia+` and then always
+  passed 1, and `--help` and the man page listed them among the options not
+  acted on. They now pass it through, so `-ia-` changes the archive as in
+  1.0.7, sometimes by a lot: `text.bin -m5 -l1000` is 4,194,408 bytes with
+  the filter and 189 with `-ia-`, in the C++ and now in both ports (v4, byte
+  for byte; the archives decode). `-ia+` is the default and `-m3` never reads
+  the filter, so those archives do not move. `--help` (identical in both
+  ports) and the man page list it under the common options now, and the CLI
+  gates check `-ia-`/`-ia+` against the C++ directly (`-m5`, `-m5o -c128`,
+  `-m4 -c128`, `-m3`, and the last of two `-ia` winning).
 - **-m3/-m4/-m5 (the default -m3 included, and -m0) now order matches that
   share one source exactly as the C++ 1.0.7 does.**
   The C++ sorts the second-pass match list by source alone with libstdc++'s

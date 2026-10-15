@@ -114,10 +114,37 @@ procedure HtFree(var T: THashTableRec);
 procedure HtPrepareBuffer(var T: THashTableRec; const Buf: TBytes; BufOff, BlockLen,
                           Offset: QWord);
 
-{ El prepare_buffer del bloque SIGUIENTE que el hilo de fondo del C++ ya
-  corrio antes de que se comprima este (io.cpp:250-265): digests y slices de
-  sus chunks, sin la grilla (eso lo hace su propio HtPrepareBuffer). Ver
-  HashTable::prepare_ahead en el Rust. }
+{ Lo unico que el bloque k lee del prepare_buffer del bloque k+1, que el hilo
+  de fondo del C++ corre mientras el principal comprime el k (io.cpp:250-265):
+  el digest de -m3 del chunk n0 = Offset div L, con el que el bloque k+1
+  numera su primer chunk. Se llama con el bloque k+1 (Offset = fin del k)
+  justo despues del HtPrepareBuffer del k; el HtPrepareBuffer del k+1 despues
+  recalcula ese mismo valor y todo lo demas.
+
+  El escaneo del bloque k se pasa de su ultimo chunk hasta max(CYCLES, 4) - 1
+  bytes (compress.cpp:153-174), asi que si Offset no es multiplo de L su
+  ultimo add_hash (compress.cpp:209) puede llegar con CurChunk = n0 y comparar
+  DigestArr[n0] (hash_table.cpp:272). Nada mas se lee por adelantado:
+  find_match y match_len solo leen digests de chunks ya insertados o
+  anteriores al bloque, y SliceCheck lee H[chunk + 1] solo con al menos 2*L
+  bytes por delante en el bloque (hash_table.cpp:92-94), lo que descarta el
+  candidato n0 - 1. Un build instrumentado que registraba cada lectura de
+  digests y slices no encontro ninguna otra antes del prepare_buffer que la
+  escribe, en 700 casos generados (-b fuera de la grilla, L impar, -m3 a
+  -m5). El bloque k+1 escribe el chunk n0 solo si trae al menos L bytes; y
+  si para el bloque k block_start mod L + filled mod L >= L, n0 es dos mas
+  que su ultimo chunk, y el del medio, al que ese add_hash tambien llega, no
+  lo escribe ningun bloque. En los dos casos el C++ lee memoria sin
+  inicializar y los ports leen cero.
+
+  En el C++ nada ordena esto: es una carrera entre sus dos hilos, con
+  cualquier -t (-t1 incluido). Con bloques grandes el hilo de fondo suele
+  terminar mucho antes de que el bloque k llegue a su final; con bloques chicos
+  (-m3 -l130 -b261b) el principal a veces llega primero y lee lo que habia,
+  y el archivo de la 1.0.7 cambia de una corrida a otra. Los ports siempre
+  toman el valor preparado: el bloque k+1 leido y preparado entero antes de
+  comprimir el k, que es lo que el C++ escribe en la mayoria de las
+  corridas. Ver HashTable::prepare_ahead en el Rust. }
 procedure HtPrepareAhead(var T: THashTableRec; const Buf: TBytes; BufOff, BlockLen,
                          Offset: QWord);
 
@@ -402,9 +429,10 @@ end;
 
 procedure HtPrepareBuffer(var T: THashTableRec; const Buf: TBytes; BufOff, BlockLen,
                           Offset: QWord);
-var cur: QWord;
+var cur, n, c: QWord;
 begin
   cur := Offset div T.L;
+  n := BlockLen div T.L;
   if (Offset mod T.L) <> 0 then T.AnyShifted := True;
   if T.AnyShifted then
   begin
@@ -415,15 +443,6 @@ begin
     T.Grid[T.GridN].Start := Offset;
     Inc(T.GridN);
   end;
-  HtPrepareAhead(T, Buf, BufOff, BlockLen, Offset);
-end;
-
-procedure HtPrepareAhead(var T: THashTableRec; const Buf: TBytes; BufOff, BlockLen,
-                         Offset: QWord);
-var cur, n, c: QWord;
-begin
-  cur := Offset div T.L;
-  n := BlockLen div T.L;
   if T.PrecomputeDigests then
   begin
     c := cur;
@@ -434,6 +453,17 @@ begin
     end;
   end;
   SlicePrepareRange(T.Slice, Buf, BufOff, cur, cur + n);
+end;
+
+procedure HtPrepareAhead(var T: THashTableRec; const Buf: TBytes; BufOff, BlockLen,
+                         Offset: QWord);
+var n0: QWord;
+begin
+  if T.PrecomputeDigests and (BlockLen >= T.L) then
+  begin
+    n0 := Offset div T.L;
+    VDigestCompute(T.Digest, Buf, BufOff, T.L, T.DigestArr, n0 * DIGEST_SIZE);
+  end;
 end;
 
 function HtChunkPos(const T: THashTableRec; K: QWord): QWord;

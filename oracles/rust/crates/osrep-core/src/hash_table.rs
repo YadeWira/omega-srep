@@ -83,8 +83,9 @@ impl SliceHash {
         // reach the last chunk of the file (the per-batch advance overshoots
         // `next_chunk` by up to three positions, which shifts the `add_hash`
         // chunk index). The C++ reads one `entry` past its `BigAlloc` there,
-        // which lands in the allocation's page padding -- zero on the fresh
-        // mmap this size produces -- so the port keeps that entry, zeroed.
+        // which lands in the allocation's page padding -- zero when malloc
+        // maps it as fresh pages (a large file); for a small one it is heap
+        // memory -- so the port keeps that entry, zeroed.
         // A second one covers a non-power-of-two `-c`, where the last chunk
         // stored can be `filesize / L` itself (see `HashTable::new`).
         SliceHash {
@@ -333,11 +334,12 @@ impl HashTable {
         self.slicehash.is_empty()
     }
 
-    /// `HashTable::prepare_buffer` (`hash_table.cpp:208-213`) minus the digest
-    /// precompute, which lands with 4c-4: fill the slice fingerprints for the
-    /// `block_len / L` whole chunks the block starts at `offset`.
+    /// `HashTable::prepare_buffer` (`hash_table.cpp:208-213`): the `-m3`
+    /// digests and the slice fingerprints of the `block_len / L` whole chunks
+    /// of the block that starts at `offset`, numbered from `offset / L`.
     pub fn prepare_buffer(&mut self, buf: &[u8], buf_off: usize, block_len: usize, offset: u64) {
         let curchunk = (offset / self.l as u64) as usize;
+        let nchunks = block_len / self.l;
         // Blocks before the first shifted one are on the grid, where `k*L`
         // (`chunk_pos`'s fallback) is right: an aligned `-b` stores nothing.
         if offset % self.l as u64 != 0 {
@@ -346,34 +348,52 @@ impl HashTable {
         if self.any_shifted {
             self.block_grid.push((curchunk, offset));
         }
-        self.prepare_ahead(buf, buf_off, block_len, offset);
-    }
-
-    /// The background thread's read-ahead (`io.cpp:250-265`): it runs
-    /// `prepare_buffer` on block k+1 before the main thread compresses
-    /// block k, so the digest and slice fingerprint of the next block's
-    /// first chunk are already there when block k's last `add_hash` reads
-    /// them. That chunk index is `(block_start + filled) / L`, which block k
-    /// itself never fills when `filled` is not a multiple of L, and the `-m3`
-    /// digest test there compared against zeros without this. Called for
-    /// the next block right after `prepare_buffer` of this one; the grid
-    /// bookkeeping is left to that block's own `prepare_buffer`, which
-    /// recomputes the same values.
-    ///
-    /// In the C++ this is a data race: the background thread prepares block
-    /// k+1 while the main thread compresses block k. With `-t1` it runs
-    /// inline there and wins in practice; with `-t2` and up (the default on a
-    /// multi-core machine) it goes through a worker pool, and with tiny blocks
-    /// (`-m3 -l130 -b261b`) the main thread was measured to get there first
-    /// and read the zeros. The ports follow `-t1`.
-    pub fn prepare_ahead(&mut self, buf: &[u8], buf_off: usize, block_len: usize, offset: u64) {
-        let curchunk = (offset / self.l as u64) as usize;
-        let nchunks = block_len / self.l;
         if self.precompute_digests {
             self.prepare_digests_range(buf, buf_off, curchunk, curchunk + nchunks);
         }
         self.slicehash
             .prepare_buffer_range(buf, buf_off, curchunk, curchunk + nchunks);
+    }
+
+    /// The one value block k reads from block k+1's `prepare_buffer`, which
+    /// the C++'s background thread runs while the main thread compresses
+    /// block k (`io.cpp:250-265`). Called with block k+1 (`offset` = block
+    /// k's end, `block_len` its length) right after block k's
+    /// `prepare_buffer`; block k+1's own `prepare_buffer` later recomputes
+    /// the same value and everything else.
+    ///
+    /// The value is the `-m3` digest of chunk `n0 = offset / L`, which block
+    /// k+1 numbers its first chunk with: block k's scan can overshoot its
+    /// last chunk by up to `max(CYCLES, 4) - 1` bytes (`compress.cpp:153-174`),
+    /// so when `offset` is not a multiple of `L` its last `add_hash`
+    /// (`compress.cpp:209`) can get `curchunk == n0` and compare
+    /// `digestarr[n0]` (`hash_table.cpp:272`). Nothing else is read ahead:
+    /// `find_match` and `match_len` only read digests of chunks already
+    /// inserted or before the block, and `SliceHash::check` reads
+    /// `h[chunk + 1]` only with at least `2 * L` bytes left in the block
+    /// (`hash_table.cpp:92-94`), which rules out the candidate `n0 - 1`.
+    /// An instrumented build that recorded every digest and slice read found
+    /// no other value read before the `prepare_buffer` that writes it, on 700
+    /// generated cases (`-b` off the chunk grid, odd `L`, `-m3`..`-m5`).
+    /// Block k+1 writes chunk `n0` only when it holds at least `L` bytes; and
+    /// when `block_start % L + filled % L >= L` for block k, `n0` is two past
+    /// its last chunk, and the chunk in between, which that `add_hash` can
+    /// also reach, is written by no block. The C++ reads uninitialised
+    /// memory in both cases; the ports read zero.
+    ///
+    /// The C++ does not order this: it is a data race between its two
+    /// threads, at every `-t` (`-t1` included). With big blocks the
+    /// background thread is usually done long before block k ends; with
+    /// small ones (`-m3 -l130 -b261b`) the main thread sometimes gets there
+    /// first and reads what the slot held before, so 1.0.7's archive varies
+    /// between runs. The ports always take the prepared value: block k+1
+    /// fully read and prepared before block k is compressed, which is what
+    /// the C++ writes in most runs.
+    pub fn prepare_ahead(&mut self, buf: &[u8], buf_off: usize, block_len: usize, offset: u64) {
+        if self.precompute_digests && block_len >= self.l {
+            let n0 = (offset / self.l as u64) as usize;
+            self.prepare_digests_range(buf, buf_off, n0, n0 + 1);
+        }
     }
 
     /// `prepare_digests_range` (`hash_table.cpp:188-192`): the digest of every

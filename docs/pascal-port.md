@@ -782,3 +782,18 @@ diferencias.
   primer bloque corrido: con un `-b` alineado no ocupa nada. La lección
   es la de `BASE_LEN` otra vez, con otra cara: el C++, el Rust y el Pascal
   daban el mismo archivo roto, y solo un barrido que descomprime lo vio.
+* **Con un `-b` chico el C++ no es un oráculo fijo.** Su hilo de lectura
+  prepara el bloque k+1 (los bytes, y los digests de `-m3`) mientras el
+  principal comprime el k, sin nada que los ordene, con cualquier `-t` (`-t1`
+  incluido). El bloque k lee del k+1 unos bytes pasado su final y, si no es
+  un número entero de chunks, el digest del chunk `fin div L` en su último
+  `add_hash`. Con bloques grandes el hilo de lectura casi siempre llega
+  antes; con `-m3 -l130 -b261b` o `-b392b` el archivo del C++ cambia en
+  algunas corridas de cada mil, también en fila y con `-t1`. Los ports
+  modelan siempre "el k+1 leído y preparado entero antes de comprimir el k"
+  (`HtPrepareAhead` calcula solo ese digest), que es el archivo de la
+  mayoría de las corridas del C++. Un caso así no se compara contra una
+  corrida en vivo del C++: se fija por md5 con el conteo medido al lado (ver
+  `tests/rust_cli_conformance.sh` y `tests/pascal_encode_conformance.sh`), y
+  un caso nuevo directo contra el C++ se corre cientos de veces, en fila y en
+  paralelo, antes de confiar en que es estable.

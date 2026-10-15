@@ -107,7 +107,8 @@ def nearcopies(seed, unit_len):
             out += bytes(r.randrange(256) for _ in range(r.randint(1, 7)))
     return bytes(out[:65536])
 open(os.path.join(d, "smalll.bin"), "wb").write(nearcopies(2, 4096) + nearcopies(3, 1024))
-# The scan's edge cases, each checked straight against the C++ below:
+# The scan's edge cases, checked below (straight against the C++, except
+# a33929/a200k, pinned by md5):
 # zruns.bin, random runs between runs of zeros, is where the accelerated
 # scan's LOOKAHEAD (it filters through bitarr in batches of up to 256
 # positions) matters; nearcopy.bin, 64 KiB at random and three copies with
@@ -233,20 +234,23 @@ for case in "-m4o -l32 -a3|-m4o -l32 -a0" "-m4 -l32 -a5|-m4 -l32 -a0" \
     done
 done
 
-say "the scan's edges and -m3's read-ahead digest, straight against the C++"
-# The inputs are described where they are generated. The C++ runs with -t1:
-# its background thread computes the next block's digests while block k is
-# being compressed (io.cpp:250-265), and with -t2 and up (the default on a
-# multi-core machine) it does that through a worker pool that, with the tiny
-# blocks of the a33929/a200k cases, was measured to finish after the main
-# thread has read the next block's first digest, so the C++'s own archive
-# there depends on -t. -t1 is the order the ports follow; the other cases give
-# the same bytes at any -t. A later -aN without /M resets the scan variant to
-# its default (srep.cpp:345-346). -l130 and -c130 earn the power-of-two
-# warning, exit 1, on both sides. Each case failed on some build the gate
-# above let through: the a33929/a200k ones on the ports without the
-# read-ahead, zruns with LOOKAHEAD 128, nearcopy with the store window's end
-# included, and the -a ones with a Pascal CLI that kept the old /M.
+say "the scan's edges and -ia-, straight against the C++"
+# The inputs are described where they are generated. These cases give the C++
+# the same archive on every run: each was run at least 300 times (half one
+# after another, half eight at a time), at -t1 as here, with one result each. -t1 is
+# only what they were measured with; the next block's read-ahead (below) is
+# unordered at any -t. A later -aN without /M resets the scan variant to its
+# default (srep.cpp:345-346). -l130 and -c130 earn the power-of-two warning,
+# exit 1, on both sides. -ia- (io_accelerator -1, srep.cpp:349-352) turns off
+# the slice filter (hash_table.cpp:33-36) that -m5, and -m4 with a -c well
+# below -l, run: text.bin -m5 -l1000 is 4,194,408 bytes with the filter and
+# 189 with -ia-; -m3 never reads the filter, so there -ia-/-ia+ must not
+# matter (-dl128 keeps BASE_LEN dividing the 128-byte chunk, where the ports
+# write the C++'s bytes; see the BASE_LEN section below). The last -ia wins.
+# Each case failed on some build the gate above let through: zruns with
+# LOOKAHEAD 128, nearcopy with the store window's end included, the -a ones
+# with a Pascal CLI that kept the old /M, and the -m4/-m5 -ia- ones on 2.2.1
+# and 02d4823, whose ports ignored -ia-.
 diff_case_t1() {
     local input="$1" rc
     shift
@@ -267,16 +271,61 @@ diff_case_t1() {
     rm -f "$TMP/cpp.osr" "$TMP/rs.osr" "$TMP/rs.dec" "$TMP/cpp.dec"
     pass=$((pass + 1))
 }
+cp tests/corpus/text.bin "$TMP/text.bin"
 for case in "zruns.bin|-m3 -l130" "zruns.bin|-m3 -c130" \
             "nearcopy.bin|-m4 -l40 -d1mb" "nearcopy.bin|-m4o -l16 -d1mb" \
             "smalll.bin|-m4 -l16 -a1/2 -a1" "smalll.bin|-m4 -l32 -a2/4 -a2" \
-            "a33929.bin|-m3 -l130 -b261b" "a33929.bin|-m3 -l130 -b261b -a0" \
-            "a200k.bin|-m3 -l130 -b392b" "a200k.bin|-m3o -l130 -b392b" \
-            "a200k.bin|-m3f -l130 -b392b"; do
+            "text.bin|-m5 -l1000 -ia-" "text.bin|-m5o -l1024 -c128 -ia-" \
+            "nearcopy.bin|-m4 -l1024 -c128 -ia-" "nearcopy.bin|-m5 -l1000 -ia+ -ia-" \
+            "nearcopy.bin|-m5 -l1000 -ia- -ia+" "nearcopy.bin|-m3 -l1024 -c128 -dl128 -ia-" \
+            "nearcopy.bin|-m3 -l1024 -c128 -dl128 -ia+" "text.bin|-m3 -ia-"; do
     IFS='|' read -r f o <<<"$case"
     # shellcheck disable=SC2086
     diff_case_t1 "$TMP/$f" $o
 done
+
+say "-m3's read-ahead digest: pinned, because the C++ races there"
+# a33929.bin and a200k.bin (one byte repeated) with -b261b/-b392b give -m3
+# blocks that are not a whole number of 130-byte chunks. The scan of block k
+# overshoots its last chunk by a few bytes, reads those bytes from block k+1,
+# and its last add_hash compares the digest of chunk (block end)/L, which only
+# block k+1's prepare_buffer writes (HashTable::prepare_ahead). In the C++
+# both are written by the reading thread while the compressing thread runs
+# block k (io.cpp:250-265), with nothing ordering the two, at every -t (-t1
+# included), so 1.0.7's archive here changes between runs. Measured at -t1,
+# 762 C++ runs per case (180 one after another, the rest 8 or 48 at a time;
+# -m3f 800 more, 64 at a time), the pinned archive came out in:
+#   a33929 -m3 -l130 -b261b       758 of 762 (the other 4: one other archive)
+#   a33929 -m3 -l130 -b261b -a0   759 of 762 (the other 3: that same one)
+#   a200k  -m3 -l130 -b392b       761 of 762
+#   a200k  -m3o -l130 -b392b      761 of 762
+#   a200k  -m3f -l130 -b392b      1561 of 1562
+# The ports always take block k+1 fully read and prepared before block k is
+# compressed. The pins are that archive (Rust and Pascal write it; it is the
+# C++'s majority output above); a live C++ run here would fail now and then.
+# They failed on f7ddd1f, whose ports read a zero digest there.
+while read -r want f o; do
+    rc=0
+    # shellcheck disable=SC2086
+    "$RS" $o --format=v4 --seed=7 "$TMP/$f" "$TMP/rs.osr" >/dev/null 2>"$TMP/rs.err" || rc=$?
+    [ "$rc" -le 1 ] || fail "port $o on $f exited $rc: $(tail -1 "$TMP/rs.err")"
+    got="$(md5sum < "$TMP/rs.osr" | cut -d' ' -f1)"
+    [ "$got" = "$want" ] || fail "$o on $f: md5 $got, pinned $want (the C++'s majority archive)"
+    "$RS" -d "$TMP/rs.osr" "$TMP/rs.dec" >/dev/null 2>&1 \
+        || fail "$o on $f: the port could not decode its archive"
+    "$CXX_BIN/osrep" -d "$TMP/rs.osr" "$TMP/cpp.dec" >/dev/null 2>&1 \
+        || fail "$o on $f: the C++ could not decode the port's archive"
+    cmp -s "$TMP/$f" "$TMP/rs.dec" || fail "$o on $f: round trip differs"
+    cmp -s "$TMP/$f" "$TMP/cpp.dec" || fail "$o on $f: C++ decode differs"
+    rm -f "$TMP/rs.osr" "$TMP/rs.dec" "$TMP/cpp.dec"
+    pass=$((pass + 1))
+done <<'EOF'
+3bb728cac4f1991a5262935b783ace1b a33929.bin -m3 -l130 -b261b
+3bb728cac4f1991a5262935b783ace1b a33929.bin -m3 -l130 -b261b -a0
+790693374c6a276ede29ad58a11dc189 a200k.bin -m3 -l130 -b392b
+07e20d42335672be6c2a3b3a32f45986 a200k.bin -m3o -l130 -b392b
+5d0d1b127567b39e121e26b56f79dfcc a200k.bin -m3f -l130 -b392b
+EOF
 
 say "the second pass orders matches with one shared source the way the C++ does"
 # srep.cpp:899 sorts the match list by `src` alone with libstdc++'s std::sort,
@@ -933,17 +982,19 @@ say "$(printf '%s' "$out" | tail -1 | sed 's/^ *//')"
 pass=$((pass + 1))
 
 say "the options the port accepts and does not act on really are inert"
-# --help says that -tN, -mmap/-nommap, -ia-/-ia+, -slp and -pc have no
-# effect here. That claim has to be checked, not asserted: each one must be
-# accepted AND leave the archive byte-identical to the same run without it. If
-# one ever starts mattering, this fails and the prose has to be corrected with
-# the code. -aN is not in that list since 2.3.0 (it sizes bitarr and picks the
-# scan, like the C++: see the small -l section above, and --help says it
-# changes the archive); -a4/4 stays here because it is what -m3's default -l
-# resolves to, so spelling it out must not move the archive.
+# --help says that -tN, -mmap/-nommap, -slp and -pc have no effect here.
+# That claim has to be checked, not asserted: each one must be accepted AND
+# leave the archive byte-identical to the same run without it. If one ever
+# starts mattering, this fails and the prose has to be corrected with the
+# code. -aN and -ia-/-ia+ are not in that list since 2.3.0: -aN sizes bitarr
+# and picks the scan, -ia- turns off the slice filter, both like the C++ (see
+# the small -l section and the -ia- cases above), and --help says they change
+# the archive. -a4/4 and -ia+ stay here because they are what -m3's defaults
+# resolve to, so spelling them out must not move the archive; -ia- does not
+# move a -m3 one either (-m3 never reads the slice filter).
 "$RS" --seed=7 -m3 tests/corpus/text.bin "$TMP/inert_base.osr" >/dev/null 2>&1 \
     || fail "could not write the baseline archive"
-for opt in -t1 -t8 -a4/4 -mmap -nommap -ia- -ia+ -slp -slp- -slp+ -pc -pc16; do
+for opt in -t1 -t8 -a4/4 -mmap -nommap -ia+ -ia- -slp -slp- -slp+ -pc -pc16; do
     rc=0
     "$RS" --seed=7 -m3 "$opt" tests/corpus/text.bin "$TMP/inert.osr" >/dev/null 2>&1 || rc=$?
     [ "$rc" -eq 0 ] || fail "$opt was rejected (exit $rc); the docs say it is accepted"
@@ -951,6 +1002,20 @@ for opt in -t1 -t8 -a4/4 -mmap -nommap -ia- -ia+ -slp -slp- -slp+ -pc -pc16; do
         || fail "$opt changed the archive. The docs say it has no effect -- fix whichever is wrong."
     pass=$((pass + 1))
 done
+# -ia- does act on the default container too: the v5 -m5 -l1000 archive of
+# text.bin must move with it (and not with -ia+).
+"$RS" --seed=7 -m5 -l1000 tests/corpus/text.bin "$TMP/ia_base.osr" >/dev/null 2>&1 \
+    || fail "could not write the -m5 -l1000 archive"
+"$RS" --seed=7 -m5 -l1000 -ia+ tests/corpus/text.bin "$TMP/ia_plus.osr" >/dev/null 2>&1 \
+    || fail "-ia+ was rejected"
+"$RS" --seed=7 -m5 -l1000 -ia- tests/corpus/text.bin "$TMP/ia_minus.osr" >/dev/null 2>&1 \
+    || fail "-ia- was rejected"
+cmp -s "$TMP/ia_base.osr" "$TMP/ia_plus.osr" || fail "-ia+ (the default) changed the v5 archive"
+cmp -s "$TMP/ia_base.osr" "$TMP/ia_minus.osr" && fail "-ia- left the v5 -m5 -l1000 archive unchanged"
+"$RS" -d "$TMP/ia_minus.osr" "$TMP/ia_minus.dec" >/dev/null 2>&1 \
+    && cmp -s tests/corpus/text.bin "$TMP/ia_minus.dec" || fail "the v5 -ia- archive does not round-trip"
+rm -f "$TMP/ia_base.osr" "$TMP/ia_plus.osr" "$TMP/ia_minus.osr" "$TMP/ia_minus.dec"
+pass=$((pass + 1))
 # -rem is a comment in both implementations, and takes a value.
 "$RS" --seed=7 -m3 -rem=anything tests/corpus/text.bin "$TMP/inert.osr" >/dev/null 2>&1 \
     || fail "-rem was rejected"

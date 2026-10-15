@@ -476,11 +476,17 @@ pub fn compress<R: ReadSeek>(
                     // `L` (`-l`/`-c` not a power of two) it overshoots
                     // `next_chunk` by up to three bytes and the incoming byte
                     // lies up to three bytes past the block. That is the next
-                    // ring slot -- except for a full block in the ring's last
-                    // slot, where the C++ reads past its allocation and the
-                    // port panicked (index out of range). Past the ring the
-                    // byte reads as zero: what a page-padded allocation holds
-                    // there, and what the Pascal port's ring tail holds.
+                    // ring slot (the next block, which the C++'s background
+                    // thread is filling at the same time: the ports always
+                    // see it filled, see `HashTable::prepare_ahead`) --
+                    // except for a full block in the ring's last slot, where
+                    // the C++ reads past its allocation and the port panicked
+                    // (index out of range). Past the ring the port reads
+                    // zero, as the Pascal port's ring tail holds. The C++
+                    // reads zero there only when malloc maps the ring as
+                    // whole pages (a large ring: the rest of the last page);
+                    // with a small `-b` the ring comes from the heap and those
+                    // bytes are the next heap chunk's header.
                     let incoming = dict.get(buf_off + i + l).copied().unwrap_or(0);
                     hash1.update(dict[buf_off + i], incoming);
                     i += 1;

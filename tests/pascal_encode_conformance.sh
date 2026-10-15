@@ -94,7 +94,8 @@ def nearcopies(seed, unit_len):
             out += bytes(r.randrange(256) for _ in range(r.randint(1, 7)))
     return bytes(out[:65536])
 open(os.path.join(d, "smalll.bin"), "wb").write(nearcopies(2, 4096) + nearcopies(3, 1024))
-# Los bordes del escaneo, cada uno directo contra el C++ mas abajo:
+# Los bordes del escaneo, mas abajo (directo contra el C++, salvo
+# a33929/a200k, fijados por md5):
 # zruns.bin (tramos al azar entre tramos de ceros) es donde importa el
 # LOOKAHEAD del escaneo acelerado (filtra por bitarr en tandas de hasta 256
 # posiciones); nearcopy.bin (64 KiB al azar y tres copias con 200 bytes
@@ -344,37 +345,38 @@ if [ -x "$CPP" ] || make_cxx bin/osrep >/dev/null 2>&1; then
             pass=$((pass + 1))
         done
     done
-    # Los bordes del escaneo y el digest de -m3 leido por adelantado (las
-    # entradas se describen donde se generan). El C++ corre con -t1: su hilo
-    # de fondo calcula los digests del bloque siguiente mientras se comprime
-    # el actual (io.cpp:250-265), y con -t2 o mas (lo normal en una maquina
-    # con varios nucleos) lo hace con un pool que, con los bloques diminutos
-    # de a33929/a200k, se midio que termina despues de que el hilo principal
-    # leyo el primer digest del bloque siguiente: ahi el archivo del C++
-    # depende de -t. Los ports siguen el orden de -t1; los demas casos dan los
-    # mismos bytes con cualquier -t. Un -aN posterior sin /M vuelve la
-    # variante a su valor por defecto (srep.cpp:345-346); encodetool tiene su
-    # propio parser, asi que el de la CLI lo prueba rust_cli_conformance con
-    # OSREP_PORT_BIN. -l130 y -c130 le dan al C++ el aviso de potencia de dos,
-    # exit 1. Cada caso fallaba con alguna build que lo de arriba dejaba pasar:
-    # a33929/a200k sin la lectura adelantada, zruns con LOOKAHEAD 128 y
-    # nearcopy con el fin de la ventana de candidatos incluido. El -b en bytes
-    # del C++ lleva sufijo b (-b261 son MB); el de encodetool, no (el sufijo
-    # b no lo entiende y queda el -b por defecto).
+    # Los bordes del escaneo y -ia- (las entradas se describen donde se
+    # generan). Con estos casos el C++ da el mismo archivo en cada corrida:
+    # cada uno se corrio al menos 300 veces (la mitad en fila, la mitad de a
+    # ocho a la vez), con -t1 como aca, con un solo resultado. -t1 es solo con lo que se midieron;
+    # la lectura adelantada del bloque siguiente (mas abajo) no tiene orden
+    # con ningun -t. Un -aN posterior sin /M vuelve la variante a su valor
+    # por defecto (srep.cpp:345-346); encodetool tiene su propio parser, asi
+    # que el de la CLI lo prueba rust_cli_conformance con OSREP_PORT_BIN.
+    # -l130 y -c130 le dan al C++ el aviso de potencia de dos, exit 1. -ia-
+    # (io_accelerator -1, srep.cpp:349-352) apaga el filtro de slices
+    # (hash_table.cpp:33-36) que corren -m5, y -m4 con un -c bastante menor
+    # que -l; -m3 nunca lo lee, asi que ahi -ia-/-ia+ no tienen que cambiar
+    # nada (-dl128 deja a BASE_LEN dividiendo al chunk de 128, donde los ports
+    # escriben los bytes del C++). Gana el ultimo -ia. Cada caso fallaba con
+    # alguna build que lo de arriba dejaba pasar: zruns con LOOKAHEAD 128,
+    # nearcopy con el fin de la ventana de candidatos incluido, y los -ia- de
+    # -m4/-m5 con la 02d4823, que ignoraba -ia-.
+    cp $C/text.bin "$TMP/text.bin"
     for case in "zruns.bin|m3|-l130" "zruns.bin|m3|-c130" \
                 "nearcopy.bin|m4|-l40 -d1mb" "nearcopy.bin|m4o|-l16 -d1mb" \
                 "smalll.bin|m4|-l16 -a1/2 -a1" "smalll.bin|m4|-l32 -a2/4 -a2" \
-                "a33929.bin|m3|-l130 -b261b" "a33929.bin|m3|-l130 -b261b -a0" \
-                "a200k.bin|m3|-l130 -b392b" "a200k.bin|m3o|-l130 -b392b" \
-                "a200k.bin|m3f|-l130 -b392b"; do
+                "text.bin|m5|-l1000 -ia-" "text.bin|m5o|-l1024 -c128 -ia-" \
+                "nearcopy.bin|m4|-l1024 -c128 -ia-" "nearcopy.bin|m5|-l1000 -ia+ -ia-" \
+                "nearcopy.bin|m5|-l1000 -ia- -ia+" "nearcopy.bin|m3|-l1024 -c128 -dl128 -ia-" \
+                "nearcopy.bin|m3|-l1024 -c128 -dl128 -ia+" "text.bin|m3|-ia-"; do
         IFS='|' read -r f m o <<<"$case"
-        eo="$(sed -E 's/-b([0-9]+)b/-b\1/' <<<"$o")"
         rc=0
         # shellcheck disable=SC2086
         "$CPP" -t1 "-$m" $o --seed=7 "$TMP/$f" "$TMP/cpp.osr" >/dev/null 2>&1 || rc=$?
         [ "$rc" -le 1 ] || fail "el C++ fallo en -t1 -$m $o sobre $f (exit $rc)"
         # shellcheck disable=SC2086
-        "$ET" "$m" $eo --seed=7 "$TMP/$f" "$TMP/pa.osr" >/dev/null 2>&1 \
+        "$ET" "$m" $o --seed=7 "$TMP/$f" "$TMP/pa.osr" >/dev/null 2>&1 \
             || fail "el Pascal fallo en $m $o sobre $f"
         cmp -s "$TMP/cpp.osr" "$TMP/pa.osr" \
             || fail "-$m $o sobre $f: distinto del C++ -t1"
@@ -382,6 +384,45 @@ if [ -x "$CPP" ] || make_cxx bin/osrep >/dev/null 2>&1; then
         pass=$((pass + 1))
     done
 fi
+
+say "el digest de -m3 leido por adelantado: fijado, porque el C++ tiene una carrera ahi"
+# a33929.bin y a200k.bin (un solo byte repetido) con -b261b/-b392b dan bloques
+# de -m3 que no son un numero entero de chunks de 130 bytes. El escaneo del
+# bloque k se pasa unos bytes de su ultimo chunk, los lee del bloque k+1, y su
+# ultimo add_hash compara el digest del chunk (fin del bloque)/L, que solo
+# escribe el prepare_buffer del bloque k+1 (HtPrepareAhead). En el C++ los dos
+# los escribe el hilo que lee mientras el que comprime corre el bloque k
+# (io.cpp:250-265), sin nada que los ordene, con cualquier -t (-t1
+# incluido), asi que el archivo de la 1.0.7 cambia de una corrida a otra.
+# Medido con -t1, 762 corridas del C++ por caso (180 en fila, el resto de a 8
+# o de a 48 a la vez; -m3f 800 mas, de a 64), el archivo fijado salio en:
+#   a33929 -m3 -l130 -b261b       758 de 762 (las otras 4: un mismo archivo)
+#   a33929 -m3 -l130 -b261b -a0   759 de 762 (las otras 3: ese mismo otro)
+#   a200k  -m3 -l130 -b392b       761 de 762
+#   a200k  -m3o -l130 -b392b      761 de 762
+#   a200k  -m3f -l130 -b392b      1561 de 1562
+# Los ports siempre toman el bloque k+1 leido y preparado entero antes de
+# comprimir el k. Los md5 son ese archivo (el Rust y el Pascal lo escriben, y
+# es el que el C++ da en la mayoria de las corridas); contra una corrida del
+# C++ en vivo, este caso fallaria de vez en cuando. Fallaban con la f7ddd1f,
+# que leia un digest en cero ahi. El -b en bytes del C++ lleva sufijo b (-b261
+# son MB); el de encodetool, no (el sufijo b no lo entiende y queda el -b por
+# defecto).
+while read -r want f m o; do
+    # shellcheck disable=SC2086
+    "$ET" "$m" $o --seed=7 "$TMP/$f" "$TMP/pa.osr" >/dev/null 2>&1 \
+        || fail "el Pascal fallo en $m $o sobre $f"
+    got="$(md5sum < "$TMP/pa.osr" | cut -d' ' -f1)"
+    [ "$got" = "$want" ] || fail "$m $o sobre $f: md5 $got, fijado $want (el archivo de la mayoria del C++)"
+    rm -f "$TMP/pa.osr"
+    pass=$((pass + 1))
+done <<'EOF'
+3bb728cac4f1991a5262935b783ace1b a33929.bin m3 -l130 -b261
+3bb728cac4f1991a5262935b783ace1b a33929.bin m3 -l130 -b261 -a0
+790693374c6a276ede29ad58a11dc189 a200k.bin m3 -l130 -b392
+07e20d42335672be6c2a3b3a32f45986 a200k.bin m3o -l130 -b392
+5d0d1b127567b39e121e26b56f79dfcc a200k.bin m3f -l130 -b392
+EOF
 
 say "el desempate del orden por origen, contra el std::sort de libstdc++"
 # SortBySrc transcribe el std::sort de libstdc++, que no es estable. encodetool

@@ -129,6 +129,18 @@ than the chunk, and \fB-a0/\fIY\fR), where it crashes, writes a block
 that does not decode, or (a \fIY\fR larger than the chunk) reads before its
 block buffer. A very large \fIX\fR can run out of memory (exit 4).
 .TP
+.BR -ia- ", " -ia+
+.B -ia-
+turns off the slice filter, as in the C++ 1.0.7: a fingerprint of the
+bytes around each chunk that rejects a candidate match which cannot reach
+\fB-l\fR bytes. \fB-m5\fR runs that filter, and so does \fB-m4\fR with a
+\fB-c\fR well below \fB-l\fR; \fB-m3\fR never does, so there the option
+changes nothing.
+.B -ia+
+(the default) keeps it. Like \fB-l\fR and \fB-c\fR, it changes the archive,
+sometimes by a lot: the filter can reject nearly every match on a file the
+unfiltered search compresses well.
+.TP
 \fB-t\fIN\fR
 Accepted and \fBnot acted on\fR. The shipped implementation is single-threaded
 per block, so there is no worker count to set; the value is parsed and
@@ -388,24 +400,27 @@ people reach for when compression feels slow, and here it will not help.
 .BR -mmap ", " -nommap
 Memory-mapped reads.
 .TP
-.BR -ia- ", " -ia+
-I/O acceleration.
-.TP
 .BR -slp ", " -slp- ", " -slp+
 Large-page mode.
 .TP
 \fB-pc\fR[\fIN\fR]
 Progress counters, a diagnostic.
 .PP
-None of these changes the bytes of an archive, and that is measured rather
-than assumed: the phase 4c pre-port experiments compared output across
+None of these changes the bytes of an archive here, and that is measured
+rather than assumed: the phase 4c pre-port experiments compared output across
 \fB-t1\fR/\fB-t8\fR/default and found it byte-identical (see
 \fIdocs/rust-port.md\fR). The same run found \fB-a0\fR/\fB-a16\fR identical
 too, but only with the default chunk; with a small one \fB-a\fR changes the
-archive, and since 2.3.0 it is honoured (see \fB-a\fR above). What they can change in the C++
-is speed and memory, which is why they are documented here as inert rather
-than removed: silently dropping them would break scripts, and silently
-honouring the syntax while implying an effect would be worse.
+archive, and since 2.3.0 it is honoured (see \fB-a\fR above), as is
+\fB-ia-\fR. What the others change in the C++ is speed and memory, which is
+why they are documented here as inert rather than removed: silently dropping
+them would break scripts, and silently honouring the syntax while implying
+an effect would be worse. Not even \fB-t1\fR makes the C++'s archive a
+function of its input: with a small \fB-b\fR (measured with a few hundred
+bytes) it can change from one run to the next at any \fB-t\fR, because its
+reading thread races the compressing one there. osrep's archive does not
+depend on timing; it is the one the C++ writes when the reading thread wins,
+as it usually does.
 
 .B -rem
 is different and is listed with the ordinary options: it is a comment, ignored

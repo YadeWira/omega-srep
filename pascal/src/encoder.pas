@@ -2,15 +2,19 @@ unit Encoder;
 { El driver de compresion (encoder.rs): lo que la primera pasada de srep.cpp
   hace alrededor de los compresores de cada modo, y lo que el hilo de fondo de
   io.cpp hace por ella. El C++ solapa leer un bloque con comprimir el anterior
-  por un anillo de dos ranuras; las dos ordenes dan los mismos bytes (medido:
-  -t1 contra -t8), asi que se corre en secuencia.
+  por un anillo de dos ranuras; aca se corre en secuencia, en un orden fijo:
+  el bloque k+1 leido y preparado entero antes de comprimir el k. En el C++
+  ese orden es una carrera que su hilo de fondo suele ganar; con bloques
+  grandes siempre (medido: -t1 contra -t8, mismos bytes), con bloques chicos
+  (un -b de unos cientos de bytes) a veces la pierde, con cualquier -t, y el
+  archivo de la 1.0.7 cambia de una corrida a otra (ver HtPrepareAhead).
 
   La lectura adelantada no es solo velocidad: compress lee unos bytes pasado
   el final del bloque (el lote de cuatro, o de CYCLES en el escaneo
   acelerado, se pasa de next_chunk), y en el C++
   esos bytes son la ranura siguiente del anillo -- que el hilo de fondo ya
-  suele haber llenado con el bloque que sigue. Leer un bloque adelante lo
-  reproduce de forma determinista.
+  suele haber llenado con el bloque que sigue. Leer un bloque adelante le da
+  a los ports esos bytes siempre.
 
   Todos los compresores (-m0 a -m5, con -d) y los cuatro contenedores:
   I/O-LZ (sufijo o, v1/v2) en una pasada; Index-LZ (v4), Future-LZ (sufijo f,
@@ -60,6 +64,11 @@ type
     { -aN/M (ACCELERATOR): 9000 = no se dio, min(accel, 16) (srep.cpp:634);
       elige la variante de compress<> }
     Accelerator: DWord;
+    { -ia-/-ia+ (io_accelerator, srep.cpp:349-352): -1 o 1, por defecto 1.
+      -1 apaga el filtro de slices (SliceHash, hash_table.cpp:33-36), que
+      -m4/-m5 corren cuando -l esta bastante por encima del chunk; cambia el
+      archivo. }
+    IoAccelerator: LongInt;
   end;
 
   TEncodeProgress = procedure(Done, Total: QWord);
@@ -103,6 +112,7 @@ begin
   O.Index := nil;
   O.Accel := 9000;
   O.Accelerator := 9000;
+  O.IoAccelerator := 1;
 end;
 
 procedure FillSeedFrom(var Out_: TBytes; Seed64: QWord);
@@ -421,13 +431,14 @@ begin
   { Las tablas y el anillo viven en paginas propias (zeropages.pas) que la
     finalizacion no libera: el finally del final las suelta. }
   try
-  { COMPARE_DIGESTS = metodo <= -m3; PRECOMPUTE_DIGESTS = -m3; io_accelerator 1.
-    -m0 no tiene tabla. }
+  { COMPARE_DIGESTS = metodo <= -m3; PRECOMPUTE_DIGESTS = -m3; io_accelerator
+    1 salvo -ia- (srep.cpp:295, 349-352). -m0 no tiene tabla. }
   if accelerator = 0 then bitarrAccelerator := 0;   { sin escaneo filtrado, sin bitarr }
   if Kind <> ekInmem then
     try
       HtInit(table, roundMatches, Kind in [ekInmem, ekCdc, ekCdcZpaq, ekDigest],
-             Kind = ekDigest, cdc, l, minMatch, 1, bitarrAccelerator, fileSize);
+             Kind = ekDigest, cdc, l, minMatch, Opts.IoAccelerator, bitarrAccelerator,
+             fileSize);
     except
       on EHtBitArrMemory do raise EEncode.Create('OutOfMemory');
     end;
@@ -487,8 +498,9 @@ begin
     if Kind <> ekInmem then
     begin
       HtPrepareBuffer(table, dict, bufOffset, filled, blockStart);
-      { el hilo de fondo del C++ ya preparo el bloque siguiente
-        (io.cpp:250-265): ver HtPrepareAhead }
+      { el bloque k+1 preparado antes de comprimir el k, como casi siempre
+        logra el hilo de fondo del C++ (io.cpp:250-265): solo el digest que
+        el k lee, ver HtPrepareAhead }
       if nextFilled > 0 then
         HtPrepareAhead(table, dict, nextOffset, nextFilled, blockStart + filled);
     end;

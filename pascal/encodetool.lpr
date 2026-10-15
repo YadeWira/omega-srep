@@ -169,7 +169,7 @@ begin
   dup := False;
   if ArgCount < 1 then
   begin
-    WriteErr('usage: encodetool <mode> [--seed=N] [-dN] [-bN] [-lN] [-cN] [-aN[/M]] [-hash=NAME] <in> <out>' + #10);
+    WriteErr('usage: encodetool <mode> [--seed=N] [-dN] [-bN] [-lN] [-cN] [-aN[/M]] [-ia-|-ia+] [-hash=NAME] <in> <out>' + #10);
     Halt(2);
   end;
   mode := ArgStr(1);
@@ -200,6 +200,8 @@ begin
     else if StartsWith(a, '-b') then opts.BufSize := ParseMem(Copy(a, 3, Length(a)))
     else if StartsWith(a, '-l') then opts.MinMatch := ParseMem(Copy(a, 3, Length(a)))
     else if StartsWith(a, '-c') then opts.L := ParseMem(Copy(a, 3, Length(a)))
+    else if a = '-ia-' then opts.IoAccelerator := -1
+    else if a = '-ia+' then opts.IoAccelerator := 1
     else if a = '-a-' then opts.Accel := 0
     else if StartsWith(a, '-a') then
     begin

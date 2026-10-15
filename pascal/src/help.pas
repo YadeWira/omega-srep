@@ -59,6 +59,9 @@ begin
     '                    of bit array per chunk, and the scan variant M' + LF +
     '                    (default N, at most 16); -a0 turns it off.' + LF +
     '                    Like -l/-c, it changes the archive.' + LF +
+    '  -ia-, -ia+        -ia- turns off the slice filter of -m5 (and of' + LF +
+    '                    -m4 with -c well below -l); -ia+, the default,' + LF +
+    '                    keeps it. Like -l/-c, it changes the archive.' + LF +
     '  -bN               buffer size (default 8mb)' + LF +
     '  -dBYTES           dictionary size for -m0' + LF +
     '  -hash=NAME        select hash (vmac, sha1, ...)' + LF +
@@ -95,7 +98,6 @@ begin
     '  -tN               the implementation is single-threaded per block,' + LF +
     '                    so there is no worker count to set' + LF +
     '  -mmap, -nommap    mmap reads' + LF +
-    '  -ia-, -ia+        I/O acceleration' + LF +
     '  -slp, -slp-       large-page mode' + LF +
     '  -pc[N]            progress counters' + LF +
     '  These are parsed and validated so scripts written against the' + LF +

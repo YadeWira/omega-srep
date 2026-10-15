@@ -70,7 +70,7 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
         eprintln!(
-            "usage: {} <mode> [--seed=N] [--dup] [-dN] [-bN] [-lN] [-cN] [-aN[/M]] [-hash=NAME] <in> <out>",
+            "usage: {} <mode> [--seed=N] [--dup] [-dN] [-bN] [-lN] [-cN] [-aN[/M]] [-ia-|-ia+] [-hash=NAME] <in> <out>",
             args[0]
         );
         return ExitCode::from(2);
@@ -107,6 +107,10 @@ fn main() -> ExitCode {
             opts.min_match = parse_mem(v) as usize;
         } else if let Some(v) = a.strip_prefix("-c") {
             opts.l = parse_mem(v) as usize;
+        } else if a == "-ia-" {
+            opts.io_accelerator = -1;
+        } else if a == "-ia+" {
+            opts.io_accelerator = 1;
         } else if a == "-a-" {
             opts.accel = 0;
         } else if let Some(v) = a.strip_prefix("-a") {
