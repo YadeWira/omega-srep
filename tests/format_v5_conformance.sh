@@ -13,10 +13,11 @@ set -u
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
+source tests/_paths.sh
 
-RS=${1:-$ROOT/target/release/encode_conformance}
+RS=${1:-$ROOT/$RUST_TARGET/release/encode_conformance}
 if [ ! -x "$RS" ]; then
-    cargo build --release -p osrep-conformance >/dev/null 2>&1 || {
+    cargo_rs build --release -p osrep-conformance >/dev/null 2>&1 || {
         echo "cannot build $RS" >&2
         exit 1
     }
@@ -97,6 +98,6 @@ say "rejection rules live in the unit tests"
 # Header/footer/meta CRC mismatches, bad magic, bad version, undefined flags,
 # a mismatched hash_id/hash_size pair, an unterminated varint and a block count
 # that disagrees with the footer are covered by `cargo test -p osrep-core`
-# (v5::tests), which the core suite runs.
+# (v5::tests, run from oracles/rust), which the core suite runs.
 
 echo "  format_v5_conformance: passed=$pass"

@@ -18,13 +18,14 @@ set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+source tests/_paths.sh
 
 # Path-portability shim: on Git-Bash/MSYS, translate POSIX paths to
 # Windows mixed-form so inline Python can open them.
 source "$(dirname "$0")/_winpath.sh"
 
 source "$(dirname "$0")/_osrep_bin.sh"
-[[ -x bin/dedup_test ]] || make bin/dedup_test
+[[ -x "$CXX_BIN/dedup_test" ]] || make_cxx bin/dedup_test
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -88,7 +89,7 @@ fi
 #    osrep -d (with native ODUP detection) can decompress.
 xa_in="$TMP/xa_in.bin"
 gen_input "$xa_in"
-./bin/dedup_test split-encode "$xa_in" "$TMP/xa.meta" "$TMP/xa.body" --buf 8388608 >/dev/null
+"$CXX_BIN/dedup_test" split-encode "$xa_in" "$TMP/xa.meta" "$TMP/xa.body" --buf 8388608 >/dev/null
 "$OSREP" -m4 "$TMP/xa.body" "$TMP/xa.body.osr" >/dev/null 2>&1
 cat "$TMP/xa.body.osr" "$TMP/xa.meta" > "$TMP/xa.archive"
 meta_size=$(stat -c%s "$TMP/xa.meta")
@@ -131,7 +132,7 @@ xb_body_size=$(( total - 12 - xb_meta_size ))
 dd if="$TMP/xb.archive" of="$TMP/xb.body.osr" bs=1 count="$xb_body_size" status=none
 dd if="$TMP/xb.archive" of="$TMP/xb.meta"     bs=1 skip="$xb_body_size" count="$xb_meta_size" status=none
 "$OSREP" -d "$TMP/xb.body.osr" "$TMP/xb.body.dec" >/dev/null 2>&1
-./bin/dedup_test split-decode "$TMP/xb.meta" "$TMP/xb.body.dec" "$TMP/xb.restored" >/dev/null
+"$CXX_BIN/dedup_test" split-decode "$TMP/xb.meta" "$TMP/xb.body.dec" "$TMP/xb.restored" >/dev/null
 if [[ "$trailer_magic" == "ODUP" ]] && cmp -s "$xb_in" "$TMP/xb.restored"; then
     echo "OK    native archive consumable by F5.3a tooling (ODUP trailer)"
     passed=$((passed + 1))

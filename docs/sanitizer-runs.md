@@ -2,15 +2,15 @@
 
 Pre-release stability check: build the full test suite under
 AddressSanitizer (and optionally UBSan) and verify no memory-safety
-issues exist in the F5-generation code (`Compression/SREP/dedup.cpp`,
-`Compression/SREP/dup_wrapper.cpp`, plus the modifications to
-`Compression/SREP/hashes.cpp` and `Compression/Common.cpp`).
+issues exist in the F5-generation code (`oracles/cxx/Compression/SREP/dedup.cpp`,
+`oracles/cxx/Compression/SREP/dup_wrapper.cpp`, plus the modifications to
+`oracles/cxx/Compression/SREP/hashes.cpp` and `oracles/cxx/Compression/Common.cpp`).
 
 ## How to run
 
 ```bash
-make clean
-make bin/osrep bin/dedup_test \
+make -C oracles/cxx clean
+make -C oracles/cxx bin/osrep bin/dedup_test \
   CFLAGS="-O1 -g -fsanitize=address -fno-omit-frame-pointer" \
   LDFLAGS="-lpthread -lstdc++ -fsanitize=address" \
   STATIC=""
@@ -46,7 +46,7 @@ report as failure.
 
 Real bug surfaced and fixed during this run:
 
-- `Compression/SREP/hashes.cpp:364-366` — VMAC result writeback used
+- `oracles/cxx/Compression/SREP/hashes.cpp:364-366` — VMAC result writeback used
   `((uint64_t*)result)[0] = res` on a `void*` that callers don't
   guarantee is 8-byte-aligned. UBSAN flagged it as a misaligned
   store. Fixed with `memcpy` (commit `a17cc3c`); compiles to the
@@ -58,11 +58,11 @@ These trip UBSAN strict mode but are not real bugs on x86_64 (our
 only target). Vendored crypto deliberately reads unaligned uint64_t
 words for performance:
 
-- `Compression/_Encryption/hashes/vmac/vmac.c:966` — `nh_16_2`
+- `oracles/cxx/Compression/_Encryption/hashes/vmac/vmac.c:966` — `nh_16_2`
   reads input in 16-byte blocks (two `uint64_t`s) from the user
   buffer. The input pointer offset is determined by the data, not
   alignment.
-- `Compression/_Encryption/hashes/siphash/siphash.c` — same
+- `oracles/cxx/Compression/_Encryption/hashes/siphash/siphash.c` — same
   pattern in `U8TO64_LE`.
 
 x86_64 hardware tolerates unaligned access (the C standard does not).
@@ -76,7 +76,7 @@ declared x86_64-only, so this stays open.
 
 ## Memory leaks at exit (NOT fixed)
 
-`srep_main` in `Compression/SREP/srep.cpp` (lines around 541, 649,
+`srep_main` in `oracles/cxx/Compression/SREP/srep.cpp` (lines around 541, 649,
 725-727) allocates working buffers with `new[]` and never frees
 them; the program exits and the OS reclaims the memory. This is
 upstream SREP behavior. LeakSanitizer correctly reports them but

@@ -1,8 +1,14 @@
 # Building Omega SREP on Windows (FOSS toolchains)
 
-The supported and tested Windows toolchain is **MinGW-w64** (gcc).
-This is the path the shipped `osrep-windows-x86_64.exe` releases use,
-and it is what the maintainer builds locally before each tag.
+> **Since 2.2.0 this page is about the C++ oracle, not the released
+> binary.** The shipped `.exe` files are the Free Pascal build in
+> `pascal/` (see the README). The C++ 1.0.7 lives in `oracles/cxx/` and
+> is kept as a reference the Pascal is diffed against; the build commands
+> below run from that directory (`bin\osrep.exe` is `oracles/cxx/bin/`).
+
+The supported and tested Windows toolchain for the C++ is **MinGW-w64**
+(gcc). This is the path the 1.0.x `osrep-windows-x86_64.exe` releases
+used.
 
 You do not need Visual Studio. Everything below is open-source and
 self-contained.
@@ -23,7 +29,7 @@ scoop install gcc make git
 
 # Build
 git clone https://github.com/YadeWira/omega-srep
-cd omega-srep
+cd omega-srep/oracles/cxx
 make bin/osrep
 ```
 
@@ -54,7 +60,7 @@ options on Windows:
   toolchain.
 
 - **clang on MSVC headers (clang-cl)** -- works in principle via
-  the `CMakeLists.txt` at repo root (it has `MSVC`-conditional
+  `oracles/cxx/CMakeLists.txt` (it has `MSVC`-conditional
   branches that clang-cl honors). Untested by the maintainer.
   See "CMake build" below.
 
@@ -66,7 +72,7 @@ options on Windows:
 
 ## CMake build (alternative to Make)
 
-The `CMakeLists.txt` at repo root is provided for users who prefer
+`oracles/cxx/CMakeLists.txt` is provided for users who prefer
 cmake over the Makefile (Ninja generator, IDE integration, etc.).
 It works with GCC + Make on Linux, GCC + MinGW on Windows, and any
 other C++17 compiler that CMake can drive.

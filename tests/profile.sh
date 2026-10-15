@@ -13,12 +13,13 @@
 # threads (currently only the BG I/O+hash thread, plus -m1/-m2's -tN).
 set -eu
 
-BIN="${OSREP_BIN:-bin/osrep}"
+source "$(dirname "$0")/_paths.sh"
+BIN="${OSREP_BIN:-$CXX_BIN/osrep}"
 INPUT="${1:-tests/corpus/text.bin}"
 PER_METHOD_TIMEOUT="${OSREP_PROFILE_TIMEOUT:-60}"  # seconds; override via env
 
 if [[ ! -x "$BIN" ]]; then
-  echo "ERROR: $BIN not found. Run 'make' first." >&2; exit 1
+  echo "ERROR: $BIN not found. Run 'make -C $CXX_DIR bin/osrep' first." >&2; exit 1
 fi
 if [[ ! -f "$INPUT" ]]; then
   echo "Generating corpus..."

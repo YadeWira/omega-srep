@@ -1,6 +1,7 @@
 unit Help;
 { `--version` and `--help`, byte-for-byte what the C++ prints and the Rust port
-  reproduces (`crates/osrep-cli/src/help.rs`, `dup_wrapper.cpp:412-472`).
+  reproduces (`oracles/rust/crates/osrep-cli/src/help.rs`,
+  `dup_wrapper.cpp:412-472`).
 
   A drop-in replacement that prints a different synopsis is a worse drop-in, so
   this is reproduced rather than rewritten. `tests/pascal_cli_conformance.sh`

@@ -15,16 +15,17 @@ set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+source tests/_paths.sh
 
 say()  { printf '  %s\n' "$*"; }
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 
 command -v cargo >/dev/null 2>&1 || { say "sin cargo -- salteando"; exit 0; }
-cargo build --release -p osrep-conformance >/dev/null 2>&1 \
+cargo_rs build --release -p osrep-conformance >/dev/null 2>&1 \
     || fail "no compila el harness Rust"
-DC=target/release/decode_conformance
-RS="${OSREP_RUST_BIN:-target/x86_64-unknown-linux-gnu/release/osrep}"
-[ -x "$RS" ] || cargo build --release --target x86_64-unknown-linux-gnu >/dev/null 2>&1
+DC=$RUST_TARGET/release/decode_conformance
+RS="${OSREP_RUST_BIN:-$RUST_TARGET/x86_64-unknown-linux-gnu/release/osrep}"
+[ -x "$RS" ] || cargo_rs build --release --target x86_64-unknown-linux-gnu >/dev/null 2>&1
 [ -x "$RS" ] || fail "no hay encoder Rust en $RS"
 
 DT="${OSREP_PASCAL_DECODETOOL:-pascal/bin/decodetool}"

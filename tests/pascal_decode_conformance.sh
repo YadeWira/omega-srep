@@ -14,11 +14,12 @@ set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+source tests/_paths.sh
 
 say()  { printf '  %s\n' "$*"; }
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 
-RS="${OSREP_RUST_BIN:-target/x86_64-unknown-linux-gnu/release/osrep}"
+RS="${OSREP_RUST_BIN:-$RUST_TARGET/x86_64-unknown-linux-gnu/release/osrep}"
 DT="${OSREP_PASCAL_DECODETOOL:-pascal/bin/decodetool}"
 [ -x "$RS" ] || { say "sin binario Rust -- salteando"; exit 0; }
 if [ ! -x "$DT" ]; then
@@ -119,7 +120,7 @@ pass=$((pass + 1))
 # Los numeros de las opciones, como `str::parse::<u64>` del harness Rust: un
 # '+' opcional y digitos. TryStrToQWord aceptaba hex, octal, binario y
 # espacios al principio.
-DC=target/release/decode_conformance
+DC=$RUST_TARGET/release/decode_conformance
 if [ -x "$DC" ]; then
     "$RS" --format=v4 -m3 -b64k -t1 "$TMP/dup.bin" "$TMP/flz.osr" >/dev/null 2>&1
     for v in 1048576 +1048576 0x100000 '$100000' '%101' '&17' ' 1048576' '1048576 ' \

@@ -8,8 +8,8 @@ platforms.
 
 **Since 2.2.0 the released binaries are the Free Pascal implementation** in
 `pascal/`. Two earlier implementations stay in-tree, buildable, and are not
-dead code: the **Rust** in `crates/` (the released binary from 2.0.0 to 2.1.2)
-and the original **C++** in `Compression/` (1.0.x, frozen at **1.0.7**). They
+dead code: the **Rust** in `oracles/rust/` (the released binary from 2.0.0 to
+2.1.2) and the original **C++** in `oracles/cxx/` (1.0.x, frozen at **1.0.7**). They
 are the oracles: every Pascal module is diffed byte-for-byte against the Rust,
 which is diffed byte-for-byte against the C++, rather than merely
 round-tripped through itself. The archives are the same bytes whichever of
@@ -20,6 +20,20 @@ this project, and Rust upstream is leaving both — `i686-pc-windows-gnu` was
 demoted from Tier 1 in Rust 1.88, and 1.77.2, the last release that targets
 Windows 7, can never move. Free Pascal 3.2.2 targets both natively. See
 `docs/pascal-port.md` and, for the Rust port, `docs/rust-port.md`.
+
+## Repository layout
+
+```
+pascal/        the shipped implementation (Free Pascal): sources, build.sh
+oracles/cxx/   the C++ 1.0.7 reference: Compression/, Makefile, test tools
+oracles/rust/  the Rust port reference (2.0.0-2.1.2): Cargo workspace, crates/
+tests/         conformance, regression and fuzz suites (shell)
+docs/          design notes, the format specs, the port plans
+man/, completions/  the man page and the bash/zsh completions
+```
+
+The two oracles are not shipped and not needed to use `osrep`; they are what
+the Pascal is diffed against. See `oracles/README.md`.
 
 ## What is different from upstream SREP
 
@@ -158,16 +172,21 @@ a different file format.
 The Rust oracle — needed only to run the differential tests:
 
 ```bash
+  $ cd oracles/rust
   $ cargo build --release --target x86_64-unknown-linux-gnu -p osrep-cli
 ```
 
-The toolchain is pinned in `rust-toolchain.toml` to **1.77.2**, deliberately:
+Run cargo from `oracles/rust/`, not with `--manifest-path`: the toolchain pin
+and the linker setup are read from the current directory. The toolchain is
+pinned in `oracles/rust/rust-toolchain.toml` to **1.77.2**, deliberately:
 it is the last Rust release that supports Windows 7 for `*-pc-windows-gnu`
 (1.78 raised the floor to Windows 10). The Windows binaries cross-compile
-from Linux with the same MinGW-w64 toolchain the C++ uses — `.cargo/config.toml`
-wires up the linkers, so no Visual Studio is required:
+from Linux with the same MinGW-w64 toolchain the C++ uses —
+`oracles/rust/.cargo/config.toml` wires up the linkers, so no Visual Studio is
+required:
 
 ```bash
+  $ cd oracles/rust
   $ cargo build --release --target x86_64-pc-windows-gnu
   $ cargo build --release --target i686-pc-windows-gnu
 ```
@@ -176,12 +195,10 @@ The C++ oracle — needed only to run the differential tests, not to use
 `osrep`:
 
 ```bash
-  $ make            # produces bin/osrep
-  # make install
+  $ make -C oracles/cxx bin/osrep     # produces oracles/cxx/bin/osrep
 ```
 
-A `PREFIX` may be provided to the `make` argument. Tested on Debian Linux
-with `g++`/`clang++`. On non-x86 targets the build fails by design at
+Tested on Debian Linux with `g++`/`clang++`. On non-x86 targets the build fails by design at
 the preprocessor. For Windows, see `docs/windows-build.md` (FOSS
 MinGW-w64 toolchain, no Visual Studio needed) and `docs/32bit-support.md`
 for the opt-in 32-bit (i686) cross-compile path.
@@ -195,9 +212,9 @@ Rust one; the `OSREP_PASCAL_*` variables point them at the `.exe` files under
 wine.
 
 One thing that surprises people about the Rust oracle: `cargo build --release`
-lands a ~760 KB binary in `target/release/`, while a build with an explicit
-`--target` is ~2.4 MB, and the test scripts use the latter
-(`target/x86_64-unknown-linux-gnu/release/osrep`). The code is identical —
+lands a ~760 KB binary in `oracles/rust/target/release/`, while a build with
+an explicit `--target` is ~2.4 MB, and the test scripts use the latter
+(`oracles/rust/target/x86_64-unknown-linux-gnu/release/osrep`). The code is identical —
 cargo defaults `split-debuginfo` differently in the two cases.
 
 ## Description

@@ -17,9 +17,10 @@ set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+source tests/_paths.sh
 
 source "$(dirname "$0")/_osrep_bin.sh"
-[[ -x bin/dedup_test ]] || make bin/dedup_test
+[[ -x "$CXX_BIN/dedup_test" ]] || make_cxx bin/dedup_test
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -41,7 +42,7 @@ printf 'not-a-real-body' > "$TMP/body.bin"
 
 echo "[1/2] decode_streaming rejects a leading ref (dedup_test)"
 set +e
-./bin/dedup_test decode-streaming "$TMP/meta.bin" "$TMP/body.bin" "$TMP/out.bin" \
+"$CXX_BIN/dedup_test" decode-streaming "$TMP/meta.bin" "$TMP/body.bin" "$TMP/out.bin" \
     >"$TMP/unit.out" 2>"$TMP/unit.err"
 rc=$?
 set -e

@@ -1,7 +1,13 @@
 # Build output. Anchored: an unanchored `bin/` would also swallow the
-# crates' `src/bin/` sources.
+# crates' `src/bin/` sources. The C++ oracle builds into oracles/cxx/bin/,
+# the Rust oracle into oracles/rust/target/, the Pascal into pascal/bin/.
+/oracles/cxx/bin/
+/oracles/rust/target/
+pascal/bin/
+# Pre-reorg build output (up to 2.2.1), so stale dirs in old checkouts stay ignored.
 /bin/
-target/
+/target/
+__pycache__/
 build/
 build-cmake/
 pgo-data/
@@ -24,4 +30,3 @@ SREP_Technical_Documentation.zip
 # notes that get exchanged with other sessions working alongside this one.
 .commandcode/
 message-from-*.md
-pascal/bin/

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Regression test for the chunk_hash() swap (FNV-1a -> word-at-a-time
-# 64-bit hash, Compression/SREP/dedup.cpp).
+# 64-bit hash, oracles/cxx/Compression/SREP/dedup.cpp).
 #
 # Why this test exists, specifically: the real `osrep -dup` CLI always
 # goes through encode_streaming() (dup_wrapper.cpp), and by DEFAULT
@@ -32,10 +32,11 @@ set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+source tests/_paths.sh
 
 source "$(dirname "$0")/_winpath.sh"
 
-[[ -x bin/osrep ]] || make bin/osrep
+[[ -x "$CXX_BIN/osrep" ]] || make_cxx bin/osrep
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -76,8 +77,8 @@ for m in -m3 -m4 -m5; do
     name="${m#-}"
     archive="$TMP/tiny_${name}.osr"
     restored="$TMP/tiny_${name}.dec"
-    if ./bin/osrep -dup "$m" --chunk-avg=8 --chunk-min=1 --chunk-max=16 "$IN" "$archive" >/dev/null 2>&1 && \
-       ./bin/osrep -d "$archive" "$restored" >/dev/null 2>&1 && \
+    if "$CXX_BIN/osrep" -dup "$m" --chunk-avg=8 --chunk-min=1 --chunk-max=16 "$IN" "$archive" >/dev/null 2>&1 && \
+       "$CXX_BIN/osrep" -d "$archive" "$restored" >/dev/null 2>&1 && \
        cmp -s "$IN" "$restored"; then
         arch_sz=$(stat -c%s "$archive")
         echo "OK    osrep -dup $m (no --dup-paranoid) tiny-chunk round-trip   in=$IN_SIZE archive=$arch_sz"
@@ -111,8 +112,8 @@ REP_IN_SIZE=$(stat -c%s "$TMP/repeated_tiny.bin")
 
 archive="$TMP/repeated.osr"
 restored="$TMP/repeated.dec"
-if ./bin/osrep -dup -m4 --chunk-avg=8 --chunk-min=1 --chunk-max=16 "$TMP/repeated_tiny.bin" "$archive" >/dev/null 2>&1 && \
-   ./bin/osrep -d "$archive" "$restored" >/dev/null 2>&1 && \
+if "$CXX_BIN/osrep" -dup -m4 --chunk-avg=8 --chunk-min=1 --chunk-max=16 "$TMP/repeated_tiny.bin" "$archive" >/dev/null 2>&1 && \
+   "$CXX_BIN/osrep" -d "$archive" "$restored" >/dev/null 2>&1 && \
    cmp -s "$TMP/repeated_tiny.bin" "$restored"; then
     arch_sz=$(stat -c%s "$archive")
     echo "OK    osrep -dup -m4 (no --dup-paranoid) tiny-chunk round-trip with real dedup hits   in=$REP_IN_SIZE archive=$arch_sz"
@@ -129,8 +130,8 @@ fi
 # ---------------------------------------------------------------
 archive="$TMP/paranoid.osr"
 restored="$TMP/paranoid.dec"
-if ./bin/osrep -dup -m4 --dup-paranoid --chunk-avg=8 --chunk-min=1 --chunk-max=16 "$IN" "$archive" >/dev/null 2>&1 && \
-   ./bin/osrep -d "$archive" "$restored" >/dev/null 2>&1 && \
+if "$CXX_BIN/osrep" -dup -m4 --dup-paranoid --chunk-avg=8 --chunk-min=1 --chunk-max=16 "$IN" "$archive" >/dev/null 2>&1 && \
+   "$CXX_BIN/osrep" -d "$archive" "$restored" >/dev/null 2>&1 && \
    cmp -s "$IN" "$restored"; then
     echo "OK    osrep -dup -m4 --dup-paranoid tiny-chunk round-trip"
     passed=$((passed + 1))

@@ -9,6 +9,11 @@ post for community feedback at their own pace, independent of the
 release timeline; pick one venue, copy the corresponding draft, edit
 names and links to taste.
 
+The drafts describe the tree as it was at v1.0a-beta.4. The C++ now
+lives under `oracles/cxx/` (`oracles/cxx/Compression/SREP/dedup.cpp`
+and so on), so the source links below are pinned to the
+`v1.0a-beta.4` tag, where the paths they name still exist.
+
 ---
 
 ## Draft 1 — encode.su (compression / FreeArc community)
@@ -101,10 +106,10 @@ hand-holding.
 > Thanks. Aiming to soak 2-4 weeks of feedback before promoting to
 > stable v1.0.
 >
-> [dedup]: https://github.com/YadeWira/omega-srep/blob/main/Compression/SREP/dedup.cpp
-> [wrap]:  https://github.com/YadeWira/omega-srep/blob/main/Compression/SREP/dup_wrapper.cpp
+> [dedup]: https://github.com/YadeWira/omega-srep/blob/v1.0a-beta.4/Compression/SREP/dedup.cpp
+> [wrap]:  https://github.com/YadeWira/omega-srep/blob/v1.0a-beta.4/Compression/SREP/dup_wrapper.cpp
 > [fmt]:   https://github.com/YadeWira/omega-srep/blob/main/docs/format-spec.md
-> [threads]: https://github.com/YadeWira/omega-srep/blob/main/Compression/LZMA2/C/ThreadsWin32.c
+> [threads]: https://github.com/YadeWira/omega-srep/blob/v1.0a-beta.4/Compression/LZMA2/C/ThreadsWin32.c
 > [cmp]:   https://github.com/YadeWira/omega-srep/blob/main/docs/upstream-comparison.md
 > [bench]: https://github.com/YadeWira/omega-srep/blob/main/docs/multi-corpus-bench.md
 > [rel]:   https://github.com/YadeWira/omega-srep/releases/tag/v1.0a-beta.4

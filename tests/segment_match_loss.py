@@ -5,7 +5,7 @@ match-finder into independent parallel segments.
 
 Design rationale (see task brief / docs/research-notes.md F3.3):
 
-  - Real SREP's -m3/-m4/-m5 path (Compression/SREP/hash_table.cpp,
+  - Real SREP's -m3/-m4/-m5 path (oracles/cxx/Compression/SREP/hash_table.cpp,
     compress.cpp) samples the input on a fixed L-byte grid:
     `HashTable::total_chunks = filesize/L` and `curchunk = (block_start+i)/L`.
     That means the hash table is fundamentally chunk-indexed, not a
@@ -37,7 +37,7 @@ Design rationale (see task brief / docs/research-notes.md F3.3):
     cross-segment synchronization of the mutable table required.
 
 This is a structural proxy, not a byte-for-byte reimplementation of
-Compression/SREP/*.cpp. It preserves: chunk grid size (=MIN_MATCH),
+oracles/cxx/Compression/SREP/*.cpp. It preserves: chunk grid size (=MIN_MATCH),
 whole-file vs segment-bounded lookback, greedy single-candidate matching,
 and unconditional hash-slot overwrite.
 """

@@ -4,6 +4,7 @@
 # decompress(compress(x)) == x. Fails CI on any mismatch.
 set -euo pipefail
 
+source "$(dirname "$0")/_paths.sh"
 source "$(dirname "$0")/_osrep_bin.sh"
 BIN="$OSREP"
 CORPUS="${OSREP_CORPUS:-tests/corpus}"
@@ -13,7 +14,7 @@ WORK="$(mktemp -d -t osrep-roundtrip-XXXX)"
 METHODS=("-m0" "-m1" "-m2" "-m3" "-m4" "-m5")
 
 if [[ ! -x "$BIN" ]]; then
-  echo "ERROR: $BIN not found or not executable. Run 'make' first." >&2
+  echo "ERROR: $BIN not found or not executable. Run 'make -C $CXX_DIR bin/osrep' first." >&2
   exit 1
 fi
 

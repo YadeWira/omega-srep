@@ -4,11 +4,11 @@
 # Two layers:
 #
 #   1. **Same argv, same bytes.** For a matrix of inputs and options the C++
-#      binary and `target/release/osrep` are run with identical arguments and
-#      the archives must compare byte for byte. The algorithm is already pinned
-#      by tests/encode_conformance.sh; what this adds is the *front end* -- the
-#      option parsing, the defaults, the container choice -- and cross-decoding
-#      in both directions.
+#      binary and `oracles/rust/target/release/osrep` are run with identical
+#      arguments and the archives must compare byte for byte. The algorithm is
+#      already pinned by tests/encode_conformance.sh; what this adds is the
+#      *front end* -- the option parsing, the defaults, the container choice --
+#      and cross-decoding in both directions.
 #
 #      Since phase 5c-2 the port's default container is v5, which the C++ cannot
 #      write, so this layer pins `--format=v4` on the Rust side: what it is
@@ -28,24 +28,26 @@ set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+source tests/_paths.sh
 
 say()  { printf '  %s\n' "$*"; }
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 
 if ! command -v cargo >/dev/null 2>&1; then
-    say "cargo not found -- skipping Rust CLI conformance (install rustup; rust-toolchain.toml pins 1.77.2)"
+    say "cargo not found -- skipping Rust CLI conformance (install rustup; oracles/rust/rust-toolchain.toml pins 1.77.2)"
     exit 0
 fi
 
-say "building the C++ oracle (bin/osrep)"
-make bin/osrep >/dev/null 2>&1 || fail "make bin/osrep"
+say "building the C++ oracle ($CXX_BIN/osrep)"
+make_cxx bin/osrep >/dev/null 2>&1 || fail "make -C $CXX_DIR bin/osrep"
 
 say "building the Rust CLI (osrep-cli)"
-if ! cargo build --release -p osrep-cli >target/rust-cli-build.log 2>&1; then
-    cat target/rust-cli-build.log >&2
+mkdir -p "$RUST_TARGET"
+if ! cargo_rs build --release -p osrep-cli >"$RUST_TARGET/rust-cli-build.log" 2>&1; then
+    cat "$RUST_TARGET/rust-cli-build.log" >&2
     fail "cargo build failed"
 fi
-RS=target/release/osrep
+RS=$RUST_TARGET/release/osrep
 # `OSREP_PORT_BIN` runs this whole script -- both layers -- over another build
 # of the port's CLI. That is how the Pascal port (docs/pascal-port.md, phase 7)
 # is held to exactly the gate the Rust one passes.
@@ -55,8 +57,8 @@ fi
 [[ -x "$RS" ]] || fail "missing $RS"
 OSREP_BIN="$RS"
 
-say "rustc: $(rustc --version)"
-say "osrep: $("$RS" --version) / $(./bin/osrep --version)"
+say "rustc: $(cd "$RUST_DIR" && rustc --version)"
+say "osrep: $("$RS" --version) / $("$CXX_BIN/osrep" --version)"
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -77,7 +79,7 @@ pass=0
 diff_case() {
     local input="$1"
     shift
-    if ! ./bin/osrep "$@" --seed=7 "$input" "$TMP/cpp.osr" >/dev/null 2>"$TMP/cpp.err"; then
+    if ! "$CXX_BIN/osrep" "$@" --seed=7 "$input" "$TMP/cpp.osr" >/dev/null 2>"$TMP/cpp.err"; then
         fail "cpp $* on $(basename "$input") failed: $(tail -1 "$TMP/cpp.err")"
     fi
     if ! "$RS" "$@" --format=v4 --seed=7 "$input" "$TMP/rs.osr" >/dev/null 2>"$TMP/rs.err"; then
@@ -87,7 +89,7 @@ diff_case() {
         || fail "$* on $(basename "$input"): archives differ ($(stat -c%s "$TMP/cpp.osr") vs $(stat -c%s "$TMP/rs.osr") bytes)"
 
     # The C++ reading the Rust archive, and the reverse.
-    ./bin/osrep -d "$TMP/rs.osr" "$TMP/cpp.dec" >/dev/null 2>&1 \
+    "$CXX_BIN/osrep" -d "$TMP/rs.osr" "$TMP/cpp.dec" >/dev/null 2>&1 \
         || fail "$* on $(basename "$input"): the C++ could not decode the Rust archive"
     "$RS" -d "$TMP/cpp.osr" "$TMP/rs.dec" >/dev/null 2>&1 \
         || fail "$* on $(basename "$input"): the Rust binary could not decode the C++ archive"
@@ -125,7 +127,7 @@ diff_case tests/corpus/text.bin -m4 -t8 -v0         # accepted and ignored
 
 say "stdin/stdout: '-' is a pipe, not a file called '-'"
 for m in m0 m3 m4 m4f m5o; do
-    if ! ./bin/osrep -$m --seed=7 - - <tests/corpus/text.bin >"$TMP/cpp.pipe" 2>"$TMP/cpp.err"; then
+    if ! "$CXX_BIN/osrep" -$m --seed=7 - - <tests/corpus/text.bin >"$TMP/cpp.pipe" 2>"$TMP/cpp.err"; then
         fail "cpp -$m through a pipe failed: $(tail -1 "$TMP/cpp.err")"
     fi
     if ! "$RS" -$m --format=v4 --seed=7 - - <tests/corpus/text.bin >"$TMP/rs.pipe" 2>"$TMP/rs.err"; then
@@ -180,7 +182,7 @@ say "an unknown option is refused, the way the C++ refuses it"
 if "$RS" -m4 --seed=7 -bogus tests/corpus/text.bin "$TMP/a.osr" >/dev/null 2>&1; then
     fail "the port accepted -bogus"
 fi
-if ./bin/osrep -m4 --seed=7 -bogus tests/corpus/text.bin "$TMP/a.osr" >/dev/null 2>&1; then
+if "$CXX_BIN/osrep" -m4 --seed=7 -bogus tests/corpus/text.bin "$TMP/a.osr" >/dev/null 2>&1; then
     fail "the C++ accepted -bogus (the test is wrong, not the port)"
 fi
 pass=$((pass + 1))
@@ -209,13 +211,13 @@ pass=$((pass + 1))
 
 say "-dup: an archive the C++ can read, and the same payload inside v5"
 for m in m3 m4 m5; do
-    ./bin/osrep -dup -$m --seed=7 "$TMP/dup1m.bin" "$TMP/cpp.osr" >/dev/null 2>&1 \
+    "$CXX_BIN/osrep" -dup -$m --seed=7 "$TMP/dup1m.bin" "$TMP/cpp.osr" >/dev/null 2>&1 \
         || fail "cpp -dup -$m failed"
     "$RS" -dup -$m --format=v4 --seed=7 "$TMP/dup1m.bin" "$TMP/rs.osr" >/dev/null 2>&1 \
         || fail "rust -dup -$m failed"
     cmp -s "$TMP/cpp.osr" "$TMP/rs.osr" || fail "-dup -$m: archives differ"
     # The C++ auto-detects the trailer of the Rust archive, and vice versa.
-    ./bin/osrep -d "$TMP/rs.osr" "$TMP/cpp.dec" >/dev/null 2>&1 || fail "-dup -$m: C++ cannot decode the Rust archive"
+    "$CXX_BIN/osrep" -d "$TMP/rs.osr" "$TMP/cpp.dec" >/dev/null 2>&1 || fail "-dup -$m: C++ cannot decode the Rust archive"
     cmp -s "$TMP/dup1m.bin" "$TMP/cpp.dec" || fail "-dup -$m: cross-decode differs"
     # And the default container, v5 since phase 5c-2: the C++ cannot read it,
     # so only the port's own round-trip is checked here
@@ -231,7 +233,7 @@ say "-dup: the flags around it"
 for c in "-dup --dup-paranoid -m4" "-dup -m4 --chunk-avg=8192" "-dup -m4 --chunk-hash=gear" \
          "-dup -m4 --chunk-min=2048 --chunk-max=32768 --chunk-buf=65536"; do
     # shellcheck disable=SC2086
-    ./bin/osrep $c --seed=7 "$TMP/dup1m.bin" "$TMP/cpp.osr" >/dev/null 2>&1 \
+    "$CXX_BIN/osrep" $c --seed=7 "$TMP/dup1m.bin" "$TMP/cpp.osr" >/dev/null 2>&1 \
         || fail "cpp $c failed"
     # shellcheck disable=SC2086
     "$RS" $c --format=v4 --seed=7 "$TMP/dup1m.bin" "$TMP/rs.osr" >/dev/null 2>&1 \
@@ -308,7 +310,7 @@ for fmt_off in "v4 16 48" "v5 28 60"; do
         || fail "OSREP_SEED_HEX did not take effect in $1 at [$2:$3] (stored $stored)"
 done
 # The oracle only writes v4, so that is the archive it is compared against.
-OSREP_SEED_HEX=$SEED ./bin/osrep -m4 --seed=1 "$TMP/dup1m.bin" "$TMP/hexcpp.osr" >/dev/null 2>&1
+OSREP_SEED_HEX=$SEED "$CXX_BIN/osrep" -m4 --seed=1 "$TMP/dup1m.bin" "$TMP/hexcpp.osr" >/dev/null 2>&1
 cmp -s "$TMP/hex.v4.osr" "$TMP/hexcpp.osr" || fail "OSREP_SEED_HEX archive differs from the C++"
 pass=$((pass + 1))
 
@@ -322,13 +324,13 @@ say "the C++ refuses a v5 archive cleanly, and says why"
 [ "$(head -c 4 "$TMP/v5.osr")" = "OSR5" ] || fail "the default container is not v5"
 rm -f "$TMP/v5.out"
 # `set -e` is on and these are expected to fail, so the status is captured.
-rc=0; ./bin/osrep -d "$TMP/v5.osr" "$TMP/v5.out" >"$TMP/v5.err" 2>&1 || rc=$?
+rc=0; "$CXX_BIN/osrep" -d "$TMP/v5.osr" "$TMP/v5.out" >"$TMP/v5.err" 2>&1 || rc=$?
 [ "$rc" -eq 4 ] || fail "the C++ -d on a v5 archive exited $rc, expected 4 (bad data)"
 grep -qi "not an omega srep compressed file" "$TMP/v5.err" \
     || fail "the C++ -d on a v5 archive did not say the file is not an .osr"
 [ ! -s "$TMP/v5.out" ] \
     || fail "the C++ -d on a v5 archive produced $(stat -c%s "$TMP/v5.out") bytes of output"
-rc=0; ./bin/osrep -i "$TMP/v5.osr" >"$TMP/v5i.err" 2>&1 || rc=$?
+rc=0; "$CXX_BIN/osrep" -i "$TMP/v5.osr" >"$TMP/v5i.err" 2>&1 || rc=$?
 [ "$rc" -eq 4 ] || fail "the C++ -i on a v5 archive exited $rc, expected 4 (bad data)"
 grep -qi "not an omega srep compressed file" "$TMP/v5i.err" \
     || fail "the C++ -i on a v5 archive did not say the file is not an .osr"
@@ -336,9 +338,9 @@ pass=$((pass + 1))
 
 say "-i agrees with the C++ on mode, hash and size"
 for m in m3 m4f m5o; do
-    ./bin/osrep -$m --seed=7 tests/corpus/text.bin "$TMP/cpp.osr" >/dev/null 2>&1
+    "$CXX_BIN/osrep" -$m --seed=7 tests/corpus/text.bin "$TMP/cpp.osr" >/dev/null 2>&1
     "$RS" -i "$TMP/cpp.osr" >"$TMP/rs.info" 2>&1
-    ./bin/osrep -i "$TMP/cpp.osr" >"$TMP/cpp.info" 2>&1
+    "$CXX_BIN/osrep" -i "$TMP/cpp.osr" >"$TMP/cpp.info" 2>&1
     head -1 "$TMP/rs.info" >"$TMP/rs.head"
     head -1 "$TMP/cpp.info" >"$TMP/cpp.head"
     cmp -s "$TMP/rs.head" "$TMP/cpp.head" \
@@ -357,7 +359,7 @@ say "-index=: the match lists in a second file, byte for byte against the C++"
 # implementation, which is exactly what the cross-checks below catch.
 for m in m1f m3f m5f m1o m3o m5o; do
     rm -f "$TMP/ix_c.osr" "$TMP/ix_c.ix" "$TMP/ix_r.osr" "$TMP/ix_r.ix"
-    ./bin/osrep --seed=7 "-$m" -index="$TMP/ix_c.ix" tests/corpus/text.bin "$TMP/ix_c.osr" >/dev/null 2>&1 \
+    "$CXX_BIN/osrep" --seed=7 "-$m" -index="$TMP/ix_c.ix" tests/corpus/text.bin "$TMP/ix_c.osr" >/dev/null 2>&1 \
         || fail "the C++ could not write an index for -$m"
     "$RS" --format=v4 --seed=7 "-$m" -index="$TMP/ix_r.ix" tests/corpus/text.bin "$TMP/ix_r.osr" >/dev/null 2>&1 \
         || fail "the port could not write an index for -$m"
@@ -369,7 +371,7 @@ for m in m1f m3f m5f m1o m3o m5o; do
     "$RS" -d -index="$TMP/ix_c.ix" "$TMP/ix_c.osr" "$TMP/ix_a.out" >/dev/null 2>&1 \
         || fail "-$m -index=: the port could not decode the C++'s archive"
     cmp -s tests/corpus/text.bin "$TMP/ix_a.out" || fail "-$m -index=: port decoded the C++ archive wrongly"
-    ./bin/osrep -d -index="$TMP/ix_r.ix" "$TMP/ix_r.osr" "$TMP/ix_b.out" >/dev/null 2>&1 \
+    "$CXX_BIN/osrep" -d -index="$TMP/ix_r.ix" "$TMP/ix_r.osr" "$TMP/ix_b.out" >/dev/null 2>&1 \
         || fail "-$m -index=: the C++ could not decode the port's archive"
     cmp -s tests/corpus/text.bin "$TMP/ix_b.out" || fail "-$m -index=: C++ decoded the port archive wrongly"
     pass=$((pass + 1))
@@ -380,7 +382,7 @@ say "-index= is refused for the container that cannot read it back"
 # archive and never consults the index, so an archive written this way used to
 # compress with exit 0 and then fail to decompress -- silent data loss. Both
 # binaries now refuse it up front.
-for bin in ./bin/osrep "$RS"; do
+for bin in "$CXX_BIN/osrep" "$RS"; do
     rc=0; "$bin" -m3 -index="$TMP/ix_no.ix" tests/corpus/text.bin "$TMP/ix_no.osr" >"$TMP/ix_no.err" 2>&1 || rc=$?
     [ "$rc" -eq 2 ] || fail "$bin -m3 -index= exited $rc, expected 2 (cmdline)"
     grep -qi "index" "$TMP/ix_no.err" || fail "$bin -m3 -index= did not explain itself"
@@ -394,14 +396,14 @@ say "a chunk length below the slice width is a command-line error, not SIGFPE"
 # (exit 136) in the C++ and a panic (exit 101) in the port, both with no
 # message. -c0 means "not given" and must still take the default.
 for n in 1 4 7; do
-    for bin in ./bin/osrep "$RS"; do
+    for bin in "$CXX_BIN/osrep" "$RS"; do
         rc=0; "$bin" "-c$n" -m3 tests/corpus/text.bin "$TMP/c.osr" >"$TMP/c.err" 2>&1 || rc=$?
         [ "$rc" -eq 2 ] || fail "$bin -c$n exited $rc, expected 2 (cmdline)"
     done
     pass=$((pass + 1))
 done
 for n in 0 8; do
-    for bin in ./bin/osrep "$RS"; do
+    for bin in "$CXX_BIN/osrep" "$RS"; do
         rc=0; "$bin" "-c$n" -m3 tests/corpus/text.bin "$TMP/c.osr" >/dev/null 2>&1 || rc=$?
         [ "$rc" -eq 0 ] || fail "$bin -c$n exited $rc, expected 0"
     done
@@ -624,7 +626,7 @@ say "-m5 with an -c that is not a power of two warns and exits 1, like the C++"
 # Against the C++ where it survives the run (it dies with SIGBUS on other odd
 # -c values with this input), and on the expected exit and warning otherwise.
 for args in "-m5 -c17" "-m5 -c16" "-m5 -l17" "-m5 -c16 -l17"; do
-    rc_c=0; ./bin/osrep $args tests/corpus/tiny.bin "$TMP/w5c.osr" >/dev/null 2>"$TMP/w5c.err" || rc_c=$?
+    rc_c=0; "$CXX_BIN/osrep" $args tests/corpus/tiny.bin "$TMP/w5c.osr" >/dev/null 2>"$TMP/w5c.err" || rc_c=$?
     rc=0; "$RS" --seed=7 $args tests/corpus/tiny.bin "$TMP/w5.osr" >/dev/null 2>"$TMP/w5.err" || rc=$?
     [ "$rc" -eq "$rc_c" ] || fail "$args exited $rc, the C++ $rc_c"
     w_c="$(grep -ac 'power of 2' "$TMP/w5c.err" || true)"

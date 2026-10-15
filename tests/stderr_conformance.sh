@@ -33,6 +33,7 @@ set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+source tests/_paths.sh
 
 say()  { printf '  %s\n' "$*"; }
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
@@ -42,11 +43,12 @@ if ! command -v cargo >/dev/null 2>&1; then
     exit 0
 fi
 
-RS="${OSREP_BIN:-target/release/osrep}"
-[ -x "$RS" ] || cargo build --release >/dev/null 2>&1
+RS="${OSREP_BIN:-$RUST_TARGET/release/osrep}"
+[ -x "$RS" ] || cargo_rs build --release >/dev/null 2>&1
 [ -x "$RS" ] || fail "no Rust binary at $RS"
-[ -x ./bin/osrep ] || make bin/osrep >/dev/null 2>&1
-[ -x ./bin/osrep ] || fail "no C++ oracle at bin/osrep"
+CPP="$CXX_BIN/osrep"
+[ -x "$CPP" ] || make_cxx bin/osrep >/dev/null 2>&1
+[ -x "$CPP" ] || fail "no C++ oracle at $CPP"
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -83,7 +85,7 @@ check_bar() {
 
 say "the -bar contract holds for both binaries"
 for m in m3 m4 m5; do
-    ./bin/osrep -bar --seed=7 "-$m" "$TMP/in.bin" "$TMP/c.osr" 2>&1 >/dev/null \
+    "$CPP" -bar --seed=7 "-$m" "$TMP/in.bin" "$TMP/c.osr" 2>&1 >/dev/null \
         | grep -a '^PROGRESS' > "$TMP/c.bar" || true
     "$RS" --format=v4 -bar --seed=7 "-$m" "$TMP/in.bin" "$TMP/r.osr" 2>&1 >/dev/null \
         | grep -a '^PROGRESS' > "$TMP/r.bar" || true
@@ -119,15 +121,15 @@ inventory() { # $1 = label, $2 = C++ stderr, $3 = port stderr
 }
 
 {
-    ./bin/osrep --seed=7 -m3 "$TMP/in.bin" "$TMP/ic.osr" 2>"$TMP/ic.err" >/dev/null
+    "$CPP" --seed=7 -m3 "$TMP/in.bin" "$TMP/ic.osr" 2>"$TMP/ic.err" >/dev/null
     "$RS" --format=v4 --seed=7 -m3 "$TMP/in.bin" "$TMP/ir.osr" 2>"$TMP/ir.err" >/dev/null
     inventory "compress -m3" "$TMP/ic.err" "$TMP/ir.err"
 
-    ./bin/osrep -d "$TMP/ic.osr" "$TMP/dc.out" 2>"$TMP/dc.err" >/dev/null
+    "$CPP" -d "$TMP/ic.osr" "$TMP/dc.out" 2>"$TMP/dc.err" >/dev/null
     "$RS" -d "$TMP/ir.osr" "$TMP/dr.out" 2>"$TMP/dr.err" >/dev/null
     inventory "decompress" "$TMP/dc.err" "$TMP/dr.err"
 
-    ./bin/osrep -i "$TMP/ic.osr" 2>"$TMP/nc.err" >/dev/null || true
+    "$CPP" -i "$TMP/ic.osr" 2>"$TMP/nc.err" >/dev/null || true
     "$RS" -i "$TMP/ir.osr" 2>"$TMP/nr.err" >/dev/null || true
     inventory "-i" "$TMP/nc.err" "$TMP/nr.err"
 } > "$TMP/inventory.txt"

@@ -13,7 +13,7 @@ note.
 ## Why 32-bit at all
 
 The `_32_or_64`/`_32_only` macro hooks and the `NUMBER` (loop-index)
-typedef already existed in `Compression/SREP/srep.cpp`, hardcoded to
+typedef already existed in `oracles/cxx/Compression/SREP/srep.cpp`, hardcoded to
 always take the 64-bit branch, alongside an explicit `#error` guard
 rejecting anything but x86_64. These are vestiges of upstream SREP
 (Bulat Ziganshin's FreeArc-derived codebase), which historically
@@ -24,26 +24,27 @@ compiled and run for i686 before.
 
 ## What changed
 
-- `Compression/Common.h` and `Compression/SREP/srep.cpp`: the `#error`
+- `oracles/cxx/Compression/Common.h` and `oracles/cxx/Compression/SREP/srep.cpp`: the `#error`
   guards now accept `_M_IX86`/`__i386__`/`__i686__` alongside the
   x86_64 macros. Anything that isn't 32- or 64-bit x86 is still
   rejected -- genuinely untested.
-- `Compression/Common.h`: the non-Windows `BigAlloc`/`BigAllocZero`
+- `oracles/cxx/Compression/Common.h`: the non-Windows `BigAlloc`/`BigAllocZero`
   (used on Linux) gained the same `size > size_t(-1)` overflow guard
   the Windows `BigAlloc` already had. Without it, an oversized `int64`
   allocation request on 32-bit Linux would silently narrow to `size_t`
   at the `malloc()` call boundary, succeeding with a far-too-small
   buffer instead of failing cleanly.
-- `Compression/SREP/srep.cpp`: `_32_or_64`/`_32_only` are now real
+- `oracles/cxx/Compression/SREP/srep.cpp`: `_32_or_64`/`_32_only` are now real
   `#if`/`#else` conditionals instead of being hardcoded to the 64-bit
   branch, so the one real call site (`_32_only(vm_mem = 1536*mb)`)
   actually caps `vm_mem` on 32-bit builds. A new `dictsize` clamp
   mirrors the existing `vm_mem` one.
-- `CMakeLists.txt`: the `CMAKE_SIZEOF_VOID_P EQUAL 8`-only gate now
+- `oracles/cxx/CMakeLists.txt`: the `CMAKE_SIZEOF_VOID_P EQUAL 8`-only gate now
   also accepts 4-byte pointers.
 
 None of this touches the x86_64 path: confirmed on every iteration of
 this work via a from-scratch `make clean && make bin/osrep bin/dedup_test`
+(today `make -C oracles/cxx clean bin/osrep bin/dedup_test`)
 and `tests/roundtrip.sh` (30/30 clean, zero new warnings). The `#error`
 guard changes and the `_32_or_64`/`_32_only` conditionals are the only
 things that could plausibly affect x86_64, and both are gated on
@@ -82,7 +83,7 @@ matter what hash the user picked.
 
 ### Root cause
 
-`Compression/_Encryption/hashes/vmac/vmac.c` is Ted Krovetz's
+`oracles/cxx/Compression/_Encryption/hashes/vmac/vmac.c` is Ted Krovetz's
 public-domain VMAC reference implementation (imported once, in the
 2014 fork, never modified since). Its 32-bit MMX-optimized inner loop
 (`nh_16_func`, the `VMAC_USE_SSE2` branch) is hand-written GCC extended
@@ -198,7 +199,7 @@ never touched.
 
 ### Root cause
 
-`Compression/_Encryption/headers/tomcrypt_macros.h`'s `STORE32H`/
+`oracles/cxx/Compression/_Encryption/headers/tomcrypt_macros.h`'s `STORE32H`/
 `LOAD32H` macros -- LibTomCrypt's big-endian 32-bit load/store helpers,
 used only by `sha1.c` (`md5.c` uses the separate little-endian
 `STORE32L`/`LOAD32L` macros; `sha512.c` uses `STORE64H`/`LOAD64H`,
@@ -254,7 +255,7 @@ hash.
 
 Flagged by a cross-project code review (a different fork of upstream
 SREP shares this exact function) and independently confirmed here.
-`Compression/SREP/hashes.cpp`'s `a_mm_crc32_u8` -- the hardware CRC32C
+`oracles/cxx/Compression/SREP/hashes.cpp`'s `a_mm_crc32_u8` -- the hardware CRC32C
 instruction wrapper used by `CrcRollingHash` for `-m1`/`-m2`'s
 content-defined chunking, on any CPU with SSE4.2 (32-bit or 64-bit;
 this is a live, actively-used path, not dead code) -- declared its
@@ -303,7 +304,7 @@ Switching to any non-VMAC hash (`-hash=md5`) made it pass, isolating
 the bug to VMAC specifically (the default hash, and the one
 `-m0`-`-m3` use internally regardless of `-hash=`).
 
-**Root cause**: `Compression/_Encryption/hashes/vmac/vmac.c`'s
+**Root cause**: `oracles/cxx/Compression/_Encryption/hashes/vmac/vmac.c`'s
 `__GNUC__ && __i386__` architecture branch only defines
 `GET_REVERSED_64` — it does **not** provide its own `ADD128`/`MUL64`/
 `PMUL64` (unlike the `__x86_64__` branch, which has hand-written
@@ -353,7 +354,7 @@ output, no error). Root-caused and fixed in `v1.0.5` (commit
 Bug #1-#5 writeups above, since it landed via a different tool
 without a matching write-up in this file.
 
-**Root cause**: `Compression/SREP/compress_cdc.cpp`'s content-defined
+**Root cause**: `oracles/cxx/Compression/SREP/compress_cdc.cpp`'s content-defined
 chunking path used `PolynomialRollingHash<size_t>` for its rolling
 hash. `size_t` is 32-bit on i686 and 64-bit on x86_64, and the
 polynomial hash's internal arithmetic is implicitly modulo the width
@@ -422,14 +423,16 @@ is invited to re-test on v1.0.6.
 
 ## Building a 32-bit binary
 
-Wired into the Makefile as named targets, one per OS:
+Wired into the C++ oracle's Makefile (`oracles/cxx/Makefile`) as named
+targets, one per OS:
 
 ```bash
-make bin/osrep32.exe        # Windows i686, needs i686-w64-mingw32-g++ in PATH
-make bin/osrep32            # Linux i686,  needs g++-multilib (g++ -m32)
+make -C oracles/cxx bin/osrep32.exe   # Windows i686, needs i686-w64-mingw32-g++ in PATH
+make -C oracles/cxx bin/osrep32       # Linux i686,  needs g++-multilib (g++ -m32)
 ```
 
-The Windows target produces `bin/osrep32.exe` (the same shape as the
+Paths below are relative to `oracles/cxx/`. The Windows target produces
+`bin/osrep32.exe` (the same shape as the
 `osrep-windows-x86.exe` release asset); the Linux target produces
 `bin/osrep32` (a native i686 ELF). Both are intentionally not part of
 `all`, since they need a multilib/cross toolchain most contributors don't
@@ -439,9 +442,10 @@ filesystem from Linux (see below); the Linux target fails fast with a
 clear message if `g++ -m32` can't be exercised.
 
 To cross-compile the Windows artifact by hand instead, the equivalent
-direct command is:
+direct command is (run from `oracles/cxx/`):
 
 ```bash
+cd oracles/cxx
 i686-w64-mingw32-g++ -DFREEARC_WIN -DUNICODE -D_UNICODE \
   -DFREEARC_INTEL_BYTE_ORDER -D_FILE_OFFSET_BITS=64 \
   -ICompression -ICompression/_Encryption \
@@ -455,11 +459,11 @@ i686-w64-mingw32-g++ -DFREEARC_WIN -DUNICODE -D_UNICODE \
 
 (On a case-sensitive filesystem you'll also need the same lowercase
 `ShObjIdl.h` shim `tests/local_hardening.sh`'s mingw stage already
-documents, for `Compression/Common.cpp:1052`'s mixed-case include -- the
+documents, for `oracles/cxx/Compression/Common.cpp:1052`'s mixed-case include -- the
 `make` target above does this for you.)
 
 `-funroll-all-loops` is required alongside `-O3`/`-msse2` -- without it,
-`Compression/SREP/compress_cdc.cpp` fails to compile on i686 at all
+`oracles/cxx/Compression/SREP/compress_cdc.cpp` fails to compile on i686 at all
 (`error: unsupported size for integer register`). The Makefile always
 bundles these two flags together, so this is not live in the real
 build; noted here only for anyone compiling by hand with a different

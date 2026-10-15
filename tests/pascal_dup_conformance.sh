@@ -12,16 +12,18 @@ set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+source tests/_paths.sh
 
 say()  { printf '  %s\n' "$*"; }
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 
 command -v cargo >/dev/null 2>&1 || { say "sin cargo -- salteando"; exit 0; }
-cargo build --release -p osrep-conformance >/dev/null 2>&1 || fail "no compila el harness Rust"
-RE=target/release/encode_conformance
-OS="${OSREP_RUST_BIN:-target/x86_64-unknown-linux-gnu/release/osrep}"
-[ -x "$OS" ] || cargo build --release --target x86_64-unknown-linux-gnu >/dev/null 2>&1
-[ -x bin/osrep ] || make bin/osrep >/dev/null 2>&1
+cargo_rs build --release -p osrep-conformance >/dev/null 2>&1 || fail "no compila el harness Rust"
+RE=$RUST_TARGET/release/encode_conformance
+OS="${OSREP_RUST_BIN:-$RUST_TARGET/x86_64-unknown-linux-gnu/release/osrep}"
+[ -x "$OS" ] || cargo_rs build --release --target x86_64-unknown-linux-gnu >/dev/null 2>&1
+CPP="$CXX_BIN/osrep"
+[ -x "$CPP" ] || make_cxx bin/osrep >/dev/null 2>&1
 
 ET="${OSREP_PASCAL_ENCODETOOL:-pascal/bin/encodetool}"
 DT="${OSREP_PASCAL_DECODETOOL:-pascal/bin/decodetool}"
@@ -61,7 +63,7 @@ for input in "$TMP/dup2m.bin" "$TMP/dup5m.bin" "$TMP/rnd5m.bin" "$TMP/tiny.bin";
         case "$m" in
             m[0-9])   # v4: el C++ es el oraculo del archivo entero
                 # shellcheck disable=SC2086
-                ./bin/osrep -dup "-$m" $o --seed=7 "$input" "$TMP/c.osr" >/dev/null 2>&1 \
+                "$CPP" -dup "-$m" $o --seed=7 "$input" "$TMP/c.osr" >/dev/null 2>&1 \
                     || fail "el C++ fallo en -dup -$m $o"
                 cmp -s "$TMP/c.osr" "$TMP/p.osr" \
                     || fail "-dup -$m $o sobre $(basename "$input"): distinto del C++" ;;

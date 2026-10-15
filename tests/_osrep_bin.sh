@@ -2,15 +2,19 @@
 #
 # `OSREP_BIN` puts a different build through the whole suite -- that is how
 # tests/rust_cli_conformance.sh runs the Rust port against it. Left unset (the
-# default) the C++ oracle in bin/osrep is used, and built if it is missing.
+# default) the C++ oracle in oracles/cxx/bin/osrep is used, and built if it is
+# missing.
 #
 # Scripts source this after `cd "$ROOT"`, and use `"$OSREP"` in place of a
-# literal path. `bin/dedup_test` is deliberately *not* parameterized: it stays
-# the C++ oracle the -dup tests cross-check against.
+# literal path. `$CXX_BIN/dedup_test` is deliberately *not* parameterized: it
+# stays the C++ oracle the -dup tests cross-check against. This file sources
+# tests/_paths.sh itself, so CXX_BIN and friends are set for its callers too.
 
-OSREP="${OSREP_BIN:-bin/osrep}"
+source "$(dirname "${BASH_SOURCE[0]}")/_paths.sh"
+
+OSREP="${OSREP_BIN:-$CXX_BIN/osrep}"
 if [ -z "${OSREP_BIN:-}" ] && [ ! -x "$OSREP" ]; then
-    make "$OSREP" >/dev/null 2>&1 || true
+    make_cxx bin/osrep >/dev/null 2>&1 || true
 fi
 if [ ! -x "$OSREP" ]; then
     echo "missing $OSREP" >&2

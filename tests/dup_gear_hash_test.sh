@@ -3,7 +3,7 @@
 # duplicates that --chunk-hash=fnv (the default) misses.
 #
 # Background: the CDC boundary hash used by the dedup pre-pass
-# (Compression/SREP/dedup.cpp) is selectable via --chunk-hash=fnv|gear
+# (oracles/cxx/Compression/SREP/dedup.cpp) is selectable via --chunk-hash=fnv|gear
 # (see dup_wrapper.cpp's --chunk-hash flag). FNV's rolling hash has no
 # fixed window -- its cut-point sequence depends on distance-since-
 # last-buffer-reset, not on local content alone -- so it only finds a
@@ -36,11 +36,12 @@ set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+source tests/_paths.sh
 
 source "$(dirname "$0")/_winpath.sh"
 
-[[ -x bin/osrep      ]] || make bin/osrep
-[[ -x bin/dedup_test ]] || make bin/dedup_test
+[[ -x "$CXX_BIN/osrep"      ]] || make_cxx bin/osrep
+[[ -x "$CXX_BIN/dedup_test" ]] || make_cxx bin/dedup_test
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -94,8 +95,8 @@ DUP_LEN=8388608
 meta_fnv="$TMP/meta.fnv"; body_fnv="$TMP/body.fnv"
 meta_gear="$TMP/meta.gear"; body_gear="$TMP/body.gear"
 
-./bin/dedup_test split-encode "$IN" "$meta_fnv"  "$body_fnv"  --buf "$BUF" --hash fnv  >/dev/null
-./bin/dedup_test split-encode "$IN" "$meta_gear" "$body_gear" --buf "$BUF" --hash gear >/dev/null
+"$CXX_BIN/dedup_test" split-encode "$IN" "$meta_fnv"  "$body_fnv"  --buf "$BUF" --hash fnv  >/dev/null
+"$CXX_BIN/dedup_test" split-encode "$IN" "$meta_gear" "$body_gear" --buf "$BUF" --hash gear >/dev/null
 
 body_sz_fnv=$(stat -c%s "$body_fnv")
 body_sz_gear=$(stat -c%s "$body_gear")
@@ -158,7 +159,7 @@ fi
 #    artifact, not just the default fnv path.
 # ---------------------------------------------------------------
 restored_gear="$TMP/restored.gear.bin"
-./bin/dedup_test split-decode "$meta_gear" "$body_gear" "$restored_gear" >/dev/null
+"$CXX_BIN/dedup_test" split-decode "$meta_gear" "$body_gear" "$restored_gear" >/dev/null
 if cmp -s "$IN" "$restored_gear"; then
     echo "OK    gear split-encode/split-decode round-trips byte-identical"
     passed=$((passed + 1))
@@ -170,7 +171,7 @@ fi
 # Sanity: default (no --hash) split-encode must equal explicit --hash
 # fnv, byte-for-byte -- confirms the flag's default didn't drift.
 meta_def="$TMP/meta.default"; body_def="$TMP/body.default"
-./bin/dedup_test split-encode "$IN" "$meta_def" "$body_def" --buf "$BUF" >/dev/null
+"$CXX_BIN/dedup_test" split-encode "$IN" "$meta_def" "$body_def" --buf "$BUF" >/dev/null
 if cmp -s "$body_def" "$body_fnv" && cmp -s "$meta_def" "$meta_fnv"; then
     echo "OK    default (no --hash) split-encode == --hash fnv, byte-for-byte"
     passed=$((passed + 1))
@@ -191,8 +192,8 @@ for m in -m3 -m4 -m5; do
     name="${m#-}"
     archive="$TMP/cli_${name}.osr"
     restored="$TMP/cli_${name}.dec"
-    if ./bin/osrep -dup "$m" --chunk-hash=gear "$IN" "$archive" >/dev/null 2>&1 && \
-       ./bin/osrep -d "$archive" "$restored" >/dev/null 2>&1 && \
+    if "$CXX_BIN/osrep" -dup "$m" --chunk-hash=gear "$IN" "$archive" >/dev/null 2>&1 && \
+       "$CXX_BIN/osrep" -d "$archive" "$restored" >/dev/null 2>&1 && \
        cmp -s "$IN" "$restored"; then
         arch_sz=$(stat -c%s "$archive")
         echo "OK    osrep -dup $m --chunk-hash=gear round-trip   archive=$arch_sz"
@@ -211,10 +212,10 @@ gear_edge_case() {
     local label="$1" input_path="$2"
     local archive="$TMP/edge_${label}.osr"
     local restored="$TMP/edge_${label}.dec"
-    if ! ./bin/osrep -dup -m4 --chunk-hash=gear "$input_path" "$archive" >/dev/null 2>&1; then
+    if ! "$CXX_BIN/osrep" -dup -m4 --chunk-hash=gear "$input_path" "$archive" >/dev/null 2>&1; then
         echo "FAIL  edge:$label  compress failed"; return 1
     fi
-    if ! ./bin/osrep -d "$archive" "$restored" >/dev/null 2>&1; then
+    if ! "$CXX_BIN/osrep" -d "$archive" "$restored" >/dev/null 2>&1; then
         echo "FAIL  edge:$label  decompress failed"; return 1
     fi
     if ! cmp -s "$input_path" "$restored"; then
@@ -229,9 +230,9 @@ if gear_edge_case "1byte" "$TMP/edge_1byte.bin"; then passed=$((passed + 1)); el
 
 : > "$TMP/edge_empty.bin"
 plain_rc=0
-./bin/osrep -m4 "$TMP/edge_empty.bin" "$TMP/edge_empty_plain.osr" >/dev/null 2>&1 || plain_rc=$?
+"$CXX_BIN/osrep" -m4 "$TMP/edge_empty.bin" "$TMP/edge_empty_plain.osr" >/dev/null 2>&1 || plain_rc=$?
 gear_rc=0
-./bin/osrep -dup -m4 --chunk-hash=gear "$TMP/edge_empty.bin" "$TMP/edge_empty_gear.osr" >/dev/null 2>&1 || gear_rc=$?
+"$CXX_BIN/osrep" -dup -m4 --chunk-hash=gear "$TMP/edge_empty.bin" "$TMP/edge_empty_gear.osr" >/dev/null 2>&1 || gear_rc=$?
 if [[ "$plain_rc" -eq "$gear_rc" ]]; then
     echo "OK    edge:empty-input (gear)   plain rc=$plain_rc, -dup --chunk-hash=gear rc=$gear_rc (consistent)"
     passed=$((passed + 1))
@@ -245,7 +246,7 @@ fi
 #    not silently accepted or misinterpreted as fnv.
 # ---------------------------------------------------------------
 bogus_rc=0
-./bin/osrep -dup -m4 --chunk-hash=bogus "$IN" "$TMP/bogus.osr" >/dev/null 2>&1 || bogus_rc=$?
+"$CXX_BIN/osrep" -dup -m4 --chunk-hash=bogus "$IN" "$TMP/bogus.osr" >/dev/null 2>&1 || bogus_rc=$?
 if [[ "$bogus_rc" -eq 2 ]]; then
     echo "OK    --chunk-hash=bogus correctly rejected (rc=2)"
     passed=$((passed + 1))

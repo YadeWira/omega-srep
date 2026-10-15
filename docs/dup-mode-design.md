@@ -111,7 +111,7 @@ These are the explicit choices that block F5.2:
 
 2. **Hash for dedup.**
    FA uses VMAC. SREP standalone has SHA-1 / VMAC / SipHash already
-   linked (see `Compression/_Encryption/`). We pick VMAC to match FA
+   linked (see `oracles/cxx/Compression/_Encryption/`). We pick VMAC to match FA
    and because it is fastest. We do NOT store the hash in the
    archive — the chunk table records reference-by-index, not by hash.
    `--save-sha-hashes`-equivalent is out of scope for v1.

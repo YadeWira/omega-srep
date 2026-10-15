@@ -21,7 +21,7 @@
 #
 # Tools required (auto-detected, missing tools just leave their row
 # blank in the output):
-#   bin/osrep                                Omega 1.0a-beta.3+
+#   oracles/cxx/bin/osrep                    Omega 1.0a-beta.3+
 #   $OSREP_SREP392 (default /tmp/bench-tools/linux/srep64)
 #                                            upstream SREP 3.92 binary
 #   $OSREP_FA011  (default /tmp/bench-tools/linux/fa)
@@ -39,6 +39,7 @@ set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+source tests/_paths.sh
 
 BENCH_DIR="${OSREP_BENCH_DIR:-$HOME/.osrep-bench-multi}"
 OUT_DOC="${OSREP_BENCH_OUT:-docs/multi-corpus-bench.md}"
@@ -47,7 +48,7 @@ SREP392="${OSREP_SREP392:-/tmp/bench-tools/linux/srep64}"
 FA011="${OSREP_FA011:-/tmp/bench-tools/linux/fa}"
 
 mkdir -p "$BENCH_DIR"
-[[ -x bin/osrep ]] || make bin/osrep
+[[ -x "$CXX_BIN/osrep" ]] || make_cxx bin/osrep
 
 declare -A CORPUS_PATH=(
     [synth]="$HOME/.osrep-bench/dup_bench_in_32x4.bin"
@@ -85,10 +86,10 @@ measure() {
     return 1
 }
 
-osr_m4_compress()    { measure ./bin/osrep -m4 "$1" "$2"; }
-osr_m4_decompress()  { measure ./bin/osrep -d  "$1" "$2"; }
-osr_dup_compress()   { measure ./bin/osrep -dup -m4 "$1" "$2"; }
-osr_dup_decompress() { measure ./bin/osrep -d        "$1" "$2"; }
+osr_m4_compress()    { measure "$CXX_BIN/osrep" -m4 "$1" "$2"; }
+osr_m4_decompress()  { measure "$CXX_BIN/osrep" -d  "$1" "$2"; }
+osr_dup_compress()   { measure "$CXX_BIN/osrep" -dup -m4 "$1" "$2"; }
+osr_dup_decompress() { measure "$CXX_BIN/osrep" -d        "$1" "$2"; }
 srep_m4_compress()   { measure "$SREP392" -m4 "$1" "$2"; }
 srep_m4_decompress() { measure "$SREP392" -d  "$1" "$2"; }
 

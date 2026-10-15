@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Los digests del port a Pascal contra `bin/hash_test` (docs/pascal-port.md,
-# fase 2).
+# Los digests del port a Pascal contra `oracles/cxx/bin/hash_test`
+# (docs/pascal-port.md, fase 2).
 #
 # El oraculo no son vectores publicados sino el MISMO codigo que el encoder
 # guarda en cada bloque: las copias vendorizadas de LibTomCrypt/VHash llevan
@@ -16,6 +16,7 @@ set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+source tests/_paths.sh
 
 say()  { printf '  %s\n' "$*"; }
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
@@ -28,8 +29,9 @@ if [ ! -x "$PA" ]; then
         -opascal/bin/hashtool pascal/hashtool.lpr >/dev/null 2>&1 \
         || fail "no compila pascal/hashtool.lpr"
 fi
-[ -x bin/hash_test ] || make bin/hash_test >/dev/null 2>&1
-[ -x bin/hash_test ] || fail "sin oraculo en bin/hash_test"
+HT="$CXX_BIN/hash_test"
+[ -x "$HT" ] || make_cxx bin/hash_test >/dev/null 2>&1
+[ -x "$HT" ] || fail "sin oraculo en $HT"
 
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 pass=0
@@ -55,7 +57,7 @@ SEED32_C=$(printf '00%.0s' $(seq 32))
 check() {  # $1=algo $2=seed
     local algo="$1" seed="$2" n c p n_ok=0
     for n in $SIZES; do
-        c=$(./bin/hash_test "$algo" "$seed" "$TMP/in-$n") \
+        c=$("$HT" "$algo" "$seed" "$TMP/in-$n") \
             || fail "$algo: el oraculo fallo con $n bytes"
         p=$("$PA" "$algo" "$seed" "$TMP/in-$n") \
             || fail "$algo: el Pascal fallo con $n bytes"
@@ -97,7 +99,7 @@ say "aes, contra el LibTomCrypt vendorizado y no solo contra FIPS-197"
 # que se apoya vmac se verifica por separado en vez de solo a traves de el.
 for n in 16 32 64 4096; do
     head -c "$n" /dev/urandom > "$TMP/blk-$n"
-    c=$(./bin/hash_test aes "$SEED32_A" "$TMP/blk-$n")
+    c=$("$HT" aes "$SEED32_A" "$TMP/blk-$n")
     p=$("$PA" aes "$SEED32_A" "$TMP/blk-$n") || fail "aes: el Pascal fallo con $n bytes"
     [ "$c" = "$p" ] || fail "aes con $n bytes: oraculo $c, Pascal $p"
     pass=$((pass + 1))

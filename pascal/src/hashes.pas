@@ -1,12 +1,12 @@
 unit Hashes;
 { Digests sin clave: md5, sha1, sha512.
 
-  Se portan contra `tests/hash_test.cpp`, que calcula el digest con el MISMO
-  codigo que el encoder guarda en cada bloque -- no contra vectores publicados.
-  La diferencia importa: las copias de LibTomCrypt que este repo tiene
-  vendorizadas llevan parches locales, asi que un vector de la RFC podria pasar
-  y el archivo salir distinto igual. (Es el mismo criterio que uso el port a
-  Rust; ver `crates/osrep-core/src/hashes.rs`.)
+  Se portan contra `oracles/cxx/tools/hash_test.cpp`, que calcula el digest con
+  el MISMO codigo que el encoder guarda en cada bloque -- no contra vectores
+  publicados. La diferencia importa: las copias de LibTomCrypt que este repo
+  tiene vendorizadas llevan parches locales, asi que un vector de la RFC podria
+  pasar y el archivo salir distinto igual. (Es el mismo criterio que uso el
+  port a Rust; ver `oracles/rust/crates/osrep-core/src/hashes.rs`.)
 
   Todos los anchos son explicitos: ni `Integer` ni `SizeInt` aparecen en el
   calculo. Ver `src/widths.pas` para por que. }

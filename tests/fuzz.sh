@@ -9,7 +9,8 @@
 #   SEED_BASE   first seed value (default 1) — useful to reproduce a bug
 set -eu
 
-BIN="${OSREP_BIN:-bin/osrep}"
+source "$(dirname "$0")/_paths.sh"
+BIN="${OSREP_BIN:-$CXX_BIN/osrep}"
 N="${1:-10}"
 SEED_BASE="${2:-1}"
 # Tunables for stable-release soak runs:
@@ -27,11 +28,11 @@ METHODS=("-m0" "-m1" "-m2" "-m3" "-m4" "-m5")
 # Methods with known preexisting upstream bugs (predate the Omega fork).
 # Failures here are reported but don't fail the harness.
 # Set OSREP_FUZZ_STRICT=1 to make them fatal anyway.
-# Currently empty: -m5 SIGSEGV was fixed in Compression/SREP/hash_table.cpp:62.
+# Currently empty: -m5 SIGSEGV was fixed in oracles/cxx/Compression/SREP/hash_table.cpp:62.
 KNOWN_BUG_METHODS=()
 
 if [[ ! -x "$BIN" ]]; then
-  echo "ERROR: $BIN not found or not executable. Run 'make' first." >&2
+  echo "ERROR: $BIN not found or not executable. Run 'make -C $CXX_DIR bin/osrep' first." >&2
   exit 1
 fi
 

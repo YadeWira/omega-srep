@@ -26,6 +26,7 @@ set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+source tests/_paths.sh
 
 source "$(dirname "$0")/_winpath.sh"
 
@@ -41,8 +42,8 @@ BUF_BYTES="${OSREP_BENCH_BUF:-$((8 * 1024 * 1024))}"
 OUT_DOC="${OSREP_BENCH_OUT:-docs/dup-bench.md}"
 
 mkdir -p "$BENCH_DIR"
-[[ -x bin/osrep      ]] || make bin/osrep
-[[ -x bin/dedup_test ]] || make bin/dedup_test
+[[ -x "$CXX_BIN/osrep"      ]] || make_cxx bin/osrep
+[[ -x "$CXX_BIN/dedup_test" ]] || make_cxx bin/dedup_test
 
 INPUT="$BENCH_DIR/dup_bench_in_${BLOCK_MB}x${REPEATS}.bin"
 
@@ -92,18 +93,18 @@ measure() {
 A_OSR="$WORK/A.osr"
 A_DEC="$WORK/A.bin"
 
-read RSS_A_C TIME_A_C <<< "$(measure A_compress ./bin/osrep "$METHOD" "$INPUT" "$A_OSR")"
+read RSS_A_C TIME_A_C <<< "$(measure A_compress "$CXX_BIN/osrep" "$METHOD" "$INPUT" "$A_OSR")"
 A_OSR_SIZE=$(stat -c%s "$A_OSR")
-read RSS_A_D TIME_A_D <<< "$(measure A_decompress ./bin/osrep -d "$A_OSR" "$A_DEC")"
+read RSS_A_D TIME_A_D <<< "$(measure A_decompress "$CXX_BIN/osrep" -d "$A_OSR" "$A_DEC")"
 cmp -s "$INPUT" "$A_DEC" || { echo "A round-trip mismatch"; exit 1; }
 
 # ----- Config B: native -dup flag (F5.3c streaming, end-to-end) -----
 B_OSR="$WORK/B.osr"
 B_DEC="$WORK/B.bin"
 
-read RSS_B_C TIME_B_C <<< "$(measure B_compress ./bin/osrep -dup "$METHOD" "--chunk-buf=$BUF_BYTES" "$INPUT" "$B_OSR")"
+read RSS_B_C TIME_B_C <<< "$(measure B_compress "$CXX_BIN/osrep" -dup "$METHOD" "--chunk-buf=$BUF_BYTES" "$INPUT" "$B_OSR")"
 B_ARCH_SIZE=$(stat -c%s "$B_OSR")
-read RSS_B_D TIME_B_D <<< "$(measure B_decompress ./bin/osrep -d "$B_OSR" "$B_DEC")"
+read RSS_B_D TIME_B_D <<< "$(measure B_decompress "$CXX_BIN/osrep" -d "$B_OSR" "$B_DEC")"
 cmp -s "$INPUT" "$B_DEC" || { echo "B round-trip mismatch"; exit 1; }
 
 # Pull meta_size and body.osr size off the trailer for the structure
@@ -116,7 +117,7 @@ data = open(sys.argv[1],'rb').read()
 print(struct.unpack('<Q', data[-12:-4])[0])
 " "$(winpath "$B_OSR")")
 B_BODY_OSR_SIZE=$(( B_ARCH_SIZE - 12 - META_SIZE ))
-./bin/dedup_test split-encode "$INPUT" "$WORK/B.meta_struct" "$WORK/B.body_struct" --buf "$BUF_BYTES" >/dev/null
+"$CXX_BIN/dedup_test" split-encode "$INPUT" "$WORK/B.meta_struct" "$WORK/B.body_struct" --buf "$BUF_BYTES" >/dev/null
 BODY_SIZE=$(stat -c%s "$WORK/B.body_struct")
 
 RATIO_ARCH=$(python3 -c "print(f'{$B_ARCH_SIZE/$A_OSR_SIZE*100:.1f}')")

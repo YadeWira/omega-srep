@@ -27,7 +27,8 @@ set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
-OSREP="${OSREP_BIN:-target/release/osrep}"
+source tests/_paths.sh
+OSREP="${OSREP_BIN:-$RUST_TARGET/release/osrep}"
 [ -x "$OSREP" ] || { echo "missing $OSREP (set OSREP_BIN)" >&2; exit 1; }
 [ -f tests/corpus/text.bin ] || { echo "missing tests/corpus/text.bin" >&2; exit 1; }
 

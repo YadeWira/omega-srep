@@ -2,9 +2,10 @@ unit Vmac;
 { VMAC / VHASH-128 -- el checksum de bloque por defecto.
 
   Port de la copia vendorizada `hashes/vmac/vmac.c` tal como la configura
-  `Compression/SREP/hashes.cpp`: `VMAC_TAG_LEN 128`, `VMAC_KEY_LEN 256`,
-  `VMAC_NHBYTES 4096`, `VMAC_PREFER_BIG_ENDIAN 0`, sin `VMAC_REQUIRE_FILL16`.
-  Solo el `vhash()` de un tiro, que es lo que usa el encoder.
+  `oracles/cxx/Compression/SREP/hashes.cpp`: `VMAC_TAG_LEN 128`,
+  `VMAC_KEY_LEN 256`, `VMAC_NHBYTES 4096`, `VMAC_PREFER_BIG_ENDIAN 0`, sin
+  `VMAC_REQUIRE_FILL16`. Solo el `vhash()` de un tiro, que es lo que usa el
+  encoder.
 
   POR QUE ESTE ES EL ARCHIVO DELICADO DEL PORT. `vmac.c` llega al producto de
   64x64 -> 128 y a la suma de 128 bits por asm especifico en x86_64 y por un

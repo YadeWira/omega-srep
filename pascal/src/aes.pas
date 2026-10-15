@@ -2,8 +2,8 @@ unit AES;
 { AES-256, solo cifrado de bloque -- la primitiva sobre la que se construye vmac.
 
   Es el build `LTC_RIJNDAEL` + `ENCRYPT_ONLY` de la copia vendorizada de
-  LibTomCrypt (`Compression/_Encryption/ciphers/aes/`). Asi llega el C++ a AES:
-  `hashes.cpp` define `VMAC_USE_LIB_TOM_CRYPT`, y `vmac.c` llama a
+  LibTomCrypt (`oracles/cxx/Compression/_Encryption/ciphers/aes/`). Asi llega
+  el C++ a AES: `hashes.cpp` define `VMAC_USE_LIB_TOM_CRYPT`, y `vmac.c` llama a
   `aes_enc_setup(key, 32, 0, skey)` + `aes_enc_ecb_encrypt(pt, ct, skey)` con
   `VMAC_KEY_LEN == 256`. Solo ese camino: sin descifrado, sin claves de
   128/192 bits, sin modos.

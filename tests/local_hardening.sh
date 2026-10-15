@@ -14,7 +14,7 @@
 #
 # Stages (run in order, each one must fully pass before the next
 # starts):
-#   1. Baseline build (Makefile) + the full existing shell-script test
+#   1. Baseline build (oracles/cxx/Makefile) + the full existing shell-script test
 #      suite -- the same suite ci.yml ran, plus fuzz_regression.sh.
 #   2. Rebuild with ASAN+UBSAN, rerun the same suite under the
 #      combined-sanitizer env-var pattern documented in
@@ -51,6 +51,7 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$ROOT"
+source tests/_paths.sh
 
 NPROC="$(command -v nproc >/dev/null 2>&1 && nproc || echo 4)"
 HARDEN_FUZZ_SECONDS="${HARDEN_FUZZ_SECONDS:-40}"
@@ -137,9 +138,9 @@ run_core_suite() {
 stage1_baseline() {
     section "${STAGE_LABEL[s1]}"
 
-    run_logged "make clean" "$LOGDIR/s1-clean.log" make clean
-    run_logged "make bin/osrep bin/dedup_test" "$LOGDIR/s1-build.log" \
-        make -j"$NPROC" bin/osrep bin/dedup_test
+    run_logged "make -C $CXX_DIR clean" "$LOGDIR/s1-clean.log" make_cxx clean
+    run_logged "make -C $CXX_DIR bin/osrep bin/dedup_test" "$LOGDIR/s1-build.log" \
+        make_cxx -j"$NPROC" bin/osrep bin/dedup_test
 
     echo "  -> running full test suite (unsanitized baseline)"
     run_core_suite 10
@@ -179,13 +180,13 @@ stage2_sanitizer() {
     note "in vendored VMAC/SipHash on x86_64). This stage uses that"
     note "combined variant."
 
-    run_logged "make clean" "$LOGDIR/s2-clean.log" make clean
+    run_logged "make -C $CXX_DIR clean" "$LOGDIR/s2-clean.log" make_cxx clean
     # bin/dedup_test used to ignore $(CFLAGS)/$(LDFLAGS) (it hardcoded its
     # own compile line), so sanitizer runs silently left it uninstrumented
     # while dedup_xtest.sh/fuzz_regression.sh exercised it. The rule was
     # fixed to use the shared flags, so one `make` now instruments both.
-    run_logged "make bin/osrep bin/dedup_test (ASAN+UBSAN)" "$LOGDIR/s2-build.log" \
-        make -j"$NPROC" bin/osrep bin/dedup_test \
+    run_logged "make -C $CXX_DIR bin/osrep bin/dedup_test (ASAN+UBSAN)" "$LOGDIR/s2-build.log" \
+        make_cxx -j"$NPROC" bin/osrep bin/dedup_test \
         CFLAGS="-O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer" \
         LDFLAGS="-lpthread -lstdc++ -fsanitize=address,undefined" \
         STATIC=""
@@ -213,39 +214,39 @@ stage3_fuzz_soak() {
 
     mkdir -p tests/fuzz-artifacts
 
-    # NOTE: tests/fuzz_decode.cc's own build-comment omits `-I .`,
-    # which actually makes that exact documented command fail (its
-    # `#include "Compression/SREP/dedup.cpp"` cannot resolve without
-    # the repo root on the include path). Confirmed by trying the
-    # comment's literal command before writing this script.
-    # fuzz_decode_streaming.cc / fuzz_encode_split.cc's comments
-    # already include `-I .`. Using `-I . -I Compression -I
-    # Compression/SREP` for all three, uniformly, since that's what
-    # actually compiles.
+    # NOTE: oracles/cxx/tools/fuzz_decode.cc's own build-comment omits
+    # `-I .`, which actually makes that exact documented command fail
+    # (its `#include "Compression/SREP/dedup.cpp"` cannot resolve
+    # without the C++ oracle's root, oracles/cxx, on the include path).
+    # Confirmed by trying the comment's literal command before writing
+    # this script. fuzz_decode_streaming.cc / fuzz_encode_split.cc's
+    # comments already include `-I .`. Using `-I $CXX_DIR -I
+    # $CXX_DIR/Compression -I $CXX_DIR/Compression/SREP` for all three,
+    # uniformly, since that's what actually compiles.
     note "fuzz_decode.cc's own build-comment is missing -I . (verified"
-    note "broken as literally written); using -I . for all 3 harnesses."
+    note "broken as literally written); using -I $CXX_DIR for all 3 harnesses."
 
-    local common_flags=(-O1 -g -fsanitize=fuzzer,address,undefined -I . -I Compression -I Compression/SREP)
+    local common_flags=(-O1 -g -fsanitize=fuzzer,address,undefined -I "$CXX_DIR" -I "$CXX_DIR/Compression" -I "$CXX_DIR/Compression/SREP")
 
     run_logged "compile fuzz_decode" "$LOGDIR/s3-build-fuzz_decode.log" \
-        clang++ "${common_flags[@]}" tests/fuzz_decode.cc -o bin/fuzz_decode
+        clang++ "${common_flags[@]}" "$CXX_DIR/tools/fuzz_decode.cc" -o "$CXX_BIN/fuzz_decode"
     run_logged "compile fuzz_decode_streaming" "$LOGDIR/s3-build-fuzz_decode_streaming.log" \
-        clang++ "${common_flags[@]}" tests/fuzz_decode_streaming.cc -o bin/fuzz_decode_streaming
+        clang++ "${common_flags[@]}" "$CXX_DIR/tools/fuzz_decode_streaming.cc" -o "$CXX_BIN/fuzz_decode_streaming"
     run_logged "compile fuzz_encode_split" "$LOGDIR/s3-build-fuzz_encode_split.log" \
-        clang++ "${common_flags[@]}" tests/fuzz_encode_split.cc -o bin/fuzz_encode_split
+        clang++ "${common_flags[@]}" "$CXX_DIR/tools/fuzz_encode_split.cc" -o "$CXX_BIN/fuzz_encode_split"
 
     echo "  -> soaking each harness for ${HARDEN_FUZZ_SECONDS}s (HARDEN_FUZZ_SECONDS to override)"
 
     run_logged "fuzz_decode soak" "$LOGDIR/s3-run-fuzz_decode.log" \
-        bin/fuzz_decode -max_total_time="$HARDEN_FUZZ_SECONDS" -max_len=16777216 \
+        "$CXX_BIN/fuzz_decode" -max_total_time="$HARDEN_FUZZ_SECONDS" -max_len=16777216 \
         -artifact_prefix=tests/fuzz-artifacts/ tests/fuzz-corpus
 
     run_logged "fuzz_decode_streaming soak" "$LOGDIR/s3-run-fuzz_decode_streaming.log" \
-        bin/fuzz_decode_streaming -max_total_time="$HARDEN_FUZZ_SECONDS" -max_len=16777216 \
+        "$CXX_BIN/fuzz_decode_streaming" -max_total_time="$HARDEN_FUZZ_SECONDS" -max_len=16777216 \
         -artifact_prefix=tests/fuzz-artifacts/ tests/fuzz-corpus-decode-streaming
 
     run_logged "fuzz_encode_split soak" "$LOGDIR/s3-run-fuzz_encode_split.log" \
-        bin/fuzz_encode_split -max_total_time="$HARDEN_FUZZ_SECONDS" -max_len=16777216 \
+        "$CXX_BIN/fuzz_encode_split" -max_total_time="$HARDEN_FUZZ_SECONDS" -max_len=16777216 \
         -artifact_prefix=tests/fuzz-artifacts/ tests/fuzz-corpus-encode-split
 
     # Belt-and-suspenders: libFuzzer exits non-zero on a crash (which
@@ -283,7 +284,7 @@ stage4_mingw_wine() {
     mkdir -p "$shim_dir"
 
     # Real bug found while building this script (Linux-only, cosmetic
-    # on native Windows): Compression/Common.cpp:1052 does
+    # on native Windows): oracles/cxx/Compression/Common.cpp:1052 does
     # `#include <ShObjIdl.h>` (mixed case) inside a
     # `!defined(__GNUC__) || __GNUC__>=4` branch that mingw-w64 GCC
     # also takes. mingw-w64's headers only ship the lowercase
@@ -323,7 +324,7 @@ EOF
     fi
 
     run_logged "cmake configure (mingw-w64 toolchain)" "$LOGDIR/s4-configure.log" \
-        cmake -B "$build_dir" "${gen_args[@]}" -DCMAKE_BUILD_TYPE=Release \
+        cmake -S "$CXX_DIR" -B "$build_dir" "${gen_args[@]}" -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_TOOLCHAIN_FILE="$toolchain_file" \
         -DCMAKE_CXX_FLAGS="-I$shim_dir" -DCMAKE_C_FLAGS="-I$shim_dir"
 
@@ -342,12 +343,12 @@ EOF
         return 0
     fi
 
-    # Real bug found while building this script: CMakeLists.txt's
+    # Real bug found while building this script: oracles/cxx/CMakeLists.txt's
     # `-static` link gate is `GNU AND NOT WIN32`, which excludes the
     # one case (GNU/mingw compiler targeting Windows) that most wants
     # it. The resulting osrep.exe is dynamically linked against
     # libstdc++/libgcc_s, unlike the Makefile-built release binaries.
-    # Not fixed in CMakeLists.txt here; worked around by copying the
+    # Not fixed in oracles/cxx/CMakeLists.txt here; worked around by copying the
     # two runtime DLLs next to the exe so the Wine smoke test can run.
     note "CMakeLists.txt's -static gate is 'GNU AND NOT WIN32', which"
     note "excludes mingw-targeting-Windows -- the exe is dynamically"
@@ -454,14 +455,14 @@ CURRENT_STAGE=s4
 stage4_mingw_wine
 
 # All stages reached and passed (or were cleanly skipped). Restore
-# bin/osrep and bin/dedup_test to a normal, non-sanitizer-instrumented
-# build so the repo isn't left in a state where the last thing in
-# bin/ is an ASAN binary. Best-effort / non-fatal: this is cleanup,
+# oracles/cxx/bin/osrep and bin/dedup_test to a normal,
+# non-sanitizer-instrumented build so the repo isn't left in a state
+# where the last thing in oracles/cxx/bin/ is an ASAN binary. Best-effort / non-fatal: this is cleanup,
 # not a gate, so a failure here doesn't flip the overall PASS result.
-section "Restoring plain (non-sanitizer) build in bin/"
-if make clean >"$LOGDIR/restore-clean.log" 2>&1 && \
-   make -j"$NPROC" bin/osrep bin/dedup_test >"$LOGDIR/restore-build.log" 2>&1; then
-    echo "  bin/osrep, bin/dedup_test rebuilt without sanitizers."
+section "Restoring plain (non-sanitizer) build in $CXX_BIN/"
+if make_cxx clean >"$LOGDIR/restore-clean.log" 2>&1 && \
+   make_cxx -j"$NPROC" bin/osrep bin/dedup_test >"$LOGDIR/restore-build.log" 2>&1; then
+    echo "  $CXX_BIN/osrep, $CXX_BIN/dedup_test rebuilt without sanitizers."
 else
     echo "  WARNING: could not restore plain build (non-fatal; see $LOGDIR/restore-*.log)" >&2
 fi

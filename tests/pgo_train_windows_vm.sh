@@ -6,7 +6,7 @@
 # Why this exists: reusing the Linux-collected profile (tests/pgo_train.sh)
 # for the MinGW cross-compiled binary does NOT work -- confirmed empirically.
 # GCC's -fprofile-use ties LTO profile data to the exact GIMPLE structure
-# recorded during -fprofile-generate, and Compression/Common.cpp's
+# recorded during -fprofile-generate, and oracles/cxx/Compression/Common.cpp's
 # FREEARC_WIN-gated code paths are never even compiled into the Linux
 # (FREEARC_UNIX) instrumented binary, so there is no profile data for them at
 # all -- not a lookup bug, a genuine absence of data for Windows-only code.
@@ -20,7 +20,7 @@
 #   if your VM's connection details differ). Starts/stops the VM itself.
 #
 # Output: Compression-flavored .gcda profile data restored under
-# ./pgo-data-win/, ready for a final -fprofile-use=pgo-data-win rebuild with
+# oracles/cxx/pgo-data-win/, ready for a final -fprofile-use=oracles/cxx/pgo-data-win rebuild with
 # THE SAME -o path used below for the instrumented binary (GCC's LTO profile
 # lookup is keyed to that exact absolute path -- see docs/research-notes.md).
 set -eu
@@ -34,8 +34,10 @@ SSH="ssh -i $SSH_KEY -p $SSH_PORT -o StrictHostKeyChecking=no -o BatchMode=yes"
 SCP="scp -i $SSH_KEY -P $SSH_PORT -o StrictHostKeyChecking=no"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-INSTRUMENTED_OUT="$REPO_ROOT/bin/osrep-pgo-instrumented-win.exe"
-PGO_DIR_WIN="$REPO_ROOT/pgo-data-win"
+source "$REPO_ROOT/tests/_paths.sh"
+SRC="$REPO_ROOT/$CXX_DIR/Compression"
+INSTRUMENTED_OUT="$REPO_ROOT/$CXX_BIN/osrep-pgo-instrumented-win.exe"
+PGO_DIR_WIN="$REPO_ROOT/$CXX_DIR/pgo-data-win"
 SHIM_DIR="$(mktemp -d)"
 printf '#include <shobjidl.h>\n' > "$SHIM_DIR/ShObjIdl.h"
 
@@ -47,15 +49,16 @@ for i in $(seq 1 20); do
 done
 
 echo "-- cross-compiling instrumented Windows binary --"
+mkdir -p "$(dirname "$INSTRUMENTED_OUT")"
 x86_64-w64-mingw32-g++ -DFREEARC_WIN -DUNICODE -D_UNICODE \
   -DFREEARC_INTEL_BYTE_ORDER -D_FILE_OFFSET_BITS=64 \
   -I"$SHIM_DIR" \
-  -I"$REPO_ROOT/Compression" -I"$REPO_ROOT/Compression/_Encryption" \
-  -I"$REPO_ROOT/Compression/_Encryption/headers" -I"$REPO_ROOT/Compression/_Encryption/hashes" \
+  -I"$SRC" -I"$SRC/_Encryption" \
+  -I"$SRC/_Encryption/headers" -I"$SRC/_Encryption/hashes" \
   -O3 -flto -mtune=generic -funroll-all-loops -msse2 \
   -fprofile-generate=pgo-data-win \
   -Wno-write-strings -Wno-unused-result \
-  "$REPO_ROOT/Compression/Common.cpp" "$REPO_ROOT/Compression/SREP/srep.cpp" \
+  "$SRC/Common.cpp" "$SRC/SREP/srep.cpp" \
   -lstdc++ -lole32 -luuid -lshell32 -ladvapi32 -static \
   -o "$INSTRUMENTED_OUT"
 

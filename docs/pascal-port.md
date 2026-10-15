@@ -2,10 +2,11 @@
 
 > **Estado**: hecho. La decisión se tomó el 2026-09-25; desde la **2.2.0**
 > (2026-10-10) el binario que se publica es el Pascal, con archivos byte a
-> byte iguales a los de la 2.1.2. El Rust (`crates/`) y el C++
-> (`Compression/`) quedan como oráculos. Lo que sigue: la 2.2.1 (pérdidas de
-> datos con combinaciones raras de `-l`/`-c`/`-b`, heredadas del C++) y la
-> 2.3.0 (el orden de empates del `std::sort` del C++).
+> byte iguales a los de la 2.1.2. El Rust (`oracles/rust/`) y el C++
+> (`oracles/cxx/`) quedan como oráculos (ver `oracles/README.md`). Lo que
+> sigue: la 2.2.1 (pérdidas de datos con combinaciones raras de
+> `-l`/`-c`/`-b`, heredadas del C++) y la 2.3.0 (el orden de empates del
+> `std::sort` del C++).
 
 ## Por qué, y qué cambió respecto del port a Rust
 

@@ -37,31 +37,32 @@ set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+source tests/_paths.sh
 
 say()  { printf '  %s\n' "$*"; }
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 
 if ! command -v cargo >/dev/null 2>&1; then
-    say "cargo not found -- skipping decoder conformance (rust-toolchain.toml pins 1.77.2)"
+    say "cargo not found -- skipping decoder conformance (oracles/rust/rust-toolchain.toml pins 1.77.2)"
     exit 0
 fi
 
-say "building the C++ encoder (bin/osrep)"
-make bin/osrep >/dev/null 2>&1 || fail "make bin/osrep"
+say "building the C++ encoder ($CXX_BIN/osrep)"
+make_cxx bin/osrep >/dev/null 2>&1 || fail "make -C $CXX_DIR bin/osrep"
 
 say "building the Rust decoders (decode_conformance)"
-if ! cargo build --release -p osrep-conformance >/tmp/decode-conformance-build.log 2>&1; then
+if ! cargo_rs build --release -p osrep-conformance >/tmp/decode-conformance-build.log 2>&1; then
     cat /tmp/decode-conformance-build.log >&2
     fail "cargo build failed"
 fi
-RS=target/release/decode_conformance
+RS=$RUST_TARGET/release/decode_conformance
 [[ -x "$RS" ]] || fail "missing $RS"
-OSREP=bin/osrep
+OSREP=$CXX_BIN/osrep
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
-say "rustc: $(rustc --version)"
+say "rustc: $(cd "$RUST_DIR" && rustc --version)"
 
 # --- Inputs ---------------------------------------------------------- #
 
@@ -246,7 +247,7 @@ for case in "io-lz|-m3o" "io-lz|-m1o" "future-lz|-m3f" "future-lz|-m3"; do
         # shellcheck disable=SC2086
         $OSREP $flags $BFLAGS -t1 "$src" "$arc" >/dev/null 2>&1 \
             || fail "[corrupt/$tag/$input] compress"
-        layout=$("$ROOT/target/release/container_conformance" blocks "$arc" 2>&1) \
+        layout=$("$ROOT/$RUST_TARGET/release/container_conformance" blocks "$arc" 2>&1) \
             || fail "[corrupt/$tag/$input] blocks: $layout"
         lit_start=$(printf '%s\n' "$layout" | sed -n 's/.*literal_start=\([0-9]*\) literal_len=\([0-9]*\).*/\1/p' | head -1)
         lit_len=$(printf '%s\n' "$layout" | sed -n 's/.*literal_start=\([0-9]*\) literal_len=\([0-9]*\).*/\2/p' | head -1)

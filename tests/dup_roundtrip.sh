@@ -23,6 +23,7 @@ set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+source tests/_paths.sh
 
 # -m0 (REP-only) is incompatible with -dup per the design and is
 # excluded; -m1/-m2 work but emit a CDC-on-CDC warning in the real
@@ -30,7 +31,7 @@ cd "$ROOT"
 METHODS=(${OSREP_DUP_METHODS:-"-m1 -m2 -m3 -m4 -m5"})
 
 source "$(dirname "$0")/_osrep_bin.sh"
-[[ -x bin/dedup_test ]] || make bin/dedup_test
+[[ -x "$CXX_BIN/dedup_test" ]] || make_cxx bin/dedup_test
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -100,7 +101,7 @@ for method in $METHODS; do
     gen_input "$in"
     in_size=$(stat -c%s "$in")
 
-    ./bin/dedup_test split-encode "$in" "$meta" "$body" >/dev/null
+    "$CXX_BIN/dedup_test" split-encode "$in" "$meta" "$body" >/dev/null
     "$OSREP" "$method" "$body" "$body_osr" >/dev/null
 
     pack_archive "$body_osr" "$meta" "$archive"
@@ -108,7 +109,7 @@ for method in $METHODS; do
 
     unpack_archive "$archive" "$body_osr_dec" "$meta_dec"
     "$OSREP" -d "$body_osr_dec" "$body_dec" >/dev/null
-    ./bin/dedup_test split-decode "$meta_dec" "$body_dec" "$out" >/dev/null
+    "$CXX_BIN/dedup_test" split-decode "$meta_dec" "$body_dec" "$out" >/dev/null
 
     if cmp -s "$in" "$out"; then
         ratio=$(python3 -c "print(f'{$arch_size/$in_size:.3f}')")

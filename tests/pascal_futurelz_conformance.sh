@@ -23,17 +23,18 @@ set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+source tests/_paths.sh
 
 say()  { printf '  %s\n' "$*"; }
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 
 command -v cargo >/dev/null 2>&1 || { say "sin cargo -- salteando"; exit 0; }
-[ -x target/release/decode_conformance ] \
-    || cargo build --release --bin decode_conformance >/dev/null 2>&1
-DC=target/release/decode_conformance
+DC=$RUST_TARGET/release/decode_conformance
+[ -x "$DC" ] \
+    || cargo_rs build --release --bin decode_conformance >/dev/null 2>&1
 [ -x "$DC" ] || fail "no hay harness Rust en $DC"
-[ -x bin/osrep ] || make bin/osrep >/dev/null 2>&1
-OSREP=bin/osrep
+OSREP=$CXX_BIN/osrep
+[ -x "$OSREP" ] || make_cxx bin/osrep >/dev/null 2>&1
 
 DT="${OSREP_PASCAL_DECODETOOL:-pascal/bin/decodetool}"
 if [ ! -x "$DT" ]; then

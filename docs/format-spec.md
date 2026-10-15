@@ -264,7 +264,7 @@ for record in chunk_table:
         out_pos += length
 ```
 
-The `dedup::decode_streaming` implementation (`Compression/SREP/dedup.cpp`)
+The `dedup::decode_streaming` implementation (`oracles/cxx/Compression/SREP/dedup.cpp`)
 uses the inverse operation: it streams unique chunks from the body
 to the output sequentially, and on each ref `fseek`s back into the
 output to copy previously-written bytes forward. Peak RAM is

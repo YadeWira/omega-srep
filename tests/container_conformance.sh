@@ -22,31 +22,32 @@ set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+source tests/_paths.sh
 
 say()  { printf '  %s\n' "$*"; }
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 
 if ! command -v cargo >/dev/null 2>&1; then
-    say "cargo not found -- skipping container conformance (rust-toolchain.toml pins 1.77.2)"
+    say "cargo not found -- skipping container conformance (oracles/rust/rust-toolchain.toml pins 1.77.2)"
     exit 0
 fi
 
-say "building the C++ encoder (bin/osrep)"
-make bin/osrep >/dev/null 2>&1 || fail "make bin/osrep"
+say "building the C++ encoder ($CXX_BIN/osrep)"
+make_cxx bin/osrep >/dev/null 2>&1 || fail "make -C $CXX_DIR bin/osrep"
 
 say "building the Rust codec (container_conformance)"
-if ! cargo build --release -p osrep-conformance >/tmp/container-conformance-build.log 2>&1; then
+if ! cargo_rs build --release -p osrep-conformance >/tmp/container-conformance-build.log 2>&1; then
     cat /tmp/container-conformance-build.log >&2
     fail "cargo build failed"
 fi
-RS=target/release/container_conformance
+RS=$RUST_TARGET/release/container_conformance
 [[ -x "$RS" ]] || fail "missing $RS"
-OSREP=bin/osrep
+OSREP=$CXX_BIN/osrep
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
-say "rustc: $(rustc --version)"
+say "rustc: $(cd "$RUST_DIR" && rustc --version)"
 
 # --- Inputs ---------------------------------------------------------- #
 

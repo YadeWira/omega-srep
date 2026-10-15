@@ -18,11 +18,13 @@ byte-for-byte against the shipped C++ binary by `tests/rust_conformance.sh`.
 
 Rust **1.78 raised the minimum supported Windows version to Windows 10** for
 every `*-pc-windows-*` target (`msvc`, `gnu` and `gnullvm`; x86_64 and i686).
-Omega SREP targets Windows 7 x64/x86, so `rust-toolchain.toml` pins **1.77.2**,
+Omega SREP targets Windows 7 x64/x86, so `oracles/rust/rust-toolchain.toml` pins **1.77.2**,
 the last stable release that supports Win7 without nightly and the Tier 3
 `*-win7-windows-*` targets (which ship no prebuilt `std`).
 
 This pin is workspace-wide, so Linux and Windows builds use the same compiler.
+Cargo finds `rust-toolchain.toml` and `.cargo/config.toml` from the current
+directory, not from `--manifest-path`, so run it from `oracles/rust/`.
 
 | target | triple |
 |---|---|
@@ -31,7 +33,7 @@ This pin is workspace-wide, so Linux and Windows builds use the same compiler.
 | Windows x86 (Win7+) | `i686-pc-windows-gnu` |
 
 Windows builds cross-compile from Linux with the same mingw-w64 toolchain the
-C++ build uses (`.cargo/config.toml` wires up the linkers), so no Visual Studio
+C++ build uses (`oracles/rust/.cargo/config.toml` wires up the linkers), so no Visual Studio
 is required.
 
 **Windows 7 comes out ahead:** the Rust binaries import `ADVAPI32.dll`,
@@ -118,7 +120,8 @@ has been making all along.
 So what actually changed at 2.0.0:
 
 - The released assets are Rust only. The C++ is not published any more.
-- `Compression/` stays in the tree and stays buildable with `make`. The
+- `Compression/` stays in the tree and stays buildable with `make` (after
+  2.2.1 it moved to `oracles/cxx/`: `make -C oracles/cxx bin/osrep`). The
   differential suites keep running against it via `OSREP_BIN`.
 - `srep.cpp` stays at **1.0.7**, the last version the C++ actually shipped in.
   `--version` therefore no longer matches between the two binaries, which is
@@ -135,12 +138,16 @@ There is no deadline on making that call, and no cost to deferring it.
 
 ## Layout
 
+The workspace lives in `oracles/rust/` (it was at the repository root up to
+2.2.1); build output goes to `oracles/rust/target/`.
+
 ```
-crates/osrep-core/         library; modules are ported here
-crates/osrep-cli/          the `osrep` binary: args.rs (both parsers), modes.rs
-                           (compress/decompress/-i), report.rs (stderr),
-                           help.rs (--version/--help)
-crates/osrep-conformance/  differential harnesses; mirror the C++ test tools' CLIs
+oracles/rust/crates/osrep-core/         library; modules are ported here
+oracles/rust/crates/osrep-cli/          the `osrep` binary: args.rs (both parsers),
+                                        modes.rs (compress/decompress/-i),
+                                        report.rs (stderr), help.rs (--version/--help)
+oracles/rust/crates/osrep-conformance/  differential harnesses; mirror the C++ test
+                                        tools' CLIs
 tests/rust_conformance.sh       runs both implementations and diffs the output
 tests/container_conformance.sh  validates the container framing against real archives
 tests/rust_cli_conformance.sh   runs the CLI against the C++ binary, then runs the
@@ -149,11 +156,11 @@ tests/_osrep_bin.sh             how that redirection works: every CLI-level scri
                                 resolves its binary through OSREP_BIN
 ```
 
-`crates/osrep-conformance` deliberately reproduces the C++ test tool's command
-names, options and printed text, so the two can be compared directly:
+`oracles/rust/crates/osrep-conformance` deliberately reproduces the C++ test
+tool's command names, options and printed text, so the two can be compared directly:
 
 ```bash
-cargo build --release -p osrep-conformance
+(cd oracles/rust && cargo build --release -p osrep-conformance)
 tests/rust_conformance.sh          # builds both sides, then diffs
 ```
 
@@ -163,8 +170,8 @@ cross-decode in both directions, `split-encode` (identical meta and body),
 is the path `osrep -dup` actually uses), `selftest` stdout, and the corrupt
 forward-ref meta (both must reject with `DEDUP_ERR_BAD_REF` and not crash).
 
-For the digests it diffs `tests/hash_test.cpp` (backed by the real
-`Compression/SREP/hashes.cpp`) against `hash_conformance` — all five of
+For the digests it diffs `oracles/cxx/tools/hash_test.cpp` (backed by the real
+`oracles/cxx/Compression/SREP/hashes.cpp`) against `hash_conformance` — all five of
 `md5`/`sha1`/`sha512`/`siphash`/`vmac` now — at the MD5/SHA-1 64-byte and
 SHA-512 128-byte padding boundaries (0, 55, 56, 63, 64, 65, 111, 112, 119, 120,
 127, 128, 129, …), which is where hand-written digest ports break. Dedicated

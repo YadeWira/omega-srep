@@ -3,7 +3,7 @@ unit HashesKeyed;
   arrastra AES).
 
   siphash es SipHash-2-4 con tag de 8 bytes y clave de 16. Portado contra
-  `bin/hash_test`, igual que el resto. }
+  `oracles/cxx/bin/hash_test`, igual que el resto. }
 
 {$MODE OBJFPC}{$H+}
 {$RANGECHECKS OFF}

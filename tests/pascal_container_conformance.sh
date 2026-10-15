@@ -16,11 +16,12 @@ set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+source tests/_paths.sh
 
 say()  { printf '  %s\n' "$*"; }
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 
-RS="${OSREP_RUST_BIN:-target/x86_64-unknown-linux-gnu/release/osrep}"
+RS="${OSREP_RUST_BIN:-$RUST_TARGET/x86_64-unknown-linux-gnu/release/osrep}"
 CT="${OSREP_PASCAL_CONTAINERTOOL:-pascal/bin/containertool}"
 [ -x "$RS" ] || { say "sin binario Rust -- salteando"; exit 0; }
 if [ ! -x "$CT" ]; then

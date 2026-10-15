@@ -27,8 +27,9 @@ set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+source tests/_paths.sh
 
-[[ -x bin/osrep ]] || make bin/osrep
+[[ -x "$CXX_BIN/osrep" ]] || make_cxx bin/osrep
 
 SRC_DIR="${OSREP_REALWORLD_DIR:-/usr/bin}"
 if [[ ! -d "$SRC_DIR" ]]; then
@@ -56,12 +57,12 @@ run_config() {
     local archive="$WORK/${label}.osr"
     local restored="$WORK/${label}.bin"
     shift
-    if ! ./bin/osrep "$@" "$INPUT" "$archive" >/dev/null 2>&1; then
+    if ! "$CXX_BIN/osrep" "$@" "$INPUT" "$archive" >/dev/null 2>&1; then
         echo "FAIL  $label compress"
         failed=$((failed + 1))
         return
     fi
-    if ! ./bin/osrep -d "$archive" "$restored" >/dev/null 2>&1; then
+    if ! "$CXX_BIN/osrep" -d "$archive" "$restored" >/dev/null 2>&1; then
         echo "FAIL  $label decompress"
         failed=$((failed + 1))
         return

@@ -1,6 +1,6 @@
 program hashtool;
-{ Espejo de `tests/hash_test.cpp`, para que el harness pueda diffear los dos
-  lado a lado:  hashtool <algo> <seed-hex|none> <archivo>
+{ Espejo de `oracles/cxx/tools/hash_test.cpp`, para que el harness pueda
+  diffear los dos lado a lado:  hashtool <algo> <seed-hex|none> <archivo>
   Imprime el digest en hex minuscula por stdout. }
 {$MODE OBJFPC}{$H+}
 uses OsText, Widths, OutRaw, Hashes, HashesKeyed, AES, Vmac, SysUtils, Classes;

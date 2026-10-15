@@ -13,13 +13,14 @@ set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+source tests/_paths.sh
 
 say()  { printf '  %s\n' "$*"; }
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 
 command -v cargo >/dev/null 2>&1 || { say "sin cargo -- salteando"; exit 0; }
-cargo build --release -p osrep-conformance >/dev/null 2>&1 || fail "no compila el harness Rust"
-RS=target/release/encode_conformance
+cargo_rs build --release -p osrep-conformance >/dev/null 2>&1 || fail "no compila el harness Rust"
+RS=$RUST_TARGET/release/encode_conformance
 
 ET="${OSREP_PASCAL_ENCODETOOL:-pascal/bin/encodetool}"
 if [ ! -x "$ET" ]; then
@@ -189,13 +190,14 @@ say "el segundo oraculo: el C++ 1.0.7, directo, en lo que el escribe (v1-v4)"
 # El Rust es byte-identico al C++, pero comparar contra los dos es mas fuerte:
 # una diferencia contra dos que coinciden entre si es, sin ambiguedad, del
 # port nuevo (docs/pascal-port.md, "Dos oraculos, no uno").
-if [ -x bin/osrep ] || make bin/osrep >/dev/null 2>&1; then
+CPP="$CXX_BIN/osrep"
+if [ -x "$CPP" ] || make_cxx bin/osrep >/dev/null 2>&1; then
     for input in $C/mixed.bin $C/text.bin "$TMP/dup20m.bin" "$TMP/rnd16.bin"; do
         for case in "m0o|-d16mb" "m1o|" "m2o|" "m3o|" "m4o|" "m5o|" "m0|-d16mb" "m1|" "m2|" \
                     "m3|" "m4|" "m5|" "m1f|" "m3f|" "m4f|" "m5f|" "m4o|-d16mb"; do
             IFS='|' read -r m o <<<"$case"
             # shellcheck disable=SC2086
-            ./bin/osrep "-$m" $o --seed=7 "$input" "$TMP/cpp.osr" >/dev/null 2>&1 \
+            "$CPP" "-$m" $o --seed=7 "$input" "$TMP/cpp.osr" >/dev/null 2>&1 \
                 || fail "el C++ fallo en -$m $o"
             # shellcheck disable=SC2086
             "$ET" "$m" $o --seed=7 "$input" "$TMP/pa.osr" >/dev/null 2>&1 \

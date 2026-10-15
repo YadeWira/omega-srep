@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Replay every captured-and-fixed crash artifact in tests/fuzz-regression/
-# through bin/dedup_test decode. A pass means the decoder rejects the
-# input cleanly (non-zero exit, no SIGSEGV/SIGABRT/SIGBUS) without
+# through oracles/cxx/bin/dedup_test decode. A pass means the decoder
+# rejects the input cleanly (non-zero exit, no SIGSEGV/SIGABRT/SIGBUS) without
 # crashing.
 #
 # Add new regression samples by:
@@ -12,6 +12,7 @@ set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+source tests/_paths.sh
 
 if [[ ! -d tests/fuzz-regression ]]; then
     echo "no regression samples yet"
@@ -25,7 +26,7 @@ if (( ${#samples[@]} == 0 )); then
     exit 0
 fi
 
-[[ -x bin/dedup_test ]] || make bin/dedup_test
+[[ -x "$CXX_BIN/dedup_test" ]] || make_cxx bin/dedup_test
 
 passed=0
 failed=0
@@ -33,7 +34,7 @@ for f in "${samples[@]}"; do
     name="$(basename "$f")"
     rm -f /tmp/fuzz_replay_out.bin
     set +e
-    timeout 5 ./bin/dedup_test decode "$f" /tmp/fuzz_replay_out.bin >/dev/null 2>&1
+    timeout 5 "$CXX_BIN/dedup_test" decode "$f" /tmp/fuzz_replay_out.bin >/dev/null 2>&1
     rc=$?
     set -e
     case "$rc" in

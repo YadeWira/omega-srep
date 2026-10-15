@@ -79,7 +79,7 @@ independently. `-m3 / -m4 / -m5` are not so kind.
 
 ### What's already parallel
 
-`Compression/SREP/io.cpp` defines `BG_COMPRESSION_THREAD`. There's already
+`oracles/cxx/Compression/SREP/io.cpp` defines `BG_COMPRESSION_THREAD`. There's already
 a **two-stage pipeline** (one bg thread + one main thread):
 
   - BG thread: reads next block, computes the per-block hash, runs
@@ -95,7 +95,7 @@ critical path of the main compression thread.
 
 ### What's hard to parallelize
 
-The inner loop in `Compression/SREP/compress.cpp` (`compress<ACCELERATOR>`,
+The inner loop in `oracles/cxx/Compression/SREP/compress.cpp` (`compress<ACCELERATOR>`,
 around line 97) carries genuine serial dependencies between iterations:
 
   - `last_match_end` advances as each match is recorded; later iterations
@@ -471,7 +471,7 @@ pool-coordination overhead.
 
 **Fix**: capped `PrepThreadsCount` (the prep-buffer stripe pool's own
 worker count) at a new `PREP_POOL_MAX = 16` constant in
-`Compression/SREP/io.cpp`, independent of `NumThreads`/`-tN` itself —
+`oracles/cxx/Compression/SREP/io.cpp`, independent of `NumThreads`/`-tN` itself —
 `-m1`/`-m2`'s separate, mature CDC thread pool is untouched and still
 scales with the user's `-tN`/all-cores default exactly as before.
 Verified output-safe (`prepare_buffer_striped`'s stripe assignment is
@@ -500,7 +500,7 @@ of `-tN`.
 
 ### What we tested
 
-The `-dup` CDC boundary hash (`Compression/SREP/dedup.cpp`, mirrored in
+The `-dup` CDC boundary hash (`oracles/cxx/Compression/SREP/dedup.cpp`, mirrored in
 `tests/dup_prototype.py`'s `cdc_split`) is `h = h*PRIME + byte`, reset to
 `0` only when a cut fires. A pure-Python prototype
 (`gear_cdc_split`, not committed — see below) swapped in a Gear-hash
@@ -642,14 +642,14 @@ average resync while still fixing every degenerate corpus tested (a
 
 ### What shipped
 
-`Compression/SREP/dedup.cpp` gained `CDC_HASH_FNV` (default, byte-for-byte
+`oracles/cxx/Compression/SREP/dedup.cpp` gained `CDC_HASH_FNV` (default, byte-for-byte
 unchanged) / `CDC_HASH_GEAR` (opt-in), a fixed compile-time 256-entry
 `GEAR_TABLE`, and `cdc_split_buffer_gear` implementing the tuned dual-mask
 Gear-hash chunker with the gated safeguard above. Threaded through
 `cdc_split`/`cdc_split_buffer`/`encode`/`encode_split`/`encode_streaming`
 (both call sites — the direct `cdc_split_buffer` call in the streaming
 path, and the `cdc_split` call in `encode`). Exposed as `--chunk-hash=fnv|gear`
-in `Compression/SREP/dup_wrapper.cpp`, documented in its `--help` and
+in `oracles/cxx/Compression/SREP/dup_wrapper.cpp`, documented in its `--help` and
 `srep.cpp`'s synopsis. `decode()`/`decode_streaming()`/`decode_split()`
 are untouched — confirmed by direct inspection, no `hash_algo`/`CDC_HASH`
 token appears anywhere near them. This is purely an encoder-side chunking
@@ -758,7 +758,8 @@ works as intended.
 
 ### What we tried first (1.0.1) and why it didn't extend to Windows
 
-1.0.1 added `make bin/osrep-pgo` (instrument -> train against
+1.0.1 added `make bin/osrep-pgo` (today
+`make -C oracles/cxx bin/osrep-pgo`; instrument -> train against
 `tests/corpus/*.bin` across all `-mN` at `-t1`/`-t8` -> `-fprofile-use`
 rebuild), verified byte-identical and shipped in the **Linux** release
 binary. The natural next step -- reuse that same Linux-collected
@@ -766,7 +767,7 @@ binary. The natural next step -- reuse that same Linux-collected
 and confirmed **not viable**, not just suboptimal: rebuilding with
 `-fprofile-use=pgo-data -fprofile-correction` while targeting Windows
 produced `-Wmissing-profile` warnings for essentially every function in
-`Compression/Common.cpp` and `dup_wrapper.cpp`. This is not a filename
+`oracles/cxx/Compression/Common.cpp` and `dup_wrapper.cpp`. This is not a filename
 or path-matching bug (verified by making the `-o` output path exactly
 match the instrumented build's) -- it's that `Common.cpp`'s
 `FREEARC_WIN`-gated code paths (TCHAR-based filename API, COM calls for

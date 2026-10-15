@@ -2,10 +2,10 @@ unit FutureLz;
 { El decoder de Future-LZ (v3, sufijo `f`) e Index-LZ (v4, el default de las
   1.0.x), con su memory manager y el derrame a disco.
 
-  Port de `crates/osrep-core/src/future_lz.rs` lineas 1-876. La especificacion
-  de la que sale este codigo la produjeron cuatro lectores independientes, uno
-  por componente, mas un critico que reviso la cobertura y resolvio
-  contradicciones contra el Rust (docs/pascal-port.md, fase 4b).
+  Port de `oracles/rust/crates/osrep-core/src/future_lz.rs` lineas 1-876. La
+  especificacion de la que sale este codigo la produjeron cuatro lectores
+  independientes, uno por componente, mas un critico que reviso la cobertura y
+  resolvio contradicciones contra el Rust (docs/pascal-port.md, fase 4b).
 
   Por que este formato es el dificil. En I/O-LZ un match apunta HACIA ATRAS y
   el bloque se reconstruye solo. Aca apunta HACIA ADELANTE: los bytes de origen

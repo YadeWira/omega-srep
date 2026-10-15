@@ -14,28 +14,29 @@ set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+source tests/_paths.sh
 
 say()  { printf '  %s\n' "$*"; }
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 
 if ! command -v cargo >/dev/null 2>&1; then
-    say "cargo not found -- skipping encoder conformance (install rustup; rust-toolchain.toml pins 1.77.2)"
+    say "cargo not found -- skipping encoder conformance (install rustup; oracles/rust/rust-toolchain.toml pins 1.77.2)"
     exit 0
 fi
 
-say "building the C++ oracle (bin/osrep)"
-make bin/osrep >/dev/null 2>&1
+say "building the C++ oracle ($CXX_BIN/osrep)"
+make_cxx bin/osrep >/dev/null 2>&1
 
 say "building the Rust port (osrep-conformance)"
-if ! cargo build --release -p osrep-conformance >/tmp/rust-encoder-build.log 2>&1; then
+if ! cargo_rs build --release -p osrep-conformance >/tmp/rust-encoder-build.log 2>&1; then
     cat /tmp/rust-encoder-build.log >&2
     fail "cargo build failed"
 fi
-RS_DIR=target/release
+RS_DIR=$RUST_TARGET/release
 RS="$RS_DIR/encode_conformance"
 [[ -x "$RS" ]] || fail "missing $RS"
 
-say "rustc: $(rustc --version)"
+say "rustc: $(cd "$RUST_DIR" && rustc --version)"
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -63,7 +64,7 @@ pass=0
 enc() {
     local input="$1" cm="$2" rm="$3"
     shift 3
-    if ! ./bin/osrep "$cm" "$@" --seed=7 "$input" "$TMP/cpp.osr" >/dev/null 2>"$TMP/cpp.err"; then
+    if ! "$CXX_BIN/osrep" "$cm" "$@" --seed=7 "$input" "$TMP/cpp.osr" >/dev/null 2>"$TMP/cpp.err"; then
         fail "cpp $cm $* on $input failed: $(tail -1 "$TMP/cpp.err")"
     fi
     if ! "$RS" "$rm" "$@" --seed=7 "$input" "$TMP/rs.osr" >/dev/null 2>"$TMP/rs.err"; then

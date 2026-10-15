@@ -9,6 +9,18 @@ Versions follow `<major>.<minor>.<patch>` for stable releases and
 written by the new default cannot be read by the previous release, which is
 what happened in 2.0.0.
 
+## [Unreleased]
+
+### Changed
+
+- **The C++ and Rust oracles moved under `oracles/`**: the C++ 1.0.7
+  (`Compression/`, `Makefile`, `CMakeLists.txt` and its test tools) is now in
+  `oracles/cxx/`, and the Rust workspace (`Cargo.toml`, `crates/`,
+  `rust-toolchain.toml`, `.cargo/`) in `oracles/rust/`, so the root holds the
+  shipped Pascal in `pascal/`, the tests and the docs. Build with
+  `make -C oracles/cxx bin/osrep` and `cd oracles/rust && cargo build ...`;
+  see `oracles/README.md`. The shipped binaries and the format are unchanged.
+
 ## [2.2.1] — 2026-10-12
 
 Data-loss fixes. Every one needs non-default options (`-dup` on runs of zeros
