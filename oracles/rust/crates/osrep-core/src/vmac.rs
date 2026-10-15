@@ -461,10 +461,12 @@ pub const DIGEST_SIZE: usize = 20;
 /// tag are overwritten and the digest is `v1[0..4] ++ v2[0..16]`.
 ///
 /// The C++ keys both instances from `cryptographic_prng()` and never stores
-/// them: the digests only ever get compared for *equality* against other
-/// digests from the same instances (`hash_table.cpp:321`), so the key cannot
-/// affect the archive. The port pins it to zeroes, which keeps `--seed=N` runs
-/// byte-identical and makes the digest reproducible across builds.
+/// them. The port pins the key to zeroes, which keeps `--seed=N` runs
+/// byte-identical and makes the digest reproducible across builds. Where the
+/// digest is only compared for equality (`hash_table.cpp:321`) the key cannot
+/// affect the archive; where its trailing bytes index the hash table (CDC,
+/// `hash_table.cpp:417`) it can, and the C++ oracle was changed to zeroes too
+/// (see `cdc.rs`, `CdcChunkHasher`).
 pub struct VDigest {
     vhash1: Vmac,
     vhash2: Vmac,

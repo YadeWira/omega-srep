@@ -13,8 +13,8 @@ what happened in 2.0.0.
 
 ### Changed
 
-- **-m3/-m4/-m5 (the default -m3 included, and -m0) now write the same bytes
-  as the C++ 1.0.7 on every input, also where many matches share one source.**
+- **-m3/-m4/-m5 (the default -m3 included, and -m0) now order matches that
+  share one source exactly as the C++ 1.0.7 does.**
   The C++ sorts the second-pass match list by source alone with libstdc++'s
   `std::sort` (`srep.cpp:899`), which is not stable, and the order it leaves
   equal sources in is part of the archive. 2.2.1 and the Rust oracle kept them
@@ -30,8 +30,16 @@ what happened in 2.0.0.
   before (the decoders never depended on that order). What changes is only
   that compressing the same input with 2.2.1 and with this release can give
   different files (two archives pinned in `tests/rust_cli_conformance.sh` moved
-  this way). `-mNo` never sorts; `-m1`/`-m2` had no ties in the sample. The gate is `tests/cxx_sort_tie_divergence.sh`, and the
-  tie inputs are in the standard encode gates too.
+  this way). `-mNo` never sorts; `-m1`/`-m2` had no ties in the sample.
+  The gate is `tests/cxx_sort_tie_divergence.sh`, and the tie inputs are in the
+  standard encode gates too.
+- **The C++ oracle's `-m1`/`-m2` is deterministic.** 1.0.7 keyed the two VMAC
+  chunk hashers of the CDC modes from a fresh random key on every run, and
+  part of each hash is the hash-table index, so which matches survived a full
+  probe chain changed from run to run (on a 1.3 GB tar, 12 runs gave 12
+  different archives, all decodable). The oracle in `oracles/cxx/` now uses an
+  all-zero key, as the Rust and the Pascal always did, and writes exactly
+  their archives. No change to `osrep` itself.
 - **The C++ and Rust oracles moved under `oracles/`**: the C++ 1.0.7
   (`Compression/`, `Makefile`, `CMakeLists.txt` and its test tools) is now in
   `oracles/cxx/`, and the Rust workspace (`Cargo.toml`, `crates/`,

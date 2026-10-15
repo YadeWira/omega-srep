@@ -193,8 +193,12 @@ fn zpaq_find_chunks(
 }
 
 /// The two VMAC instances every chunk is hashed with (`CDC_Thread::vhash1/2`).
-/// Like `-m3`'s digests, the C++ keys them from the PRNG and never stores them
-/// — they are only compared for equality — so the port pins them to zeroes.
+/// The key is never stored, but it is not output-neutral: the bytes after the
+/// digest are the hash-table index (`hash_table.cpp:417`), so the key decides
+/// which chunks share a probe run, and a full run overwrites its last slot
+/// unchecked. The C++ 1.0.7 drew a fresh PRNG key per run, which made `-m1`/
+/// `-m2` archives vary between runs; the C++ oracle now uses zeroes
+/// (`compress_cdc.cpp`), and so does the port.
 pub struct CdcChunkHasher {
     vhash1: Vmac,
     vhash2: Vmac,

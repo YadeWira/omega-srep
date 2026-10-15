@@ -158,7 +158,13 @@ struct CDC_Global
     ThreadStorage = new CDC_Thread[NumThreads];  Threads.MaxJobs = NumThreads;  Threads.NumThreads = NumThreads;
     if (!ThreadStorage || Threads.start()!=0)  {errcode=ERROR_MEMORY; return;}   // Error: not enough memory
 
-    vhash1.init(); vhash2.init();
+    // Omega SREP: fixed all-zero key for both chunk hashers, not cryptographic_prng().
+    // The 8 bytes after the digest are the HashTable index (hash_table.cpp:417), so the key
+    // decides which chunks share a MAX_HASH_CHAIN probe run; a full run overwrites its 12th
+    // slot unchecked (add_hash0), dropping a future match source. A per-run random key made
+    // -m1/-m2 archives differ from run to run. The key is never stored in the archive, the
+    // decoder never needs it, and the Rust/Pascal ports pin it to zeroes the same way.
+    {ALIGN(4) unsigned char zero_key[VMAC_KEY_LEN_BYTES] = {0};  vhash1.init(zero_key);  vhash2.init(zero_key);}
     for (int i=0; i<NumThreads; i++)
       ThreadStorage[i].init (vhash1, vhash2);
   }

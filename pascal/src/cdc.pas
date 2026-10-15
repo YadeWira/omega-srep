@@ -30,8 +30,12 @@ procedure CompressCdc(Zpaq: Boolean; L, MinMatchIn, BaseLen, BlockStart: QWord;
                       var T: THashTableRec; const B: TBytes; At, BlockSize: QWord;
                       out LiteralBytes: DWord; var Stat: TStatList; const ChunkKey: TVmac);
 
-{ La clave cero de los dos VMAC de cada chunk (nunca se guardan: solo se
-  comparan, asi que cualquier clave compartida da las mismas decisiones). }
+{ La clave cero de los dos VMAC de cada chunk. Nunca se guarda, pero decide
+  el archivo: los bytes despues del digest son el indice de la tabla
+  (hash_table.cpp:417), asi que la clave decide que chunks comparten una
+  cadena de sondeo, y una cadena llena pisa su ultimo slot sin comparar. El
+  C++ 1.0.7 sacaba una clave al azar en cada corrida (por eso -m1/-m2 variaban
+  entre corridas); el oraculo C++ ahora usa ceros, igual que el Rust y esto. }
 procedure CdcHasherInit(out K: TVmac);
 
 implementation
