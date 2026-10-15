@@ -21,6 +21,9 @@
 # table bounds those sizes). An archive that decoded keeps its bytes, so the
 # second table pins archives 2.2.0 already wrote. Run by tests/rust_cli_conformance.sh against the Rust
 # and (OSREP_PORT_BIN) the Pascal build; both write these same archives.
+# The z66 -l9 and text.bin -l17 pins moved in 2.3.0 (L 9 and 17 run the C++'s
+# bitarr-filtered compress<1>, not compress<0>, and add_hash compares the -m3
+# digests); the others did not.
 #
 #   OSREP_BIN=<osrep> bash tests/m3_grid_regress.sh
 set -eu
@@ -100,10 +103,10 @@ done <<'EOF'
 1 74c1f456b282320006dfcd3c52c36ba9 t300k -m3 -l128 -c300 -b117kb
 0 8a96c3a1993719a09cabaccc69acd621 cr1b -m3 -l16 -b1000b
 0 1fab6dfe267b1b20de74cf8800bde493 cr1b -m3 -l16 -b1000b --format=v4
-1 d694b1099b653ea5ef410c8a4cdac986 z66 -m3 -l9
-1 d694b1099b653ea5ef410c8a4cdac986 z66 -m3o -l9
-1 4ea55e35c3093cd75cfd0085a05a8d66 text.bin -m3 -l17 -b4kb --format=v4
-1 3af8578e4c2492c3b949083fb3661110 text.bin -m3f -l17 -b4kb --format=v4
+1 669181f64290b946084d95142813de40 z66 -m3 -l9
+1 669181f64290b946084d95142813de40 z66 -m3o -l9
+1 3da714f1149c046323c45229ef6f6fcf text.bin -m3 -l17 -b4kb --format=v4
+1 61c98db3cd9ffaff74847c941690e85c text.bin -m3f -l17 -b4kb --format=v4
 EOF
 
 # Archives that already decoded keep their bytes (these are 2.2.0's).
@@ -127,7 +130,7 @@ done <<'EOF'
 0 a2b33d6835108c9a02686a7e32587b04 8000 text.bin -m3 -b1000001b
 0 bccf87152797f89d3d8ae6a631a28f72 80000 text.bin -m3 -b65537b
 0 19b7305637d04f8ed0539f6ed6c76a6e 8000 t300k -m3 -b65537b
-1 4ea55e35c3093cd75cfd0085a05a8d66 200000 text.bin -m3 -l17 -b4kb --format=v4
+1 3da714f1149c046323c45229ef6f6fcf 200000 text.bin -m3 -l17 -b4kb --format=v4
 EOF
 
 # Through a pipe (-s given) the fix rereads the same bytes: same archive.

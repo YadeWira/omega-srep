@@ -29,7 +29,7 @@ use crate::hash_table::HashTable;
 use crate::inmem::DictionaryCompressor;
 use crate::lz;
 use crate::second_pass::{self, CompressedBlock};
-use crate::util::rounddown_to_power_of_two;
+use crate::util::{rounddown_to_power_of_two, zeroed_vec};
 use crate::{hashes, hashes_keyed, vmac};
 
 /// `-b` default (`srep.cpp:288`).
@@ -166,6 +166,12 @@ pub struct EncodeOptions {
     /// writer puts it before the footer and points the footer at it. v4 keeps
     /// its ODUP trailer, which the caller appends itself.
     pub dup_meta: Option<Vec<u8>>,
+    /// `-aN` (`accel`): 9000 = not given, derive from `L`
+    /// (`srep.cpp:631-632`). Sizes `bitarr` (`N * 8` bits per chunk).
+    pub accel: u32,
+    /// `-aN/M` (`ACCELERATOR`): 9000 = not given, `min(accel, 16)`
+    /// (`srep.cpp:634`). Picks the `compress<ACCELERATOR>` variant.
+    pub accelerator: u32,
 }
 
 impl Default for EncodeOptions {
@@ -182,6 +188,8 @@ impl Default for EncodeOptions {
             declared_size: None,
             hash: container::DEFAULT_HASH_NAME.to_string(),
             dup_meta: None,
+            accel: 9000,
+            accelerator: 9000,
         }
     }
 }
@@ -333,6 +341,38 @@ pub fn encode<R: Read + Seek, W: Write>(
     let base_len = min_match.min(dict_min_match);
     let bufsize = opts.bufsize;
 
+    // `srep.cpp:631-634`: `accel` defaults to `L / 32`, at least 1 and at
+    // most DEFAULT_ACCEL (4); it sizes `bitarr` (`accel * 8` bits per chunk).
+    // The scan variant (`ACCELERATOR`, `-aN/M`) defaults to `accel` capped at
+    // 16. Both are output-visible (see `compress::compress`). Where the C++
+    // has no defined behaviour the port keeps the plain `compress<0>` scan,
+    // which is what 2.2.1 ran for every `-a`:
+    // * there are `compress<>` instances for 0, 1, 2, 4, ..., 64 only; with
+    //   any other value (`-a3`, `-a5`, and the default `accel` 3 of
+    //   `-l96`..`-l127`) the C++ skips the scan and writes a broken block;
+    // * `-a0/N` (or `-a-` after `-aN/M`) dereferences a null `bitarr`;
+    // * a variant wider than the chunk (`-l16 -a1/32`) gives `hash1` a
+    //   negative window (`L - OFFSET`): the C++ aborts or writes garbage.
+    let accel = if opts.accel == 9000 {
+        ((l / 32).max(1)).min(4) as u32
+    } else {
+        opts.accel
+    };
+    let bitarr_accelerator = accel.wrapping_mul(8) as u64;
+    let accelerator = if opts.accelerator == 9000 {
+        accel.min(16)
+    } else {
+        opts.accelerator
+    } as usize;
+    let accelerator = if matches!(accelerator, 1 | 2 | 4 | 8 | 16 | 32 | 64)
+        && accelerator <= l
+        && bitarr_accelerator != 0
+    {
+        accelerator
+    } else {
+        0
+    };
+
     // `ROUND_MATCHES = (method == -m3) && dictsize == 0` (`srep.cpp:443`):
     // `-m3o` writes format v1 with 3-word records, `-m3o -d` falls back to v2.
     let round_matches = kind == Kind::Digest && opts.dictsize == 0;
@@ -460,16 +500,22 @@ pub fn encode<R: Read + Seek, W: Write>(
                 Kind::Inmem | Kind::Cdc | Kind::CdcZpaq | Kind::Digest
             );
             let precompute_digests = kind == Kind::Digest;
-            Some(HashTable::new(
-                round_matches,
-                compare_digests,
-                precompute_digests,
-                cdc,
-                l,
-                min_match,
-                1,
-                filesize,
-            ))
+            // `None` when `bitarr` does not fit (a huge `-aN`): the C++'s
+            // "Can't allocate memory", exit 4 here.
+            Some(
+                HashTable::new(
+                    round_matches,
+                    compare_digests,
+                    precompute_digests,
+                    cdc,
+                    l,
+                    min_match,
+                    1,
+                    bitarr_accelerator,
+                    filesize,
+                )
+                .ok_or(EncodeError::OutOfMemory)?,
+            )
         }
     };
 
@@ -604,6 +650,7 @@ pub fn encode<R: Read + Seek, W: Write>(
                     &mut stat,
                     &mut literal_bytes,
                     input,
+                    accelerator,
                 )?;
             }
         }
@@ -734,28 +781,6 @@ fn write_literals<W: Write>(
     }
     output.write_all(&dict[buf_offset + in_pos..buf_offset + filled])?;
     Ok((filled - in_pos) as u64)
-}
-
-/// `vec![0u8; n]` that reports an allocation failure instead of aborting.
-/// It keeps `vec!`'s lazy zeroed pages (`alloc_zeroed`, calloc), so a huge
-/// `-b` on a 64-bit build still costs only what is written.
-fn zeroed_vec(n: usize) -> Option<Vec<u8>> {
-    if n == 0 {
-        return Some(Vec::new());
-    }
-    let layout = std::alloc::Layout::array::<u8>(n).ok()?;
-    // SAFETY: `layout` is non-zero-sized; the pointer comes from the global
-    // allocator with exactly this layout, which is what `Vec::from_raw_parts`
-    // requires for a `Vec<u8>` of capacity `n`, and the bytes are initialized
-    // (zeroed).
-    unsafe {
-        let p = std::alloc::alloc_zeroed(layout);
-        if p.is_null() {
-            None
-        } else {
-            Some(Vec::from_raw_parts(p, n, n))
-        }
-    }
 }
 
 /// `roundUp` (`Common.h:692`) for the base the ring uses.

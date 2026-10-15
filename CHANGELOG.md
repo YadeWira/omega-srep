@@ -13,6 +13,53 @@ what happened in 2.0.0.
 
 ### Changed
 
+- **-m3/-m4/-m5 with a small chunk now write exactly what the C++ 1.0.7
+  writes, and `-aN[/M]` is honoured.** Two mistakes in the ports' first pass,
+  present in every 2.x (the Rust oracle had them too):
+  the match table replaced an entry on an equal stored hash alone, where the
+  C++ with `-m3` also requires equal chunk digests (`hash_table.cpp:268-276`),
+  so `-m3` lost matches against chunks that differ only in their last bytes;
+  and the ports always ran the C++'s plain scan (`compress<0>`), while the
+  C++ runs, by default, a scan that only looks up positions whose hash passes
+  a bit-array filter (`compress<accel>`, `accel = min(max(L/32, 1), 4)`,
+  `srep.cpp:631-634`). With the default `-l` the filter almost never decides
+  anything. With a chunk of about 16 to 128 bytes it does: **`-m3`/`-m4`
+  with `-l16`..`-l128` or a small `-c`, and `-m5` with a small `-c`, in every
+  container (`o`, `f`, v4 and the default v5), can now give different bytes
+  than 2.2.1** for the same input (as decodable, by either release; existing
+  archives read as before). `-aN[/M]` used to be parsed and ignored; it now
+  sizes the bit array (`N` bytes per chunk) and picks the scan (`M`, default
+  `N` capped at 16), as in the C++, so `-a` with a small chunk changes the
+  archive too. Where 1.0.7 has no defined behaviour the plain scan of 2.2.1
+  stays, and every option 2.2.1 accepted is still accepted: a scan with no
+  instance in the C++ (`-a3`, `-a5`, `-aN/3`, and the default `accel` 3 of
+  `-l96`..`-l127`/`-c96`..`-c127`, where 1.0.7's behaviour is undefined: it
+  exits 3, aborts, or writes a block that does not decode), `-a0/N` or `-aN/M` followed by `-a-` (1.0.7 segfaults),
+  and a scan wider than the chunk (`-l16 -a1/32`, where 1.0.7 aborts). A huge
+  `-aN` can now stop with `OutOfMemory`, exit 4, like 1.0.7's "Can't allocate
+  memory". Measured: on 220 real files with 55 small-chunk and `-a` option
+  sets (`-m3o`..`-m5` with `-l16`..`-l128`, `-c16`..`-c64`, `-a1`..`-a16` and
+  `/N`), all 11,880 cases where the C++ is defined match it byte for byte
+  (Rust and Pascal, v4), and the Pascal matches the Rust in v5; 20 of them
+  with 67 option sets give the same bytes with both Windows builds under
+  wine. **The default options' archives did not move in that sample**:
+  those 220 files and 13 more of 13 to 39 MB, with `-m3`/`-m4`/`-m5` (`o`,
+  `f`, default), `-m4 -b1mb` and `-m5 -l1000`, v5 and v4 (2,563 archives),
+  are byte-identical to 2.2.1 plus the sort fix above; that is a sample, not
+  a proof. The default `-m3`/`-m4`/`-m5` got
+  faster (Pascal, two ~38 MB real files: 1.2x to 1.9x on Linux x64, 1.2x to
+  1.7x under wine x64, 1.2x to 2.1x on win32); a small `-l` runs between
+  0.83x and 1.16x the 2.2.1 speed on those files, and 1.4x to 2.4x slower on
+  an all-zero file, where the C++'s filtered scan is also 1.5x to 2.7x slower
+  than its plain one. Pinned archives that moved, all because their chunk
+  is 9 or 17 bytes: `-m4 -l17 -b1mb` and `-m5 -c17 -b1mb` on `text.bin`
+  (now 1.0.7's bytes), the `-m3`/`-m3o`/`-m3f -l17 -b4kb` ones (in both CLI
+  suites), and `z66 -m3`/`-m3o -l9` in `tests/m3_grid_regress.sh`. The
+  encode and CLI conformance suites now check a generated near-copy input
+  against the C++, and the fallback values against the plain scan. `--help` still lists
+  `-aN[/M]` among the options that are not acted on; that text is pinned byte
+  for byte across the ports and is corrected separately (`man osrep` is
+  already right).
 - **-m3/-m4/-m5 (the default -m3 included, and -m0) now order matches that
   share one source exactly as the C++ 1.0.7 does.**
   The C++ sorts the second-pass match list by source alone with libstdc++'s

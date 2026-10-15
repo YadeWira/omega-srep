@@ -70,7 +70,7 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
         eprintln!(
-            "usage: {} <mode> [--seed=N] [--dup] [-dN] [-bN] [-lN] [-cN] [-hash=NAME] <in> <out>",
+            "usage: {} <mode> [--seed=N] [--dup] [-dN] [-bN] [-lN] [-cN] [-aN[/M]] [-hash=NAME] <in> <out>",
             args[0]
         );
         return ExitCode::from(2);
@@ -107,6 +107,21 @@ fn main() -> ExitCode {
             opts.min_match = parse_mem(v) as usize;
         } else if let Some(v) = a.strip_prefix("-c") {
             opts.l = parse_mem(v) as usize;
+        } else if a == "-a-" {
+            opts.accel = 0;
+        } else if let Some(v) = a.strip_prefix("-a") {
+            // `-aN` / `-aN/M`, decimal: the bitarr size and the scan variant.
+            let (n, m) = v.split_once('/').unwrap_or((v, "9000"));
+            match (n.parse::<u32>(), m.parse::<u32>()) {
+                (Ok(n), Ok(m)) => {
+                    opts.accel = n;
+                    opts.accelerator = m;
+                }
+                _ => {
+                    eprintln!("bad option: {a}");
+                    return ExitCode::from(2);
+                }
+            }
         } else if let Some(v) = a.strip_prefix("-hash=") {
             opts.hash = v.to_string();
         } else if a == "-hash-" {

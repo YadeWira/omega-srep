@@ -306,7 +306,7 @@ random block — 16.8 MB → ~1.05 MB at `-m0/-m3/-m4/-m5`, ~1.13 MB at `-m1`) w
 
 | experiment | result |
 |---|---|
-| `-a0` vs `-a1` vs `-a16` vs default, and `-ia+` vs `-ia-` (`-m3/-m4/-m5`, and `-f`) | **byte-identical** — the accelerator, `bitarr` and the prefetch/batching machinery are output-neutral. The port implements one path: the plain per-position rolling hash. |
+| `-a0` vs `-a1` vs `-a16` vs default, and `-ia+` vs `-ia-` (`-m3/-m4/-m5`, and `-f`) | **byte-identical on this input with the default `-l`** — and the conclusion drawn from it, that the accelerator, `bitarr` and the batching machinery are output-neutral so one path (the plain per-position rolling hash, `compress<0>`) suffices, was **wrong**. With a small chunk (`-l16`..`-l128`, a small `-c`) the C++'s default `compress<accel>` (`accel = min(max(L/32, 1), 4)`) probes only the positions whose hash passes `bitarr`, and `find_match` accepts chunks whose hash differs in the bits it does not compare, so the probed set is visible in the archive. Found in 2.3.0 development; the ports now implement `compress<CYCLES>` too (see `compress.rs` and the CHANGELOG). The prefetches and `-ia` are output-neutral. |
 | `-t1` vs `-t8` vs default (`-m0`…`-m5`, `-m1f`, `-m5f`) | **byte-identical** — thread count does not affect output. The port is single-threaded per block. |
 | `-m1` built normally vs built with `#if GCC_VERSION >= 403` forced to `#if 0` (`hashes.cpp:204`, which makes `crc32c()` the `false` macro at `hashes.cpp:236`) | **different archives** (1,125,378 vs 1,158,094 bytes) — the two CDC routes are real algorithms, not a tuning knob. Both must be ported. |
 
@@ -485,8 +485,10 @@ with the binary in phase 5.
   header as a block. The harnesses pass `None`, so nothing but the CLI could
   have caught it.
 * **What the CLI accepts and does not act on**: `-t` (the port is single-threaded
-  per block), `-a`/`-ia`/`-slp`/`-pc`/`-mmap`/`-nommap`/`-rem` -- all proven
-  output-neutral by the phase 4c pre-port experiments. `-mem` and `-vmblock=`
+  per block), `-ia`/`-slp`/`-pc`/`-mmap`/`-nommap`/`-rem` -- all proven
+  output-neutral by the phase 4c pre-port experiments. `-a` was on this list
+  until 2.3.0, on the strength of a measurement made only with the default
+  `-l` (see the table above); it is honoured now. `-mem` and `-vmblock=`
   map onto the spill budget, and `-vmfile=` names the spill file.
 * **`-index=` is implemented** (it was the last refusal to go). It routes the
   per-block match lists to a second file: I/O-LZ writes them in the first

@@ -70,6 +70,30 @@ while len(out) < 2 << 20:
         out += bytes(r.randrange(256) for _ in range(r.randint(1, 40)))
 open(os.path.join(d, "noisy512k.bin"), "wb").write(out[:512 << 10])
 open(os.path.join(d, "noisy2m.bin"), "wb").write(out[:2 << 20])
+# Casi-copias para un -l chico (la primera pasada de -m3/-m4/-m5 con
+# -l16..-l128 o un -c chico): copias de una unidad al azar con el ultimo byte
+# (o el anteultimo) de ~30% de las celdas de 16 bytes subido 1-3, y unos bytes
+# al azar despues de ~20% de las copias; una mitad de 64 KiB con unidad de
+# 4 KiB y otra con unidad de 1 KiB. La 2.2.x (Rust y Pascal) escribia otros
+# bytes que el C++ en todos los casos de -l chico de abajo: dos chunks que
+# difieren en el ultimo byte se reemplazaban en add_hash (el C++ ademas
+# compara los digests de -m3 ahi) y los ports corrian compress<0> donde el
+# C++ corre el escaneo filtrado por bitarr, compress<accel>.
+def nearcopies(seed, unit_len):
+    r = random.Random(seed)
+    unit = bytearray(r.randrange(256) for _ in range(unit_len))
+    out = bytearray()
+    while len(out) < 65536:
+        u = bytearray(unit)
+        for c in range(0, unit_len, 16):
+            if r.random() < 0.3:
+                j = c + 15 - r.randrange(2)
+                u[j] = (u[j] + r.randrange(1, 4)) & 0xFF
+        out += u
+        if r.random() < 0.2:
+            out += bytes(r.randrange(256) for _ in range(r.randint(1, 7)))
+    return bytes(out[:65536])
+open(os.path.join(d, "smalll.bin"), "wb").write(nearcopies(2, 4096) + nearcopies(3, 1024))
 PY
 
 # enc <entrada> <modo> <opciones...>: los dos encoders, --seed=7, cmp.
@@ -153,6 +177,34 @@ done
 enc "$TMP/noisy2m.bin" m0 -d16mb
 enc "$TMP/noisy2m.bin" m0v -d16mb
 
+say "-l o -c chicos: el escaneo filtrado por bitarr y el digest de -m3 en add_hash"
+# accel = min(max(L/32, 1), 4) elige compress<accel> (srep.cpp:631-634); -aN/M
+# dimensiona bitarr y elige la variante; -a0/-a- es compress<0>. Los valores
+# sin comportamiento definido en el C++ (-a3, -l96..-l127, -a0/N, una variante
+# mas ancha que el chunk) caen al escaneo simple: el mismo archivo que -a0.
+SMALLL_CASES="m3o|-l32 m3|-l32 m4o|-l16 m4|-c64 m5|-c64 m4o|-l32 m5o|-l32 m4|-l64 m3f|-l32
+  m3o|-l32_-a0 m3|-l32_-a- m4o|-l16_-a2/2 m3o|-l32_-a2 m4|-l64_-a16 m4o|-l64_-a4/64
+  m5|-c64_-a8 m4o|-l16_-a1/16 m4|-l64_-a1/64 m3v|-l32 m4v|-l16 m5v|-c64"
+for case in $SMALLL_CASES; do
+    IFS='|' read -r m o <<<"$case"
+    # shellcheck disable=SC2086
+    enc "$TMP/smalll.bin" "$m" ${o//_/ }
+done
+for case in "m4o|-l32 -a3|-l32 -a0" "m4|-l32 -a5|-l32 -a0" "m3o|-l32 -a0/4|-l32 -a0" \
+            "m4|-l16 -a1/32|-l16 -a0" "m5o|-l32 -a1/64|-l32 -a0" "m4o|-l96|-l96 -a0" \
+            "m3|-l100|-l100 -a0" "m4|-l32 -a4/8 -a-|-l32 -a0" "m4|-l64 -a2/3|-l64 -a0"; do
+    IFS='|' read -r m o plain <<<"$case"
+    # shellcheck disable=SC2086
+    enc "$TMP/smalll.bin" "$m" $o
+    cp "$TMP/pa.osr" "$TMP/fallback.osr"
+    # shellcheck disable=SC2086
+    "$ET" "$m" $plain --seed=7 "$TMP/smalll.bin" "$TMP/plain.osr" >/dev/null 2>&1 \
+        || fail "el Pascal fallo en $m $plain"
+    cmp -s "$TMP/fallback.osr" "$TMP/plain.osr" \
+        || fail "$m $o no cae al escaneo simple (distinto de $m $plain)"
+    pass=$((pass + 1))
+done
+
 say "-m1/-m2 (chunking por contenido)"
 for input in $C/mixed.bin "$TMP/dup4m.bin" "$TMP/dup20m.bin"; do
     enc "$input" m1o
@@ -235,6 +287,20 @@ if [ -x "$CPP" ] || make_cxx bin/osrep >/dev/null 2>&1; then
                 || fail "-$m $o sobre $(basename "$input"): distinto del C++"
             pass=$((pass + 1))
         done
+    done
+    # -l o -c chicos, directo contra el C++, en lo que el C++ tiene definido
+    for case in $SMALLL_CASES; do
+        IFS='|' read -r m o <<<"$case"
+        case "$m" in *v) continue ;; esac
+        # shellcheck disable=SC2086
+        "$CPP" "-$m" ${o//_/ } --seed=7 "$TMP/smalll.bin" "$TMP/cpp.osr" >/dev/null 2>&1 \
+            || fail "el C++ fallo en -$m ${o//_/ }"
+        # shellcheck disable=SC2086
+        "$ET" "$m" ${o//_/ } --seed=7 "$TMP/smalll.bin" "$TMP/pa.osr" >/dev/null 2>&1 \
+            || fail "el Pascal fallo en $m ${o//_/ }"
+        cmp -s "$TMP/cpp.osr" "$TMP/pa.osr" \
+            || fail "-$m ${o//_/ } sobre smalll.bin: distinto del C++"
+        pass=$((pass + 1))
     done
     # Los empates del orden por origen, directo contra el C++ (sin -m2: el
     # -m2 del C++ no es determinista en todas las entradas).

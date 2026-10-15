@@ -409,6 +409,8 @@ begin
   E.DictMinMatch := O.DictMinMatch;
   E.DictChunk := O.DictChunk;
   E.L := O.L;
+  E.Accel := O.Accel;
+  E.Accelerator := O.Accelerator;
   if O.HasHash then E.Hash := O.Hash else E.Hash := 'vmac';
   E.HasDeclaredSize := HasDeclared;
   E.DeclaredSize := Declared;

@@ -1,7 +1,18 @@
 unit FixedCompress;
 { El compresor de un bloque para -m3/-m4/-m5 (compress.rs, que porta
-  compress.cpp con ACCELERATOR == 0 -- todas las variantes dan el mismo
-  archivo, medido). Lo que si se ve en la salida, y se reproduce:
+  compress.cpp). El C++ es una plantilla sobre ACCELERATOR (0, 1, 2, 4, ...,
+  64), y las variantes NO dan el mismo archivo: find_match acepta un chunk
+  cuyo hash difiere del buscado en los bits que no compara (los del numero
+  de chunk en el slot de chunkarr), y -m4/-m5 lo guardan si los bytes
+  releidos, con la extension hacia atras, llegan a MIN_MATCH (siempre posible
+  con MIN_MATCH == L). El escaneo acelerado solo sondea las posiciones cuyo
+  hash pasa bitarr, que filtra casi todas esas, y es el que el C++ usa por
+  defecto (accel = min(max(L/32, 1), 4)). Con el -l por defecto casi nunca
+  decide nada; con -l16..-l128 o -c chico si. Asi que CompressFixed corre
+  CompressFixedAccel (compress<CYCLES>) para las variantes que el C++
+  instancia, y compress<0> para -a0/-a- y para los valores donde el C++ no
+  tiene comportamiento definido (encoder.pas los lista).
+  Lo que se ve en la salida de compress<0>, y se reproduce:
 
   * solo se prueban posiciones en [last_match_end, match_start): ni adentro del
     match anterior ni adentro del match de entrada pendiente;
@@ -23,12 +34,14 @@ uses SysUtils, Classes, Widths, Hashes, LzCodec, HashTable;
 type
   EEncode = class(Exception);
 
-{ compress<0>: los records van a Stat y la cuenta de literales a LiteralBytes.
-  Dict tiene el bloque en BufOff; InStat es la lista de entrada. }
+{ compress<ACCELERATOR>: los records van a Stat y la cuenta de literales a
+  LiteralBytes. Dict tiene el bloque en BufOff; InStat es la lista de
+  entrada. Accelerator es la variante ya validada por el encoder (0 = el
+  escaneo simple); sin bitarr tambien es el simple. }
 procedure CompressFixed(var T: THashTableRec; const Dict: TBytes; BufOff, BlockSize: QWord;
                         RoundMatches: Boolean; L, MinMatch: QWord; BaseLen: DWord;
                         BlockStart: QWord; const InStat: TStatList; var Stat: TStatList;
-                        out LiteralBytes: DWord; Reread: TStream);
+                        out LiteralBytes: DWord; Reread: TStream; Accelerator: DWord);
 
 { El error de ENCODE_LZ_MATCH, con el texto del Debug del Rust. }
 procedure MatchTooSmall(MatchLen, BaseLen: DWord);
@@ -40,6 +53,8 @@ uses Rolling;
 const
   LOOKAHEAD = 128;      { compress.cpp:134 con ACCELERATOR == 0 }
   X = 4;                { max(CYCLES, 4) }
+  LOOKAHEAD_A = 256;    { compress.cpp:134 con ACCELERATOR != 0 }
+  MAX_CYCLES = 64;      { la variante mas ancha que el C++ instancia }
 
 procedure MatchTooSmall(MatchLen, BaseLen: DWord);
 begin
@@ -273,7 +288,8 @@ begin
   Result := n;
 end;
 
-procedure CompressFixed(var T: THashTableRec; const Dict: TBytes; BufOff, BlockSize: QWord;
+{ compress<0> }
+procedure CompressPlain(var T: THashTableRec; const Dict: TBytes; BufOff, BlockSize: QWord;
                         RoundMatches: Boolean; L, MinMatch: QWord; BaseLen: DWord;
                         BlockStart: QWord; const InStat: TStatList; var Stat: TStatList;
                         out LiteralBytes: DWord; Reread: TStream);
@@ -402,6 +418,292 @@ begin
     { add_hash en la frontera de L, con el valor ACTUAL de hash1 }
     HtAddHash(T, hash1.Value, DWord(hash1.Value shr 32), (BlockStart + i) div L);
   end;
+end;
+
+{ El lote de CompressFixedAccel que corre hash1 (compress.cpp:138-149): de a
+  Cycles posiciones desde I mientras I0 < LastI, guardando en H1 el hash de la
+  primera de cada grupo; devuelve cuantos guardo. hash1 cubre los ultimos
+  L - OFFSET bytes de la ventana: sale Pb[p], entra Pb[p + L - OFFSET]. Hoja,
+  por lo mismo que HashBatch. }
+function Hash1Batch(Pb: PByte; I, LastI, Cycles, L: QWord; var HV: QWord;
+                    Prime, PrimeL: QWord; H1: PQWord; Bits: PByte; Shift: DWord): LongInt;
+var i0, h, p, e: QWord; n: LongInt;
+begin
+  h := HV;
+  n := 0;
+  i0 := I;
+  while i0 < LastI do
+  begin
+    { hash1.update(buf[i0+OFFSET], buf[i0+L]) y despues update<CYCLES-1>
+      desde buf+i0+1+OFFSET: las dos son, byte a byte, sacar buf[p] y meter
+      buf[p + L - OFFSET] para p = i0+OFFSET .. i0+2*OFFSET }
+    p := i0 + Cycles - 1;
+    h := h * Prime + QWord(Pb[PtrUInt(p + L - Cycles + 1)]) - PrimeL * QWord(Pb[PtrUInt(p)]);
+    H1[n] := h;
+    Inc(n);
+    {$IFDEF CPUX86_64}
+    { prefetch_check_match_possibility: el byte de bitarr que mira CheckBatch }
+    prefetch(Bits[PtrUInt(h shr Shift)]);
+    {$ENDIF}
+    e := p + Cycles - 1;
+    while p < e do
+    begin
+      Inc(p);
+      h := h * Prime + QWord(Pb[PtrUInt(p + L - Cycles + 1)]) - PrimeL * QWord(Pb[PtrUInt(p)]);
+    end;
+    i0 := i0 + Cycles;
+  end;
+  HV := h;
+  Result := n;
+end;
+
+{ El filtro de bitarr y el calculo de hash2 (compress.cpp:152-184): por cada
+  hash de H1 que pasa bitarr se arman los hashes de ventana entera de sus
+  Cycles posiciones y se guardan las que caen en [Lo, Hi). }
+function CheckBatch(const T: THashTableRec; Pb: PByte; var I: QWord; LastI, Cycles, L, Lo,
+                    Hi: QWord; H1: PQWord; Powers: PQWord; Prime, PrimeL: QWord;
+                    PH, PP: PQWord): LongInt;
+var ii, h2, j, hs1: QWord; n, n1: LongInt; bits: PByte; shift: DWord; hsh1: QWord; ca: PDWord;
+begin
+  ca := PDWord(T.ChunkArr);
+  hs1 := T.HashSize1;
+  ii := I;
+  n := 0;
+  n1 := 0;
+  bits := PByte(T.BitArr);
+  shift := T.BitShift;
+  while ii < LastI do
+  begin
+    hsh1 := H1[n1];
+    Inc(n1);
+    if (bits[PtrUInt(hsh1 shr shift)] and (Byte(1) shl (DWord(hsh1) and 7))) <> 0 then
+    begin
+      Inc(ii);
+      h2 := hsh1;
+      j := 0;
+      while j < Cycles - 1 do
+      begin
+        h2 := h2 + QWord(Pb[PtrUInt(ii + j)]) * Powers[PtrUInt(j)];
+        Inc(j);
+      end;
+      if (ii >= Lo) and (ii < Hi) then
+      begin
+        PH[n] := h2;
+        PP[n] := ii;
+        Inc(n);
+        {$IFDEF CPUX86_64}
+        prefetch(ca[PtrUInt(h2 and hs1)]);     { prefetch_match }
+        {$ENDIF}
+      end;
+      j := 0;
+      while j < Cycles - 1 do
+      begin
+        h2 := h2 * Prime + QWord(Pb[PtrUInt(ii + L)]) - PrimeL * QWord(Pb[PtrUInt(ii)]);
+        if (ii + 1 >= Lo) and (ii + 1 < Hi) then
+        begin
+          PH[n] := h2;
+          PP[n] := ii + 1;
+          Inc(n);
+          {$IFDEF CPUX86_64}
+          prefetch(ca[PtrUInt(h2 and hs1)]);
+          {$ENDIF}
+        end;
+        Inc(ii);
+        Inc(j);
+      end;
+    end
+    else
+      ii := ii + Cycles;
+  end;
+  I := ii;
+  Result := n;
+end;
+
+{ compress<CYCLES> para CYCLES = 1, 2, 4, ..., 64 (compress.cpp:54-212), tal
+  cual: hash1 cubre los ultimos L - OFFSET bytes de la ventana, bitarr se
+  prueba una vez cada CYCLES posiciones y, si pasa, se hashean las CYCLES
+  posiciones enteras y se guardan; LOOKAHEAD es 256. El que llama garantiza
+  1 <= Cycles <= min(L, 64) y BitArr no vacio. Lee hasta Cycles - 1 bytes
+  pasado el bloque (ver RING_TAIL). }
+procedure CompressFixedAccel(var T: THashTableRec; const Dict: TBytes; BufOff, BlockSize: QWord;
+                             RoundMatches: Boolean; L, MinMatch: QWord; BaseLen: DWord;
+                             BlockStart: QWord; const InStat: TStatList; var Stat: TStatList;
+                             out LiteralBytes: DWord; Reread: TStream; Cycles: QWord);
+var
+  lastMatchEnd, matchStart, matchOffset, inAt: QWord;
+  matchLen: DWord;
+  hash1, hash2: TPolyHash;
+  powers: array[0..MAX_CYCLES - 1] of QWord;
+  hashes1: array[0..LOOKAHEAD_A - 1] of QWord;
+  pairH, pairP: array[0..LOOKAHEAD_A + MAX_CYCLES] of QWord;
+  npairs, pi_, nh1: LongInt;
+  offset, xx, i, j, nextChunk, nextI, lastI, matchEnd, cut, ms, lit, ml, savedHash1, hv: QWord;
+  k: DWord;
+  pb: PByte;
+
+  procedure DecodeNext(BasicPos: QWord);
+  var m: TLzMatch; used: QWord;
+  begin
+    if not DecodeLzMatch(InStat, inAt, RoundMatches, False, BaseLen, BasicPos, m, used) then
+      raise EEncode.Create('BadBlockRecord');
+    inAt := inAt + used;
+    matchStart := m.Dest - BlockStart;
+    matchLen := m.Len;
+    matchOffset := m.Dest - m.Src;
+  end;
+
+begin
+  lastMatchEnd := 0;
+  LiteralBytes := DWord(BlockSize);
+  inAt := 0;
+  DecodeNext(BlockStart);
+
+  if 2 * L > BlockSize then Exit;
+
+  offset := Cycles - 1;
+  if Cycles > 4 then xx := Cycles else xx := 4;          { X = max(CYCLES, 4) }
+  PolyInit(hash1, L - offset, PRIME1);
+  PolyInit(hash2, L, PRIME1);
+  { PRIME1_powers[j] = PRIME1^(L-1-j) (compress.cpp:73-75) }
+  powers[Cycles - 1] := Power(PRIME1, DWord(L - Cycles));
+  j := Cycles - 1;
+  while j > 0 do
+  begin
+    powers[j - 1] := powers[j] * PRIME1;
+    Dec(j);
+  end;
+  pb := PByte(@Dict[BufOff]);
+
+  { --- los primeros L bytes (compress.cpp:78-94) --- }
+  PolyMoveTo(hash1, Dict, BufOff);
+  hash2.Value := hash1.Value;
+  j := 0;
+  while True do
+  begin
+    HtMarkPossible(T, hash1.Value);
+    if j = offset then Break;
+    PolyUpdate(hash1, pb[PtrUInt(j)], pb[PtrUInt(L - offset + j)]);
+    PolyUpdate(hash2, 0, pb[PtrUInt(L - offset + j)]);
+    Inc(j);
+  end;
+  k := HtFindMatch(T, Dict, BufOff, 0, BlockSize, hash2.Value, DWord(hash2.Value shr 32));
+  if k <> NOT_FOUND then
+    if RecordMatch(T, Dict, BufOff, BlockSize, BlockStart, RoundMatches, L, MinMatch, BaseLen,
+                   Reread, Stat, lastMatchEnd, matchEnd, LiteralBytes, 0, k) then
+      lastMatchEnd := matchEnd;
+  HtAddHash(T, hash2.Value, DWord(hash2.Value shr 32), BlockStart div L);
+
+  { --- el ciclo principal (compress.cpp:97-210) --- }
+  i := 0;
+  while i + 2 * L <= BlockSize do
+  begin
+    savedHash1 := 0;
+    nextChunk := i + L;
+    while i < nextChunk do
+    begin
+      { el match de entrada, al llegar a su comienzo }
+      if i >= matchStart then
+      begin
+        if matchStart + QWord(matchLen) - QWord(BaseLen) >= lastMatchEnd then
+        begin
+          if matchStart > lastMatchEnd then ms := matchStart else ms := lastMatchEnd;
+          cut := ms - matchStart;
+          ml := QWord(matchLen) - cut;
+          lit := ms - lastMatchEnd;
+          Enc(Stat, RoundMatches, BaseLen, DWord(lit), matchOffset, DWord(ml));
+          lastMatchEnd := ms + ml;
+          LiteralBytes := DWord(QWord(LiteralBytes) - ml);
+        end;
+        DecodeNext(BlockStart + matchStart + QWord(matchLen));
+      end;
+
+      { hash1 hasta last_match_end, redondeado hacia abajo a X (124-132) }
+      if lastMatchEnd > 0 then nextI := lastMatchEnd - 1 else nextI := 0;
+      if nextChunk - Cycles < nextI then nextI := nextChunk - Cycles;
+      if nextI >= i + L div 2 then
+      begin
+        i := nextI and not QWord(xx - 1);
+        PolyMoveTo(hash1, Dict, BufOff + i + offset);
+      end
+      else
+      begin
+        hv := hash1.Value;
+        while i + xx <= nextI do
+        begin
+          j := 0;
+          while j < xx do
+          begin
+            hv := hv * hash1.Prime + QWord(pb[PtrUInt(i + j + L)]) -
+                  hash1.PrimeL * QWord(pb[PtrUInt(i + offset + j)]);
+            Inc(j);
+          end;
+          i := i + xx;
+        end;
+        hash1.Value := hv;
+      end;
+
+      lastI := i + LOOKAHEAD_A;
+      if nextChunk < lastI then lastI := nextChunk;
+
+      { hash1 de a CYCLES (138-149) }
+      hv := hash1.Value;
+      nh1 := Hash1Batch(pb, i, lastI, Cycles, L, hv, hash1.Prime, hash1.PrimeL, @hashes1[0],
+                        PByte(T.BitArr), T.BitShift);
+      hash1.Value := hv;
+      savedHash1 := hashes1[nh1 - 1];
+
+      { bitarr y las candidatas (152-184) }
+      npairs := CheckBatch(T, pb, i, lastI, Cycles, L, lastMatchEnd, matchStart, @hashes1[0],
+                           @powers[0], hash2.Prime, hash2.PrimeL, @pairH[0], @pairP[0]);
+
+      { chunkarr, buscando un match (187-192) }
+      pi_ := 0;
+      while True do
+      begin
+        pi_ := HtNextCandidate(T, @pairH[0], pi_, npairs);
+        if pi_ >= npairs then Break;
+        k := HtFindMatch(T, Dict, BufOff, pairP[pi_], BlockSize, pairH[pi_],
+                         DWord(pairH[pi_] shr 32));
+        if k <> NOT_FOUND then
+          if RecordMatch(T, Dict, BufOff, BlockSize, BlockStart, RoundMatches, L, MinMatch,
+                         BaseLen, Reread, Stat, lastMatchEnd, matchEnd, LiteralBytes,
+                         pairP[pi_], k) then
+          begin
+            lastMatchEnd := matchEnd;
+            Break;                     { goto match_found2 }
+          end;
+        Inc(pi_);
+      end;
+    end;
+
+    { las ultimas CYCLES posiciones del chunk otra vez (196-208), y add_hash }
+    hash1.Value := savedHash1;
+    hash2.Value := savedHash1;
+    HtMarkPossible(T, hash1.Value);
+    j := 1;
+    while j < Cycles do
+    begin
+      PolyUpdate(hash1, pb[PtrUInt(i - Cycles + j + offset)], pb[PtrUInt(i - Cycles + j + L)]);
+      HtMarkPossible(T, hash1.Value);
+      PolyUpdate(hash2, 0, pb[PtrUInt(i - Cycles + j + L)]);
+      Inc(j);
+    end;
+    HtAddHash(T, hash2.Value, DWord(hash2.Value shr 32), (BlockStart + i) div L);
+  end;
+end;
+
+procedure CompressFixed(var T: THashTableRec; const Dict: TBytes; BufOff, BlockSize: QWord;
+                        RoundMatches: Boolean; L, MinMatch: QWord; BaseLen: DWord;
+                        BlockStart: QWord; const InStat: TStatList; var Stat: TStatList;
+                        out LiteralBytes: DWord; Reread: TStream; Accelerator: DWord);
+begin
+  { switch (ACCELERATOR) (srep.cpp:748-758) }
+  if (Accelerator <> 0) and (Length(T.BitArr) > 0) then
+    CompressFixedAccel(T, Dict, BufOff, BlockSize, RoundMatches, L, MinMatch, BaseLen,
+                       BlockStart, InStat, Stat, LiteralBytes, Reread, Accelerator)
+  else
+    CompressPlain(T, Dict, BufOff, BlockSize, RoundMatches, L, MinMatch, BaseLen,
+                  BlockStart, InStat, Stat, LiteralBytes, Reread);
 end;
 
 end.

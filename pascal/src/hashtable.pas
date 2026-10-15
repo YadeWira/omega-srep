@@ -6,8 +6,10 @@ unit HashTable;
   (enmascarados por hash_mask) y hasharr los 32 altos --, asi que mezclarlas
   encuentra los matches "correctos" en el lugar equivocado.
 
-  Lo que el Rust deja afuera queda afuera aca tambien: bitarr y los prefetch
-  (probadamente neutros a la salida). speed_opt SI es semantica: find_match
+  Lo que el Rust deja afuera queda afuera aca tambien: los prefetch. bitarr
+  NO es neutro: el escaneo acelerado (CompressFixedAccel) solo sondea las
+  posiciones cuyo hash pasa ese filtro, y con un -l chico eso cambia el
+  archivo (fixedcompress.pas). speed_opt tambien es semantica: find_match
   abandona el sondeo tras un chequeo de slices fallido.
 
   Por ahora el camino de chunks de tamano fijo (-m3/-m4/-m5); CDC es la 5b. }
@@ -17,30 +19,33 @@ unit HashTable;
 {$OVERFLOWCHECKS OFF}
 interface
 
-uses Classes, Widths, Hashes, Vmac;
+uses SysUtils, Classes, Widths, Hashes, Vmac;
 
 const
   MAX_HASH_CHAIN = DWord(12);
   NOT_FOUND      = DWord(0);     { el chunk 0 es "no hay match": nunca se guarda }
   DIGEST_SIZE    = 20;
-  { Bytes en cero detras del anillo del encoder, que nunca se escriben. El lote
-    de CompressFixed avanza de a 4 y, si 4 no divide a L (-l o -c que no son
-    potencia de dos), se pasa de next_chunk hasta 3 posiciones: con un bloque
-    lleno en la ultima ranura del anillo eso lee pasado el anillo. El C++ lee
-    ahi fuera de su reserva; el Rust lee cero y aca tambien, pero sin chequear
-    byte por byte en el lazo mas caliente.
+  { Bytes en cero detras del anillo del encoder, que nunca se escriben. El
+    escaneo lee pasado el fin del bloque: el lote de CompressFixed avanza de a
+    4 y, si 4 no divide a L (-l o -c que no son potencia de dos), se pasa de
+    next_chunk hasta 3 posiciones; el de CompressFixedAccel avanza de a CYCLES
+    (hasta 64, con -aN/64) y lee hasta CYCLES - 1 = 63 bytes pasado el bloque.
+    Con un bloque lleno en la ultima ranura del anillo eso lee pasado el
+    anillo. El C++ lee ahi fuera de su reserva; el Rust lee cero y aca
+    tambien, pero sin chequear byte por byte en el lazo mas caliente.
     El invariante, que dos lecturas usan:
-    * el byte que entra al hash en el lote (pbL[i], compress.rs: dict.get);
+    * el byte que entra al hash en el lote (pbL[i], compress.rs: dict.get y
+      byte_at);
     * la ventana de L bytes del digest de -m3 en una posicion candidata
-      (DigestMatchesAt; hash_table.rs: digest_at), que con esas 3 posiciones
-      de mas termina hasta 3 bytes despues del bloque.
-    Las dos llegan a lo sumo X - 1 = 3 bytes pasado el fin de un bloque, asi
-    que con RING_TAIL >= 3 nunca salen del TBytes, y como la cola esta en cero
-    leen exactamente lo que el Rust rellena con ceros: mismos digests, mismos
+      (DigestMatchesAt; hash_table.rs: digest_at), que con esas posiciones
+      de mas termina hasta CYCLES - 1 bytes despues del bloque.
+    Las dos llegan a lo sumo 63 bytes pasado el fin de un bloque, asi que con
+    RING_TAIL >= 63 nunca salen del TBytes, y como la cola esta en cero leen
+    exactamente lo que el Rust rellena con ceros: mismos digests, mismos
     archivos. Por eso RingEnsure (encoder.pas) siempre pide RING_TAIL bytes
     detras de la ranura que llena, y nada escribe en ellos. SliceCheck no los
     cuenta como parte del buffer: para el Rust el anillo termina antes. }
-  RING_TAIL      = 4;
+  RING_TAIL      = 64;
 
 type
   { (primer chunk, inicio) de un bloque: ver THashTableRec.Grid }
@@ -77,10 +82,28 @@ type
     Grid: array of TGridEntry;
     GridN: QWord;
     AnyShifted: Boolean;         { algun bloque con Offset mod L <> 0 }
+    { bitarr (hash_table.cpp:137-140, 155-157): un bit por valor de hash visto
+      en una frontera de chunk, que el escaneo acelerado prueba antes que
+      chunkarr. Vacio con BITARR_ACCELERATOR 0 (-a0, -a-) y en CDC. Se indexa
+      con los BitShift = 64 - lb(tamano) bits altos del hash de 64 bits (el
+      size_t del C++ en x86-64, tambien en i386). }
+    BitArr: array of Byte;
+    BitShift: DWord;
   end;
 
+  { bitarr no entra (un -aN enorme, o no cabe en el espacio de direcciones
+    de i386): el "Can't allocate memory" del C++; encoder.pas lo convierte en
+    EncodeError::OutOfMemory, como el Rust. }
+  EHtBitArrMemory = class(Exception);
+
 procedure HtInit(out T: THashTableRec; RoundMatches, CompareDigests, PrecomputeDigests,
-                 Cdc: Boolean; L, MinMatch: QWord; IoAccelerator: LongInt; FileSize: QWord);
+                 Cdc: Boolean; L, MinMatch: QWord; IoAccelerator: LongInt;
+                 BitarrAccelerator: QWord; FileSize: QWord);
+
+{ check_match_possibility / mark_match_possibility (hash_table.cpp:218-219).
+  Solo con BitArr no vacio. }
+function HtCheckPossible(const T: THashTableRec; Hash: QWord): Boolean; inline;
+procedure HtMarkPossible(var T: THashTableRec; Hash: QWord); inline;
 
 { Libera las tablas de HtInit (las que viven en paginas propias; el resto
   lo libera la finalizacion de siempre). }
@@ -286,8 +309,9 @@ begin
 end;
 
 procedure HtInit(out T: THashTableRec; RoundMatches, CompareDigests, PrecomputeDigests,
-                 Cdc: Boolean; L, MinMatch: QWord; IoAccelerator: LongInt; FileSize: QWord);
-var fs, hashsize: QWord; key: TBytes;
+                 Cdc: Boolean; L, MinMatch: QWord; IoAccelerator: LongInt;
+                 BitarrAccelerator: QWord; FileSize: QWord);
+var fs, hashsize, bitarrSize: QWord; key: TBytes;
 begin
   T.RoundMatches := RoundMatches;
   T.CompareDigests := CompareDigests;
@@ -302,6 +326,29 @@ begin
   begin
     if T.TotalChunks > 1024 then T.TotalChunks := T.TotalChunks + T.TotalChunks div 10
     else T.TotalChunks := T.TotalChunks + T.TotalChunks;
+  end;
+  { hash_table.cpp:155-157: unos accel bytes por chunk. Primero que las
+    demas tablas, como en el Rust: es la que una opcion (-a1000) puede hacer
+    tan grande como quiera, y un tamano que no entra es OutOfMemory y no un
+    arreglo truncado (un QWord que pasa a SizeInt en i386). En paginas en
+    cero, como el BigAllocZero del C++ y el calloc del Rust. }
+  if (BitarrAccelerator = 0) or Cdc then bitarrSize := 0
+  else
+  begin
+    bitarrSize := (T.TotalChunks div 8) * BitarrAccelerator;
+    if bitarrSize < 2 then bitarrSize := 2;
+    bitarrSize := RoundupToPowerOfTwo(bitarrSize);
+  end;
+  T.BitShift := 64 - Lb(bitarrSize);
+  SetLength(T.BitArr, 0);
+  if bitarrSize > 0 then
+  begin
+    if bitarrSize > QWord(High(SizeInt)) then raise EHtBitArrMemory.Create('OutOfMemory');
+    try
+      ZNew(Pointer(T.BitArr), TypeInfo(T.BitArr), SizeInt(bitarrSize), 1);
+    except
+      on EOutOfMemory do raise EHtBitArrMemory.Create('OutOfMemory');
+    end;
   end;
   T.ChunknumMask := DWord(RoundupToPowerOfTwo(T.TotalChunks + 2) - 1);
   T.HashMask := not T.ChunknumMask;
@@ -338,6 +385,7 @@ end;
 
 procedure HtFree(var T: THashTableRec);
 begin
+  ZFree(Pointer(T.BitArr));
   ZFree(Pointer(T.ChunkArr));
   ZFree(Pointer(T.HashArr));
   ZFree(Pointer(T.StartArr));
@@ -388,9 +436,32 @@ begin
   Result := T.Grid[lo - 1].Start + (K - T.Grid[lo - 1].Chunk) * T.L;
 end;
 
+function HtCheckPossible(const T: THashTableRec; Hash: QWord): Boolean;
+begin
+  Result := (T.BitArr[PtrUInt(Hash shr T.BitShift)] and (Byte(1) shl (DWord(Hash) and 7))) <> 0;
+end;
+
+procedure HtMarkPossible(var T: THashTableRec; Hash: QWord);
+var p: PtrUInt;
+begin
+  p := PtrUInt(Hash shr T.BitShift);
+  T.BitArr[p] := T.BitArr[p] or (Byte(1) shl (DWord(Hash) and 7));
+end;
+
 function ChunkarrValue(const T: THashTableRec; Hash: QWord; Chunk: DWord): DWord; inline;
 begin
   Result := DWord(QWord(DWord(Hash) and T.HashMask) + QWord(Chunk));
+end;
+
+{ memcmp(digestarr[A], digestarr[B]) }
+function DigestsEq(const T: THashTableRec; A, B: QWord): Boolean;
+var i: LongInt; pa, pb: PByte;
+begin
+  pa := @T.DigestArr[A * DIGEST_SIZE];
+  pb := @T.DigestArr[B * DIGEST_SIZE];
+  for i := 0 to DIGEST_SIZE - 1 do
+    if pa[i] <> pb[i] then Exit(False);
+  Result := True;
 end;
 
 function HtAddHash(var T: THashTableRec; Index: QWord; StoredValue: DWord;
@@ -412,7 +483,12 @@ begin
     if (value and T.HashMask) = savedHash then
     begin
       chunk := value and T.ChunknumMask;
-      if T.HashArr[chunk] = StoredValue then
+      { el chunk equivalente: mismo hasharr y, con COMPARE_DIGESTS (-m3), el
+        mismo digest precalculado (hash_table.cpp:271-272). Sin el digest dos
+        chunks que difieren en el ultimo byte se reemplazaban aca y -m3
+        perdia el match contra el mas viejo. }
+      if (T.HashArr[chunk] = StoredValue) and
+         (not T.CompareDigests or DigestsEq(T, chunk, CurChunk)) then
       begin
         Result := chunk;
         Break;
@@ -437,7 +513,7 @@ end;
   de la pila de excepciones + finalize) en CADA llamada de la funcion que lo
   declara. HtFindMatch corre una vez por posicion candidata y casi nunca llega
   aca; con el TBytes adentro, ese marco era ~29% del tiempo de -m3.
-  At + L puede pasar hasta 3 bytes el fin del anillo (ver RING_TAIL): se leen
+  At + L puede pasar hasta 63 bytes el fin del anillo (ver RING_TAIL): se leen
   los ceros de la cola, que es lo que el Rust rellena en digest_at. }
 function DigestMatchesAt(const T: THashTableRec; const Buf: TBytes; At, Chunk: QWord): Boolean;
 var dig: TBytes;

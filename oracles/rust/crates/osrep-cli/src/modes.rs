@@ -194,6 +194,8 @@ fn encode_options(o: &Options, declared_size: Option<u64>) -> EncodeOptions {
         declared_size,
         hash,
         dup_meta: None,
+        accel: o.accel,
+        accelerator: o.accelerator,
     }
 }
 

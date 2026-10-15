@@ -51,6 +51,7 @@ type
     BufSize: QWord;
     NumThreads: QWord;
     Accel: DWord;
+    Accelerator: DWord;
     IoAccelerator: LongInt;
     { -hash=NOMBRE; HasHash False = el default, Hash '' = -hash- }
     HasHash: Boolean;
@@ -318,6 +319,7 @@ begin
   O.BufSize := 8 * MB;
   O.NumThreads := 0;
   O.Accel := 9000;
+  O.Accelerator := 9000;
   O.IoAccelerator := 1;
   O.HasHash := False;
   O.Hash := '';
@@ -490,12 +492,21 @@ begin
     else if a = '-a-' then O.Accel := 0
     else if StartsWith(a, '-a') and (Length(a) >= 3) and IsDigit(a[3]) then
     begin
-      { -aN o -aN/M; los dos no cambian la salida, asi que solo se revisa la sintaxis }
+      { -aN o -aN/M (srep.cpp:343-348): el tamano de bitarr y la variante del
+        escaneo. NO son neutros a la salida (fixedcompress.pas). Como el C++
+        (strtol a un unsigned) y el Rust (as u32), se truncan a 32 bits; -aN
+        sin /M vuelve la variante a "no se dio" (9000), y -a- no la toca. }
       body := Copy(a, 3, Length(a));
       slash := Pos('/', body);
       if slash > 0 then accelS := Copy(body, 1, slash - 1) else accelS := body;
       if not ParseInt(accelS, x) then Bad(a);
-      if (slash > 0) and not ParseInt(Copy(body, slash + 1, Length(body)), x) then Bad(a);
+      O.Accel := DWord(QWord(x) and $FFFFFFFF);
+      O.Accelerator := 9000;
+      if slash > 0 then
+      begin
+        if not ParseInt(Copy(body, slash + 1, Length(body)), x) then Bad(a);
+        O.Accelerator := DWord(QWord(x) and $FFFFFFFF);
+      end;
     end
     else if a = '-ia-' then O.IoAccelerator := -1
     else if a = '-ia+' then O.IoAccelerator := 1

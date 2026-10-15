@@ -293,6 +293,22 @@ diferencias.
   (`oracles/cxx/tools/stdsort_fixture.cpp`) y `tests/cxx_sort_tie_divergence.sh`
   es el gate. Antes de reemplazar un `std::sort` del C++ por otro orden,
   probar con entradas de muchos empates y más de 16 elementos.
+* **«Neutro a la salida» vale para lo que se midió, no más.** La fase 4c del
+  Rust comparó `-a0`/`-a1`/`-a16` contra el default con el `-l` por defecto,
+  sobre una sola entrada, los encontró idénticos y concluyó que las variantes
+  `compress<ACCELERATOR>` del C++ daban el mismo archivo; los dos ports
+  implementaron solo `compress<0>`. Con `-l16`..`-l128` o un `-c` chico no es
+  así: el C++ usa por defecto el escaneo filtrado por `bitarr`
+  (`accel = min(max(L/32, 1), 4)`), y como `find_match` acepta chunks cuyo
+  hash difiere en los bits que no compara, qué posiciones se prueban queda en
+  el archivo. Pasó 2.0 a 2.2.1 sin que nadie lo viera porque ninguna suite
+  probaba un `-l` chico contra el C++. Ahora `CompressFixedAccel` transcribe
+  `compress<CYCLES>` (y `HtAddHash` el chequeo de digest de `-m3` que también
+  faltaba), y `smalll.bin` en los gates lo cubre. Dos consecuencias para el
+  Pascal: el escaneo lee hasta `CYCLES - 1 = 63` bytes pasado el bloque, así
+  que `RING_TAIL` pasó de 4 a 64; y `bitarr` mide unos `accel` bytes por
+  chunk, así que se pide antes que las otras tablas y un tamaño que no entra
+  en `SizeInt` (i386) es `OutOfMemory`, no un `QWord` truncado en silencio.
 * **Los records de Future-LZ no son «literales y después match».** `lit_len` es
   el hueco hasta el *origen* del próximo match, el match se copia *hacia
   adelante* a `src + distance`, y el cursor avanza al origen, no más allá del

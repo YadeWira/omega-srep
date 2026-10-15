@@ -74,6 +74,7 @@ pub struct Options {
     pub bufsize: u64,
     pub num_threads: u64,
     pub accel: u32,
+    pub accelerator: u32,
     pub io_accelerator: i32,
     /// `-hash=NAME`; `None` keeps the default, `Some("")` is `-hash-`.
     pub hash: Option<String>,
@@ -116,6 +117,7 @@ impl Default for Options {
             bufsize: 8 * MB,
             num_threads: 0,
             accel: 9000,
+            accelerator: 9000,
             io_accelerator: 1,
             hash: None,
             vm_mem: parse_mem_option("75%", Unit::M).unwrap_or(0),
@@ -364,16 +366,18 @@ pub fn parse(args: &[String]) -> Result<Options, CmdLineError> {
         } else if a == "-a-" {
             o.accel = 0;
         } else if a.starts_with("-a") && a.as_bytes().get(2).is_some_and(|c| c.is_ascii_digit()) {
-            // `-aN` or `-aN/M`; both are output-neutral (docs/rust-port.md, the
-            // phase 4c pre-port experiments), so only the syntax is checked.
+            // `-aN` or `-aN/M` (`srep.cpp:343-348`): the `bitarr` size and the
+            // scan variant. Not output-neutral (see compress.rs).
             let body = &a[2..];
             let (accel, rest) = match body.split_once('/') {
                 Some((l, r)) => (l, Some(r)),
                 None => (body, None),
             };
-            parse_int(accel).ok_or_else(|| bad(format!("Invalid option: {a}")))?;
+            o.accel = parse_int(accel).ok_or_else(|| bad(format!("Invalid option: {a}")))? as u32;
+            o.accelerator = 9000;
             if let Some(r) = rest {
-                parse_int(r).ok_or_else(|| bad(format!("Invalid option: {a}")))?;
+                o.accelerator =
+                    parse_int(r).ok_or_else(|| bad(format!("Invalid option: {a}")))? as u32;
             }
         } else if a == "-ia-" {
             o.io_accelerator = -1;

@@ -6,7 +6,8 @@ unit Encoder;
   -t1 contra -t8), asi que se corre en secuencia.
 
   La lectura adelantada no es solo velocidad: compress lee unos bytes pasado
-  el final del bloque (el lote de cuatro se pasa de next_chunk), y en el C++
+  el final del bloque (el lote de cuatro, o de CYCLES en el escaneo
+  acelerado, se pasa de next_chunk), y en el C++
   esos bytes son la ranura siguiente del anillo -- que el hilo de fondo ya
   suele haber llenado con el bloque que sigue. Leer un bloque adelante lo
   reproduce de forma determinista.
@@ -53,6 +54,12 @@ type
     DeclaredSize: QWord;
     { -index=: las listas de matches van a este stream en vez del archivo }
     Index: TStream;
+    { -aN (accel): 9000 = no se dio, sale de L (srep.cpp:631-632); dimensiona
+      bitarr (N * 8 bits por chunk) }
+    Accel: DWord;
+    { -aN/M (ACCELERATOR): 9000 = no se dio, min(accel, 16) (srep.cpp:634);
+      elige la variante de compress<> }
+    Accelerator: DWord;
   end;
 
   TEncodeProgress = procedure(Done, Total: QWord);
@@ -94,6 +101,8 @@ begin
   O.HasDeclaredSize := False;
   O.DeclaredSize := 0;
   O.Index := nil;
+  O.Accel := 9000;
+  O.Accelerator := 9000;
 end;
 
 procedure FillSeedFrom(var Out_: TBytes; Seed64: QWord);
@@ -260,6 +269,8 @@ var
   v5h: TV5Header;
   blocks: TCompressedBlocks;
   nblocks, actual, headerLen: QWord;
+  accel, accelerator: DWord;
+  bitarrAccelerator: QWord;
 begin
   if not HashByName(Opts.Hash, info) then
     raise EEncode.Create('UnknownHash("' + Opts.Hash + '")');
@@ -288,6 +299,37 @@ begin
   baseLen := minMatch;
   if dictMinMatch < baseLen then baseLen := dictMinMatch;
   bufsize := Opts.BufSize;
+
+  { srep.cpp:631-634: accel sale de L / 32, entre 1 y DEFAULT_ACCEL (4), y
+    dimensiona bitarr (accel * 8 bits por chunk, en 32 bits como el unsigned
+    del C++); la variante del escaneo (ACCELERATOR, -aN/M) es accel con tope
+    16. Las dos se ven en la salida (fixedcompress.pas). Donde el C++ no tiene
+    comportamiento definido queda el escaneo simple, compress<0>, que es lo
+    que la 2.2.1 corria con cualquier -a (encoder.rs, la misma regla):
+    * solo hay compress<> para 0, 1, 2, 4, ..., 64; con otro valor (-a3, -a5,
+      y el accel 3 por defecto de -l96..-l127) el C++ saltea el escaneo y
+      escribe un bloque roto;
+    * -a0/N (o -a- despues de -aN/M) desreferencia un bitarr nulo;
+    * una variante mas ancha que el chunk (-l16 -a1/32) le da a hash1 una
+      ventana negativa (L - OFFSET): el C++ aborta o escribe basura. }
+  if Opts.Accel = 9000 then
+  begin
+    if l div 32 > 4 then accel := 4
+    else if l div 32 < 1 then accel := 1
+    else accel := DWord(l div 32);
+  end
+  else accel := Opts.Accel;
+  bitarrAccelerator := QWord(DWord(QWord(accel) * 8));
+  if Opts.Accelerator = 9000 then
+  begin
+    if accel > 16 then accelerator := 16 else accelerator := accel;
+  end
+  else accelerator := Opts.Accelerator;
+  case accelerator of
+    1, 2, 4, 8, 16, 32, 64: ;
+  else accelerator := 0;
+  end;
+  if (QWord(accelerator) > l) or (bitarrAccelerator = 0) then accelerator := 0;
 
   { ROUND_MATCHES = (-m3) && dictsize == 0: -m3o escribe v1 con records de 3 }
   roundMatches := (Kind = ekDigest) and (Opts.DictSize = 0);
@@ -375,8 +417,12 @@ begin
   { COMPARE_DIGESTS = metodo <= -m3; PRECOMPUTE_DIGESTS = -m3; io_accelerator 1.
     -m0 no tiene tabla. }
   if Kind <> ekInmem then
-    HtInit(table, roundMatches, Kind in [ekInmem, ekCdc, ekCdcZpaq, ekDigest],
-           Kind = ekDigest, cdc, l, minMatch, 1, fileSize);
+    try
+      HtInit(table, roundMatches, Kind in [ekInmem, ekCdc, ekCdcZpaq, ekDigest],
+             Kind = ekDigest, cdc, l, minMatch, 1, bitarrAccelerator, fileSize);
+    except
+      on EHtBitArrMemory do raise EEncode.Create('OutOfMemory');
+    end;
   DcInit(inmem, Opts.DictSize, Opts.DictHashSize, dictMinMatch, dictChunk, baseLen);
   CdcHasherInit(chunkKey);
 
@@ -461,7 +507,7 @@ begin
                              DWord(baseLen)) then
           MatchTooSmall(DWord(baseLen), DWord(baseLen));
         CompressFixed(table, dict, bufOffset, filled, roundMatches, l, minMatch, DWord(baseLen),
-                      blockStart, inStat, stat, literalBytes, Input);
+                      blockStart, inStat, stat, literalBytes, Input, accelerator);
       end;
     end;
 

@@ -11,15 +11,16 @@
 //! (`find_match_CDC`, `startarr`) lands with phase 4c-6 and the digest
 //! comparison with 4c-4.
 //!
-//! Deliberately not ported: `bitarr` and the `prefetch*` helpers. The 4c-0
-//! `-a0`/`-a16` byte-identity run proved they are output-neutral, and
+//! Deliberately not ported: the `prefetch*` helpers. `bitarr` is ported: the
+//! accelerated scan's filter decides which positions are probed at all, and
+//! that is output-visible with a small `-l` (see `compress.rs`). And
 //! `speed_opt` (hash_table.cpp:248) is what makes `find_match0` give up on a
 //! candidate after one failed slice check — that one *is* semantics and is
 //! kept.
 
 use std::io::{Read, Seek};
 
-use crate::util::roundup_to_power_of_two;
+use crate::util::{lb, roundup_to_power_of_two, zeroed_vec};
 use crate::vmac::{VDigest, DIGEST_SIZE};
 
 /// Bytes of one CDC chunk's hash pair: `vhash1` then `vhash2`.
@@ -230,12 +231,21 @@ pub struct HashTable {
     block_grid: Vec<(usize, u64)>,
     /// Whether some block started off the `L` grid (`block_start % L != 0`).
     pub any_shifted: bool,
+    /// `bitarr` (`hash_table.cpp:137-140`, 155-157): one bit per hash value
+    /// seen at a chunk boundary, probed before `chunkarr` by the accelerated
+    /// scan (`compress<ACCELERATOR != 0>`). Empty with `BITARR_ACCELERATOR`
+    /// 0 (`-a0`/`-a-`) and for CDC.
+    bitarr: Vec<u8>,
+    /// `bitshift`: `bitarr` is indexed by the top `lb(bitarr.len())` bits of
+    /// the 64-bit hash (the C++'s `size_t` on x86-64).
+    bitshift: u32,
 }
 
 impl HashTable {
     /// `HashTable::HashTable` (`hash_table.cpp:142-169`) for the non-CDC,
-    /// non-in-memory modes. `ERRCODE`-style allocation failures cannot happen
-    /// with owned vectors, so the constructor is infallible.
+    /// non-in-memory modes. `None` when `bitarr` cannot be allocated (the
+    /// C++'s `ERROR_MEMORY`); the other tables abort like any `vec!`.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         round_matches: bool,
         compare_digests: bool,
@@ -244,8 +254,9 @@ impl HashTable {
         l: usize,
         min_match: usize,
         io_accelerator: i32,
+        bitarr_accelerator: u64,
         filesize: u64,
-    ) -> HashTable {
+    ) -> Option<HashTable> {
         let filesize = filesize.max(l as u64);
         let mut total_chunks = filesize / l as u64;
         if content_defined_chunking {
@@ -270,7 +281,18 @@ impl HashTable {
         // not panic are unchanged. `SliceHash::h` gets the same one extra for
         // its `h[chunk + 1]`.
         let slots = total_chunks as usize + 1;
-        HashTable {
+        // `hash_table.cpp:155-157`: about `accel` bytes per chunk, in lazily
+        // zeroed pages like the C++'s `BigAllocZero`. Allocated before the
+        // other tables because it is the one a user option can make
+        // arbitrarily large (`-a1000`); a size that does not fit is `None`.
+        let bitarrsize = if bitarr_accelerator == 0 || content_defined_chunking {
+            0
+        } else {
+            roundup_to_power_of_two((total_chunks / 8).wrapping_mul(bitarr_accelerator).max(2))
+        };
+        let bitshift = 64 - lb(bitarrsize);
+        let bitarr = zeroed_vec(usize::try_from(bitarrsize).ok()?)?;
+        Some(HashTable {
             round_matches,
             compare_digests,
             precompute_digests,
@@ -302,7 +324,9 @@ impl HashTable {
             main_digest: VDigest::new(),
             block_grid: Vec::new(),
             any_shifted: false,
-        }
+            bitarr,
+            bitshift,
+        })
     }
 
     pub fn slicehash_is_empty(&self) -> bool {
@@ -375,15 +399,37 @@ impl HashTable {
         value & self.chunknum_mask
     }
 
+    /// `check_match_possibility` (`hash_table.cpp:218`): whether a hash value
+    /// may have been added before. Only called with a non-empty `bitarr`.
+    #[inline]
+    pub fn check_match_possibility(&self, hash: u64) -> bool {
+        self.bitarr[(hash >> self.bitshift) as usize] & (1u8 << (hash & 7)) != 0
+    }
+
+    /// `mark_match_possibility` (`hash_table.cpp:219`).
+    #[inline]
+    pub fn mark_match_possibility(&mut self, hash: u64) {
+        self.bitarr[(hash >> self.bitshift) as usize] |= 1u8 << (hash & 7);
+    }
+
+    /// Whether the accelerated scan can run: it needs `bitarr` (the C++
+    /// dereferences a null `bitarr` with `-a0/N`, N > 0).
+    pub fn has_bitarr(&self) -> bool {
+        !self.bitarr.is_empty()
+    }
+
     /// `hash_index` (`hash_table.cpp:242`).
     #[inline]
     fn hash_index(&self, h: u64) -> usize {
         (h & self.hashsize1) as usize
     }
 
-    /// `add_hash0<false>` (`hash_table.cpp:252-282`) with `speed_opt == true`
-    /// and no digests: scan the chain for an equivalent chunk (there is none to
-    /// verify here, so the first hash-bits + `hasharr` hit wins), then insert.
+    /// `add_hash0<false>` (`hash_table.cpp:252-282`) with `speed_opt == true`:
+    /// scan the chain for an equivalent chunk -- same hash bits and `hasharr`
+    /// value and, with COMPARE_DIGESTS (`-m3`), the same precomputed digest
+    /// (`hash_table.cpp:271-272`) -- then insert. Without the digest test two
+    /// chunks that differ only in their last byte replaced each other here
+    /// and `-m3` lost the match to the older one.
     ///
     /// The C++ caller discards the returned chunk -- `add_hash` exists to
     /// insert -- but the scan still decides *where* the chunk lands, because a
@@ -409,7 +455,10 @@ impl HashTable {
             }
             if self.get_hash(value) == saved_hash {
                 let chunk = self.get_chunk(value);
-                if self.hasharr[chunk as usize] == stored_value {
+                if self.hasharr[chunk as usize] == stored_value
+                    && (!self.compare_digests
+                        || self.digestarr[chunk as usize] == self.digestarr[curchunk])
+                {
                     found = chunk;
                     break;
                 }

@@ -152,7 +152,8 @@ begin
 end;
 
 var
-  mode, a, inPath, outPath: AnsiString;
+  mode, a, inPath, outPath, aN, aM: AnsiString;
+  accN, accM: QWord;
   opts: TEncodeOptions;
   files: array of AnsiString;
   i: LongInt;
@@ -168,7 +169,7 @@ begin
   dup := False;
   if ArgCount < 1 then
   begin
-    WriteErr('usage: encodetool <mode> [--seed=N] [-dN] [-bN] [-lN] [-cN] [-hash=NAME] <in> <out>' + #10);
+    WriteErr('usage: encodetool <mode> [--seed=N] [-dN] [-bN] [-lN] [-cN] [-aN[/M]] [-hash=NAME] <in> <out>' + #10);
     Halt(2);
   end;
   mode := ArgStr(1);
@@ -199,6 +200,26 @@ begin
     else if StartsWith(a, '-b') then opts.BufSize := ParseMem(Copy(a, 3, Length(a)))
     else if StartsWith(a, '-l') then opts.MinMatch := ParseMem(Copy(a, 3, Length(a)))
     else if StartsWith(a, '-c') then opts.L := ParseMem(Copy(a, 3, Length(a)))
+    else if a = '-a-' then opts.Accel := 0
+    else if StartsWith(a, '-a') then
+    begin
+      { -aN / -aN/M, en decimal: el tamano de bitarr y la variante }
+      aN := Copy(a, 3, Length(a));
+      aM := '9000';
+      if Pos('/', aN) > 0 then
+      begin
+        aM := Copy(aN, Pos('/', aN) + 1, Length(aN));
+        aN := Copy(aN, 1, Pos('/', aN) - 1);
+      end;
+      if not ParseU64(aN, accN) or not ParseU64(aM, accM) or (accN > High(DWord)) or
+         (accM > High(DWord)) then
+      begin
+        WriteErr('bad option: ' + a + #10);
+        Halt(2);
+      end;
+      opts.Accel := DWord(accN);
+      opts.Accelerator := DWord(accM);
+    end
     else if StartsWith(a, '-hash=') then opts.Hash := Copy(a, 7, Length(a))
     else if a = '-hash-' then opts.Hash := ''
     else if (Length(a) > 0) and (a[1] <> '-') then

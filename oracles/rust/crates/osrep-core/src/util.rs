@@ -88,6 +88,28 @@ pub fn random_bytes(n: usize) -> Vec<u8> {
     out
 }
 
+/// `vec![0u8; n]` that reports an allocation failure instead of aborting.
+/// It keeps `vec!`'s lazy zeroed pages (`alloc_zeroed`, calloc), so a huge
+/// `-b` on a 64-bit build still costs only what is written.
+pub fn zeroed_vec(n: usize) -> Option<Vec<u8>> {
+    if n == 0 {
+        return Some(Vec::new());
+    }
+    let layout = std::alloc::Layout::array::<u8>(n).ok()?;
+    // SAFETY: `layout` is non-zero-sized; the pointer comes from the global
+    // allocator with exactly this layout, which is what `Vec::from_raw_parts`
+    // requires for a `Vec<u8>` of capacity `n`, and the bytes are initialized
+    // (zeroed).
+    unsafe {
+        let p = std::alloc::alloc_zeroed(layout);
+        if p.is_null() {
+            None
+        } else {
+            Some(Vec::from_raw_parts(p, n, n))
+        }
+    }
+}
+
 /// `lb()` — floor(log2(n)) for n >= 1; 0 for n == 0.
 #[inline]
 pub fn lb(n: u64) -> u32 {

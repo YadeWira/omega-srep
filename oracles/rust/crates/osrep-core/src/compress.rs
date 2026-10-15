@@ -1,12 +1,21 @@
 //! The single-block compressor for `-m3`/`-m4`/`-m5` (`compress.cpp`).
 //!
 //! The C++ is templated over `ACCELERATOR` (0,1,2,…,64) with three
-//! hand-unrolled loops, `bitarr` prefiltering and prefetches. The 4c-0
-//! `-a0`/`-a16` byte-identity run proved every variant produces the same
-//! archive, so this port transcribes the `ACCELERATOR == 0` shape -- the
-//! simplest one, and the only one whose control flow can be read without
-//! untangling the batch machinery -- and reproduces the details that *are*
-//! output-visible:
+//! hand-unrolled loops, `bitarr` prefiltering and prefetches. The variants
+//! are NOT output-neutral (the 4c-0 `-a0`/`-a16` run only covered the default
+//! `-l`): `find_match` accepts a chunk whose hash differs from the probe's in
+//! the chunk-number bits of its `chunkarr` slot -- a window that differs only
+//! in its last byte or two by a small amount -- and `-m4`/`-m5` keep it when
+//! the reread bytes, with the backward extension, still reach `MIN_MATCH`
+//! (always possible when `MIN_MATCH == L`: `L - 1` forward plus one back).
+//! The accelerated scan only probes positions whose hash passes `bitarr`,
+//! which filters most of those out, and the C++ picks it by default
+//! (`accel = min(max(L/32, 1), 4)`). So `compress` runs `compress_accel`
+//! for the variants the C++ instantiates, and `compress<0>` for `-a-`/`-a0`
+//! and for the values where the C++ has no defined behaviour (`encoder.rs`
+//! lists them). With the default `-l` the filter almost never decides
+//! anything and both give the same archive. In `compress<0>` this port
+//! reproduces the details that *are* output-visible:
 //!
 //! * matches are only probed at positions in `[last_match_end, match_start)`,
 //!   i.e. not inside the previous match nor inside the pending input match
@@ -323,7 +332,32 @@ pub fn compress<R: ReadSeek>(
     stat: &mut Vec<u32>,
     literal_bytes: &mut u32,
     reread: &mut R,
+    accelerator: usize,
 ) -> Result<(), lz::EncodeError> {
+    // `switch (ACCELERATOR)` (srep.cpp:748-758). The variants are not
+    // output-neutral: the accelerated ones only probe `chunkarr` at positions
+    // whose hash passes the `bitarr` filter, and `find_match` can return a
+    // chunk whose 64-bit hash differs from the probe's in the low bits it does
+    // not compare (the chunk-number bits of the `chunkarr` slot), which
+    // `-m4`/`-m5` then accept when the reread bytes reach `MIN_MATCH`.
+    if accelerator != 0 && h.has_bitarr() {
+        return compress_accel(
+            h,
+            dict,
+            buf_off,
+            block_size,
+            round_matches,
+            l,
+            min_match,
+            base_len,
+            block_start,
+            in_stat,
+            stat,
+            literal_bytes,
+            reread,
+            accelerator,
+        );
+    }
     let mut last_match_end = 0usize;
     *literal_bytes = block_size as u32;
 
@@ -484,6 +518,268 @@ pub fn compress<R: ReadSeek>(
         h.add_hash(
             hash1.value,
             (hash1.value >> 32) as u32,
+            ((block_start + i as u64) / l as u64) as usize,
+        );
+    }
+    Ok(())
+}
+
+/// The byte at `idx` of the ring, zero past its end (see the batch in
+/// `compress`: the scan reads up to `CYCLES - 1` bytes past a block).
+#[inline]
+fn byte_at(dict: &[u8], idx: usize) -> u8 {
+    dict.get(idx).copied().unwrap_or(0)
+}
+
+/// `compress<ACCELERATOR>` for `ACCELERATOR` = 1, 2, 4, ..., 64
+/// (`compress.cpp:54-212`), transcribed as written: `hash1` covers the last
+/// `L - OFFSET` bytes of the window, `bitarr` is probed once per `CYCLES`
+/// positions and, on a hit, all `CYCLES` positions are hashed in full and
+/// stored; `LOOKAHEAD` is 256.
+#[allow(clippy::too_many_arguments)]
+fn compress_accel<R: ReadSeek>(
+    h: &mut HashTable,
+    dict: &[u8],
+    buf_off: usize,
+    block_size: usize,
+    round_matches: bool,
+    l: usize,
+    min_match: usize,
+    base_len: u32,
+    block_start: u64,
+    in_stat: &[u32],
+    stat: &mut Vec<u32>,
+    literal_bytes: &mut u32,
+    reread: &mut R,
+    cycles: usize,
+) -> Result<(), lz::EncodeError> {
+    const LOOKAHEAD_A: usize = 256;
+    let offset = cycles - 1;
+    let x = cycles.max(4);
+    let mut last_match_end = 0usize;
+    *literal_bytes = block_size as u32;
+
+    let mut instat = in_stat;
+    let decode_next =
+        |instat: &mut &[u32], basic_pos: u64| -> Result<(usize, u32, u64), lz::DecodeError> {
+            let (m, used) = lz::decode_lz_match(instat, round_matches, false, base_len, basic_pos)?;
+            *instat = &instat[used..];
+            Ok(((m.dest - block_start) as usize, m.len, m.dest - m.src))
+        };
+    let (ms, ml, mo) =
+        decode_next(&mut instat, block_start).map_err(|_| lz::EncodeError::BadInputMatch)?;
+    let mut match_start = ms;
+    let mut match_len = ml;
+    let mut match_offset = mo;
+
+    if l > block_size / 2 {
+        return Ok(());
+    }
+
+    let mut hash1 = PolynomialRollingHash::new(l - offset, PRIME1);
+    let mut hash2 = PolynomialRollingHash::new(l, PRIME1);
+    // PRIME1_powers[j] = PRIME1^(L-1-j) (compress.cpp:73-75).
+    let mut powers = vec![0u64; cycles];
+    powers[cycles - 1] = crate::rolling::power(PRIME1, (l - cycles) as u32);
+    for j in (1..cycles).rev() {
+        powers[j - 1] = powers[j].wrapping_mul(PRIME1);
+    }
+    let mut hashes1: Vec<u64> = Vec::with_capacity(LOOKAHEAD_A);
+    let mut pairs: Vec<(u64, usize)> = Vec::with_capacity(LOOKAHEAD_A * 2);
+
+    // --- SPECIAL HANDLING FOR FIRST L BYTES (compress.cpp:78-94) ---------- //
+    hash1.moveto(&dict[buf_off..]);
+    hash2.value = hash1.value;
+    let mut j = 0usize;
+    loop {
+        h.mark_match_possibility(hash1.value);
+        if j == offset {
+            break;
+        }
+        hash1.update(dict[buf_off + j], dict[buf_off + l - offset + j]);
+        hash2.update(0, dict[buf_off + l - offset + j]);
+        j += 1;
+    }
+    {
+        let i = 0usize;
+        let hash = hash2.value;
+        let k = h.find_match(dict, buf_off, i, block_size, hash, (hash >> 32) as u32);
+        if k != NOT_FOUND {
+            let mut match_end = 0usize;
+            if record_match(
+                h,
+                dict,
+                buf_off,
+                block_size,
+                block_start,
+                round_matches,
+                l,
+                min_match,
+                base_len,
+                reread,
+                stat,
+                last_match_end,
+                &mut match_end,
+                literal_bytes,
+                i,
+                k,
+            )? {
+                last_match_end = match_end;
+            }
+        }
+    }
+    h.add_hash(
+        hash2.value,
+        (hash2.value >> 32) as u32,
+        (block_start / l as u64) as usize,
+    );
+
+    // --- MAIN CYCLE (compress.cpp:97-210) ---------------------------------- //
+    let mut i = 0usize;
+    while i + 2 * l <= block_size {
+        let mut saved_hash1 = 0u64;
+        let next_chunk = i + l;
+        while i < next_chunk {
+            if i >= match_start {
+                if match_start + match_len as usize - base_len as usize >= last_match_end {
+                    let cut = match_start.max(last_match_end) - match_start;
+                    let match_len = match_len as usize - cut;
+                    let match_start = match_start.max(last_match_end);
+                    let literal_len = match_start - last_match_end;
+                    lz::encode_lz_match(
+                        stat,
+                        round_matches,
+                        base_len,
+                        literal_len as u32,
+                        match_offset,
+                        match_len as u32,
+                    )?;
+                    last_match_end = match_start + match_len;
+                    *literal_bytes -= match_len as u32;
+                }
+                let (ms, ml, mo) = decode_next(
+                    &mut instat,
+                    block_start + match_start as u64 + match_len as u64,
+                )
+                .map_err(|_| lz::EncodeError::BadInputMatch)?;
+                match_start = ms;
+                match_len = ml;
+                match_offset = mo;
+            }
+
+            // UPDATE hash1 UNTIL last_match_end (compress.cpp:124-132).
+            let next_i = (next_chunk - cycles).min(if last_match_end > 0 {
+                last_match_end - 1
+            } else {
+                0
+            });
+            if next_i >= i + l / 2 {
+                i = next_i & !(x - 1);
+                hash1.moveto(&dict[buf_off + i + offset..]);
+            } else {
+                while i + x <= next_i {
+                    for t in 0..x {
+                        let p = buf_off + i + offset + t;
+                        hash1.update(dict[p], byte_at(dict, p + l - offset));
+                    }
+                    i += x;
+                }
+            }
+
+            let last_i = next_chunk.min(i + LOOKAHEAD_A);
+
+            // PREFETCH bitarr AND UPDATE hash1 (compress.cpp:138-149).
+            hashes1.clear();
+            let mut i0 = i;
+            while i0 < last_i {
+                hash1.update(
+                    byte_at(dict, buf_off + i0 + offset),
+                    byte_at(dict, buf_off + i0 + l),
+                );
+                hashes1.push(hash1.value);
+                for t in 0..cycles - 1 {
+                    let p = buf_off + i0 + 1 + offset + t;
+                    hash1.update(byte_at(dict, p), byte_at(dict, p + l - offset));
+                }
+                i0 += cycles;
+            }
+            saved_hash1 = *hashes1.last().unwrap();
+
+            // CHECK bitarr AND STORE CANDIDATES (compress.cpp:152-184).
+            pairs.clear();
+            let store = |pos: usize, hash: u64, pairs: &mut Vec<(u64, usize)>| {
+                if pos >= last_match_end && pos < match_start {
+                    pairs.push((hash, pos));
+                }
+            };
+            let mut n1 = 0usize;
+            while i < last_i {
+                let hsh1 = hashes1[n1];
+                n1 += 1;
+                if h.check_match_possibility(hsh1) {
+                    i += 1;
+                    hash2.value = hsh1;
+                    for (j, &power) in powers[..cycles - 1].iter().enumerate() {
+                        hash2.value = hash2.value.wrapping_add(
+                            (byte_at(dict, buf_off + i + j) as u64).wrapping_mul(power),
+                        );
+                    }
+                    store(i, hash2.value, &mut pairs);
+                    for _ in 0..cycles - 1 {
+                        hash2.update(byte_at(dict, buf_off + i), byte_at(dict, buf_off + i + l));
+                        store(i + 1, hash2.value, &mut pairs);
+                        i += 1;
+                    }
+                } else {
+                    i += cycles;
+                }
+            }
+
+            // CHECK chunkarr TRYING TO FIND MATCH (compress.cpp:187-192).
+            for &(hsh, pos) in &pairs {
+                let k = h.find_match(dict, buf_off, pos, block_size, hsh, (hsh >> 32) as u32);
+                if k != NOT_FOUND {
+                    let mut match_end = 0usize;
+                    if record_match(
+                        h,
+                        dict,
+                        buf_off,
+                        block_size,
+                        block_start,
+                        round_matches,
+                        l,
+                        min_match,
+                        base_len,
+                        reread,
+                        stat,
+                        last_match_end,
+                        &mut match_end,
+                        literal_bytes,
+                        pos,
+                        k,
+                    )? {
+                        last_match_end = match_end;
+                        break;
+                    }
+                }
+            }
+        }
+
+        // SECOND SUB-MAIN CYCLE (compress.cpp:196-208).
+        hash1.value = saved_hash1;
+        hash2.value = saved_hash1;
+        h.mark_match_possibility(hash1.value);
+        for j in 1..cycles {
+            hash1.update(
+                byte_at(dict, buf_off + i - cycles + j + offset),
+                byte_at(dict, buf_off + i - cycles + j + l),
+            );
+            h.mark_match_possibility(hash1.value);
+            hash2.update(0, byte_at(dict, buf_off + i - cycles + j + l));
+        }
+        h.add_hash(
+            hash2.value,
+            (hash2.value >> 32) as u32,
             ((block_start + i as u64) / l as u64) as usize,
         );
     }

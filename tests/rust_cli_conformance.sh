@@ -84,6 +84,29 @@ while len(out) < 2 << 20:
         out += bytes(r.randrange(256) for _ in range(r.randint(1, 40)))
 open(os.path.join(d, "noisy512k.bin"), "wb").write(out[:512 << 10])
 open(os.path.join(d, "noisy2m.bin"), "wb").write(out[:2 << 20])
+# Near-duplicates for a small -l (the -m3/-m4/-m5 first pass with -l16..-l128
+# or a small -c). Copies of a random unit with the last byte or two of ~30% of
+# the 16-byte cells bumped by 1-3, and a short random run after ~20% of the
+# copies; one 64 KiB half with a 4 KiB unit, one with a 1 KiB unit. 2.2.x
+# wrote other bytes than 1.0.7 on it in every small-l case the gates check:
+# chunks that differ in their last byte replaced each other in add_hash (the
+# C++ also compares the -m3 digests there), and the ports ran the plain
+# compress<0> scan where the C++ runs the bitarr-filtered compress<accel>.
+def nearcopies(seed, unit_len):
+    r = random.Random(seed)
+    unit = bytearray(r.randrange(256) for _ in range(unit_len))
+    out = bytearray()
+    while len(out) < 65536:
+        u = bytearray(unit)
+        for c in range(0, unit_len, 16):
+            if r.random() < 0.3:
+                j = c + 15 - r.randrange(2)
+                u[j] = (u[j] + r.randrange(1, 4)) & 0xFF
+        out += u
+        if r.random() < 0.2:
+            out += bytes(r.randrange(256) for _ in range(r.randint(1, 7)))
+    return bytes(out[:65536])
+open(os.path.join(d, "smalll.bin"), "wb").write(nearcopies(2, 4096) + nearcopies(3, 1024))
 PY
 
 pass=0
@@ -139,6 +162,50 @@ diff_case tests/corpus/text.bin -m0 -d16mb
 diff_case tests/corpus/text.bin -m3 -dl256
 diff_case tests/corpus/text.bin -m4 -m64kb          # -mBYTES, the maximum-save form
 diff_case tests/corpus/text.bin -m4 -t8 -v0         # accepted and ignored
+
+say "a small -l or -c: the bitarr-filtered scan, -aN[/M], and -m3's digest test in add_hash"
+# accel = min(max(L/32, 1), 4) picks the C++'s compress<accel> (srep.cpp:631-634)
+# and -aN[/M] sizes bitarr and picks the variant; -a0/-a- is compress<0>. 2.2.x
+# ignored -a and always ran compress<0>, and its add_hash skipped the -m3
+# digest test: every case here differed from 1.0.7 (see smalll.bin above).
+for o in "-m3o -l32" "-m3 -l32" "-m4o -l16" "-m4 -c64" "-m5 -c64" "-m4o -l32" "-m4 -l64" \
+         "-m3f -l32" "-m3o -l32 -a0" "-m3 -l32 -a-" "-m4o -l16 -a2/2" "-m3o -l32 -a2" \
+         "-m4 -l64 -a16" "-m4o -l64 -a4/64" "-m5 -c64 -a8"; do
+    # shellcheck disable=SC2086
+    diff_case "$TMP/smalll.bin" $o
+done
+# Where the C++ has no defined behaviour the port keeps the plain scan, which
+# is what 2.2.1 wrote for every -a: no compress<3>/<5>/... instance (-a3, -a5,
+# and the default accel 3 of -l96..-l127: the C++ exits 3 or writes a block
+# that does not decode), -a0/N and -aN/M followed by -a- (a null bitarr: the
+# C++ segfaults), and a variant wider than the chunk (-l16 -a1/32: the C++
+# aborts). Each must succeed, write exactly the -a0 archive, and round-trip;
+# the v4 one must also decode with the C++.
+for case in "-m4o -l32 -a3|-m4o -l32 -a0" "-m4 -l32 -a5|-m4 -l32 -a0" \
+            "-m3o -l32 -a0/4|-m3o -l32 -a0" "-m4 -l16 -a1/32|-m4 -l16 -a0" \
+            "-m4o -l96|-m4o -l96 -a0" "-m3 -l100|-m3 -l100 -a0" \
+            "-m4 -l32 -a4/8 -a-|-m4 -l32 -a0" "-m5 -c64 -a2/3|-m5 -c64 -a0"; do
+    IFS='|' read -r o plain <<<"$case"
+    for fmt in "" --format=v4; do
+        rc=0
+        # shellcheck disable=SC2086
+        "$RS" $fmt --seed=7 $o "$TMP/smalll.bin" "$TMP/fb.osr" >/dev/null 2>"$TMP/fb.err" || rc=$?
+        # -l96 and -l100 also earn the power-of-two warning, which is exit 1
+        [ "$rc" -le 1 ] || fail "$o $fmt exited $rc: $(tail -1 "$TMP/fb.err")"
+        # shellcheck disable=SC2086
+        "$RS" $fmt --seed=7 $plain "$TMP/smalll.bin" "$TMP/pl.osr" >/dev/null 2>&1 || true
+        cmp -s "$TMP/fb.osr" "$TMP/pl.osr" || fail "$o $fmt: not the plain-scan archive of $plain"
+        "$RS" -d "$TMP/fb.osr" "$TMP/fb.dec" >/dev/null 2>&1 || fail "$o $fmt: archive does not decode"
+        cmp -s "$TMP/smalll.bin" "$TMP/fb.dec" || fail "$o $fmt: round trip differs"
+        if [ -n "$fmt" ]; then
+            "$CXX_BIN/osrep" -d "$TMP/fb.osr" "$TMP/fb.cdec" >/dev/null 2>&1 \
+                || fail "$o: the C++ could not decode the port's archive"
+            cmp -s "$TMP/smalll.bin" "$TMP/fb.cdec" || fail "$o: C++ decode differs"
+        fi
+        rm -f "$TMP/fb.osr" "$TMP/pl.osr" "$TMP/fb.dec" "$TMP/fb.cdec"
+        pass=$((pass + 1))
+    done
+done
 
 say "the second pass orders matches with one shared source the way the C++ does"
 # srep.cpp:899 sorts the match list by `src` alone with libstdc++'s std::sort,
@@ -485,10 +552,10 @@ say "unusual -l/-c values keep the match finder inside its buffers"
 #   * -l/-c not a power of two (-l17 -m4, -c17 -m5): the last chunk number
 #     reached the end of hasharr, and the 4-byte batch read up to 3 bytes past
 #     a full block in the ring's last slot. Both arrays now have room.
-# The archives are pinned. The -m5 ones are also what 1.0.7 writes on the
-# x86-64 reference machine; the others differ from 1.0.7 like every archive
-# with a non-power-of-two L already did (the C++ warns that such an L "may be
-# corrupt").
+# The archives are pinned, and all nine are also what 1.0.7 writes on the
+# x86-64 reference machine. The -l17/-c17 pins moved in 2.3.0: L 17 gives
+# accel 1, and the C++ runs compress<1> (the bitarr-filtered scan) there, not
+# the compress<0> that 2.2.x ran; before, they differed from 1.0.7.
 python3 - "$TMP" <<'PY'
 import os, random, sys
 # A 4 KiB unit repeated, with a short random run after ~5% of the copies:
@@ -520,8 +587,8 @@ a1cf9353f86601ddb899f36aaf2353da tests/corpus/tiny.bin -m5o -l1000
 b4ed8daf9deaefbec2cbd9f18122e52d $TMP/noisy2m.bin -m5 -l1000 -b1mb
 e3a9a4e95ed57711cc8013d74db62746 $TMP/noisy2m.bin -m5o -l1000 -b1mb
 46b4ce95087359a552ee65b038e2ad85 $TMP/noisy2m.bin -m5f -l2000 -b1mb
-e96ad08392be4215b8e712cb5d43d581 tests/corpus/text.bin -m4 -l17 -b1mb
-e96ad08392be4215b8e712cb5d43d581 tests/corpus/text.bin -m5 -c17 -b1mb
+983d886bc4287933468ca4738095feae tests/corpus/text.bin -m4 -l17 -b1mb
+983d886bc4287933468ca4738095feae tests/corpus/text.bin -m5 -c17 -b1mb
 f6c1579ce5fac9a5c6fd42b29ddb9d6e tests/corpus/random.bin -m4 -l9
 EOF
 
@@ -535,7 +602,9 @@ say "-m3's digest check stays inside the ring with an -l/-c that is not a power 
 # agree); they keep the power-of-two warning, exit 1. Through 2.2.0 they did
 # not decode (-b4kb is not a multiple of 17, so the blocks after the first
 # start off the chunk grid, as in 1.0.7); now they do -- see
-# tests/m3_grid_regress.sh below.
+# tests/m3_grid_regress.sh below. The pins moved in 2.3.0: L 17 runs the C++'s
+# compress<1> (the bitarr-filtered scan) instead of compress<0>, and add_hash
+# compares the -m3 digests; the archives still decode, with the C++ too.
 while read -r want args; do
     rc=0; "$RS" --format=v4 --seed=7 $args tests/corpus/text.bin "$TMP/dg.osr" >/dev/null 2>"$TMP/dg.err" || rc=$?
     [ "$rc" -eq 1 ] || fail "$args exited $rc, expected 1 (warning): $(grep -a -m1 -E 'panicked|ERROR' "$TMP/dg.err")"
@@ -546,10 +615,10 @@ while read -r want args; do
     rm -f "$TMP/dg.osr" "$TMP/dg.dec"
     pass=$((pass + 1))
 done <<EOF
-4ea55e35c3093cd75cfd0085a05a8d66 -m3 -l17 -b4kb
-4ea55e35c3093cd75cfd0085a05a8d66 -m3 -c17 -b4kb
-3b4754052081adf90e4274ddd624abc5 -m3o -l17 -b4kb
-3af8578e4c2492c3b949083fb3661110 -m3f -l17 -b4kb
+3da714f1149c046323c45229ef6f6fcf -m3 -l17 -b4kb
+3da714f1149c046323c45229ef6f6fcf -m3 -c17 -b4kb
+bcb8084698e36d5b0fe28dddd07a1aa8 -m3o -l17 -b4kb
+61c98db3cd9ffaff74847c941690e85c -m3f -l17 -b4kb
 EOF
 
 say "-l, -c, -dl and -dc above 4294967295 are refused, not wrapped or overflowed"
@@ -793,11 +862,13 @@ say "$(printf '%s' "$out" | tail -1 | sed 's/^ *//')"
 pass=$((pass + 1))
 
 say "the options the port accepts and does not act on really are inert"
-# The man page and --help now say outright that -tN, -aN, -mmap/-nommap,
-# -ia-/-ia+, -slp and -pc have no effect here. That claim has to be checked,
-# not asserted: each one must be accepted AND leave the archive byte-identical
-# to the same run without it. If one ever starts mattering, this fails and the
-# prose has to be corrected with the code.
+# --help says that -tN, -aN, -mmap/-nommap, -ia-/-ia+, -slp and -pc have no
+# effect here. That claim has to be checked, not asserted: each one must be
+# accepted AND leave the archive byte-identical to the same run without it. If
+# one ever starts mattering, this fails and the prose has to be corrected with
+# the code. -aN is no longer inert in general (since 2.3.0 it sizes bitarr
+# and picks the scan, like the C++: see the small -l section above), but with
+# the default -l it still leaves this archive alone, which is what is checked.
 "$RS" --seed=7 -m3 tests/corpus/text.bin "$TMP/inert_base.osr" >/dev/null 2>&1 \
     || fail "could not write the baseline archive"
 for opt in -t1 -t8 -a2 -a4/4 -mmap -nommap -ia- -ia+ -slp -slp- -slp+ -pc -pc16; do

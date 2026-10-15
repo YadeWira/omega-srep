@@ -111,15 +111,22 @@ with every method but
 .BR -m1 / -m2 .
 .TP
 \fB-a\fIX\fR[\fB/\fIY\fR]
-Compression accelerator: allocate
+Compression accelerator of \fB-m3\fR/\fB-m4\fR/\fB-m5\fR, as in the C++
+1.0.7: a bit array of
 .I X
-bytes per
-.I L
-input bytes,
+bytes per chunk filters which positions are looked up in the match table,
+and
 .I Y
-of which are set. Use
+(default: \fIX\fR, at most 16) picks the scan that uses it. Without the
+option \fIX\fR is \fIL\fR/32 between 1 and 4. Both can change the archive,
+noticeably only with a small chunk (\fB-l\fR or \fB-c\fR of 16 to 128).
 .B -a0
-for slowest / least memory.
+or
+.B -a-
+is the plain scan with no bit array; so are the values 1.0.7 has no defined
+behaviour for (a \fIY\fR that is not 1, 2, 4, 8, 16, 32 or 64, or is larger
+than the chunk, and \fB-a0/\fIY\fR), where it crashes or writes a block
+that does not decode. A very large \fIX\fR can run out of memory (exit 4).
 .TP
 \fB-t\fIN\fR
 Accepted and \fBnot acted on\fR. The shipped implementation is single-threaded
@@ -377,10 +384,6 @@ Worker thread count in the C++. The Rust implementation is single-threaded per
 block. This is worth knowing beyond the bookkeeping: it is the option most
 people reach for when compression feels slow, and here it will not help.
 .TP
-\fB-a\fIX\fR[\fB/\fIY\fR]
-Accelerator sizing. The C++ allocates \fIX\fR bytes per \fIL\fR input bytes
-for its bit-array; the Rust implementation allocates nothing for it.
-.TP
 .BR -mmap ", " -nommap
 Memory-mapped reads.
 .TP
@@ -395,8 +398,10 @@ Progress counters, a diagnostic.
 .PP
 None of these changes the bytes of an archive, and that is measured rather
 than assumed: the phase 4c pre-port experiments compared output across
-\fB-t1\fR/\fB-t8\fR/default and across \fB-a0\fR/\fB-a16\fR and found it
-byte-identical (see \fIdocs/rust-port.md\fR). What they can change in the C++
+\fB-t1\fR/\fB-t8\fR/default and found it byte-identical (see
+\fIdocs/rust-port.md\fR). The same run found \fB-a0\fR/\fB-a16\fR identical
+too, but only with the default chunk; with a small one \fB-a\fR changes the
+archive, and since 2.3.0 it is honoured (see \fB-a\fR above). What they can change in the C++
 is speed and memory, which is why they are documented here as inert rather
 than removed: silently dropping them would break scripts, and silently
 honouring the syntax while implying an effect would be worse.

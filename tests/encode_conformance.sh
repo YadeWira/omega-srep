@@ -74,6 +74,29 @@ while len(out) < 2 << 20:
         out += bytes(r.randrange(256) for _ in range(r.randint(1, 40)))
 open(os.path.join(d, "noisy512k.bin"), "wb").write(out[:512 << 10])
 open(os.path.join(d, "noisy2m.bin"), "wb").write(out[:2 << 20])
+# Near-duplicates for a small -l (the -m3/-m4/-m5 first pass with -l16..-l128
+# or a small -c). Copies of a random unit with the last byte or two of ~30% of
+# the 16-byte cells bumped by 1-3, and a short random run after ~20% of the
+# copies; one 64 KiB half with a 4 KiB unit, one with a 1 KiB unit. 2.2.x
+# wrote other bytes than 1.0.7 on it in every small-l case the gates check:
+# chunks that differ in their last byte replaced each other in add_hash (the
+# C++ also compares the -m3 digests there), and the ports ran the plain
+# compress<0> scan where the C++ runs the bitarr-filtered compress<accel>.
+def nearcopies(seed, unit_len):
+    r = random.Random(seed)
+    unit = bytearray(r.randrange(256) for _ in range(unit_len))
+    out = bytearray()
+    while len(out) < 65536:
+        u = bytearray(unit)
+        for c in range(0, unit_len, 16):
+            if r.random() < 0.3:
+                j = c + 15 - r.randrange(2)
+                u[j] = (u[j] + r.randrange(1, 4)) & 0xFF
+        out += u
+        if r.random() < 0.2:
+            out += bytes(r.randrange(256) for _ in range(r.randint(1, 7)))
+    return bytes(out[:65536])
+open(os.path.join(d, "smalll.bin"), "wb").write(nearcopies(2, 4096) + nearcopies(3, 1024))
 PY
 
 pass=0
@@ -163,6 +186,20 @@ for input in "$TMP/tie10k.bin" "$TMP/noisy512k.bin" "$TMP/noisy2m.bin"; do
     enc "$input" -m5f m5f
     enc "$input" -m4 m4 -b1mb
     enc "$input" -m0 m0 -d16mb
+done
+
+say "a small -l or -c: the bitarr-filtered scan and -m3's digest test in add_hash"
+# accel = min(max(L/32, 1), 4) picks compress<accel> (srep.cpp:631-634), and
+# -aN[/M] sizes bitarr and picks the variant. -a0/-a- is compress<0>, which
+# isolates the add_hash digest test (-m3). Only values the C++ instantiates:
+# the others (-a3, -l96..-l127, -a0/N) are undefined there and are pinned
+# against the port's own plain scan in tests/rust_cli_conformance.sh.
+for case in "m3o|-l32" "m3|-l32" "m4o|-l16" "m4|-c64" "m5|-c64" "m4o|-l32" "m5o|-l32" \
+            "m4|-l64" "m3f|-l32" "m3o|-l32 -a0" "m3|-l32 -a-" "m4o|-l16 -a2/2" "m3o|-l32 -a2" \
+            "m4|-l64 -a16" "m4o|-l64 -a4/64" "m5|-c64 -a8" "m4o|-l16 -a1/16" "m4|-l64 -a1/64"; do
+    IFS='|' read -r m o <<<"$case"
+    # shellcheck disable=SC2086
+    enc "$TMP/smalll.bin" "-$m" "$m" $o
 done
 
 say "-m1/-m2 (content-defined chunking) vs the C++ encoder"
