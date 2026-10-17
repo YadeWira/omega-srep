@@ -38,6 +38,11 @@
 # Tunables (env vars):
 #   HARDEN_FUZZ_SECONDS   libFuzzer soak duration per harness, in
 #                         seconds. Default 40 (3 harnesses -> ~2 min).
+#   OSREP_WINEPREFIX_ROOT an existing directory where stage 4 makes its
+#                         private wine prefix (~1.4 GB, removed at exit).
+#                         Default: the run directory, which mktemp usually
+#                         puts in /tmp, in RAM. Ignored when WINEPREFIX is
+#                         set: that prefix is used as is and never removed.
 #
 # Exit code: 0 iff every stage that was reached PASSED (stages
 # skipped for a missing optional tool do not fail the run).
@@ -59,6 +64,8 @@ HARDEN_FUZZ_SECONDS="${HARDEN_FUZZ_SECONDS:-40}"
 RUN_TMPROOT="$(mktemp -d -t osrep-local-hardening-XXXXXX)"
 LOGDIR="$RUN_TMPROOT/logs"
 mkdir -p "$LOGDIR"
+# Stage 4's private wine prefix, once it has made one; on_exit removes it.
+OWN_WINEPREFIX=""
 
 START_TS=$(date +%s)
 
@@ -359,6 +366,24 @@ EOF
     if [[ -f "$libstdcxx_dll" ]]; then cp "$libstdcxx_dll" "$build_dir/"; fi
     if [[ -f "$libgcc_dll" ]]; then cp "$libgcc_dll" "$build_dir/"; fi
 
+    # A private WINEPREFIX, not the shared ~/.wine: every wine process on one
+    # prefix talks to one wineserver, and a `wineserver -k` from any other job
+    # on that prefix ends ours mid-run, usually with exit 0 and no output
+    # (docs/pascal-port.md, "Un `wineserver -k` ajeno"). A WINEPREFIX the
+    # caller set is used as is. The private one is a fresh mktemp directory
+    # in OSREP_WINEPREFIX_ROOT, or else in $RUN_TMPROOT (usually a tmpfs: the
+    # prefix is ~1.4 GB), so it can never be somebody else's. It is booted
+    # here, outside the 30 s timeouts below (a first boot takes a while), and
+    # on_exit removes exactly that directory, even on a failure.
+    local own_prefix=""
+    if [[ -z "${WINEPREFIX:-}" ]]; then
+        own_prefix="$(mktemp -d "${OSREP_WINEPREFIX_ROOT:-$RUN_TMPROOT}/osrep-wineprefix.XXXXXX")"
+        OWN_WINEPREFIX="$own_prefix"
+        export WINEPREFIX="$own_prefix"
+        run_logged "wineboot -i (private WINEPREFIX $own_prefix)" "$LOGDIR/s4-wineboot.log" \
+            env WINEDEBUG=-all WINEDLLOVERRIDES="mscoree,mshtml=" timeout 300 wineboot -i
+    fi
+
     echo "  -> Wine smoke test: --help"
     export WINEDEBUG=-all
     run_logged "wine osrep.exe --help" "$LOGDIR/s4-wine-help.log" \
@@ -379,6 +404,7 @@ EOF
         return 1
     fi
     unset WINEDEBUG
+    [[ -z "$own_prefix" ]] || unset WINEPREFIX
 
     STAGE_STATUS[s4]="PASS"
 }
@@ -420,6 +446,14 @@ on_exit() {
         printf '  %-58s %s\n' "${STAGE_LABEL[$s]}" "${STAGE_STATUS[$s]}"
     done
     echo "==================================================================="
+
+    # Stage 4's private wine prefix goes whatever happened (it is not
+    # evidence, and it is big). It is ours alone: wait for its wineserver to
+    # exit first, so the prefix is not removed from under it.
+    if [[ -n "$OWN_WINEPREFIX" && -d "$OWN_WINEPREFIX" ]]; then
+        WINEPREFIX="$OWN_WINEPREFIX" timeout 60 wineserver -w || true
+        rm -rf "${OWN_WINEPREFIX:?}"
+    fi
 
     # Keep logs (and the mingw build tree) around for post-mortem on
     # failure; on a clean pass there's nothing worth digging through,

@@ -23,6 +23,7 @@ fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 
 RS="${OSREP_RUST_BIN:-$RUST_TARGET/x86_64-unknown-linux-gnu/release/osrep}"
 CT="${OSREP_PASCAL_CONTAINERTOOL:-pascal/bin/containertool}"
+warn_shared_wine "$CT"
 [ -x "$RS" ] || { say "sin binario Rust -- salteando"; exit 0; }
 if [ ! -x "$CT" ]; then
     command -v fpc >/dev/null 2>&1 || { say "sin fpc -- salteando"; exit 0; }

@@ -29,6 +29,7 @@ RS="${OSREP_RUST_BIN:-$RUST_TARGET/x86_64-unknown-linux-gnu/release/osrep}"
 [ -x "$RS" ] || fail "no hay encoder Rust en $RS"
 
 DT="${OSREP_PASCAL_DECODETOOL:-pascal/bin/decodetool}"
+warn_shared_wine "$DT"
 if [ ! -x "$DT" ]; then
     command -v fpc >/dev/null 2>&1 || { say "sin fpc -- salteando"; exit 0; }
     mkdir -p pascal/bin/units-linux
@@ -60,39 +61,93 @@ PY
 rust_err()   { sed 's/^decode_conformance: //; s/^broken compressed data: //'; }
 pascal_err() { sed -n 's/^  ERROR! //p'; }
 
+# Cada corrida deja su stdout, su stderr y su codigo en $TMP: rs.* el Rust,
+# pa.* el Pascal. Asi un FAIL puede mostrar las dos salidas enteras.
+run_rs() { RS_RC=0; "$DC" v5 "$@" >"$TMP/rs.o" 2>"$TMP/rs.e" || RS_RC=$?; }
+run_pa() { PA_RC=0; "$DT" "$@" >"$TMP/pa.o" 2>"$TMP/pa.e" || PA_RC=$?; }
+
+# Un FAIL de abajo con todo lo necesario para diagnosticarlo despues: el
+# archivo y su md5, codigo, stdout y stderr de los dos, la salida del Pascal
+# y una segunda corrida del Pascal (si esa pasa, fue algo del entorno). Se
+# guarda fuera de $TMP, que el trap borra. Hubo un FAIL bajo wine32 que no se
+# repitio y del que no quedo mas que la linea del FAIL (docs/pascal-port.md,
+# "Un `wineserver -k` ajeno").
+fail_diag() { # $1=mensaje $2=archivo $3=salida del Pascal, el resto opciones
+    local msg="$1" arc="$2" pout="$3"; shift 3
+    local keep rc2=0 f
+    keep=$(mktemp -d "${OSREP_KEEP_DIR:-${TMPDIR:-/tmp}}/pascal_v5_fail.XXXXXX") \
+        || keep=$(mktemp -d) || fail "$msg (y no se pudo guardar el diagnostico)"
+    cp "$arc" "$keep/"
+    for f in rs.o rs.e pa.o pa.e; do cp "$TMP/$f" "$keep/" 2>/dev/null || :; done
+    [ ! -e "$TMP/r.out" ] || cp "$TMP/r.out" "$keep/rust.out"
+    [ ! -e "$pout" ] || cp "$pout" "$keep/pascal.out"
+    "$DT" "$arc" "$keep/again.out" "$@" >"$keep/again.o" 2>"$keep/again.e" || rc2=$?
+    {
+        printf '%s\n' "$msg"
+        printf '  archivo: %s, %s bytes, md5 %s; opciones: %s\n' "$(basename "$arc")" \
+            "$(stat -c%s "$arc")" "$(md5sum <"$arc" | cut -c1-32)" "${*:-(ninguna)}"
+        for f in rust:rs:"${RS_RC:-?}" pascal:pa:"${PA_RC:-?}"; do
+            IFS=: read -r who p code <<<"$f"
+            printf '  %s: rc=%s\n    stdout: %s\n    stderr: %s\n' "$who" "$code" \
+                "$(tr '\n' '|' 2>/dev/null <"$TMP/$p.o")" "$(tr '\n' '|' 2>/dev/null <"$TMP/$p.e")"
+        done
+        for f in "$keep/rust.out" "$keep/pascal.out" "$keep/again.out"; do
+            [ ! -e "$f" ] || printf '  %s: %s bytes, md5 %s\n' "$(basename "$f")" \
+                "$(stat -c%s "$f")" "$(md5sum <"$f" | cut -c1-32)"
+        done
+        printf '  el Pascal otra vez: rc=%s, stdout: %s, stderr: %s\n' "$rc2" \
+            "$(tr '\n' '|' <"$keep/again.o")" "$(tr '\n' '|' <"$keep/again.e")"
+        # decodetool siempre escribe algo: "ok ..." al salir con 0, un mensaje
+        # al salir con cualquier otro codigo. Mudo, con el codigo que sea (bajo
+        # wine casi siempre 0, tambien 1 y 131), es que no termino.
+        [ -z "${PA_RC:-}" ] || [ -s "$TMP/pa.o" ] || [ -s "$TMP/pa.e" ] || printf '%s\n' \
+            "  el Pascal salio $PA_RC sin escribir nada: no termino. Bajo wine, es lo que da" \
+            "  un wineserver que se va (un \`wineserver -k\` en el mismo WINEPREFIX)."
+        printf '  guardado en %s\n' "$keep"
+    } >&2
+    fail "$msg"
+}
+
 # Con -dup, decode_v5 reconstruye el stream ya deduplicado: el original lo
 # arma despues el post-paso de la CLI (fase 6). Ahi el original es "-" y se
 # comparan los dos decoders entre si, byte a byte.
 compare() { # $1=etiqueta $2=archivo $3=original o "-", el resto opciones
     local label="$1" arc="$2" src="$3"; shift 3
     local want got
-    want=$("$DC" v5 "$arc" "$TMP/r.out" "$@" 2>/dev/null) \
-        || fail "[$label $*] el Rust no decodifico su propio archivo"
+    # nada de un caso anterior puede pasar por evidencia de este
+    PA_RC=; rm -f "$TMP/pa.o" "$TMP/pa.e" "$TMP/r.out" "$TMP/p.out"
+    run_rs "$arc" "$TMP/r.out" "$@"
+    [ "$RS_RC" -eq 0 ] || fail_diag "[$label $*] el Rust no decodifico su propio archivo" "$arc" - "$@"
+    want=$(cat "$TMP/rs.o")
     [ "$src" = - ] || cmp -s "$src" "$TMP/r.out" || fail "[$label] el Rust no reconstruyo la entrada"
-    got=$("$DT" "$arc" "$TMP/p.out" "$@" 2>/dev/null) \
-        || fail "[$label $*] el Pascal fallo donde el Rust decodifico"
-    [ "$want" = "$got" ] || fail "[$label $*] estadisticas distintas
+    run_pa "$arc" "$TMP/p.out" "$@"
+    [ "$PA_RC" -eq 0 ] \
+        || fail_diag "[$label $*] el Pascal fallo donde el Rust decodifico" "$arc" "$TMP/p.out" "$@"
+    got=$(cat "$TMP/pa.o")
+    [ "$want" = "$got" ] || fail_diag "[$label $*] estadisticas distintas
       Rust:   $want
-      Pascal: $got"
-    cmp -s "$TMP/r.out" "$TMP/p.out" || fail "[$label $*] los bytes reconstruidos difieren"
+      Pascal: $got" "$arc" "$TMP/p.out" "$@"
+    cmp -s "$TMP/r.out" "$TMP/p.out" \
+        || fail_diag "[$label $*] los bytes reconstruidos difieren" "$arc" "$TMP/p.out" "$@"
     pass=$((pass + 1))
 }
 
 # Un archivo danado: los dos fallan, con el mismo error, sin dejar salida.
 broken() { # $1=etiqueta $2=archivo, el resto opciones
     local label="$1" arc="$2"; shift 2
-    local want got out rc=0 r=0
-    out=$("$DC" v5 "$arc" "$TMP/r.out" "$@" 2>&1 >/dev/null) || r=$?
+    local want got
+    run_rs "$arc" "$TMP/r.out" "$@"
     rm -f "$TMP/r.out"
-    [ "$r" -ne 0 ] || return 1       # el Rust lo acepto: no es un caso danado
-    want=$(printf '%s\n' "$out" | rust_err)
-    out=$("$DT" "$arc" "$TMP/bad" "$@" 2>&1 >/dev/null) || rc=$?
-    got=$(printf '%s\n' "$out" | pascal_err)
-    [ "$rc" -eq 4 ] || fail "[$label] el Rust fallo ($want) y el Pascal salio $rc"
-    [ ! -e "$TMP/bad" ] || fail "[$label] quedo una salida a medias"
-    [ "$want" = "$got" ] || fail "[$label] otro error que el Rust
+    [ "$RS_RC" -ne 0 ] || return 1   # el Rust lo acepto: no es un caso danado
+    want=$(rust_err <"$TMP/rs.e")
+    run_pa "$arc" "$TMP/bad" "$@"
+    got=$(pascal_err <"$TMP/pa.e")
+    [ "$PA_RC" -eq 4 ] \
+        || fail_diag "[$label] el Rust fallo ($want) y el Pascal salio $PA_RC" "$arc" "$TMP/bad" "$@"
+    [ ! -e "$TMP/bad" ] || fail_diag "[$label] quedo una salida a medias" "$arc" "$TMP/bad" "$@"
+    [ "$want" = "$got" ] || fail_diag "[$label] otro error que el Rust
       Rust:   $want
-      Pascal: $got"
+      Pascal: $got" "$arc" "$TMP/bad" "$@"
     pass=$((pass + 1))
     return 0
 }
@@ -121,9 +176,17 @@ compare "spill" "$TMP/spill.osr" "$TMP/far.bin"
 compare "spill" "$TMP/spill.osr" "$TMP/far.bin" --mem=1048576 --vmblock=131072
 compare "spill" "$TMP/spill.osr" "$TMP/far.bin" --mem=524288 --vmblock=65536
 compare "spill" "$TMP/spill.osr" "$TMP/far.bin" --mem=2097152 --vmblock=262144
-got=$("$DT" "$TMP/spill.osr" "$TMP/p.out" --mem=1048576 --vmblock=131072 2>/dev/null)
+# Por run_pa y fail_diag, como el resto: un Pascal que muere aca deja su
+# evidencia y un FAIL, no un `set -e` mudo. Sin corrida del Rust: lo que haya
+# en rs.* y r.out es de otro caso, y no se guarda como si fuera de este.
+RS_RC=; rm -f "$TMP/rs.o" "$TMP/rs.e" "$TMP/r.out" "$TMP/p.out"
+run_pa "$TMP/spill.osr" "$TMP/p.out" --mem=1048576 --vmblock=131072
+[ "$PA_RC" -eq 0 ] || fail_diag "[spill vmw] el Pascal fallo" \
+    "$TMP/spill.osr" "$TMP/p.out" --mem=1048576 --vmblock=131072
+got=$(cat "$TMP/pa.o")
 vmw=$(printf '%s' "$got" | sed -n 's/.*vmw=\([0-9]*\).*/\1/p')
-[ "${vmw:-0}" -gt 0 ] || fail "el caso de spill no derramo nada (vmw=$vmw): el test seria vacio"
+[ "${vmw:-0}" -gt 0 ] || fail_diag "el caso de spill no derramo nada (vmw=$vmw): el test seria vacio" \
+    "$TMP/spill.osr" "$TMP/p.out" --mem=1048576 --vmblock=131072
 pass=$((pass + 1))
 
 say "el contenedor danado: los dos fallan con el mismo error"
@@ -239,11 +302,14 @@ say "$pass comprobaciones hasta aca; $accepted mutaciones que el Rust acepta"
 
 say "lo que el Rust acepta de esas mutaciones, el Pascal lo reconstruye igual"
 for k in "$TMP"/k.*.osr; do
-    r=0; want=$("$DC" v5 "$k" "$TMP/r.out" 2>/dev/null) || r=$?
-    [ "$r" -eq 0 ] || continue
-    got=$("$DT" "$k" "$TMP/p.out" 2>/dev/null) || fail "[$(basename "$k")] el Rust lo acepto y el Pascal no"
-    [ "$want" = "$got" ] || fail "[$(basename "$k")] estadisticas distintas: $want / $got"
-    cmp -s "$TMP/r.out" "$TMP/p.out" || fail "[$(basename "$k")] bytes distintos"
+    rm -f "$TMP/r.out" "$TMP/p.out"
+    run_rs "$k" "$TMP/r.out"
+    [ "$RS_RC" -eq 0 ] || continue
+    run_pa "$k" "$TMP/p.out"
+    [ "$PA_RC" -eq 0 ] || fail_diag "[$(basename "$k")] el Rust lo acepto y el Pascal no" "$k" "$TMP/p.out"
+    want=$(cat "$TMP/rs.o"); got=$(cat "$TMP/pa.o")
+    [ "$want" = "$got" ] || fail_diag "[$(basename "$k")] estadisticas distintas: $want / $got" "$k" "$TMP/p.out"
+    cmp -s "$TMP/r.out" "$TMP/p.out" || fail_diag "[$(basename "$k")] bytes distintos" "$k" "$TMP/p.out"
     pass=$((pass + 1))
 done
 
