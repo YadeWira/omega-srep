@@ -765,9 +765,10 @@ say "fd 0, 1 y 2 cerrados o llenos: lo mismo que el Rust, y ningun texto adentro
 # falla al leer (ERROR_INVALID_FUNCTION, "Can't read"), donde Linux y un
 # Windows sin handle leen vacio, y con los tres cerrados se rompe el propio
 # wine. Lo que en Windows es un handle que falta (nulo, como un proceso sin
-# consola) se prueba con tests/win_null_std_handles.c, si hay mingw: el .exe
-# con handles nulos tiene que dar lo mismo que el Rust de Linux con esos fds
-# cerrados ("L:nkn" contra "02").
+# consola, o INVALID_HANDLE_VALUE) se prueba con tests/win_null_std_handles.c,
+# si hay mingw: el .exe con handles nulos o invalidos tiene que dar lo mismo
+# que el Rust de Linux con esos fds cerrados ("L:nkn" contra "02", "L:kik"
+# contra "1").
 FD="$TMP/fd"
 mkdir -p "$FD/fix"
 { head -c 150000 tests/corpus/text.bin; head -c 50000 tests/corpus/random.bin; head -c 90000 tests/corpus/text.bin; } > "$FD/fix/in.txt"
@@ -782,7 +783,7 @@ else
     if command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1 && [ -f "$FDEXE" ] \
        && x86_64-w64-mingw32-gcc -municode -O1 -o "$TMP/nullstd.exe" tests/win_null_std_handles.c 2>/dev/null; then
         FDEXE=$(WINEDEBUG=-all winepath -w "$FDEXE" 2>/dev/null)
-        FDCOMBOS="$FDCOMBOS L:nkk L:knk L:kkn L:nnk L:nkn L:knn L:nnn"
+        FDCOMBOS="$FDCOMBOS L:nkk L:knk L:kkn L:nnk L:nkn L:knn L:nnn L:ikk L:kik L:kki"
     else
         say "sin mingw o sin el .exe del wrapper: los handles nulos no se prueban"
     fi
@@ -814,10 +815,11 @@ fdlaunch() {
     echo "$rc" > "$dir/rc"
     rm -f "$dir/w/in.txt" "$dir/w/a.osr" "$dir/w/bad.osr"
 }
-# la mascara del lanzador como los fds cerrados equivalentes
+# la mascara del lanzador como los fds cerrados equivalentes: un handle
+# nulo (n) o INVALID_HANDLE_VALUE (i) es un fd cerrado
 fdmask() {
     local m=$1 c=""
-    [ "${m:0:1}" = n ] && c="${c}0"; [ "${m:1:1}" = n ] && c="${c}1"; [ "${m:2:1}" = n ] && c="${c}2"
+    [ "${m:0:1}" != k ] && c="${c}0"; [ "${m:1:1}" != k ] && c="${c}1"; [ "${m:2:1}" != k ] && c="${c}2"
     echo "$c"
 }
 fdnorm() { [ -e "$1" ] && sed -E 's/[0-9]+(\.[0-9]+)? sec/T sec/g; s/[0-9]+ mb\/s/M mb\/s/g' "$1"; }
@@ -877,6 +879,8 @@ $FD/fix/a.osr|-d
 $FD/fix/in.txt|--seed=7 -s$fdsize - o.osr
 /dev/null|--seed=7 in.txt -
 /dev/null|--seed=7 -m0 in.txt -
+/dev/null|--seed=7 --format=v4 in.txt -
+/dev/null|--seed=7 -bar --format=v4 in.txt -
 /dev/null|-d a.osr o.dec
 $FD/fix/a.osr|-d - o.dec
 /dev/null|-d a.osr -
@@ -890,15 +894,20 @@ $FD/fix/a.osr|--verify -
 ARGS
 say "$fdn corridas con fds cerrados, las mismas que el Rust"
 pass=$((pass + 1))
-# -delete con stdout cerrado o lleno: la salida falla y la entrada se queda
-for spec in "in.txt|--seed=7 -delete in.txt -" "a.osr|-delete -d a.osr -"; do
+# -delete con stdout cerrado o lleno: la salida falla y la entrada se queda.
+# En Linux tambien con la salida /dev/stdout o /proc/self/fd/1, que reabren
+# lo que hay detras del fd 1: reservado sobre un directorio, el open falla.
+if [ "$WINE" = 0 ]; then FDOUTS="- /dev/stdout /proc/self/fd/1"; else FDOUTS="-"; fi
+for spec in "in.txt|--seed=7 -delete in.txt" "a.osr|-delete -d a.osr"; do
     keep=${spec%%|*}; args=${spec#*|}
-    for r in '>&- 2>/dev/null' '>&- 2>&-' '<&- >&- 2>&-' '>/dev/full 2>/dev/null'; do
-        [ "$WINE" = 1 ] && [ "$r" = '<&- >&- 2>&-' ] && continue
-        rm -rf "$FD/q"; mkdir -p "$FD/q"; cp "$FD/fix/"* "$FD/q/"
-        rc=0; (cd "$FD/q" && eval "\"\$PAX\" $args $r") || rc=$?
-        [ "$rc" != 0 ] || fail "fd [$args $r]: exit 0 sin poder escribir"
-        [ -e "$FD/q/$keep" ] || fail "fd [$args $r]: -delete borro $keep sin haber escrito nada"
+    for o in $FDOUTS; do
+        for r in '>&- 2>/dev/null' '>&- 2>&-' '<&- >&- 2>&-' '>/dev/full 2>/dev/null'; do
+            [ "$WINE" = 1 ] && [ "$r" = '<&- >&- 2>&-' ] && continue
+            rm -rf "$FD/q"; mkdir -p "$FD/q"; cp "$FD/fix/"* "$FD/q/"
+            rc=0; (cd "$FD/q" && eval "\"\$PAX\" $args $o $r") || rc=$?
+            [ "$rc" != 0 ] || fail "fd [$args $o $r]: exit 0 sin poder escribir"
+            [ -e "$FD/q/$keep" ] || fail "fd [$args $o $r]: -delete borro $keep sin haber escrito nada"
+        done
     done
 done
 pass=$((pass + 1))

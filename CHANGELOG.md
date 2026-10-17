@@ -20,17 +20,24 @@ what happened in 2.0.0.
   that fails with `Container(Truncated)`, and with `-delete` the input was
   gone. `-d` wrote the same text into the decompressed data, also with exit
   0, and `-d x.osr -` into what it sent to stdout. The released Pascal
-  binary (2.2.0 to 2.3.0) does this, and the C++ 1.0.7 when compressing;
-  the Rust oracle did not. Every fd 0-2 that is closed at startup is now reserved before
-  anything is opened, as the Rust runtime does.
+  binary (2.2.0 to 2.3.0) does this, and so does the C++ 1.0.7, both
+  compressing and decompressing; the Rust oracle did not. Every fd 0-2 that
+  is closed at startup is now reserved before anything is opened, as the
+  Rust runtime does.
 - **Data sent to a closed stdout is an error.** The Rust oracle reopened a
   closed stdout on `/dev/null`, so `osrep -delete x - >&-` wrote the archive
   nowhere, exited 0 and deleted `x`; its Windows build did the same with no
   stdout handle. The archive or decompressed data for a closed (or missing)
-  stdout now fails as any stdout write failure does ("Io", exit 4, when
-  compressing; "Can't write to stdout", exit 3, when decompressing) and
-  `-delete` keeps its input. The released Pascal binary already failed
-  there on Linux, and so does the C++.
+  stdout now fails as any stdout write failure does, and `-delete` keeps its
+  input: "Can't write to stdout", exit 3, when decompressing; when
+  compressing, "Io", exit 4, once the archive has reached 1024 bytes or a
+  newline byte during the encode, and "Can't write to stdout", exit 3, for a
+  smaller archive with no newline byte, which is written only at the end.
+  Naming the output `/dev/stdout`, `/dev/stderr` or `/proc/self/fd/N` for a
+  closed fd fails too ("Can't open /dev/stdout for write", exit 3): a closed
+  fd 1 or 2 is reserved on the directory `/`, so opening it again for
+  writing cannot land on `/dev/null`. The released Pascal binary already
+  failed with `-` on Linux, and so does the C++.
 - **A closed or missing stdin reads as empty in both builds.** On Windows
   with no stdin handle, and on Linux with fd 0 opened write-only, the Pascal
   said "Can't read from stdin" or "Can't read from input file" (exit 3)

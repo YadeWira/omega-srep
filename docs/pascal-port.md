@@ -506,17 +506,28 @@ diferencias.
   `osrep x x.osr <&- 2>&-` la salida quedaba en el fd 2 y el progreso y el
   resumen se escribían **adentro del archivo**, con exit 0 (y `-delete`
   borraba la entrada); `-d` los metía en los datos. El C++ 1.0.7 hace lo
-  mismo al comprimir. `src/stdfds.pas` va primera en el `uses` y reserva los
-  tres al inicializarse (antes de que `SysUtils` abra `/etc/localtime`).
-  Pero no copia el `/dev/null` de lectura-escritura del Rust para el fd 1:
-  ahí todo se escribe con éxito y `osrep -delete x - >&-` tiraba el archivo
-  y borraba `x`. El fd 1 se abre **solo lectura**, así que escribir ahí es
-  EBADF, lo mismo que un fd cerrado, y el Rust hace lo mismo desde un
-  `.init_array` que corre antes que su runtime (`osrep-cli/src/stdio.rs`);
-  como su `stdout()` se traga el EBADF, los datos van por el handle crudo
-  (`data_stdout`, con el mismo `LineWriter` de 1024), y los mensajes, que
-  nunca deben fallar, con escrituras que ignoran el error (`eprint!` y
-  `print!` hacen panic con `2>/dev/full`). Las lecturas de stdin siguen la
+  mismo, al comprimir y al descomprimir. `src/stdfds.pas` va primera en el
+  `uses` y reserva los tres al inicializarse (antes de que `SysUtils` abra
+  `/etc/localtime`). Pero solo el fd 0 va al `/dev/null` de
+  lectura-escritura del Rust: en el fd 1 ahí todo se escribe con éxito y
+  `osrep -delete x - >&-` tiraba el archivo y borraba `x`. Los fd 1 y 2 se
+  abren sobre el **directorio `/`, solo lectura**, así que escribir ahí es
+  EBADF, lo mismo que un fd cerrado; y un `/dev/null` de solo lectura no
+  alcanza, porque la salida puede llamarse `/dev/stdout`, `/dev/stderr` o
+  `/proc/self/fd/1`, y abrir eso para escribir reabre lo que hay detrás del
+  fd (`osrep -delete x /dev/stdout >&-` escribía en `/dev/null` y borraba
+  `x`); con un directorio el `open` falla con EISDIR, "Can't open
+  /dev/stdout for write". El Rust hace lo mismo desde un `.init_array` que
+  corre antes que su runtime (`osrep-cli/src/stdio.rs`); como su `stdout()`
+  se traga el EBADF, los datos van por el handle crudo (`data_stdout`, con
+  el mismo `LineWriter` de 1024), y los mensajes, que nunca deben fallar,
+  con escrituras que ignoran el error (`eprint!` y `print!` hacen panic con
+  `2>/dev/full`). Ese `LineWriter` hace su primer `write` con el primer
+  `'\n'` o a los 1024 bytes, adentro del encode: si falla, el error es "Io"
+  (exit 4) y el progreso que venía no sale; un archivo más chico y sin
+  `'\n'` falla recién en el flush final, "Can't write to stdout" (exit 3).
+  `TCountWriter` vacía su buffer una vez en ese mismo punto, o un stdout
+  cerrado o lleno daba otro stderr (`--format=v4 x -`). Las lecturas de stdin siguen la
   regla del std del Rust: EBADF, o `ERROR_INVALID_HANDLE` en Windows, es fin
   de archivo (`StdinRead`). En Windows un handle que falta es nulo y no se
   reserva nada. Bajo wine se prueba con un lanzador que pasa handles nulos

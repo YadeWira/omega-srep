@@ -65,6 +65,7 @@ type
     FBuf: array of Byte;
     FUsed: LongInt;
     FSawNewline: Boolean;
+    FDrained: Boolean;
     procedure Drain;
   public
     constructor Create(AHandle: THandle);
@@ -135,6 +136,16 @@ begin
     if FUsed = Length(FBuf) then Drain;
   end;
   Inc(FCount, QWord(Result));
+  { el primer write(2) del LineWriter del Rust: con el primer '\n' o al
+    llegar a 1024 bytes. Si ese falla, el Rust falla ahi, dentro del encode
+    y antes del progreso que sigue; aca tambien (un stdout cerrado o
+    /dev/full: el mismo stderr que el Rust). Despues sigue el buffer
+    grande; un lector que se va a mitad puede fallar en otro punto. }
+  if (not FDrained) and (FSawNewline or (FCount >= 1024)) then
+  begin
+    FDrained := True;
+    Drain;
+  end;
 end;
 
 function TCountWriter.Seek(const Offset: Int64; Origin: TSeekOrigin): Int64;

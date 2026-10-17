@@ -1106,7 +1106,8 @@ pass=$((pass + 1))
 say "closed or full stdin/stdout/stderr: no text inside an output, no data thrown away"
 # Not against the C++: 1.0.7 opens its output on the first free fd, so with
 # `<&- 2>&-` the archive lands on fd 2 and the progress and summary lines are
-# written into it (exit 0), and the Pascal did the same until 2.3.0. The
+# written into it (exit 0), and `-d` writes them into the decompressed data
+# the same way; the Pascal did both until 2.3.0. The
 # rules both ports now follow (oracles/rust/crates/osrep-cli/src/stdio.rs,
 # pascal/src/stdfds.pas): a closed fd 0-2 is reserved before anything is
 # opened; a closed stdin reads as empty; data for a closed or failing stdout
@@ -1125,14 +1126,24 @@ for r in '<&- 2>&-' '>&- 2>&-' '<&- >&- 2>&-' '2>/dev/full' '<&- >/dev/full 2>/d
     [ "$rc" -eq 0 ] || fail "fd [$r]: decompress exit $rc"
     cmp -s "$TMP/fd.out" "$TMP/fdin.bin" || fail "fd [$r]: the decompressed data differs from the input"
 done
-for spec in "fdin.bin|--seed=7 -delete fdin.bin -" "fdref.osr|-delete -d fdref.osr -"; do
+# Also with the output named /dev/stdout or /proc/self/fd/1, which opens the
+# file behind fd 1 again: a closed fd 1 is reserved on a directory, so that
+# open fails (EISDIR) instead of landing on /dev/null.
+for spec in "fdin.bin|--seed=7 -delete fdin.bin" "fdref.osr|-delete -d fdref.osr"; do
     keep=${spec%%|*}; args=${spec#*|}
-    for r in '>&- 2>/dev/null' '>/dev/full 2>/dev/null' '<&- >&- 2>&-'; do
-        rm -rf "$TMP/fdq"; mkdir "$TMP/fdq"; cp "$TMP/fdin.bin" "$TMP/fdref.osr" "$TMP/fdq/"
-        rc=0; (cd "$TMP/fdq" && eval '"$RS"' "$args" "$r") || rc=$?
-        [ "$rc" -ne 0 ] || fail "fd [$args $r]: exit 0 with nowhere to write"
-        [ -e "$TMP/fdq/$keep" ] || fail "fd [$args $r]: -delete removed $keep"
+    for o in - /dev/stdout /proc/self/fd/1; do
+        for r in '>&- 2>/dev/null' '>/dev/full 2>/dev/null' '<&- >&- 2>&-'; do
+            rm -rf "$TMP/fdq"; mkdir "$TMP/fdq"; cp "$TMP/fdin.bin" "$TMP/fdref.osr" "$TMP/fdq/"
+            rc=0; (cd "$TMP/fdq" && eval '"$RS"' "$args" "$o" "$r") || rc=$?
+            [ "$rc" -ne 0 ] || fail "fd [$args $o $r]: exit 0 with nowhere to write"
+            [ -e "$TMP/fdq/$keep" ] || fail "fd [$args $o $r]: -delete removed $keep"
+        done
     done
+done
+for o in /dev/stdout /proc/self/fd/1; do
+    rc=0; "$RS" --seed=7 "$TMP/fdin.bin" "$o" >&- 2>"$TMP/fd.err" || rc=$?
+    [ "$rc" -eq 3 ] && grep -q "Can't open $o for write" "$TMP/fd.err" \
+        || fail "fd [$o >&-]: exit $rc, '$(cat "$TMP/fd.err")', not \"Can't open $o for write\" (exit 3)"
 done
 for r in '>&-' '>/dev/full' '<&- >&- 2>&-'; do
     for a in --version --help; do
