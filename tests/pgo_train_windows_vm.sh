@@ -15,9 +15,12 @@
 # VM -- not Wine, whose own startup overhead dominates timings this small).
 #
 # Usage: bash tests/pgo_train_windows_vm.sh
-#   Requires: the win10 VM from CONEXION-IA.md reachable at
+#   Requires: the win10 VM (see /home/forum/vms/LEEME-VMS.md) reachable at
 #   ia@localhost:2222 with the ~/.ssh/winvm key (adjust the variables below
-#   if your VM's connection details differ). Starts/stops the VM itself.
+#   if your VM's connection details differ). Takes the VM's turn with
+#   `vm claim`, starts it with `vm start` and gives it back with `vm stop`:
+#   never `sudo docker start/stop`, which skips the lock other agents rely on
+#   and kills Windows after 10 s.
 #
 # Output: Compression-flavored .gcda profile data restored under
 # oracles/cxx/pgo-data-win/, ready for a final -fprofile-use=oracles/cxx/pgo-data-win rebuild with
@@ -29,7 +32,7 @@ SSH_KEY="${WINVM_SSH_KEY:-$HOME/.ssh/winvm}"
 SSH_PORT="${WINVM_SSH_PORT:-2222}"
 SSH_HOST="${WINVM_SSH_HOST:-localhost}"
 SSH_USER="${WINVM_SSH_USER:-ia}"
-DOCKER_NAME="${WINVM_DOCKER_NAME:-win10}"
+VM_NAME="${WINVM_NAME:-win10}"
 SSH="ssh -i $SSH_KEY -p $SSH_PORT -o StrictHostKeyChecking=no -o BatchMode=yes"
 SCP="scp -i $SSH_KEY -P $SSH_PORT -o StrictHostKeyChecking=no"
 
@@ -41,8 +44,10 @@ PGO_DIR_WIN="$REPO_ROOT/$CXX_DIR/pgo-data-win"
 SHIM_DIR="$(mktemp -d)"
 printf '#include <shobjidl.h>\n' > "$SHIM_DIR/ShObjIdl.h"
 
-echo "-- starting $DOCKER_NAME --"
-sudo docker start "$DOCKER_NAME" >/dev/null
+echo "-- claiming and starting $VM_NAME --"
+# vm claim exits 0 only when the turn is ours (3 = queued behind someone else).
+vm claim "$VM_NAME" "omega-srep PGO training" || { echo "$VM_NAME is busy; try again later" >&2; exit 1; }
+vm start "$VM_NAME"
 for i in $(seq 1 20); do
   $SSH -o ConnectTimeout=8 "$SSH_USER@$SSH_HOST" "echo UP" 2>/dev/null | grep -q UP && { echo "up"; break; }
   sleep 6
@@ -98,8 +103,8 @@ rm -rf "$PGO_DIR_WIN"
 mkdir -p "$PGO_DIR_WIN"
 $SCP -r "$SSH_USER@$SSH_HOST:C:/Users/$SSH_USER/pgo-data-win/home" "$PGO_DIR_WIN/"
 
-echo "-- stopping $DOCKER_NAME --"
-sudo docker stop "$DOCKER_NAME" >/dev/null
+echo "-- stopping $VM_NAME (and releasing it) --"
+vm stop "$VM_NAME"
 
 rm -rf "$SHIM_DIR"
 echo "Done. Profile data restored under $PGO_DIR_WIN."
