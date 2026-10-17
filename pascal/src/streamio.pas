@@ -63,19 +63,40 @@ function PathSize(const Path: AnsiString): QWord;
   "Can't read from input file" en un Windows real (wine no lo muestra). }
 function OsRead(H: THandle; var Buf; N: LongInt): LongInt;
 
+type
+  { la identidad de un archivo: dispositivo e inodo; en Windows el numero de
+    serie del volumen y el indice }
+  TFileId = record
+    A, B: QWord;
+  end;
+
+{ Un nombre que esta corrida abrio para escribir (util.rs, OpenedName).
+  RegularFileId da la identidad de H si es un archivo regular: stdout, un
+  pipe, un FIFO o un dispositivo (/dev/null, NUL, CON) no lo son, asi que
+  nunca se borran -- tampoco como root, que si podria borrar /dev/null.
+  RemoveIfStill borra Path solo si el nombre sigue siendo ese mismo archivo, y
+  no por un symlink (el archivo al que lleva conserva lo escrito). Con los
+  handles ya cerrados: Windows no borra un archivo abierto. }
+function RegularFileId(H: THandle; out Id: TFileId): Boolean;
+procedure RemoveIfStill(const Path: AnsiString; const Id: TFileId);
+
+{ Si dos nombres llevan al mismo archivo regular (siguiendo symlinks): un hard
+  link, ./x por x. Un nombre que no existe, un directorio, un FIFO o un
+  dispositivo no son el mismo que nada (util.rs, same_file). }
+function SameRegularFile(const A, B: AnsiString): Boolean;
+
 { Las salidas de una corrida que falla (util.rs, claim_output): lo que se
   creo o trunco con un nombre dado -- el archivo, la salida de -d, -index= --
   para que una corrida que falla no deje un archivo a medias. El C++ lo
   intenta ("Delete output files on error", srep.cpp:1339), pero solo llegan
   ahi sus `goto cleanup`; cada error() sale en el acto.
-  ClaimOutput anota H, recien abierto como Path, si es un archivo regular:
-  stdout, un pipe, un FIFO o un dispositivo (/dev/null, NUL, CON) nunca. Se
-  anota la identidad del archivo (dispositivo e inodo; en Windows el numero
-  de serie del volumen y el indice), y RemoveClaimedOutputs borra solo si el
-  nombre sigue siendo ese mismo archivo, no un symlink a el, y no la entrada
-  (Input, '' si es stdin). Hay que llamarlo con los handles ya cerrados. }
+  ClaimOutput anota H, recien abierto como Path, si es un archivo regular
+  (RegularFileId), y RemoveClaimedOutputs borra cada uno con RemoveIfStill,
+  salvo que sea el mismo archivo que alguna de las entradas de la corrida
+  (Inputs: la entrada, y -index= al descomprimir; '' no cuenta). Hay que
+  llamarlo con los handles ya cerrados. }
 procedure ClaimOutput(const Path: AnsiString; H: THandle);
-procedure RemoveClaimedOutputs(const Input: AnsiString);
+procedure RemoveClaimedOutputs(const Inputs: array of AnsiString);
 
 implementation
 
@@ -203,11 +224,6 @@ begin
   Result := TRawFileStream.Create(h);
 end;
 
-type
-  TFileId = record
-    A, B: QWord;
-  end;
-
 var
   ClaimedPath: array of AnsiString;
   ClaimedId: array of TFileId;
@@ -236,6 +252,15 @@ function IdOfPath(const Path: AnsiString; out Id: TFileId): Boolean;
 var st: BaseUnix.Stat;
 begin
   Result := fpStat(PChar(Path), st) = 0;
+  Id.A := QWord(st.st_dev);
+  Id.B := QWord(st.st_ino);
+end;
+
+{ stat: el nombre lleva a un archivo regular }
+function IdOfPathRegular(const Path: AnsiString; out Id: TFileId): Boolean;
+var st: BaseUnix.Stat;
+begin
+  Result := (fpStat(PChar(Path), st) = 0) and fpS_ISREG(st.st_mode);
   Id.A := QWord(st.st_dev);
   Id.B := QWord(st.st_ino);
 end;
@@ -293,7 +318,39 @@ var attr: DWord;
 begin
   Result := IdOfOpen(Path, ID_FLAG_BACKUP_SEMANTICS, attr, Id);
 end;
+
+{ el nombre lleva a un archivo de disco que no es un directorio (IdOfHandle
+  sobre lo que abre) }
+function IdOfPathRegular(const Path: AnsiString; out Id: TFileId): Boolean;
+var w: UnicodeString; h: THandle;
+begin
+  Id.A := 0; Id.B := 0;
+  w := UnicodeString(Path);
+  h := CreateFileW(PWideChar(w), 0, FILE_SHARE_READ or FILE_SHARE_WRITE or FILE_SHARE_DELETE,
+                   nil, OPEN_EXISTING, ID_FLAG_BACKUP_SEMANTICS, 0);
+  if h = INVALID_HANDLE_VALUE then Exit(False);
+  Result := IdOfHandle(h, Id);
+  CloseHandle(h);
+end;
 {$ENDIF}
+
+function RegularFileId(H: THandle; out Id: TFileId): Boolean;
+begin
+  Result := IdOfHandle(H, Id);
+end;
+
+procedure RemoveIfStill(const Path: AnsiString; const Id: TFileId);
+var now_: TFileId;
+begin
+  if IdOfName(Path, now_) and (now_.A = Id.A) and (now_.B = Id.B) then
+    SysUtils.DeleteFile(Path);
+end;
+
+function SameRegularFile(const A, B: AnsiString): Boolean;
+var ia, ib: TFileId;
+begin
+  Result := IdOfPathRegular(A, ia) and IdOfPathRegular(B, ib) and (ia.A = ib.A) and (ia.B = ib.B);
+end;
 
 procedure ClaimOutput(const Path: AnsiString; H: THandle);
 var id: TFileId; n: SizeInt;
@@ -306,15 +363,23 @@ begin
   ClaimedId[n] := id;
 end;
 
-procedure RemoveClaimedOutputs(const Input: AnsiString);
-var keep, now_: TFileId; hasKeep: Boolean; i: SizeInt;
+procedure RemoveClaimedOutputs(const Inputs: array of AnsiString);
+var keep: array of TFileId; k: TFileId; i, j, n: SizeInt; isInput: Boolean;
 begin
-  hasKeep := (Input <> '') and IdOfPath(Input, keep);
+  SetLength(keep, Length(Inputs));
+  n := 0;
+  for i := 0 to High(Inputs) do
+    if (Inputs[i] <> '') and IdOfPath(Inputs[i], k) then
+    begin
+      keep[n] := k;
+      Inc(n);
+    end;
   for i := 0 to High(ClaimedPath) do
   begin
-    if hasKeep and (keep.A = ClaimedId[i].A) and (keep.B = ClaimedId[i].B) then Continue;
-    if IdOfName(ClaimedPath[i], now_) and (now_.A = ClaimedId[i].A) and (now_.B = ClaimedId[i].B) then
-      SysUtils.DeleteFile(ClaimedPath[i]);
+    isInput := False;
+    for j := 0 to n - 1 do
+      if (keep[j].A = ClaimedId[i].A) and (keep[j].B = ClaimedId[i].B) then isInput := True;
+    if not isInput then RemoveIfStill(ClaimedPath[i], ClaimedId[i]);
   end;
   ClaimedPath := nil;
   ClaimedId := nil;

@@ -275,9 +275,26 @@ diferencias.
   identidad del archivo (dispositivo e inodo; volumen e índice en Windows) y
   solo si es un archivo regular, así que stdout, un FIFO, `/dev/null` o `NUL`
   nunca se borran; antes de borrar se vuelve a mirar el nombre sin seguir
-  symlinks y se salta la entrada. Hay que borrar con los handles ya cerrados
-  (los `finally` de `Compress`/`Decompress` lo hacen antes de que la
-  excepción llegue a `Run`). Los temporales no van ahí: se borran solos.
+  symlinks (`RemoveIfStill`) y se saltan los archivos que la corrida lee (la
+  entrada, y `-index=` al descomprimir: `RemoveClaimedOutputs([...])`). Hay
+  que borrar con los handles ya cerrados (los `finally` de
+  `Compress`/`Decompress` lo hacen antes de que la excepción llegue a `Run`).
+  Los temporales no van ahí: se borran solos. Los que nombra el usuario
+  (`-temp=`, `-vmfile=`) siguen la misma regla de identidad: se borran solo
+  si se abrieron, son regulares y el nombre sigue siendo ese archivo (con
+  `-vmfile=/dev/null` como root, un `DeleteFile` a secas borraba el
+  dispositivo).
+* **Dos nombres para un mismo archivo se rechazan por identidad, no por
+  texto.** El C++ compara `finame` con `foutname` como cadenas, así que
+  `osrep x.bin ./x.bin` truncaba la entrada al abrir la salida y salía con 0.
+  `RefuseSameFile` (`refuse_same_file` en el Rust) compara dispositivo e
+  inodo (volumen e índice en Windows) de cada par que la corrida lee y
+  escribe, siempre ANTES del open que truncaría a uno con el otro: entrada y
+  salida (`ResolveNames`), `-index=` contra la entrada y la salida, el spool
+  de `-temp=` contra la salida (después de llenarlo: es la entrada real) y
+  `-vmfile=` contra todo lo que lee o escribe el decoder. Un open nuevo de
+  algo con nombre del usuario necesita su chequeo en el mismo lugar en los
+  dos ports, o el orden de los errores deja de coincidir.
 * **`{$IFDEF}` con un símbolo mal escrito evalúa falso en silencio.** FPC no
   avisa. A ytool le costó **toda la vida de su port**: un `CPU64BITS` (que no
   existe; el correcto es `CPU64`) hizo que *toda* build de 64 bits tomara la

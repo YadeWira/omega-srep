@@ -15,29 +15,82 @@ what happened in 2.0.0.
 
 - **A failed run no longer leaves a partial output file behind.** Through
   2.3.0, compression that stopped with an error (`OutOfMemory` with a large
-  `-b` or `-a`, `-b2g` and up on the 32-bit Windows build, an I/O error) left
-  the archive written so far, and decompression of a damaged archive left the
-  blocks decoded before the error (`-d` stopping on `DigestMismatch` in the
-  sixth block of a 6 MB file left 5 MB), as did a `-dup` post-pass that failed
-  half way; `-index=` files were left too, empty when the input could not even
-  be opened (`-index=` is created first). The C++ 1.0.7 behaves the same: its
-  "delete output files on error" (`srep.cpp:1339`) is only reached by its
-  `goto cleanup` paths, and `error()` exits before. Now a run that fails with
-  exit 2, 3 or 4 removes the regular files it created or truncated under the
-  names it was given -- the archive, the decompressed file, `-index=` -- and
-  the exit code and the message are unchanged. A file that already existed
-  under the output name is removed as well: the open had already truncated
-  it, so its old contents were gone either way. Never removed: stdout, pipes,
-  FIFOs and devices (`/dev/null`; `NUL` and `CON` on Windows), a symlink named
-  as the output (the file it points to keeps what was written), the input
-  (also when the output name is another spelling of it, `osrep -d a.osr
-  ./a.osr`), and a file the run failed before opening (`osrep missing.bin
-  x.osr` leaves an existing `x.osr` alone). The files are closed before they
-  are removed, which Windows needs. The scratch files (the stdin/stdout
-  spools, the `-dup` bodies, the `-vmfile=` spill) were already removed on
-  failure. A run killed by a signal (Ctrl-C) removes nothing, as before. This
-  replaces the 2.3.0 known issue "When compression fails with exit 4, the
-  partial output file is left on disk".
+  `-b` or `-a`, an I/O error) left the archive written so far, and
+  decompression of a damaged archive left the blocks decoded before the error
+  (`-d` stopping on `DigestMismatch` in the sixth block of a 6 MB file left
+  5 MB), as did a `-dup` post-pass that failed half way; `-index=` files were
+  left too, empty when the input could not even be opened (`-index=` is
+  created first). On the 32-bit Windows build that `OutOfMemory` comes from
+  any `-b` whose ring does not fit in the address space: `-b2g` and up,
+  `-b4g` and its multiples included (those used to wrap around, see below).
+  The C++ 1.0.7 behaves the same: its "delete output files on error"
+  (`srep.cpp:1339`) is only reached by its `goto cleanup` paths, and
+  `error()` exits before. Now a run that fails with exit 2, 3 or 4 removes
+  the regular files it created or truncated under the names it was given --
+  the archive, the decompressed file, and the `-index=` file that
+  compression writes (on decompression `-index=` is read, and never removed)
+  -- and the exit code and the message are unchanged. A file that already
+  existed under the output name is removed as well: the open had already
+  truncated it, so its old contents were gone either way. Never removed:
+  stdout, pipes, FIFOs and devices (`/dev/null`; `NUL` and `CON` on Windows),
+  a symlink named as the output (the file it points to keeps what was
+  written), a file the run reads (the input, `-index=` when decompressing),
+  under whatever name, and a file the run failed before opening (`osrep
+  missing.bin x.osr` leaves an existing `x.osr` alone). What is removed is
+  the name: another hard link to the output keeps the partial bytes, like
+  the file behind a symlink. The files are closed before they are removed,
+  which Windows needs. The scratch files (the stdin/stdout spools, the `-dup`
+  bodies, the `-vmfile=` spill) were already removed on failure. A run killed
+  by a signal (Ctrl-C) removes nothing, as before. This replaces the 2.3.0
+  known issue "When compression fails with exit 4, the partial output file
+  is left on disk".
+- **Decoding a damaged archive no longer leaves its intact leading blocks
+  on disk** (that is the entry above, seen from the other side). To keep
+  them, decode to a stream instead of a file: `osrep -d bad.osr /dev/stdout
+  > salvage` writes the blocks before the error to `salvage` and leaves it.
+- **The output could be the input under another name, and the input was
+  lost.** `osrep x.bin ./x.bin` (or a hard link, or a symlink to `x.bin`)
+  truncated `x.bin` when it opened the output, compressed what was left --
+  nothing -- and exited 0 with an archive of nothing; `osrep -d a.osr
+  ./a.osr` lost the archive the same way. The C++ refuses an output named
+  like the input ("Input and output files should have different names",
+  exit 3) by comparing the two strings, and the ports copied that. They now
+  also compare file identity (device and inode; volume serial number and
+  file index on Windows), before the open that would truncate one with the
+  other, with the same message and exit code, for every pair of names a run
+  reads and writes: the input and the output; `-index=` and the input when
+  compressing, or the output when decompressing (`osrep -d -index=k.ix
+  x.osr ./k.ix` emptied the index); the `-temp=` spool and the archive; and
+  `-vmfile=` and the archive, the index or the output (the first spill
+  truncated it, and the end of the run removed it). Only regular files
+  count: `/dev/null` as both input and output loses nothing and still runs.
+- **On a 32-bit build, `-b4g` (and any multiple of 4 GiB) wrapped around to
+  0**: the Pascal `.exe` failed with "Division by zero" (exit 4) and the Rust
+  i686 build panicked (exit 101); `-b4097m` became 1 MiB and wrote a
+  different archive from the 64-bit builds'. A `-b` past the address space
+  now saturates, and the run fails with `OutOfMemory` (exit 4), like
+  `-b5g`. `-b0` divided by zero on every build (a panic in the Rust); it is
+  `OutOfMemory` too, which is what the C++ says ("Can't allocate memory: 0 mb
+  required", exit 5). And on Linux the Pascal, when the system would not map
+  the whole ring, fell back to growing it block by block: with `-b100000g`
+  it zero-filled a 97 TiB block until it was killed, and with a large `-d`
+  and a small `-b` under a memory limit it compressed where the Rust
+  reported `OutOfMemory`. A ring that cannot be mapped is now
+  `OutOfMemory`, as in the Rust.
+- **`-vmfile=<path>` was deleted even when opening it failed**: with a
+  read-only file, `osrep -mem1mb -vmblock=128kb -vmfile=ro -d x.osr out`
+  failed with `PermissionDenied` and removed `ro`. As root,
+  `-vmfile=/dev/null` removed the device node. The named spill file is now
+  removed only if this run opened it, only if it is a regular file, and only
+  while the name still refers to that file (not through a symlink).
+- **`osrep -delete - out.osr < data`, and `osrep -delete < data > out.osr`,
+  deleted a file named `-` in the current directory.** `-` is stdin; the
+  compression side of `-delete` now skips it, as decompression already did.
+- **`-temp=<path>` was left on disk.** The stdin spool under a name the
+  user gave was never removed by the ports; the C++ removes it when the run
+  ends (`srep.cpp:1336`). It is now removed at the end of the run and on
+  failure, under the same rule as `-vmfile=`: a regular file this run opened,
+  by the name it opened.
 
 ## [2.3.0] — 2026-10-15
 

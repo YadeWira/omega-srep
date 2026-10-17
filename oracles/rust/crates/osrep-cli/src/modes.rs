@@ -13,7 +13,7 @@ use osrep_core::container;
 use osrep_core::dup::{self, DupMode, DupParams};
 use osrep_core::encoder::{Container, EncodeOptions, Kind, Mode, Seed};
 use osrep_core::future_lz::FutureLzOptions;
-use osrep_core::util::TempFile;
+use osrep_core::util::{NamedScratch, TempFile};
 
 use crate::args::{self, CmdMode, Format, Lz, Options};
 use crate::report;
@@ -102,11 +102,35 @@ pub fn run(o: &Options) -> Result<i32, RunError> {
     // A failed run takes back the files it created or truncated (the archive,
     // the decoded file, `-index=`), so no partial output is left behind. By
     // now every handle is closed: they were locals of the mode that returned.
+    // What the run reads is never removed, whatever name it was also written
+    // under: the input, and `-index=` on the way back.
     if result.is_err() {
-        let input = (finame != "-").then(|| Path::new(finame.as_str()));
-        osrep_core::util::remove_claimed_outputs(input);
+        let mut inputs: Vec<&Path> = Vec::new();
+        if finame != "-" {
+            inputs.push(Path::new(finame.as_str()));
+        }
+        if o.cmdmode == CmdMode::Decompress && !o.index_file.is_empty() {
+            inputs.push(Path::new(o.index_file.as_str()));
+        }
+        osrep_core::util::remove_claimed_outputs(&inputs);
     }
     result
+}
+
+/// `srep.cpp:612`, the C++'s refusal of an output named like the input.
+const SAME_FILE: &str = "Input and output files should have different names";
+
+/// The same refusal when two names the run reads and writes are one regular
+/// file under different spellings (`x.bin` and `./x.bin`, a hard link, a
+/// symlink): opening the second for writing would truncate the first. The
+/// C++ compares the strings only, so `osrep x.bin ./x.bin` emptied the input
+/// and exited 0 with an archive of nothing.
+fn refuse_same_file(a: &str, b: &str) -> Result<(), RunError> {
+    if osrep_core::util::same_file(Path::new(a), Path::new(b)) {
+        Err(err(ERROR_IO, SAME_FILE))
+    } else {
+        Ok(())
+    }
 }
 
 /// The filename rules (`srep.cpp:569-583`).
@@ -149,10 +173,16 @@ fn resolve_names(o: &Options) -> Result<(String, Option<String>), RunError> {
     }
 
     if finame != "-" && foutname.as_deref() == Some(finame.as_str()) {
-        return Err(err(
-            ERROR_IO,
-            "Input and output files should have different names",
-        ));
+        return Err(err(ERROR_IO, SAME_FILE));
+    }
+    // The same file under another name. Only where there is an output: `-i`
+    // and `--verify` derive one above but never open it.
+    if matches!(o.cmdmode, CmdMode::Compress | CmdMode::Decompress) {
+        if let Some(out) = foutname.as_deref() {
+            if finame != "-" && out != "-" {
+                refuse_same_file(&finame, out)?;
+            }
+        }
     }
     Ok((finame, foutname))
 }
@@ -191,7 +221,12 @@ fn encode_options(o: &Options, declared_size: Option<u64>) -> EncodeOptions {
         .clone()
         .unwrap_or_else(|| container::DEFAULT_HASH_NAME.to_string());
     EncodeOptions {
-        bufsize: o.bufsize as usize,
+        // A `-b` past the address space saturates rather than wrapping: on a
+        // 32-bit build `-b4g` (any multiple of 4 GiB) became 0, which divided
+        // by zero (a panic here, "Division by zero" in the Pascal), and
+        // `-b4097m` became 1 MiB, a different archive. Saturated, the ring
+        // does not fit and the encoder says `OutOfMemory`, as for `-b5g`.
+        bufsize: usize::try_from(o.bufsize).unwrap_or(usize::MAX),
         dictsize,
         dict_hashsize: o.dict_hashsize,
         min_match: o.min_match,
@@ -257,16 +292,19 @@ fn decode_hex(s: &str) -> Option<Vec<u8>> {
 /// re-reads; the port has one input handle, so it spools first. The bytes read
 /// are the same, and `filesize` still comes from `-s` (or the 25 gb default),
 /// which is what keeps the archive identical.
-fn spool_stdin(o: &Options) -> Result<(String, Option<TempFile>), RunError> {
+fn spool_stdin(o: &Options) -> Result<(String, Option<Spool>), RunError> {
     match o.tempfile.as_deref() {
         Some("") => Err(err(
             ERROR_IO,
             "Reading data to compress from stdin without tempfile isn't supported for this method",
         )),
+        // `-temp=`: removed at the end like the C++'s (`srep.cpp:1336`), and
+        // on failure like every scratch file, if this run opened it.
         Some(p) => {
             let mut f = File::create(p).map_err(|_| err(ERROR_IO, "Can't open tempfile"))?;
+            let named = NamedScratch::new(Path::new(p), &f);
             copy_stdin(&mut f)?;
-            Ok((p.to_string(), None))
+            Ok((p.to_string(), Some(Spool::Named(named))))
         }
         None => {
             let t = TempFile::new("osrep-data").map_err(|_| {
@@ -278,9 +316,16 @@ fn spool_stdin(o: &Options) -> Result<(String, Option<TempFile>), RunError> {
             let path = t.path().to_string_lossy().into_owned();
             let mut f = File::create(t.path()).map_err(|_| err(ERROR_IO, "Can't open tempfile"))?;
             copy_stdin(&mut f)?;
-            Ok((path, Some(t)))
+            Ok((path, Some(Spool::Temp(t))))
         }
     }
+}
+
+/// Where stdin was spooled; held only to be dropped, which removes it.
+#[allow(dead_code)]
+enum Spool {
+    Temp(TempFile),
+    Named(NamedScratch),
 }
 
 fn copy_stdin(f: &mut File) -> Result<(), RunError> {
@@ -466,10 +511,13 @@ fn compress(o: &Options, finame: &str, foutname: &str) -> Result<i32, RunError> 
     };
 
     // `srep.cpp:606`: the index is opened before the run, so a bad path fails
-    // before any work is done rather than after the archive is written.
+    // before any work is done rather than after the archive is written. Not
+    // over the input (or the `-temp=` spool it was read into): that would
+    // truncate what is about to be compressed.
     let mut index_file = if o.index_file.is_empty() {
         None
     } else {
+        refuse_same_file(&o.index_file, &input_path)?;
         let f = File::create(&o.index_file).map_err(|_| {
             err(
                 ERROR_IO,
@@ -479,6 +527,14 @@ fn compress(o: &Options, finame: &str, foutname: &str) -> Result<i32, RunError> 
         osrep_core::util::claim_output(Path::new(&o.index_file), &f);
         Some(f)
     };
+    // The archive over the input (the `-temp=` spool too, which the filename
+    // rules never saw) or over the index it is written beside.
+    if foutname != "-" {
+        refuse_same_file(&input_path, foutname)?;
+        if !o.index_file.is_empty() {
+            refuse_same_file(&o.index_file, foutname)?;
+        }
+    }
 
     let written = {
         let mut progress = |done: u64, total: u64| {
@@ -554,7 +610,8 @@ fn compress(o: &Options, finame: &str, foutname: &str) -> Result<i32, RunError> 
 
     stats.finish(read, written);
     drop(spool);
-    if warnings == 0 && o.delete_input {
+    // `-` is stdin, not a file called "-" (decompression had this guard).
+    if warnings == 0 && o.delete_input && finame != "-" {
         let _ = std::fs::remove_file(finame);
     }
     Ok(if warnings > 0 { WARNINGS } else { NO_ERRORS })
@@ -628,6 +685,28 @@ fn decode_options(o: &Options) -> FutureLzOptions {
 
 fn decompress(o: &Options, finame: &str, foutname: &str) -> Result<i32, RunError> {
     let opts = decode_options(o);
+
+    // Nothing the decoder reads may be the file it writes: `-index=` under the
+    // output's name would be truncated before its lists are read, and a
+    // `-vmfile=` that is the archive, the index or the output would be
+    // truncated by the first spill and removed at the end.
+    if !o.index_file.is_empty() && foutname != "-" {
+        refuse_same_file(&o.index_file, foutname)?;
+    }
+    if let Some(v) = o.vmfile.as_deref() {
+        if foutname != "-" && v == foutname {
+            return Err(err(ERROR_IO, SAME_FILE));
+        }
+        if finame != "-" {
+            refuse_same_file(v, finame)?;
+        }
+        if !o.index_file.is_empty() {
+            refuse_same_file(v, &o.index_file)?;
+        }
+        if foutname != "-" {
+            refuse_same_file(v, foutname)?;
+        }
+    }
 
     // `-dup` first: the C++ auto-detects it on every decompression, with or
     // without the flag on the command line. It rewrites the archive's tail, so

@@ -350,6 +350,12 @@ pub fn encode<R: Read + Seek, W: Write>(
     };
     let base_len = min_match.min(dict_min_match);
     let bufsize = opts.bufsize;
+    // `-b0`: a block that holds nothing. The C++ fails to allocate it ("Can't
+    // allocate memory: 0 mb required"); the ports divided by zero (a panic
+    // here, "Division by zero" in the Pascal).
+    if bufsize == 0 {
+        return Err(EncodeError::OutOfMemory);
+    }
 
     // `srep.cpp:631-634`: `accel` defaults to `L / 32`, at least 1 and at
     // most DEFAULT_ACCEL (4); it sizes `bitarr` (`accel * 8` bits per chunk).

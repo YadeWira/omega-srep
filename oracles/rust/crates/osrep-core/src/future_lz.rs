@@ -35,7 +35,7 @@ use crate::decompress::{
     append, block_buffer, grow_zeroed, lz_copy, out_of_memory, read_declared,
     read_exact_or_eof, DecodeError, DecodeStats, Digest,
 };
-use crate::util::TempFile;
+use crate::util::{NamedScratch, TempFile};
 
 /// `MEMORY_MANAGER::INVALID_INDEX` (`decompress.cpp:137`): chunk 0 is reserved
 /// as the "no data" sentinel, so the first allocatable chunk is 1.
@@ -182,29 +182,19 @@ impl MemoryManager {
 /// decode, so the file is scratch -- but it has to be a *file*: keeping the
 /// blocks in memory would make the `-mem` budget meaningless, which is exactly
 /// what the C++ uses them for.
+///
+/// Held only to be dropped after the file is closed: both remove the file.
+#[allow(dead_code)]
 enum VmPath {
     /// A scratch file this decode allocated under `$TMPDIR`.
     Temp(TempFile),
     /// `-vmfile=`. The C++ removes it when the decode ends regardless of who
-    /// asked for it (`decompress.cpp:233`), and so does this.
-    Given(PathBuf),
-}
-
-impl VmPath {
-    fn path(&self) -> &Path {
-        match self {
-            VmPath::Temp(t) => t.path(),
-            VmPath::Given(p) => p,
-        }
-    }
-}
-
-impl Drop for VmPath {
-    fn drop(&mut self) {
-        if let VmPath::Given(p) = self {
-            let _ = std::fs::remove_file(p);
-        }
-    }
+    /// asked for it (`decompress.cpp:233`), and so does this -- but only once
+    /// the open has worked (a name this run could not open is not its to
+    /// remove: through 2.3.0 a read-only `-vmfile=` was deleted by the failed
+    /// open), and only if it is a regular file (`-vmfile=/dev/null` run as
+    /// root removed the device node).
+    Given(NamedScratch),
 }
 
 /// `VIRTUAL_MEMORY_MANAGER` (`decompress.cpp:217-306`): the spill area, one
@@ -239,20 +229,27 @@ impl VirtualMemory {
     /// Open the block file if this is the first spill.
     fn spill_file(&mut self) -> Result<&mut File, DecodeError> {
         if self.spill.is_none() {
-            let path = match &self.vmfile {
-                Some(p) => VmPath::Given(p.clone()),
-                None => VmPath::Temp(
-                    TempFile::new("osrep-virtual-memory")
-                        .map_err(|_| DecodeError::BadData("cannot allocate the VM scratch file"))?,
-                ),
+            fn open(p: &Path) -> std::io::Result<File> {
+                OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
+                    .open(p)
+            }
+            let spill = match &self.vmfile {
+                Some(p) => {
+                    let file = open(p)?;
+                    let named = NamedScratch::new(p, &file);
+                    (file, VmPath::Given(named))
+                }
+                None => {
+                    let t = TempFile::new("osrep-virtual-memory")
+                        .map_err(|_| DecodeError::BadData("cannot allocate the VM scratch file"))?;
+                    (open(t.path())?, VmPath::Temp(t))
+                }
             };
-            let file = OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .open(path.path())?;
-            self.spill = Some((file, path));
+            self.spill = Some(spill);
         }
         Ok(&mut self.spill.as_mut().unwrap().0)
     }

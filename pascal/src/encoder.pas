@@ -309,6 +309,10 @@ begin
   baseLen := minMatch;
   if dictMinMatch < baseLen then baseLen := dictMinMatch;
   bufsize := Opts.BufSize;
+  { -b0: un bloque donde no entra nada. El C++ no lo puede reservar ("Can't
+    allocate memory: 0 mb required"); los ports dividian por cero ("Division
+    by zero" aca, panic en el Rust). encoder.rs, la misma regla. }
+  if bufsize = 0 then raise EEncode.Create('OutOfMemory');
 
   { srep.cpp:631-634: accel sale de L / 32, entre 1 y DEFAULT_ACCEL (4), y
     dimensiona bitarr (accel * 8 bits por chunk, en 32 bits como el unsigned
@@ -465,7 +469,16 @@ begin
     i686 hacia panic; los dos dicen lo mismo ahora. }
   if (ringSize < bufsize) or (ringSize + RING_TAIL > QWord(High(SizeInt))) then
     raise EEncode.Create('OutOfMemory');
-  ZTryNew(Pointer(dict), ringSize + RING_TAIL, 1);
+  { El Rust pide el anillo entero de una vez (zeroed_vec) y, si no se lo dan,
+    es OutOfMemory. Aca un mapeo que el sistema niega tambien lo es: crecer a
+    medida con SetLength despues pedia y llenaba de ceros el primer bloque
+    entero, y en Linux con overcommit -b100000g (un anillo de 195 TiB, que no
+    entra en las direcciones, y un bloque de 97 TiB, que si) crecia hasta que
+    lo mataban, donde el Rust dice OutOfMemory. Debajo de ZNEW_MIN_BYTES no se
+    mapea nada y se crece como antes. }
+  if not ZTryNew(Pointer(dict), ringSize + RING_TAIL, 1) and
+     (ringSize + RING_TAIL >= ZNEW_MIN_BYTES) then
+    raise EEncode.Create('OutOfMemory');
   try
     RingEnsure(dict, bufsize + RING_TAIL, ringSize + RING_TAIL);
   except

@@ -180,7 +180,13 @@ to
 all give the same table.
 .TP
 \fB-b\fIBYTES\fR
-Compression block size. Default 8 MB.
+Compression block size. Default 8 MB. Two blocks must fit in memory at once:
+a block too large for the address space (on a 32-bit build,
+.B -b2g
+and up) fails with
+.BR OutOfMemory ,
+and so does
+.BR -b0 .
 .TP
 \fB-mem\fIBYTES\fR
 RAM cap for Future-LZ / Index-LZ decompression. Examples:
@@ -210,10 +216,14 @@ Tempfile path override. Default uses
 .B $TMPDIR
 on POSIX,
 .B %TEMP%
-on Windows.
+on Windows. The file is removed when the run ends, successful or not, if it
+is a regular file this run opened and the name still refers to it.
 .TP
 \fB-vmfile=\fIPATH\fR
-Virtual-memory tempfile path.
+Virtual-memory tempfile path. Removed when the decompression ends under the
+same rule as
+.BR -temp= ;
+a path the run could not open is left alone.
 .TP
 \fB-vmblock=\fIBYTES\fR
 Block size of the VM tempfile. Default 8 MB.
@@ -238,7 +248,9 @@ status 2 instead.
 Explicitly specify input size (for stdin input). Default 25 GB.
 .TP
 .B -delete
-Delete source file after successful (de)compression.
+Delete source file after successful (de)compression. With stdin as the input
+.RB ( - )
+nothing is deleted.
 .TP
 \fB-v[0..2]\fR
 Verbosity level. Default 2.
@@ -449,12 +461,30 @@ Out of memory.
 A run that fails (exit status 2, 3 or 4) removes the output it had created or
 truncated: the archive, the decompressed file, and the
 .B -index=
-file. A file that already existed under the output name is removed too, since
-opening it for writing had already truncated it. Nothing else is removed:
-not stdout, a pipe, a FIFO or a device, not a symlink named as the output
-(the file it points to keeps what was written), not the input, and not a file
-the run failed before opening. A run stopped by a signal (Ctrl-C) removes
-nothing.
+file that compression writes. A file that already existed under the output
+name is removed too, since opening it for writing had already truncated it.
+Nothing else is removed: not stdout, a pipe, a FIFO or a device, not a symlink
+named as the output (the file it points to keeps what was written), not a file
+the run reads (the input, and
+.B -index=
+when decompressing), and not a file the run failed before opening. What is
+removed is the name: another hard link to the output keeps what was written.
+A run stopped by a signal (Ctrl-C) removes nothing. To keep the blocks of a
+damaged archive that decode before the error, decompress to a stream:
+.IP
+.B osrep -d bad.osr /dev/stdout > salvage
+.PP
+Two names for one file are refused with exit status 3 ("Input and output
+files should have different names"), as an output named like the input is:
+the input and the output (\fBx.bin\fR and \fB./x.bin\fR, a hard link, a
+symlink),
+.B -index=
+and the input or the output, the
+.B -temp=
+file and the output, and
+.B -vmfile=
+and any file the decompression reads or writes. Only regular files are
+compared.
 
 .SH ENVIRONMENT
 .TP

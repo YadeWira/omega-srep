@@ -1037,6 +1037,14 @@ F="$TMP/fail"; mkdir -p "$F"
 "$RS" -v0 --seed=7 --format=v4 -m3f -b1mb -index="$F/ok.ix" "$F/in.bin" "$F/okf.osr" >/dev/null 2>&1 \
     || fail "fail: could not write okf.osr"
 "$RS" -v0 --seed=7 -dup --format=v4 "$F/in.bin" "$F/dup.osr" >/dev/null 2>&1 || fail "fail: could not write dup.osr"
+# matches far enough back that -mem1mb -vmblock=128kb spills (opens -vmfile=)
+python3 - "$F/far.bin" <<'PY'
+import random, sys
+random.seed(7)
+far = [bytes(random.randrange(256) for _ in range(64 * 1024)) for _ in range(16)]
+open(sys.argv[1], "wb").write(b"".join(far) * 2)
+PY
+"$RS" -v0 --seed=7 -m5 -b64k "$F/far.bin" "$F/far.osr" >/dev/null 2>&1 || fail "fail: could not write far.osr"
 # a flipped word three quarters in: the last block's digest fails after the
 # first ones have been written out
 cp "$F/ok.osr" "$F/bad.osr"
@@ -1059,7 +1067,7 @@ fails() {
     local rc=0
     (cd "$F/w" && B="$RS" I="$F" timeout 60 bash -c "$3") </dev/null >"$F/o" 2>"$F/e" || rc=$?
     [ "$rc" -eq "$1" ] || fail "[$3]: exit $rc, not $1: $(cat "$F/e")"
-    grep -qF "$2" "$F/e" || fail "[$3]: the error does not say '$2': $(cat "$F/e")"
+    [ -z "$2" ] || grep -qF -- "$2" "$F/e" || fail "[$3]: the error does not say '$2': $(cat "$F/e")"
 }
 gone() { for f; do [ ! -e "$F/w/$f" ] && [ ! -L "$F/w/$f" ] || fail "a failed run left $f behind"; done; }
 kept() { for f; do [ -e "$F/w/$f" ] || [ -L "$F/w/$f" ] || fail "a failed run removed $f"; done; }
@@ -1088,9 +1096,73 @@ fails 4 'Illegal seek' 'mkfifo fo; (timeout 10 cat fo >/dev/null) & "$B" -v0 -d 
 [ -p "$F/w/fo" ] || fail "a failed run removed the FIFO it wrote to"
 fails 4 'DigestMismatch' '"$B" -v0 -d "$I/bad.osr" /dev/null'
 fails 0 'DigestMismatch' '"$B" -v0 -d "$I/bad.osr" - | wc -c'
-# the input under another name for the output: truncated by the open (the
-# string compare in the filename rules does not see it), never removed
-fails 4 'Container(Truncated)' 'cp "$I/bad.osr" a.osr; "$B" -v0 -d a.osr ./a.osr'; kept a.osr
+# the input under another name for the output is refused before the open (see
+# the next section), so there is nothing to remove and nothing truncated
+fails 3 'Input and output files should have different names' \
+    'cp "$I/bad.osr" a.osr; "$B" -v0 -d a.osr ./a.osr'
+cmp -s "$F/w/a.osr" "$F/bad.osr" || fail "-d a.osr ./a.osr changed a.osr"
+# what the run reads is never removed: -index= named as the output
+fails 3 'Input and output files should have different names' \
+    'cp "$I/ok.ix" k.ix; "$B" -v0 -d -index=k.ix "$I/okf.osr" ./k.ix'
+cmp -s "$F/w/k.ix" "$F/ok.ix" || fail "-d -index=k.ix ... ./k.ix changed k.ix"
+pass=$((pass + 1))
+
+say "one file under two names is refused, and scratch files go only if opened"
+# The C++ refuses an output with the input's name ("Input and output files
+# should have different names", exit 3) by comparing the strings, so
+# `osrep x.bin ./x.bin` truncated the input and exited 0 with an archive of
+# nothing, and `-d a.osr ./a.osr` lost the archive. The ports compare file
+# identity too (device and inode; volume and file index on Windows) for every
+# pair a run reads and writes: input and output, -index= and the input (when
+# compressing) or the output (when decompressing), the -temp= spool and the
+# archive, -vmfile= and anything the decoder reads or writes. Only regular
+# files: /dev/null as both is not a loss.
+# $1 = a bash line that must be refused; $2.. = files left as they were,
+# compared with the copy of the same name in $F
+same_refused() {
+    local line="$1" f; shift
+    fails 3 'Input and output files should have different names' "$line"
+    for f; do cmp -s "$F/w/$f" "$F/$f" || fail "[$line] changed $f"; done
+}
+same_refused 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 in.bin ./in.bin' in.bin
+same_refused 'cp "$I/in.bin" in.bin; ln in.bin y.bin; "$B" -v0 --seed=7 in.bin y.bin' in.bin
+same_refused 'cp "$I/in.bin" in.bin; ln -s in.bin y.bin; "$B" -v0 --seed=7 in.bin y.bin' in.bin
+same_refused 'cp "$I/ok.osr" ok.osr; ln ok.osr ok; "$B" -v0 -d ok.osr' ok.osr
+same_refused 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 --format=v4 -m3f -index=./in.bin in.bin o.osr' in.bin
+fails 3 'Input and output files should have different names' \
+    '"$B" -v0 --seed=7 --format=v4 -m3f -index=o.osr "$I/in.bin" ./o.osr'; gone o.osr
+fails 3 'Input and output files should have different names' \
+    '"$B" -v0 --seed=7 -temp=t.tmp - ./t.tmp < "$I/in.bin"'; gone t.tmp
+same_refused 'cp "$I/far.osr" far.osr; "$B" -v0 -mem1mb -vmblock=128kb -vmfile=./far.osr -d far.osr o.out' far.osr
+same_refused 'cp "$I/ok.ix" ok.ix; "$B" -v0 -vmfile=./ok.ix -d -index=ok.ix "$I/okf.osr" o.out' ok.ix
+fails 3 'Input and output files should have different names' \
+    '"$B" -v0 -vmfile=o.out -d "$I/far.osr" o.out'; gone o.out
+# -i opens no output, so a file under the derived name is nobody's business;
+# and two devices are not a regular file to lose
+fails 0 '' 'cp "$I/ok.osr" ok.osr; ln ok.osr ok; "$B" -i ok.osr'
+fails 0 '' '"$B" -v0 --seed=7 /dev/null /dev/../dev/null'
+# -temp= is removed when the run ends, as the C++ does (srep.cpp:1336), and on
+# failure like every scratch file -- only a regular file this run opened, by
+# the name it opened (a symlink named as it stays, and so does its target)
+fails 0 '' '"$B" -v0 --seed=7 -temp=t.tmp - o.osr < "$I/in.bin"'; gone t.tmp; kept o.osr
+fails 2 'is smaller than the' 'echo keep > t.tmp; "$B" -v0 --seed=7 -s10 -temp=t.tmp - o.osr < "$I/in.bin"'
+gone t.tmp
+fails 0 '' 'ln -s target t.tmp; "$B" -v0 --seed=7 -temp=t.tmp - o.osr < "$I/in.bin"'; kept t.tmp target
+fails 3 "Can't open tempfile" '"$B" -v0 --seed=7 -temp=nodir/t.tmp - o.osr < "$I/in.bin"'
+# -vmfile= is removed only if the open worked (through 2.3.0 a read-only one
+# was deleted by the failed open)
+fails 4 'PermissionDenied' \
+    'echo x > ro; chmod 444 ro; "$B" -v0 -mem1mb -vmblock=128kb -vmfile=ro -d "$I/far.osr" o.out'
+kept ro; gone o.out
+fails 0 '' '"$B" -v0 -mem1mb -vmblock=128kb -vmfile=v.vm -d "$I/far.osr" o.out'; gone v.vm
+cmp -s "$F/w/o.out" "$F/far.bin" || fail "-vmfile=: the decode differs"
+# -delete with stdin as the input deletes nothing (it removed a file named "-")
+fails 0 '' 'echo keep > ./-; "$B" -v0 --seed=7 -delete - o.osr < "$I/in.bin"'; kept ./-
+fails 0 '' 'echo keep > ./-; "$B" -v0 --seed=7 -delete < "$I/in.bin" > o.osr'; kept ./-
+# -b0: a block that holds nothing is OutOfMemory, as in the C++ ("Can't
+# allocate memory"); the ports divided by zero (a panic, "Division by zero")
+fails 4 OutOfMemory '"$B" -v0 --seed=7 -b0 "$I/in.bin" o.osr'; gone o.osr
+fails 3 'Encode(OutOfMemory)' '"$B" -v0 --seed=7 -b0 -dup "$I/in.bin" o.osr'; gone o.osr
 pass=$((pass + 1))
 
 say "--verify: what it accepts, what it catches, and what it admits it misses"
