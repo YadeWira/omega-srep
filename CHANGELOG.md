@@ -182,11 +182,13 @@ what happened in 2.0.0.
   nowhere, exited 0 and deleted `x`; its Windows build did the same with no
   stdout handle. The archive or decompressed data for a closed (or missing)
   stdout now fails as any stdout write failure does, and `-delete` keeps its
-  input: "Can't write to stdout", exit 3, when decompressing; when
-  compressing, "Io", exit 4, once the archive has passed 1024 bytes or
-  contains a newline byte during the encode, and "Can't write to stdout", exit
-  3, for an archive of at most 1024 bytes with no newline byte, which is
-  written only at the end. Naming the output `/dev/stdin`, `/dev/stdout`,
+  input: "Can't write to stdout", exit 3, compressing or decompressing,
+  wherever the write that failed falls. (Compressing used to say "Io", exit
+  4, when the failure fell inside the encode -- once the Rust's 1024-byte
+  `LineWriter` had passed something on -- and "Can't write to stdout" at the
+  final flush; the Pascal, whose buffer is another, guessed which, and a
+  stdout that filled up in the archive's last kilobyte, `ulimit -f` or a full
+  disk, gave exit 3 in the Rust and 4 in the Pascal.) Naming the output `/dev/stdin`, `/dev/stdout`,
   `/dev/stderr` or `/proc/self/fd/N` for a closed fd fails too ("Can't open
   /dev/stdout for write", exit 3): a closed fd 0, 1 or 2 is reserved on the
   directory `/` (fd 0 with `O_PATH`, so it still reads as empty), so opening
@@ -277,11 +279,54 @@ what happened in 2.0.0.
   and still run. On Windows the file index decides and a volume serial number
   of 0 matches any: under wine a file in the prefix's `drive_c` has the
   drive's serial when opened by name and 0 through the standard handles or
-  `Z:`, so `>> x`, `< x` and a hard link outside `drive_c` got through. With
+  `Z:`, so `>> x`, `< x` and a hard link outside `drive_c` got through. Under
+  wine every `Z:` path has volume serial 0 and the file index is the Unix
+  inode alone, so two files on different Linux filesystems with the same
+  inode number (tmpfs mounts hand out small ones) are taken for one file:
+  the run is refused (exit 3) and nothing is changed; write the output to
+  another directory. No better identity is to be had there (wine's creation
+  time is the modification time, and `FileIdInformation` carries the inode
+  too), and a tie-break on size or time would miss a real match. With
   the input on stdin, `-temp=` must be a regular file: `-temp=/dev/null`
   spooled stdin into nothing and wrote an archive of nothing with exit 0 (the
   C++ writes the right archive; on Windows `NUL` already failed), and is now
   "Can't open tempfile", exit 3.
+- **Data loss: an input that changed while it was read was deleted with
+  exit 0.** The input is measured once, read in the first pass, then read
+  again by the second pass and the match finder, and `-delete` removed the
+  name with nothing checked. A writer appending to the input while it was
+  compressed gave an archive whose footer disagrees with its header
+  (`BadData`), a byte rewritten in place one that fails with
+  `DigestMismatch`, and a rename over the input (an editor's save, a log
+  rotation) an archive of the old file -- each with exit 0, and with
+  `-delete` the input, or the new file under its name, was gone. A larger
+  append read past the length the match finder was sized for: the Rust
+  panicked (exit 101, leaving the partial archive), the Pascal overran its
+  table ("Access violation", exit 4, or with `--format=v4 -m3o` exit 0 and an
+  archive of neither file). Decompression the same: a `-hash-` archive
+  edited during `-d`, or a `-dup` archive renamed over, gave exit 0, a wrong
+  or missing output, and with `-delete` the archive deleted. Linux, and the
+  Windows builds under wine. Now the first pass reads up to the length
+  measured at the start and no further, and the run compares the file the
+  input's name leads to, its length and its modification time (and change
+  time on Unix; volume serial, file index, size and `LastWriteTime` on
+  Windows) before and after: when they differ it fails with "`<name>`
+  changed while it was being read", exit 3, its outputs are removed and the
+  input is kept. Checked after the last read and before the summary and
+  `-delete`, compressing and decompressing (`-dup` included); not for stdin.
+  On Windows a same-size edit by a writer that keeps its handle open may not
+  move `LastWriteTime` until it closes; appends and renames are caught.
+- **`osrep -d x` on a file that is no archive destroyed an existing
+  `x.osr`.** With one name, `-d` derives the output (`x` gives `x.osr`,
+  `x.osr` gives `x`), and the output was created before the decoder looked
+  at the input, so a file already there under that name -- an archive the
+  user never named: `-d photos.tar` for `-d photos.tar.osr` -- was truncated,
+  and removed as a partial output when the decoder then failed with
+  `Container(NotAnOsrepFile)` or `Container(Truncated)` (exit 4). The C++
+  1.0.7 leaves it empty. The input is now probed (the v5 magic, or the
+  16-byte header with its signatures and version) before the output is
+  created, with the same message and exit code, and a file under the
+  output's name is left alone. Same for `-d - out < notanarchive`.
 - **On a 32-bit build, `-b4g` (and any multiple of 4 GiB) wrapped around to
   0**: the Pascal `.exe` failed with "Division by zero" (exit 4) and the Rust
   i686 build panicked (exit 101); `-b4097m` became 1 MiB and wrote a

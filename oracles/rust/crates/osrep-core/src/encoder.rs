@@ -449,23 +449,27 @@ pub fn encode<R: Read + Seek, W: Write>(
     // The input length. `-sBYTES` overrides the measurement, because it is what
     // the C++ uses when the input is stdin and it is what decides the block
     // count and the match finder's sizing.
+    //
+    // Measured once, here, and never again: the match finder is sized from
+    // this length, v5 writes it into the header, and the first pass reads up
+    // to it and no further (`span` below). Bytes appended while the run read
+    // the input overran the table (a panic here, an access violation in the
+    // Pascal) or gave an archive whose footer disagrees with its header, with
+    // exit 0. A file that changes while it is read is the CLI's to refuse
+    // (`util::stamp_input`); this keeps the encoder within what it sized.
+    let input_len = input.seek(SeekFrom::End(0))?;
+    input.seek(SeekFrom::Start(0))?;
     let filesize = match opts.declared_size {
         Some(n) => {
-            let actual = input.seek(SeekFrom::End(0))?;
-            input.seek(SeekFrom::Start(0))?;
-            if actual > n {
+            if input_len > n {
                 return Err(EncodeError::DeclaredSizeTooSmall {
                     declared: n,
-                    actual,
+                    actual: input_len,
                 });
             }
             n
         }
-        None => {
-            let n = input.seek(SeekFrom::End(0))?;
-            input.seek(SeekFrom::Start(0))?;
-            n
-        }
+        None => input_len,
     };
 
     if v5 {
@@ -480,8 +484,7 @@ pub fn encode<R: Read + Seek, W: Write>(
         // here (the CLI spools stdin before encoding), so the length is known
         // before the header is written. v4 records neither field, and the
         // declared size still sizes the match finder in both, as in the C++.
-        let actual = input.seek(SeekFrom::End(0))?;
-        input.seek(SeekFrom::Start(0))?;
+        let actual = input_len;
         let block_count = actual.div_ceil(bufsize as u64) as u32;
         output.write_all(
             &v5::Header {
@@ -590,7 +593,9 @@ pub fn encode<R: Read + Seek, W: Write>(
     let mut blocks: Vec<CompressedBlock> = Vec::new();
     let mut buf_offset = 0usize;
     let mut next_pos: u64 = 0;
-    let mut filled = read_block_at(input, next_pos, &mut dict[buf_offset..buf_offset + bufsize])?;
+    // Up to `input_len`, the length measured above, and never past it.
+    let span = |pos: u64| input_len.saturating_sub(pos).min(bufsize as u64) as usize;
+    let mut filled = read_block_at(input, next_pos, &mut dict[buf_offset..buf_offset + span(next_pos)])?;
     next_pos += filled as u64;
     let mut block_start: u64 = 0;
 
@@ -599,7 +604,7 @@ pub fn encode<R: Read + Seek, W: Write>(
         // read past this block are the following block's, like the C++'s ring
         // (and, at EOF, whatever stale bytes that slot holds -- also the same).
         let next_offset = (buf_offset + bufsize) % ring_size;
-        let next_filled = read_block_at(input, next_pos, &mut dict[next_offset..next_offset + bufsize])?;
+        let next_filled = read_block_at(input, next_pos, &mut dict[next_offset..next_offset + span(next_pos)])?;
 
         // Per-block header: `calloc`'d, then the digest at word 3
         // (`io.cpp:262`), then the three `STAT`s filled in below.

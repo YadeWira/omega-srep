@@ -75,6 +75,15 @@ impl PartialEq for FileId {
     /// The file index decides; a volume serial of 0 is unknown and matches any
     /// (wine reports 0 for the standard handles and for a file reached through
     /// Z:, and the drive's serial for the same file reached through C:).
+    ///
+    /// The limit of that, under wine: every Z: path has serial 0 and the
+    /// index is the Unix inode alone, without the device, so two files on
+    /// different Linux filesystems with the same inode number (tmpfs mounts
+    /// hand out small ones) are one file here, and the run is refused (exit
+    /// 3, nothing changed). Nothing better is to be had there -- wine's
+    /// creation time is the modification time, `FileIdInformation` carries
+    /// the inode too -- and a tie-break on size or time would miss a real
+    /// match (`-vmfile=` against an output already being written).
     #[cfg(windows)]
     fn eq(&self, o: &FileId) -> bool {
         self.1 == o.1 && (self.0 == o.0 || self.0 == 0 || o.0 == 0)
@@ -289,6 +298,41 @@ pub fn create_output(path: &Path, read: bool) -> io::Result<File> {
         });
     }
     Ok(file)
+}
+
+/// The input as the run found it before reading it: the file the name leads
+/// to, its length, and its modification (and, on Unix, status-change) times.
+/// `-delete` removes a *name*; between the read and the removal the name can
+/// come to lead to another file (a rename over it: an editor's save, a log
+/// rotation), and the file can change while it is read (a writer appending,
+/// an in-place edit). Either way the archive does not hold what the name now
+/// leads to -- the encoder re-reads the input, so an in-place change gives an
+/// archive that does not decode -- and the run exited 0 and removed it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct InputStamp {
+    id: FileId,
+    len: u64,
+    modified: Option<std::time::SystemTime>,
+    #[cfg(unix)]
+    changed: (i64, i64),
+}
+
+/// See `InputStamp`; `None` for anything but a regular file.
+pub fn stamp_input(path: &Path) -> Option<InputStamp> {
+    let id = file_id::of_path_regular(path)?;
+    let m = std::fs::metadata(path).ok()?;
+    #[cfg(unix)]
+    let changed = {
+        use std::os::unix::fs::MetadataExt;
+        (m.ctime(), m.ctime_nsec())
+    };
+    Some(InputStamp {
+        id,
+        len: m.len(),
+        modified: m.modified().ok(),
+        #[cfg(unix)]
+        changed,
+    })
 }
 
 /// A regular file this run opened for writing under a name it was given,

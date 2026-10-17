@@ -66,6 +66,23 @@ type
     A, B: QWord;
   end;
 
+{ la entrada como la corrida la encontro antes de leerla (util.rs,
+  InputStamp): el archivo al que lleva el nombre, su largo y sus horas de
+  modificacion (y de cambio de estado en Unix). -delete borra un NOMBRE: si
+  entre la lectura y el borrado el nombre pasa a llevar a otro archivo (un
+  rename encima) o el archivo cambia mientras se lee, el archivo no tiene lo
+  que el nombre lleva ahora, y la corrida salia con 0 y lo borraba. }
+type
+  TInputStamp = record
+    Ok: Boolean;
+    Id: TFileId;
+    Size: QWord;
+    T1, T2, T3, T4: Int64;
+  end;
+
+function StampInput(const Path: AnsiString): TInputStamp;
+function SameStamp(const A, B: TInputStamp): Boolean;
+
 { ----------------------------------------- los archivos de una corrida ---
 
   util.rs, "the files of one run": los archivos que una corrida lee y
@@ -387,6 +404,40 @@ begin
 end;
 {$ENDIF}
 
+{$IF DEFINED(UNIX)}
+function StampInput(const Path: AnsiString): TInputStamp;
+var st: BaseUnix.Stat;
+begin
+  FillChar(Result, SizeOf(Result), 0);
+  Result.Ok := (fpStat(PChar(Path), st) = 0) and fpS_ISREG(st.st_mode);
+  if not Result.Ok then Exit;
+  Result.Id.A := QWord(st.st_dev);
+  Result.Id.B := QWord(st.st_ino);
+  Result.Size := QWord(st.st_size);
+  Result.T1 := Int64(st.st_mtime); Result.T2 := Int64(st.st_mtime_nsec);
+  Result.T3 := Int64(st.st_ctime); Result.T4 := Int64(st.st_ctime_nsec);
+end;
+{$ELSE}
+function StampInput(const Path: AnsiString): TInputStamp;
+var w: UnicodeString; h: THandle; info: BY_HANDLE_FILE_INFORMATION;
+begin
+  FillChar(Result, SizeOf(Result), 0);
+  w := UnicodeString(Path);
+  h := CreateFileW(PWideChar(w), 0, FILE_SHARE_READ or FILE_SHARE_WRITE or FILE_SHARE_DELETE,
+                   nil, OPEN_EXISTING, ID_FLAG_BACKUP_SEMANTICS, 0);
+  if h = INVALID_HANDLE_VALUE then Exit;
+  FillChar(info, SizeOf(info), 0);
+  Result.Ok := (GetFileType(h) = ID_FILE_TYPE_DISK) and GetFileInformationByHandle(h, info) and
+               ((info.dwFileAttributes and ID_ATTR_DIRECTORY) = 0);
+  CloseHandle(h);
+  Result.Id.A := QWord(info.dwVolumeSerialNumber);
+  Result.Id.B := (QWord(info.nFileIndexHigh) shl 32) or QWord(info.nFileIndexLow);
+  Result.Size := (QWord(info.nFileSizeHigh) shl 32) or QWord(info.nFileSizeLow);
+  Result.T1 := Int64(info.ftLastWriteTime.dwHighDateTime);
+  Result.T2 := Int64(info.ftLastWriteTime.dwLowDateTime);
+end;
+{$ENDIF}
+
 { ---------------------------------------------- abrir sin truncar --- }
 
 {$IF DEFINED(UNIX)}
@@ -484,11 +535,25 @@ begin
 {$IF DEFINED(WINDOWS)}
   { el indice decide; un numero de serie 0 es desconocido y vale por
     cualquiera (wine da 0 en los handles estandar y en un archivo al que se
-    llega por Z:, y el serial del drive al mismo archivo por C:) }
+    llega por Z:, y el serial del drive al mismo archivo por C:). El limite,
+    bajo wine (util.rs, FileId::eq): todo camino por Z: tiene serial 0 y el
+    indice es el inodo de Unix sin el dispositivo, asi que dos archivos en
+    sistemas de archivos de Linux distintos con el mismo inodo (los tmpfs
+    reparten numeros chicos) son uno aca, y la corrida se rechaza (exit 3,
+    nada cambia). No hay nada mejor ahi (la hora de creacion de wine es la
+    de modificacion, FileIdInformation lleva el mismo inodo), y desempatar
+    por tamano u hora perderia un caso real (-vmfile= contra una salida que
+    ya se esta escribiendo) }
   Result := (A.B = B.B) and ((A.A = B.A) or (A.A = 0) or (B.A = 0));
 {$ELSE}
   Result := (A.A = B.A) and (A.B = B.B);
 {$ENDIF}
+end;
+
+function SameStamp(const A, B: TInputStamp): Boolean;
+begin
+  Result := A.Ok and B.Ok and SameId(A.Id, B.Id) and (A.Size = B.Size) and
+            (A.T1 = B.T1) and (A.T2 = B.T2) and (A.T3 = B.T3) and (A.T4 = B.T4);
 end;
 
 function InIds(const L: TFileIdArray; const Id: TFileId): Boolean;

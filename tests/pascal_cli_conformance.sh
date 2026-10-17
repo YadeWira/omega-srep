@@ -1026,6 +1026,37 @@ scase 0 'echo keep > ./-; "$B" -v0 --seed=7 -delete < "$I/in.bin" > o.osr'
 [ -e "$F/p/-" ] || fail "-delete por pipe borro un archivo llamado -"
 scase 4 '"$B" -v0 --seed=7 -b0 "$I/in.bin" o.osr'
 scase 3 '"$B" -v0 --seed=7 -b0 -dup "$I/in.bin" o.osr'
+# una entrada que cambia mientras se lee: un writer que agrega, un byte
+# reescrito en su lugar, un rename encima (el guardar de un editor, una
+# rotacion de logs). Hasta r231-files exit 0, un archivo que no se
+# descomprime (o con lo viejo) y -delete borraba la entrada; ahora la corrida
+# compara el archivo al que lleva el nombre, su largo y sus horas antes y
+# despues (StampInput), y falla con exit 3. Sin carreras: la corrida no
+# termina antes de que el consumidor vacie la salida, y el consumidor cambia
+# la entrada al recibir el primer byte (despues de la estampa, antes del
+# chequeo). Bajo wine: tamano, indice y LastWriteTime
+for m in 'printf x >> t' 'printf y | dd of=t bs=1 seek=100 conv=notrunc 2>/dev/null' 'cp t t.new; mv t.new t'; do
+    for run in 'cp "$I/in.bin" t; "$B" -v0 --seed=7 -delete t -' 'cp "$I/ok.osr" t; "$B" -v0 -d -delete t -'; do
+        scase 3 'set -o pipefail; '"$run"' | { dd bs=1 count=1 of=/dev/null 2>/dev/null; '"$m"'; cat >/dev/null; }'
+        grep -qx '  ERROR! t changed while it was being read' "$F/p.e" && [ -e "$F/p/t" ] \
+            || fail "[$run / $m]: $(cat "$F/p.e")"
+    done
+done
+scase 0 'set -o pipefail; cp "$I/in.bin" t; "$B" -v0 --seed=7 -delete t - | { dd bs=1 count=1 of=/dev/null 2>/dev/null; cat >/dev/null; }'
+[ ! -e "$F/p/t" ] || fail "-delete t - sin cambios: quedo t"
+# -d de un nombre que no es un archivo: la salida derivada (a.osr para a, b
+# para b.osr) se creaba antes de mirar la entrada, y un archivo que estaba
+# con ese nombre se truncaba y despues se borraba como salida parcial (el C++
+# la deja vacia). Ahora la entrada se prueba antes (ProbeArchive), con el
+# mismo mensaje
+scase 4 'cp "$I/ok.osr" a.osr; cp "$I/in.bin" a; "$B" -v0 -d a'
+cmp -s "$F/p/a.osr" "$F/in/ok.osr" || fail "-d a: cambio a.osr"
+scase 4 'cp "$I/ok.osr" b; cp "$I/in.bin" b.osr; "$B" -v0 -d b.osr'
+cmp -s "$F/p/b" "$F/in/ok.osr" || fail "-d b.osr: cambio b"
+scase 4 'cp "$I/ok.osr" c; printf OSR > c.osr; "$B" -v0 -d c.osr'
+cmp -s "$F/p/c" "$F/in/ok.osr" || fail "-d c.osr: cambio c"
+scase 4 'cp "$I/ok.osr" o.out; "$B" -v0 -d - o.out < "$I/in.bin"'
+cmp -s "$F/p/o.out" "$F/in/ok.osr" || fail "-d - o.out: cambio o.out"
 # un anillo que no entra en 64 bits: -b2^63 daba la vuelta a 0 los dos
 # bloques de margen en el Rust (panic, exit 101), y un -d a un bloque de 2^64
 # redondeaba a un anillo chico (el Rust abortaba, el Pascal decia "Out of

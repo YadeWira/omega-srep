@@ -298,8 +298,16 @@ var
   v5h: TV5Header;
   blocks: TCompressedBlocks;
   nblocks, actual, headerLen: QWord;
+  inputLen: QWord;
   accel, accelerator: DWord;
   bitarrAccelerator: QWord;
+  function Span(Pos: QWord): QWord;
+  begin
+    if Pos >= inputLen then Exit(0);
+    Result := inputLen - Pos;
+    if Result > bufsize then Result := bufsize;
+  end;
+
 begin
   if not HashByName(Opts.Hash, info) then
     raise EEncode.Create('UnknownHash("' + Opts.Hash + '")');
@@ -412,8 +420,16 @@ begin
 
   { -sBYTES gana sobre la medicion: es lo que el C++ usa con stdin, y decide
     la cantidad de bloques y el tamano del match finder }
+  { medido una vez, aca, y nunca mas (encoder.rs, input_len): el match
+    finder se dimensiona con este largo, el v5 lo escribe en la cabecera y
+    la primera pasada lee hasta el y no mas alla (Span). Lo agregado
+    mientras se leia desbordaba la tabla (Access violation; panic en el
+    Rust) o daba un archivo cuyo footer no coincide con la cabecera, con
+    exit 0. Un archivo que cambia mientras se lee lo rechaza la CLI
+    (StampInput); esto deja al encoder dentro de lo que dimensiono. }
   fileSize := EncSeek(Input, 0, soEnd);
   EncSeek(Input, 0, soBeginning);
+  inputLen := fileSize;
   if Opts.HasDeclaredSize then
   begin
     { el match finder se dimensiona con lo declarado: una entrada mas larga
@@ -436,8 +452,7 @@ begin
     { del largo REAL de la entrada, no de fileSize: con stdin y sin -s,
       fileSize es el default de 25 GiB y el header no coincidia con el footer
       (el bug de 2.0.0-2.1.1 en el Rust, arreglado en los dos a la vez) }
-    actual := EncSeek(Input, 0, soEnd);
-    EncSeek(Input, 0, soBeginning);
+    actual := inputLen;
     v5h.BlockCount := DWord((actual + bufsize - 1) div bufsize);
     v5h.OriginalSize := actual;
     hb := EncodeV5Header(v5h);
@@ -524,7 +539,8 @@ begin
 
   bufOffset := 0;
   nextPos := 0;
-  filled := ReadBlockAt(Input, nextPos, dict, bufOffset, bufsize);
+  { hasta inputLen, el largo medido arriba, nunca mas alla }
+  filled := ReadBlockAt(Input, nextPos, dict, bufOffset, Span(nextPos));
   nextPos := nextPos + filled;
   blockStart := 0;
   stat.N := 0; inStat.N := 0;
@@ -538,7 +554,7 @@ begin
     except
       on EOutOfMemory do raise EEncode.Create('OutOfMemory');
     end;
-    nextFilled := ReadBlockAt(Input, nextPos, dict, nextOffset, bufsize);
+    nextFilled := ReadBlockAt(Input, nextPos, dict, nextOffset, Span(nextPos));
 
     SetLength(header, BLOCK_HEADER_SIZE + storedHashSize);
     FillChar(header[0], Length(header), 0);

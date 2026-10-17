@@ -530,6 +530,7 @@ fn compress(o: &Options, finame: &str, foutname: &str) -> Result<i32, RunError> 
     }
 
     let mode = mode_of(o);
+    let before = stamp(finame);
     let (input_path, spool) = if finame == "-" {
         spool_stdin(o)?
     } else {
@@ -624,6 +625,14 @@ fn compress(o: &Options, finame: &str, foutname: &str) -> Result<i32, RunError> 
             // (`stdio.rs`), not a discard.
             if foutname == "-" {
                 let mut out = CountWriter::new(stdio::data_stdout());
+                // A write to stdout that failed is "Can't write to stdout",
+                // wherever the `LineWriter` happened to pass it on: inside the
+                // encode (an `EncodeError::Io`) or in the flush at the end.
+                // Through r231-files the first was "Io" (exit 4) and the
+                // second this, so where the failure fell decided the message,
+                // and the Pascal, whose buffer is not the `LineWriter`'s,
+                // could only guess (`RustWroteEarly`): a stdout that filled
+                // up in the archive's last kilobyte gave 3 here and 4 there.
                 osrep_core::encoder::encode(
                     &mut input,
                     &mut out,
@@ -632,7 +641,13 @@ fn compress(o: &Options, finame: &str, foutname: &str) -> Result<i32, RunError> 
                     Some(&mut progress),
                     index,
                 )
-                .map_err(|e| err(ERROR_COMPRESSION, format!("{e:?}")))?;
+                .map_err(|e| {
+                    if out.failed() {
+                        err(ERROR_IO, "Can't write to stdout")
+                    } else {
+                        err(ERROR_COMPRESSION, format!("{e:?}"))
+                    }
+                })?;
                 out.flush().map_err(|_| err(ERROR_IO, "Can't write to stdout"))?;
                 out.written()
             } else {
@@ -653,6 +668,7 @@ fn compress(o: &Options, finame: &str, foutname: &str) -> Result<i32, RunError> 
         }
     };
 
+    check_unchanged(finame, &before)?;
     stats.finish(read, written);
     drop(spool);
     // `-` is stdin, not a file called "-" (decompression had this guard).
@@ -662,36 +678,69 @@ fn compress(o: &Options, finame: &str, foutname: &str) -> Result<i32, RunError> 
     Ok(if warnings > 0 { WARNINGS } else { NO_ERRORS })
 }
 
+/// The input's stamp before it is read (`util::InputStamp`); `None` for stdin.
+fn stamp(finame: &str) -> Option<osrep_core::util::InputStamp> {
+    if finame == "-" {
+        None
+    } else {
+        osrep_core::util::stamp_input(Path::new(finame))
+    }
+}
+
+/// After the last read and before `-delete`: the name still leads to the
+/// file that was read, unchanged. Otherwise the run fails (and its outputs
+/// are removed): the archive holds neither what was there nor what is there
+/// now, or what the name leads to now is in no archive.
+fn check_unchanged(finame: &str, before: &Option<osrep_core::util::InputStamp>) -> Result<(), RunError> {
+    if let Some(b) = before {
+        if osrep_core::util::stamp_input(Path::new(finame)).as_ref() != Some(b) {
+            return Err(err(ERROR_IO, format!("{finame} changed while it was being read")));
+        }
+    }
+    Ok(())
+}
+
 fn file_size(path: &str) -> u64 {
     std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
 }
 
 /// Counts what it forwards, so the summary line knows how big an archive sent
 /// to stdout was. A file can be measured after the fact; a pipe cannot.
+/// It also remembers whether a write failed, so an encode error that came
+/// from stdout is told from one that did not.
 struct CountWriter<W: Write> {
     inner: W,
     written: u64,
+    failed: bool,
 }
 
 impl<W: Write> CountWriter<W> {
     fn new(inner: W) -> CountWriter<W> {
-        CountWriter { inner, written: 0 }
+        CountWriter {
+            inner,
+            written: 0,
+            failed: false,
+        }
     }
 
     fn written(&self) -> u64 {
         self.written
     }
+
+    fn failed(&self) -> bool {
+        self.failed
+    }
 }
 
 impl<W: Write> Write for CountWriter<W> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let n = self.inner.write(buf)?;
+        let n = self.inner.write(buf).inspect_err(|_| self.failed = true)?;
         self.written += n as u64;
         Ok(n)
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
-        self.inner.flush()
+        self.inner.flush().inspect_err(|_| self.failed = true)
     }
 }
 
@@ -730,6 +779,7 @@ fn decode_options(o: &Options) -> FutureLzOptions {
 
 fn decompress(o: &Options, finame: &str, foutname: &str) -> Result<i32, RunError> {
     let opts = decode_options(o);
+    let before = stamp(finame);
 
     // `-dup` first: the C++ auto-detects it on every decompression, with or
     // without the flag on the command line. It rewrites the archive's tail, so
@@ -740,6 +790,7 @@ fn decompress(o: &Options, finame: &str, foutname: &str) -> Result<i32, RunError
         let out_of_line = !o.index_file.is_empty();
         match dup::decode_with(Path::new(finame), Path::new(foutname), &opts, out_of_line) {
             Ok(true) => {
+                check_unchanged(finame, &before)?;
                 if o.delete_input {
                     let _ = std::fs::remove_file(finame);
                 }
@@ -775,6 +826,12 @@ fn decompress(o: &Options, finame: &str, foutname: &str) -> Result<i32, RunError
     let mut input = File::open(&input_path)
         .map_err(|_| err(ERROR_IO, format!("Can't open {finame} for read")))?;
     let total = input.metadata().map(|m| m.len()).unwrap_or(0);
+    // Before the output is created: a name that is no archive fails here,
+    // with the message `archive::decode` gives, and leaves a file that was
+    // there under the output's name alone (`archive::probe`).
+    if let Err(e) = archive::probe(&mut input) {
+        return Err(err(ERROR_COMPRESSION, format!("{e:?}: {finame}")));
+    }
 
     let mut bar = report::Bar::new(o.bar);
     let mut stats = report::Stats::new(o.verbosity > 0);
@@ -849,6 +906,7 @@ fn decompress(o: &Options, finame: &str, foutname: &str) -> Result<i32, RunError
         stdout.flush().map_err(|_| err(ERROR_IO, "Can't write to stdout"))?;
     }
 
+    check_unchanged(finame, &before)?;
     stats.finish(total, decoded);
     drop(spool);
     if o.delete_input && finame != "-" {

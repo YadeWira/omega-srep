@@ -253,9 +253,12 @@ diferencias.
   por `WriteAllOrFault`/`ReadExactOrFault` con `FileWrite`/`FileRead`
   directos: `THandleStream.Write` convierte el -1 en 0 y se pierde el error.
   Tres bordes que salieron del barrido, y que no son de los decoders: el
-  stdout del Rust es un `LineWriter` de 1024 bytes, así que un disco lleno al
-  comprimir a stdout da `Io` (rc 4) salvo que el archivo entero quepa en ese
-  buffer sin un `\n`, y entonces `Can't write to stdout` (rc 3); el `File::open`
+  stdout al comprimir: un write que falla es `Can't write to stdout` (rc 3)
+  caiga donde caiga (`CountWriter`/`TCountWriter` anotan la falla, y un
+  error del encode que vino de ahí se reporta así; hasta r231-files era `Io`,
+  rc 4, si caía adentro del encode por el `LineWriter` de 1024 bytes del
+  Rust, y el Pascal lo adivinaba: un stdout lleno en el último kilobyte daba
+  3 en uno y 4 en el otro); el `File::open`
   del Rust abre un directorio en Unix y falla después (`Truncated`, `Io` o
   `Io(Os { code: 21 .. })` según el sistema de archivos), y el `FileOpen` de
   FPC lo rechaza antes; y toda falla de E/S del encoder es `Io` a secas
@@ -603,17 +606,41 @@ diferencias.
   con escrituras que ignoran el error (`eprint!` y `print!` hacen panic con
   `2>/dev/full`). Ese `LineWriter` hace su primer `write` con el primer
   `'\n'` o pasados los 1024 bytes (con 1024 justos el buffer queda lleno y
-  no escribe), adentro del encode: si falla, el error es "Io" (exit 4) y el
-  progreso que venía no sale; un archivo de hasta 1024 bytes y sin `'\n'`
-  falla recién en el flush final, "Can't write to stdout" (exit 3).
-  `TCountWriter` vacía su buffer una vez en ese mismo punto, o un stdout
-  cerrado o lleno daba otro stderr (`--format=v4 x -`). Las lecturas de stdin siguen la
+  no escribe), adentro del encode: si falla, el progreso que venía no sale;
+  un archivo de hasta 1024 bytes y sin `'\n'` falla recién en el flush
+  final. Las dos son "Can't write to stdout" (exit 3). `TCountWriter` vacía
+  su buffer una vez en ese mismo punto, o un stdout cerrado o lleno daba
+  otro stderr (`--format=v4 x -`). Las lecturas de stdin siguen la
   regla del std del Rust: EBADF, o `ERROR_INVALID_HANDLE` en Windows, es fin
   de archivo (`StdinRead`). En Windows un handle que falta es nulo y no se
   reserva nada. Bajo wine se prueba con un lanzador que pasa handles nulos
   por `STARTUPINFO`; cerrar los fd de unix bajo wine da otra cosa (un stdin
   cerrado falla con `ERROR_INVALID_FUNCTION`, y con los tres cerrados se
   rompe el propio wine).
+* **Bajo wine la identidad de un archivo de `Z:` es solo su inodo.** Todo
+  camino por `Z:` da número de serie de volumen 0 y el índice es el inodo de
+  Unix sin el dispositivo, así que dos archivos en sistemas de archivos de
+  Linux distintos con el mismo inodo (los tmpfs reparten números chicos) son
+  uno para `SameId`/`FileId::eq`: la corrida se rechaza (exit 3) y no cambia
+  nada. No hay identidad mejor (la hora de creación de wine es la de
+  modificación, y `FileIdInformation` lleva el mismo inodo), y desempatar
+  por tamaño u hora perdería un caso real (el `-vmfile=` contra una salida
+  que ya se está escribiendo).
+* **La entrada se estampa antes de leerla y se revisa antes de `-delete`**
+  (`StampInput`/`SameStamp` en `src/streamio.pas`, `stamp_input` en
+  `util.rs`): el archivo al que lleva el nombre, el largo y las horas de
+  modificación y de cambio (en Windows volumen, índice, largo y
+  `LastWriteTime`). La entrada se lee dos veces y el match finder se
+  dimensiona con el largo medido al principio: un writer que agregaba o
+  reescribía mientras tanto daba un archivo que no se descomprime (o un
+  `Access violation` por la tabla desbordada), y un rename encima borraba el
+  archivo nuevo, todo con exit 0. Ahora la primera pasada no lee más allá de
+  ese largo (`Span` en `encoder.pas`, que lo mide una sola vez) y un cambio
+  es "`<nombre>` changed while it was being read", exit 3.
+* **`-d` prueba la entrada antes de crear la salida** (`ProbeArchive`, la
+  primera parte de `DecodeArchive`; `archive::probe` en el Rust): un nombre
+  que no es un archivo (`-d x`, cuya salida es `x.osr`) truncaba y borraba
+  lo que estuviera con el nombre de la salida.
 * **El directorio temporal de FPC no es el de Rust.** En Unix, `GetTempDir`
   mira `TEMP`, después `TMP` y recién después `TMPDIR`. `std::env::temp_dir()`
   mira **solo** `TMPDIR` (o `/tmp`). Con `TEMP` apuntando a otro lado, el spill

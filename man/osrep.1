@@ -266,7 +266,13 @@ Explicitly specify input size (for stdin input). Default 25 GB.
 .B -delete
 Delete source file after successful (de)compression. With stdin as the input
 .RB ( - )
-nothing is deleted.
+nothing is deleted. When the input changes while the run reads it (a writer
+appending to it, an edit in place, a rename over it), the run fails with exit
+status 3 ("\fIname\fR changed while it was being read"), removes its outputs
+and keeps the input, with or without
+.BR -delete .
+On Windows an edit that keeps the file's size, by a writer that holds it open,
+may not be seen until the writer closes it.
 .TP
 \fB-v[0..2]\fR
 Verbosity level. Default 2.
@@ -496,7 +502,13 @@ named as the output (the file it points to keeps what was written), not a file
 the run reads (it is never written, see below), and not a file the run failed
 before opening. What is
 removed is the name: another hard link to the output keeps what was written.
-A run stopped by a signal (Ctrl-C) removes nothing. To keep the blocks of a
+A run stopped by a signal (Ctrl-C) removes nothing. A
+.B -d
+whose input is no archive fails before it creates the output, so with one name
+.RB ( "osrep -d x" ,
+whose output is
+.BR x.osr )
+a file already there under the output's name is left alone. To keep the blocks of a
 damaged archive that decode before the error, give an output name that is a
 symlink to a regular file, such as
 .B /dev/stdout
@@ -549,7 +561,12 @@ is left. The
 .B -vmfile=
 file is compared when the decompression first needs it. Only regular files are
 compared. When stderr's file is one the run reads, the refusal's own message
-is still written to it.
+is still written to it. Under wine every
+.B Z:
+path has volume serial number 0 and the file index is the Unix inode alone, so
+two files on different Linux filesystems with the same inode number are taken
+for one file and the run is refused (nothing is changed); write the output to
+another directory.
 
 .SH ENVIRONMENT
 .TP

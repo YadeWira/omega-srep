@@ -88,6 +88,19 @@ function DecodeV5(Input, Sink: TStream; const Opts: TFutureLzOptions;
 function DecodeArchive(Input, Sink: TStream; const Opts: TFutureLzOptions; Index: TStream;
                        out Err: TDecodeFault; Progress: TFlzProgress = nil): Boolean;
 
+{ archive::probe (archive.rs): la parte de DecodeArchive que no lee mas que
+  el principio del archivo (la magia v5, o el header de 16 bytes con sus
+  firmas y su version); deja Input en 0. La CLI la corre sola antes de
+  crear la salida: un nombre que no es un archivo (-d fotos.tar por -d
+  fotos.tar.osr) falla antes de crear la salida derivada (fotos.tar.osr)
+  encima de un archivo que estaba; hasta r231-files la truncaba y despues
+  la borraba como salida parcial (el C++ la deja vacia). Los errores son los
+  de DecodeArchive, que la vuelve a correr. }
+type
+  TArchiveKind = (akV5, akIoLz, akFutureLz);
+
+function ProbeArchive(Input: TStream; out Kind: TArchiveKind; out Err: TDecodeFault): Boolean;
+
 implementation
 
 uses StreamIO;
@@ -1300,21 +1313,19 @@ end;
 
 { ------------------------------------------------------- dispatch --- }
 
-function DecodeArchive(Input, Sink: TStream; const Opts: TFutureLzOptions; Index: TStream;
-                       out Err: TDecodeFault; Progress: TFlzProgress): Boolean;
+function ProbeArchive(Input: TStream; out Kind: TArchiveKind; out Err: TDecodeFault): Boolean;
 var
   len: QWord;
   head: TBytes;
   h: TArchiveHeader;
   ce: TContainerError;
-  e: TDecodeError;
-  fst: TFutureLzStats;
-  dst: TDecodeStats;
   got: QWord;
 begin
   Err := NoFault;
+  Kind := akFutureLz;
+  Result := False;
   try
-    { archive::decode: los dos seeks con `?`, el largo tal cual lo da el sistema }
+    { archive::probe: los dos seeks con `?`, el largo tal cual lo da el sistema }
     len := SeekOrFault(Input, 0, soEnd);
     SeekOrFault(Input, 0, soBeginning);
     if len >= V5_HEADER_SIZE then
@@ -1331,7 +1342,10 @@ begin
       if got = 0 then FillChar(head[0], V5_HEADER_SIZE, 0);
       SeekOrFault(Input, 0, soBeginning);
       if IsV5(head) then
-        Exit(DecodeV5(Input, Sink, Opts, fst, Err, Progress) = deOK);
+      begin
+        Kind := akV5;
+        Exit(True);
+      end;
     end;
     { read_exact_or_eof: nada o un pedazo, los dos son Truncated aca }
     SetLength(head, ARCHIVE_HEADER_SIZE);
@@ -1345,6 +1359,8 @@ begin
     ce := DecodeArchiveHeader(head, h);
     if ce = ceNotAnOsrepFile then begin Err := FaultContainer(ckNotAnOsrepFile); Exit(False); end;
     if ce <> ceOK then begin Err := FaultContainer(ckUnsupportedVersion, h.Version); Exit(False); end;
+    if (h.Version = 1) or (h.Version = 2) then Kind := akIoLz else Kind := akFutureLz;
+    Result := True;
   except
     on X: Exception do
     begin
@@ -1352,10 +1368,23 @@ begin
       Exit(False);
     end;
   end;
-  if (h.Version = 1) or (h.Version = 2) then
-    e := DecodeIoLz(Input, Sink, Index, dst, Err, Progress)
+end;
+
+function DecodeArchive(Input, Sink: TStream; const Opts: TFutureLzOptions; Index: TStream;
+                       out Err: TDecodeFault; Progress: TFlzProgress): Boolean;
+var
+  kind: TArchiveKind;
+  e: TDecodeError;
+  fst: TFutureLzStats;
+  dst: TDecodeStats;
+begin
+  if not ProbeArchive(Input, kind, Err) then Exit(False);
+  case kind of
+    akV5: e := DecodeV5(Input, Sink, Opts, fst, Err, Progress);
+    akIoLz: e := DecodeIoLz(Input, Sink, Index, dst, Err, Progress);
   else
     e := DecodeFutureLz(Input, Sink, Opts, fst, Err, Progress, Index);
+  end;
   Result := e = deOK;
 end;
 

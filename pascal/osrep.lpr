@@ -66,6 +66,7 @@ type
     FUsed: LongInt;
     FSawNewline: Boolean;
     FDrained: Boolean;
+    FFailed: Boolean;
     procedure Drain;
   public
     constructor Create(AHandle: THandle);
@@ -73,12 +74,10 @@ type
     function Write(const Buffer; Count: LongInt): LongInt; override;
     function Seek(const Offset: Int64; Origin: TSeekOrigin): Int64; override;
     procedure Flush;
-    { si el stdout del Rust (un LineWriter de 1024 bytes) ya habria escrito
-      algo al fd antes de terminar el encode: con un '\n' en lo escrito, o
-      con MAS de 1024 bytes (con 1024 justos el buffer esta lleno pero
-      todavia no escribio). Si no, todo esperaba al flush final. }
-    function RustWroteEarly: Boolean;
     property Written: QWord read FCount;
+    { si fallo un write al fd: un error del encode que vino de stdout es
+      "Can't write to stdout", no el del encoder (modes.rs, failed) }
+    property Failed: Boolean read FFailed;
   end;
 
 constructor ERun.CreateCode(ACode: LongInt; const AMsg: AnsiString);
@@ -107,7 +106,11 @@ begin
   while off < FUsed do
   begin
     w := FileWrite(FHandle, FBuf[off], FUsed - off);
-    if w <= 0 then raise EWriteError.Create('Can''t write to stdout');
+    if w <= 0 then
+    begin
+      FFailed := True;
+      raise EWriteError.Create('Can''t write to stdout');
+    end;
     Inc(off, w);
   end;
   FUsed := 0;
@@ -160,11 +163,6 @@ end;
 procedure TCountWriter.Flush;
 begin
   Drain;
-end;
-
-function TCountWriter.RustWroteEarly: Boolean;
-begin
-  Result := FSawNewline or (FCount > 1024);
 end;
 
 { ------------------------------------------------------------ helpers --- }
@@ -669,8 +667,17 @@ begin
          IntToStr(O.Chunk.MinChunk) + ' bytes)');
 end;
 
+{ despues de la ultima lectura y antes de -delete (modes.rs, check_unchanged):
+  el nombre sigue llevando al archivo que se leyo, sin cambios }
+procedure CheckUnchanged(const FiName: AnsiString; const Before: TInputStamp);
+begin
+  if Before.Ok and not SameStamp(Before, StampInput(FiName)) then
+    Fail(ERROR_IO, FiName + ' changed while it was being read');
+end;
+
 function Compress(const O: TOptions; const FiName, FoutName: AnsiString): LongInt;
 var
+  before: TInputStamp;
   warnings: LongInt;
   inputPath: AnsiString;
   spoolOwned, hasDeclared: Boolean;
@@ -697,6 +704,8 @@ begin
   if BadChunkParams(O) <> '' then Fail(ERROR_CMDLINE, BadChunkParams(O));
 
   { srep.cpp:459-462 (WindowWarning) }
+  FillChar(before, SizeOf(before), 0);
+  if FiName <> '-' then before := StampInput(FiName);
   warnings := 0;
   if WindowWarning(O) then
   begin
@@ -765,21 +774,24 @@ begin
         if FoutName = '-' then
         begin
           cw := TCountWriter.Create(OutHandle);
+          { un write a stdout que fallo es "Can't write to stdout", caiga
+            dentro del encode o en el flush final (modes.rs): hasta
+            r231-files, dentro era "Io" (exit 4), y este buffer no es el
+            LineWriter del Rust, asi que donde caia la falla solo se podia
+            adivinar (RustWroteEarly): un stdout que se llenaba en el ultimo
+            kilobyte del archivo daba 3 en el Rust y 4 aca }
           try
             Encode(inS, cw, enc, KindOf(O), ContainerOf(O), @OnProgress);
           except
             on X: ERun do raise;
-            on X: Exception do Fail(ERROR_COMPRESSION, EncodeErrorText(X));
+            on X: Exception do
+              if cw.Failed then Fail(ERROR_IO, 'Can''t write to stdout')
+              else Fail(ERROR_COMPRESSION, EncodeErrorText(X));
           end;
-          { El Rust escribe por un LineWriter: lo que no entro en el flush
-            final ya fue al fd DURANTE el encode, y una falla ahi es un
-            EncodeError::Io. Este buffer es mas grande, asi que la falla
-            puede llegar recien aca; se reporta donde la veria el Rust. }
           try
             cw.Flush;
           except
-            if cw.RustWroteEarly then Fail(ERROR_COMPRESSION, 'Io')
-            else Fail(ERROR_IO, 'Can''t write to stdout');
+            Fail(ERROR_IO, 'Can''t write to stdout');
           end;
           written := cw.Written;
         end
@@ -809,6 +821,7 @@ begin
       indexS.Free;
     end;
 
+    CheckUnchanged(FiName, before);
     StatsFinish(GStats, read_, written);
   finally
     if spoolOwned then DeleteTemp(inputPath)
@@ -840,10 +853,12 @@ end;
 
 function Decompress(const O: TOptions; const FiName, FoutName: AnsiString): LongInt;
 var
+  before: TInputStamp;
   opts: TFutureLzOptions;
   isDup: Boolean;
   inputPath, sinkPath, stdinSpool, stdoutSpool: AnsiString;
   err: TDecodeFault;
+  kind: TArchiveKind;
   inS, indexS, sink, f: TRawFileStream;
   total, decoded: QWord;
   endPos: Int64;
@@ -852,6 +867,8 @@ var
   n, off, w: LongInt;
 begin
   DecodeOptionsOf(O, opts);
+  FillChar(before, SizeOf(before), 0);
+  if FiName <> '-' then before := StampInput(FiName);
 
   { -dup primero: el C++ lo detecta en cada descompresion, con o sin la
     opcion. Reescribe la cola del archivo, asi que necesita dos archivos de
@@ -868,6 +885,7 @@ begin
     end;
     if isDup then
     begin
+      CheckUnchanged(FiName, before);
       if O.DeleteInput then DeleteFile(FiName);
       Exit(NO_ERRORS);
     end;
@@ -897,6 +915,11 @@ begin
     inS := OpenReadRaw(inputPath);
     if inS = nil then Fail(ERROR_IO, 'Can''t open ' + FiName + ' for read');
     total := HandleSize(inS.Handle);
+    { antes de crear la salida: un nombre que no es un archivo falla aca, con
+      el mensaje de DecodeArchive, y deja en paz un archivo que estaba con el
+      nombre de la salida (ProbeArchive) }
+    if not ProbeArchive(inS, kind, err) then
+      Fail(ERROR_COMPRESSION, FaultDebug(err) + ': ' + FiName);
 
     BarInit(GBar, O.Bar);
     StatsInit(GStats, O.Verbosity > 0);
@@ -967,6 +990,7 @@ begin
       end;
     end;
 
+    CheckUnchanged(FiName, before);
     StatsFinish(GStats, total, decoded);
   finally
     indexS.Free;

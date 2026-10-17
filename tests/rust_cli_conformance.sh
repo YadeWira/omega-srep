@@ -1866,12 +1866,15 @@ for o in /dev/stdout /proc/self/fd/1 /dev/stdin /proc/self/fd/0; do
     [ "$rc" -eq 3 ] && grep -q "Can't open $o for write" "$TMP/fd.err" \
         || fail "fd [$o <&- >&-]: exit $rc, '$(cat "$TMP/fd.err")', not \"Can't open $o for write\" (exit 3)"
 done
-# When an archive sent to a closed or full stdout fails: Rust's LineWriter
-# of 1024 bytes writes at the first newline byte or once MORE than 1024
-# bytes are buffered, inside the encode ("Io", exit 4); an archive of 1024
-# bytes or less with no newline byte waits for the final flush ("Can't write
-# to stdout", exit 3). Exactly 1024 is the edge (the Pascal said "Io"): an
-# input with no newline byte whose archive is 1024 bytes, and one byte more.
+# When an archive sent to a closed or full stdout fails, it is "Can't write
+# to stdout" (exit 3) wherever the write that failed falls. Through
+# r231-files that depended on Rust's LineWriter of 1024 bytes, which writes
+# at the first newline byte or once MORE than 1024 bytes are buffered:
+# inside the encode it was "Io" (exit 4), at the final flush exit 3, and the
+# Pascal, whose buffer is another, guessed which (wrongly at exactly 1024
+# bytes, and for a stdout that fills up in the archive's last kilobyte; see
+# below). Kept as the edge it was: an input with no newline byte whose
+# archive is 1024 bytes, and one byte more.
 tr -d '\n' < tests/corpus/random.bin | head -c 1000 > "$TMP/fdnonl.bin"
 for spec in "904|" "920|--format=v4"; do
     n=${spec%%|*}; f=${spec#*|}
@@ -1891,7 +1894,7 @@ for spec in "904|" "920|--format=v4"; do
     for r in '>&-' '>/dev/full'; do
         for k in 0 1; do
             rc=0; eval '"$RS" --seed=$seed $f "$TMP/fde$k.bin" - 2>"$TMP/fd.err"' "$r" || rc=$?
-            if [ "$k" = 0 ]; then want="3 Can't write to stdout"; else want="4 Io"; fi
+            want="3 Can't write to stdout"
             [ "$rc" -eq "${want%% *}" ] && grep -q "ERROR! ${want#* }\$" "$TMP/fd.err" \
                 || fail "fd edge [$f $((1024 + k))-byte archive $r]: exit $rc, '$(tail -c 60 "$TMP/fd.err")', not '${want#* }' (exit ${want%% *})"
         done
@@ -1913,6 +1916,108 @@ rc=0; "$RS" --seed=7 -s10 - "$TMP/fd.osr" <&- 2>/dev/null || rc=$?
 "$RS" -d "$TMP/fd.osr" "$TMP/fd.out" 2>/dev/null || fail "fd [- <&-]: the archive does not decode"
 [ -e "$TMP/fd.out" ] && [ ! -s "$TMP/fd.out" ] || fail "fd [- <&-]: a closed stdin is not an empty input"
 pass=$((pass + 1))
+
+say "an input that changes while it is read, a non-archive for -d, a stdout that fills up"
+# The input is measured once, read in the first pass, then again in the
+# second and by the match finder, and `-delete` removed the name with
+# nothing checked: an input a writer appended to, one rewritten in place, or
+# one renamed over (an editor's save, a log rotation) while the run read it
+# gave exit 0, an archive that does not decode (or holds the old file), and
+# no input. Now the run compares the file the name leads to, its length and
+# its times, before and after, and fails (exit 3) when they differ.
+# Deterministic without timing: the run cannot end before its consumer has
+# drained the output, and that consumer changes the input once it has the
+# first byte -- after the run took the input's stamp, before it checks it.
+CH="$TMP/changed"; mkdir -p "$CH"
+{ head -c 1048576 tests/corpus/text.bin; head -c 2097152 tests/corpus/random.bin; } > "$CH/in.bin"
+"$RS" -v0 --seed=7 -b1mb "$CH/in.bin" "$CH/ok.osr" 2>/dev/null || fail "changed: compress"
+"$RS" -v0 --seed=7 -hash- "$CH/in.bin" "$CH/nohash.osr" 2>/dev/null || fail "changed: compress -hash-"
+# the -dup ones written to a FIFO: an input with no repeats, so the post-pass
+# never reads back from its output
+head -c 2097152 tests/corpus/random.bin > "$CH/rnd.bin"
+"$RS" -v0 --seed=7 -dup "$CH/rnd.bin" "$CH/dup5.osr" 2>/dev/null || fail "changed: compress -dup"
+"$RS" -v0 --seed=7 -dup --format=v4 "$CH/rnd.bin" "$CH/dup4.osr" 2>/dev/null || fail "changed: compress -dup v4"
+chcase() {   # $1 = what the input starts as, $2 = the change ('' none), $3.. = the run, on file t
+    local src=$1 mut=$2 rc; shift 2
+    rm -rf "$CH/w"; mkdir "$CH/w"; cp "$CH/$src" "$CH/w/t"
+    rc=0
+    if [ "${!#}" = fifo ]; then
+        mkfifo "$CH/w/fifo"
+        (cd "$CH/w" && { "$RS" "$@" 2>"$CH/e" & p=$!
+            { dd bs=1 count=1 of=/dev/null 2>/dev/null; eval "$mut"; cat >/dev/null; } < fifo
+            wait $p; }) || rc=$?
+    else
+        (cd "$CH/w" && set -o pipefail && "$RS" "$@" 2>"$CH/e" \
+            | { dd bs=1 count=1 of=/dev/null 2>/dev/null; eval "$mut"; cat >/dev/null; }) || rc=$?
+    fi
+    if [ -z "$mut" ]; then
+        [ "$rc" -eq 0 ] && [ ! -e "$CH/w/t" ] || fail "changed [$* unchanged]: exit $rc, $(cat "$CH/e")"
+    else
+        [ "$rc" -eq 3 ] && grep -qx "  ERROR! t changed while it was being read" "$CH/e" && [ -e "$CH/w/t" ] \
+            || fail "changed [$* / $mut]: exit $rc, '$(cat "$CH/e")', t $( [ -e "$CH/w/t" ] && echo kept || echo deleted)"
+    fi
+    pass=$((pass + 1))
+}
+for m in 'printf x >> t' 'printf y | dd of=t bs=1 seek=100 conv=notrunc 2>/dev/null' 'cp t t.new; mv t.new t' ''; do
+    chcase in.bin "$m" -v0 --seed=7 -delete t -
+    chcase in.bin "$m" -v0 --seed=7 --format=v4 -m3o -delete t -
+    chcase ok.osr "$m" -v0 -d -delete t -
+    chcase nohash.osr "$m" -v0 -d -delete t -
+    chcase dup5.osr "$m" -v0 -d -delete t fifo
+    chcase dup4.osr "$m" -v0 -d -delete t fifo
+done
+# Bytes appended while the first pass still reads: it read past the length
+# the match finder was sized for (Rust panicked, exit 101, leaving the partial
+# archive; the Pascal overran its table, an access violation, or with v4
+# -m3o exited 0 with an archive of neither file). Now it reads up to the
+# measured length, and the change is refused. strace holds the third read of
+# t for a second, so the append lands before the fourth.
+if command -v strace >/dev/null 2>&1 && strace -f -qq -o /dev/null true 2>/dev/null; then
+    for f in "" -m4 "--format=v4 -m3o"; do
+        rm -rf "$CH/w"; mkdir "$CH/w"; cp "$CH/in.bin" "$CH/w/t"
+        rc=0
+        # shellcheck disable=SC2086
+        (cd "$CH/w" && { strace -f -qq -o /dev/null -P t -e trace=read -e inject=read:delay_exit=1000000:when=3 \
+                "$RS" -v0 -b1mb --seed=7 $f -delete t t.osr 2>"$CH/e" & p=$!
+            for _ in $(seq 100); do [ -e t.osr ] && break; sleep 0.05; done
+            head -c 500000 "$CH/in.bin" >> t; wait $p; }) || rc=$?
+        [ "$rc" -eq 3 ] && grep -qx "  ERROR! t changed while it was being read" "$CH/e" \
+            && [ -e "$CH/w/t" ] && [ ! -e "$CH/w/t.osr" ] \
+            || fail "changed [append in the first pass $f]: exit $rc, '$(tail -c 300 "$CH/e")', $(ls "$CH/w")"
+        pass=$((pass + 1))
+    done
+else
+    say "no usable strace: the first-pass append is not run"
+fi
+# `-d a` on a name that is no archive: the output, derived from it as
+# `a.osr`, was created before the decoder looked at the input, so an archive
+# there (one the user never named: `-d photos.tar` for `-d photos.tar.osr`)
+# was truncated and then removed as a partial output (the C++ 1.0.7 leaves
+# it empty). Now the input is probed first, with the same message.
+rm -rf "$CH/w"; mkdir "$CH/w"; cp "$CH/ok.osr" "$CH/w/a.osr"; cp "$CH/in.bin" "$CH/w/a"; : > "$CH/w/e"
+cp "$CH/in.bin" "$CH/w/b.osr"; cp "$CH/ok.osr" "$CH/w/b"; printf 'OSR' > "$CH/w/c.osr"; cp "$CH/ok.osr" "$CH/w/c"
+for spec in "a|a.osr|Container(NotAnOsrepFile)" "b.osr|b|Container(NotAnOsrepFile)" \
+            "c.osr|c|Container(Truncated)" "e|e.osr|Container(Truncated)"; do
+    IFS='|' read -r i o e <<<"$spec"
+    [ -e "$CH/w/$o" ] || cp "$CH/ok.osr" "$CH/w/$o"
+    cp "$CH/w/$o" "$CH/keep"
+    rc=0; (cd "$CH/w" && "$RS" -v0 -d "$i") 2>"$CH/e" || rc=$?
+    [ "$rc" -eq 4 ] && grep -qxF "  ERROR! $e: $i" "$CH/e" && cmp -s "$CH/w/$o" "$CH/keep" \
+        || fail "probe [-d $i]: exit $rc, '$(cat "$CH/e")', $o $( [ -e "$CH/w/$o" ] && echo changed || echo deleted)"
+    pass=$((pass + 1))
+done
+# A stdout that fills up (RLIMIT_FSIZE, SIGXFSZ ignored) in the middle of the
+# archive and in its last kilobyte: the Rust said "Can't write to stdout"
+# (exit 3) for the last bytes, which sit in its LineWriter until the final
+# flush, and the Pascal "Io" (exit 4).
+osz=$(stat -c%s "$CH/ok.osr")
+for k in 1000 $(( (osz - 1) / 1024 )); do
+    rc=0; (cd "$CH" && trap '' XFSZ && ulimit -f "$k" && exec "$RS" -v0 --seed=7 -b1mb in.bin - > fsz.osr) 2>"$CH/e" || rc=$?
+    [ "$rc" -eq 3 ] && grep -qx "  ERROR! Can't write to stdout" "$CH/e" && [ "$(stat -c%s "$CH/fsz.osr")" -eq $((k * 1024)) ] \
+        || fail "stdout fills up at $k KiB of $osz bytes: exit $rc, '$(cat "$CH/e")'"
+    pass=$((pass + 1))
+done
+rm -rf "$CH"
 
 say "what each binary reports on stderr"
 # Its own script because it compares the two binaries' *text*, which nothing

@@ -15,6 +15,48 @@ use crate::decompress::{decode_io_lz, read_exact_or_eof, DecodeError};
 use crate::future_lz::{self, FutureLzOptions, FutureLzStats};
 use crate::v5;
 
+/// Which decoder an archive takes, as [`probe`] decides it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    V5,
+    /// v1/v2
+    IoLz,
+    /// v3/v4
+    FutureLz,
+}
+
+/// The part of [`decode`] that reads no further than the archive's first
+/// bytes: the v5 magic, or the 16-byte header and its signatures and version.
+/// Leaves `input` at offset 0.
+///
+/// The CLI runs it on its own before it creates the output, so that a name
+/// that is no archive at all (`-d photos.tar` for `-d photos.tar.osr`) fails
+/// before the output -- `photos.tar.osr`, derived from it -- is created over a
+/// file that was there: through r231-files the run truncated it and then
+/// removed it as a partial output (the C++ leaves it empty). The errors are
+/// the ones [`decode`] gives, which runs it again.
+pub fn probe<R: Read + Seek>(input: &mut R) -> Result<Kind, DecodeError> {
+    let file_len = input.seek(SeekFrom::End(0))?;
+    input.seek(SeekFrom::Start(0))?;
+
+    if file_len >= v5::HEADER_SIZE as u64 {
+        let mut head = [0u8; v5::HEADER_SIZE];
+        read_exact_or_eof(input, &mut head)?;
+        input.seek(SeekFrom::Start(0))?;
+        if u32::from_le_bytes(head[..4].try_into().unwrap()) == v5::MAGIC {
+            return Ok(Kind::V5);
+        }
+    }
+
+    let mut head = [0u8; container::ARCHIVE_HEADER_SIZE];
+    if !read_exact_or_eof(input, &mut head)? {
+        return Err(container::ContainerError::Truncated.into());
+    }
+    input.seek(SeekFrom::Start(0))?;
+    let header = ArchiveHeader::decode(&head)?;
+    Ok(if header.version.io_lz() { Kind::IoLz } else { Kind::FutureLz })
+}
+
 /// Decode any archive into `sink`: v1/v2 through the I/O-LZ decoder, v3/v4
 /// through the Future/Index-LZ one, v5 through its own framing (which shares
 /// the decoder below it).
@@ -27,36 +69,19 @@ pub fn decode<R: Read + Seek, S: Read + Write + Seek>(
     // containers that read them sequentially take their bytes from here.
     index: crate::decompress::IndexSource,
 ) -> Result<FutureLzStats, DecodeError> {
-    let file_len = input.seek(SeekFrom::End(0))?;
-    input.seek(SeekFrom::Start(0))?;
-
-    if file_len >= v5::HEADER_SIZE as u64 {
-        let mut head = [0u8; v5::HEADER_SIZE];
-        read_exact_or_eof(input, &mut head)?;
-        input.seek(SeekFrom::Start(0))?;
-        if u32::from_le_bytes(head[..4].try_into().unwrap()) == v5::MAGIC {
-            return future_lz::decode_v5(input, sink, opts, progress);
+    match probe(input)? {
+        Kind::V5 => future_lz::decode_v5(input, sink, opts, progress),
+        Kind::IoLz => {
+            // I/O-LZ carries no match lists across blocks, so nothing spills
+            // and the VM counters stay zero.
+            let stats = decode_io_lz(input, sink, progress, index)?;
+            Ok(FutureLzStats {
+                decode: stats,
+                vm_bytes_written: 0,
+                vm_bytes_read: 0,
+            })
         }
-    }
-
-    let mut head = [0u8; container::ARCHIVE_HEADER_SIZE];
-    if !read_exact_or_eof(input, &mut head)? {
-        return Err(container::ContainerError::Truncated.into());
-    }
-    input.seek(SeekFrom::Start(0))?;
-    let header = ArchiveHeader::decode(&head)?;
-
-    if header.version.io_lz() {
-        // I/O-LZ carries no match lists across blocks, so nothing spills and
-        // the VM counters stay zero.
-        let stats = decode_io_lz(input, sink, progress, index)?;
-        Ok(FutureLzStats {
-            decode: stats,
-            vm_bytes_written: 0,
-            vm_bytes_read: 0,
-        })
-    } else {
-        future_lz::decode_future_lz(input, sink, opts, progress, index)
+        Kind::FutureLz => future_lz::decode_future_lz(input, sink, opts, progress, index),
     }
 }
 
