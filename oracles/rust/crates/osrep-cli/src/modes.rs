@@ -13,7 +13,7 @@ use osrep_core::container;
 use osrep_core::dup::{self, DupMode, DupParams};
 use osrep_core::encoder::{Container, EncodeOptions, Kind, Mode, Seed};
 use osrep_core::future_lz::FutureLzOptions;
-use osrep_core::util::{NamedScratch, TempFile};
+use osrep_core::util::{NamedScratch, Std, TempFile};
 
 use crate::args::{self, CmdMode, Format, Lz, Options};
 use crate::report;
@@ -133,6 +133,18 @@ fn refuse_same_file(a: &str, b: &str) -> Result<(), RunError> {
     }
 }
 
+/// The same refusal for a name that is the file stdin is read from or stdout
+/// is written to: the shell opened those (`< x`, `> x`), so no name on the
+/// command line gives them away. `osrep - x < x` truncated `x` before it was
+/// read, and `-temp=x ... > x` spooled into the file the archive was going to.
+fn refuse_std_file(name: &str, which: Std) -> Result<(), RunError> {
+    if osrep_core::util::is_std_file(Path::new(name), which) {
+        Err(err(ERROR_IO, SAME_FILE))
+    } else {
+        Ok(())
+    }
+}
+
 /// The filename rules (`srep.cpp:569-583`).
 ///
 /// With one name, the `.osr` extension decides the direction and the other name
@@ -181,6 +193,10 @@ fn resolve_names(o: &Options) -> Result<(String, Option<String>), RunError> {
         if let Some(out) = foutname.as_deref() {
             if finame != "-" && out != "-" {
                 refuse_same_file(&finame, out)?;
+            }
+            // `osrep - x < x`: the output is where stdin comes from.
+            if finame == "-" && out != "-" {
+                refuse_std_file(out, Std::In)?;
             }
         }
     }
@@ -292,7 +308,7 @@ fn decode_hex(s: &str) -> Option<Vec<u8>> {
 /// re-reads; the port has one input handle, so it spools first. The bytes read
 /// are the same, and `filesize` still comes from `-s` (or the 25 gb default),
 /// which is what keeps the archive identical.
-fn spool_stdin(o: &Options) -> Result<(String, Option<Spool>), RunError> {
+fn spool_stdin(o: &Options, foutname: &str) -> Result<(String, Option<Spool>), RunError> {
     match o.tempfile.as_deref() {
         Some("") => Err(err(
             ERROR_IO,
@@ -301,6 +317,20 @@ fn spool_stdin(o: &Options) -> Result<(String, Option<Spool>), RunError> {
         // `-temp=`: removed at the end like the C++'s (`srep.cpp:1336`), and
         // on failure like every scratch file, if this run opened it.
         Some(p) => {
+            // Not over a file the run reads or writes, checked before the
+            // open truncates it: stdin's own file (the spool would read back
+            // nothing), the file stdout goes to when the archive does, the
+            // archive or `-index=` when they already exist (a new one is
+            // caught after the spool, in `compress`).
+            refuse_std_file(p, Std::In)?;
+            if foutname == "-" {
+                refuse_std_file(p, Std::Out)?;
+            } else {
+                refuse_same_file(p, foutname)?;
+            }
+            if !o.index_file.is_empty() {
+                refuse_same_file(p, &o.index_file)?;
+            }
             let mut f = File::create(p).map_err(|_| err(ERROR_IO, "Can't open tempfile"))?;
             let named = NamedScratch::new(Path::new(p), &f);
             copy_stdin(&mut f)?;
@@ -473,7 +503,7 @@ fn compress(o: &Options, finame: &str, foutname: &str) -> Result<i32, RunError> 
 
     let mode = mode_of(o);
     let (input_path, spool) = if finame == "-" {
-        spool_stdin(o)?
+        spool_stdin(o, foutname)?
     } else {
         (finame.to_string(), None)
     };
@@ -518,6 +548,18 @@ fn compress(o: &Options, finame: &str, foutname: &str) -> Result<i32, RunError> 
         None
     } else {
         refuse_same_file(&o.index_file, &input_path)?;
+        // Nor over an archive that already exists (one that does not is
+        // checked below, once it is the index), stdin's file, or the file
+        // stdout goes to with the archive: refused after the open, any of
+        // them was already truncated.
+        if foutname != "-" {
+            refuse_same_file(&o.index_file, foutname)?;
+        } else {
+            refuse_std_file(&o.index_file, Std::Out)?;
+        }
+        if finame == "-" {
+            refuse_std_file(&o.index_file, Std::In)?;
+        }
         let f = File::create(&o.index_file).map_err(|_| {
             err(
                 ERROR_IO,
@@ -706,6 +748,14 @@ fn decompress(o: &Options, finame: &str, foutname: &str) -> Result<i32, RunError
         if foutname != "-" {
             refuse_same_file(v, foutname)?;
         }
+        // The files the shell opened: the archive read from stdin, and the
+        // file stdout goes to.
+        if finame == "-" {
+            refuse_std_file(v, Std::In)?;
+        }
+        if foutname == "-" {
+            refuse_std_file(v, Std::Out)?;
+        }
     }
 
     // `-dup` first: the C++ auto-detects it on every decompression, with or
@@ -781,6 +831,14 @@ fn decompress(o: &Options, finame: &str, foutname: &str) -> Result<i32, RunError
     // The stdout spool is a `TempFile`, removed either way.
     if spool.is_none() {
         osrep_core::util::claim_output(&sink_path, &sink);
+        // `-vmfile=` against the output once more, now that it exists: under
+        // another spelling of an output that did not exist yet (`./o.out`),
+        // the check above saw nothing, and the first spill would truncate the
+        // output and the end of the decode remove it. Refused here, the new
+        // output is taken back like any other.
+        if let Some(v) = o.vmfile.as_deref() {
+            refuse_same_file(v, foutname)?;
+        }
     }
 
     // `-index=` on the way back: the match lists come from the named file

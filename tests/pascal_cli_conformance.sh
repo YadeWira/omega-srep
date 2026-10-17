@@ -783,6 +783,35 @@ scase 3 'cp "$I/far.osr" far.osr; "$B" -v0 -mem1mb -vmblock=128kb -vmfile=./far.
 scase 3 'cp "$I/ok.ix" ok.ix; "$B" -v0 -vmfile=./ok.ix -d -index=ok.ix "$I/okf.osr" o.out' ok.ix
 scase 3 '"$B" -v0 -vmfile=o.out -d "$I/far.osr" o.out'
 scase 3 'echo x > o.out; "$B" -v0 -vmfile=./o.out -d "$I/far.osr" o.out'
+# -vmfile= otra vez despues de crear la salida: con otra escritura de una
+# salida que no existia, el primer chequeo no veia nada, el primer derrame la
+# truncaba y el final del decode la borraba -- exit 0 y nada en disco, con
+# -delete tampoco el archivo (bajo wine el Pascal fallaba por el recurso
+# compartido y el Rust win64 la borraba igual)
+scase 3 'cp "$I/far.osr" far.osr; "$B" -v0 -delete -mem1mb -vmblock=128kb -vmfile=./o.out -d far.osr o.out' far.osr
+[ ! -e "$F/p/o.out" ] || fail "-vmfile=./o.out: quedo la salida rechazada"
+# los archivos que abrio el shell para stdin y stdout tambien cuentan, aunque
+# ningun nombre de la linea los delate: la salida, -temp=, -index= o -vmfile=
+# como el archivo del que se lee stdin, y -temp=, -index= o -vmfile= como
+# aquel al que va stdout cuando va ahi el comprimido o lo descomprimido
+scase 3 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 - in.bin < in.bin' in.bin
+scase 3 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 -b0 - in.bin < in.bin' in.bin
+scase 3 'cp "$I/badok.osr" badok.osr; "$B" -v0 -d - badok.osr < badok.osr' badok.osr
+scase 3 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 -temp=in.bin - o.osr < in.bin' in.bin
+scase 3 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 --format=v4 -m3f -index=in.bin - o.osr < in.bin' in.bin
+scase 3 'cp "$I/far.osr" far.osr; "$B" -v0 -mem1mb -vmblock=128kb -vmfile=far.osr -d - o.out < far.osr' far.osr
+scase 3 '"$B" -v0 --seed=7 -temp=./o.osr < "$I/in.bin" > o.osr'
+scase 3 '"$B" -v0 --seed=7 --format=v4 -m3f -index=./o.osr - - < "$I/in.bin" > o.osr'
+scase 3 '"$B" -v0 -mem1mb -vmblock=128kb -vmfile=o.out -d "$I/far.osr" - > o.out'
+[ -e "$F/p/o.out" ] || fail "-vmfile= sobre stdout: se borro"
+# un rechazo deja todo como estaba: un nombre que ya existe se mira antes del
+# open que lo truncaria, no despues
+scase 3 'echo old > o.osr; "$B" -v0 --seed=7 --format=v4 -m3f -index=./o.osr "$I/in.bin" o.osr'
+grep -qx old "$F/p/o.osr" || fail "-index=./o.osr: cambio o.osr"
+scase 3 'echo old > o.osr; "$B" -v0 --seed=7 -temp=./o.osr - o.osr < "$I/in.bin"'
+grep -qx old "$F/p/o.osr" || fail "-temp=./o.osr: cambio o.osr"
+scase 3 'echo old > k.ix; "$B" -v0 --seed=7 --format=v4 -m3f -index=k.ix -temp=./k.ix - o.osr < "$I/in.bin"'
+grep -qx old "$F/p/k.ix" || fail "-temp=./k.ix: cambio k.ix"
 scase 0 'cp "$I/ok.osr" ok.osr; ln ok.osr ok; "$B" -i ok.osr' ok.osr
 scase 0 '"$B" -v0 --seed=7 -temp=t.tmp - o.osr < "$I/in.bin"'
 [ ! -e "$F/p/t.tmp" ] && [ -s "$F/p/o.osr" ] || fail "-temp=: el spool quedo, o no hay archivo"
@@ -797,7 +826,17 @@ scase 0 'echo keep > ./-; "$B" -v0 --seed=7 -delete < "$I/in.bin" > o.osr'
 [ -e "$F/p/-" ] || fail "-delete por pipe borro un archivo llamado -"
 scase 4 '"$B" -v0 --seed=7 -b0 "$I/in.bin" o.osr'
 scase 3 '"$B" -v0 --seed=7 -b0 -dup "$I/in.bin" o.osr'
+# un anillo que no entra en 64 bits: -b2^63 daba la vuelta a 0 los dos
+# bloques de margen en el Rust (panic, exit 101), y un -d a un bloque de 2^64
+# redondeaba a un anillo chico (el Rust abortaba, el Pascal decia "Out of
+# memory" desde el diccionario en memoria)
+scase 4 '"$B" -v0 --seed=7 -b9223372036854775808b "$I/in.bin" o.osr'
+scase 4 '"$B" -v0 --seed=7 -b9223372036854775809b "$I/in.bin" o.osr'
+scase 4 '"$B" -v0 --seed=7 -d18446744073709551615b -b3m "$I/in.bin" o.osr'
+scase 4 '"$B" -v0 --seed=7 -m0 -d18446744073709551615b -b3m "$I/in.bin" o.osr'
 if [ "$FWINE" = 0 ]; then
+    scase 3 'ln -s o.out v; "$B" -v0 -mem1mb -vmblock=128kb -vmfile=v -d "$I/far.osr" o.out'
+    [ -L "$F/p/v" ] && [ ! -e "$F/p/o.out" ] || fail "-vmfile= por un symlink a la salida"
     scase 3 'cp "$I/in.bin" in.bin; ln -s in.bin y.bin; "$B" -v0 --seed=7 in.bin y.bin' in.bin
     scase 0 '"$B" -v0 --seed=7 /dev/null /dev/../dev/null'
     scase 0 'ln -s target t.tmp; "$B" -v0 --seed=7 -temp=t.tmp - o.osr < "$I/in.bin"'

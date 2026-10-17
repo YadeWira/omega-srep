@@ -217,7 +217,10 @@ Tempfile path override. Default uses
 on POSIX,
 .B %TEMP%
 on Windows. The file is removed when the run ends, successful or not, if it
-is a regular file this run opened and the name still refers to it.
+is a regular file this run opened and the name still refers to it; never
+through a symlink, so the file a symlinked
+.B -temp=
+points to is left behind, filled.
 .TP
 \fB-vmfile=\fIPATH\fR
 Virtual-memory tempfile path. Removed when the decompression ends under the
@@ -470,9 +473,16 @@ the run reads (the input, and
 when decompressing), and not a file the run failed before opening. What is
 removed is the name: another hard link to the output keeps what was written.
 A run stopped by a signal (Ctrl-C) removes nothing. To keep the blocks of a
-damaged archive that decode before the error, decompress to a stream:
+damaged archive that decode before the error, give an output name that is a
+symlink to a regular file, such as
+.B /dev/stdout
+redirected to a file (Linux):
 .IP
 .B osrep -d bad.osr /dev/stdout > salvage
+.PP
+Not
+.B -
+and not a pipe or a FIFO: the decoder seeks its output.
 .PP
 Two names for one file are refused with exit status 3 ("Input and output
 files should have different names"), as an output named like the input is:
@@ -481,10 +491,26 @@ symlink),
 .B -index=
 and the input or the output, the
 .B -temp=
-file and the output, and
+file and the output or
+.BR -index= ,
+and
 .B -vmfile=
-and any file the decompression reads or writes. Only regular files are
-compared.
+and any file the decompression reads or writes. The files the shell opened
+for stdin and stdout count too: the output,
+.BR -temp= ,
+.B -index=
+and
+.B -vmfile=
+are refused as the file stdin is read from
+.RB ( "osrep - x < x" ),
+and
+.BR -temp= ,
+.B -index=
+and
+.B -vmfile=
+as the file stdout goes to when the output is
+.BR - .
+A refused run changes no file. Only regular files are compared.
 
 .SH ENVIRONMENT
 .TP

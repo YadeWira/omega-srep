@@ -85,6 +85,12 @@ procedure RemoveIfStill(const Path: AnsiString; const Id: TFileId);
   dispositivo no son el mismo que nada (util.rs, same_file). }
 function SameRegularFile(const A, B: AnsiString): Boolean;
 
+{ Si Path lleva al archivo regular del que se lee stdin (`< x`) o al que va
+  stdout (`> x`), con H su handle (InHandle, OutHandle): los abrio el shell,
+  asi que ningun nombre de la linea de comandos lo dice. Una terminal, un
+  pipe o un dispositivo no son un archivo que perder (util.rs, is_std_file). }
+function IsStdFile(const Path: AnsiString; H: THandle): Boolean;
+
 { Las salidas de una corrida que falla (util.rs, claim_output): lo que se
   creo o trunco con un nombre dado -- el archivo, la salida de -d, -index= --
   para que una corrida que falla no deje un archivo a medias. El C++ lo
@@ -350,6 +356,12 @@ function SameRegularFile(const A, B: AnsiString): Boolean;
 var ia, ib: TFileId;
 begin
   Result := IdOfPathRegular(A, ia) and IdOfPathRegular(B, ib) and (ia.A = ib.A) and (ia.B = ib.B);
+end;
+
+function IsStdFile(const Path: AnsiString; H: THandle): Boolean;
+var ih, ip: TFileId;
+begin
+  Result := IdOfHandle(H, ih) and IdOfPathRegular(Path, ip) and (ih.A = ip.A) and (ih.B = ip.B);
 end;
 
 procedure ClaimOutput(const Path: AnsiString; H: THandle);

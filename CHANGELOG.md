@@ -46,8 +46,12 @@ what happened in 2.0.0.
   is left on disk".
 - **Decoding a damaged archive no longer leaves its intact leading blocks
   on disk** (that is the entry above, seen from the other side). To keep
-  them, decode to a stream instead of a file: `osrep -d bad.osr /dev/stdout
+  them, give an output name that is a symlink to a regular file, e.g.
+  `/dev/stdout` redirected to a file on Linux: `osrep -d bad.osr /dev/stdout
   > salvage` writes the blocks before the error to `salvage` and leaves it.
+  Not `-` (decoded to a scratch file first, so nothing reaches stdout) and
+  not a pipe or a FIFO (the decoder seeks its output: "Illegal seek");
+  Windows has no `/dev/stdout`.
 - **The output could be the input under another name, and the input was
   lost.** `osrep x.bin ./x.bin` (or a hard link, or a symlink to `x.bin`)
   truncated `x.bin` when it opened the output, compressed what was left --
@@ -57,19 +61,36 @@ what happened in 2.0.0.
   exit 3) by comparing the two strings, and the ports copied that. They now
   also compare file identity (device and inode; volume serial number and
   file index on Windows), before the open that would truncate one with the
-  other, with the same message and exit code, for every pair of names a run
-  reads and writes: the input and the output; `-index=` and the input when
-  compressing, or the output when decompressing (`osrep -d -index=k.ix
-  x.osr ./k.ix` emptied the index); the `-temp=` spool and the archive; and
-  `-vmfile=` and the archive, the index or the output (the first spill
-  truncated it, and the end of the run removed it). Only regular files
-  count: `/dev/null` as both input and output loses nothing and still runs.
+  other, with the same message and exit code: the input and the output;
+  `-index=` and the input when compressing, or the output when
+  decompressing (`osrep -d -index=k.ix x.osr ./k.ix` emptied the index);
+  the `-temp=` spool and the archive or `-index=`; and `-vmfile=` and the
+  archive, the index or the output (the first spill truncated it, and the
+  end of the run removed it: `osrep -delete -vmfile=./o.out -d f.osr o.out`
+  exited 0 with neither `f.osr` nor `o.out` left; an output that does not
+  exist yet is checked again once it is created). The files the shell
+  opened for stdin and stdout count as names too: the output, `-temp=`,
+  `-index=` and `-vmfile=` are refused as the file stdin is read from
+  (`osrep - x < x` truncated `x` before reading it; `osrep -temp=d - o.osr
+  < d` wrote an archive of nothing and deleted `d`), and `-temp=`,
+  `-index=` and `-vmfile=` as the file stdout goes to when the archive or
+  the decoded data does (`osrep -temp=./o.osr < x > o.osr` exited 0 and
+  deleted `o.osr`). A refused run leaves every file as it was: a name that
+  already exists is checked before the open that would truncate it. Only
+  regular files count: `/dev/null` and `/dev/../dev/null` as input and
+  output lose nothing and still run (the same string twice is refused by
+  the C++'s own check).
 - **On a 32-bit build, `-b4g` (and any multiple of 4 GiB) wrapped around to
   0**: the Pascal `.exe` failed with "Division by zero" (exit 4) and the Rust
   i686 build panicked (exit 101); `-b4097m` became 1 MiB and wrote a
   different archive from the 64-bit builds'. A `-b` past the address space
   now saturates, and the run fails with `OutOfMemory` (exit 4), like
-  `-b5g`. `-b0` divided by zero on every build (a panic in the Rust); it is
+  `-b5g`. On 64-bit builds the Rust wrapped too, a little higher: `-b` of
+  2^63 bytes or a little more made the ring's two headroom blocks 0 and
+  panicked (exit 101, the archive's header left behind), and a `-d` within a
+  block of 2^64 rounded up to a small ring and aborted on the in-memory
+  dictionary (exit 134; the Pascal said "Out of memory"). The ring size is
+  now checked in both ports: `OutOfMemory`, exit 4. `-b0` divided by zero on every build (a panic in the Rust); it is
   `OutOfMemory` too, which is what the C++ says ("Can't allocate memory: 0 mb
   required", exit 5). And on Linux the Pascal, when the system would not map
   the whole ring, fell back to growing it block by block: with `-b100000g`
@@ -82,7 +103,9 @@ what happened in 2.0.0.
   failed with `PermissionDenied` and removed `ro`. As root,
   `-vmfile=/dev/null` removed the device node. The named spill file is now
   removed only if this run opened it, only if it is a regular file, and only
-  while the name still refers to that file (not through a symlink).
+  while the name still refers to that file (not through a symlink: a
+  `-vmfile=` or `-temp=` that is a symlink to a regular file is written
+  through, and what it points to is left behind, filled).
 - **`osrep -delete - out.osr < data`, and `osrep -delete < data > out.osr`,
   deleted a file named `-` in the current directory.** `-` is stdin; the
   compression side of `-delete` now skips it, as decompression already did.

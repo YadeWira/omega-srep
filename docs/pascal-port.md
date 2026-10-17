@@ -291,10 +291,19 @@ diferencias.
   inodo (volumen e índice en Windows) de cada par que la corrida lee y
   escribe, siempre ANTES del open que truncaría a uno con el otro: entrada y
   salida (`ResolveNames`), `-index=` contra la entrada y la salida, el spool
-  de `-temp=` contra la salida (después de llenarlo: es la entrada real) y
-  `-vmfile=` contra todo lo que lee o escribe el decoder. Un open nuevo de
+  de `-temp=` contra la salida y `-index=` (antes de crearlo si ya existen, y
+  otra vez después de llenarlo: es la entrada real) y `-vmfile=` contra todo
+  lo que lee o escribe el decoder (y otra vez contra la salida apenas se la
+  crea: `-vmfile=./o.out` con `o.out` que no existía no se veía antes). Los
+  archivos que abrió el shell para stdin y stdout no tienen nombre en la
+  línea de comandos: `RefuseStdFile` (`refuse_std_file`) compara un nombre
+  con el handle (`InHandle`/`OutHandle`; `fstat` del fd 0/1, o
+  `GetFileType`+`GetFileInformationByHandle` en Windows). Un open nuevo de
   algo con nombre del usuario necesita su chequeo en el mismo lugar en los
-  dos ports, o el orden de los errores deja de coincidir.
+  dos ports, o el orden de los errores deja de coincidir. Bajo wine un
+  symlink de Unix nombrado como salida se sigue (se borra el destino y queda
+  el symlink colgando); un symlink de NTFS es un reparse point y el código
+  hace lo correcto, así que el caso del symlink va solo en el gate nativo.
 * **`{$IFDEF}` con un símbolo mal escrito evalúa falso en silencio.** FPC no
   avisa. A ytool le costó **toda la vida de su port**: un `CPU64BITS` (que no
   existe; el correcto es `CPU64`) hizo que *toda* build de 64 bits tomara la

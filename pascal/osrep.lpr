@@ -312,6 +312,16 @@ begin
   if SameRegularFile(A, B) then Fail(ERROR_IO, SAME_FILE);
 end;
 
+{ El mismo rechazo para un nombre que es el archivo del que se lee stdin o al
+  que va stdout, con H su handle: los abrio el shell (`< x`, `> x`), asi que
+  ningun nombre de la linea de comandos los delata. `osrep - x < x` truncaba
+  x antes de leerlo, y `-temp=x ... > x` volcaba stdin en el archivo al que
+  iba el comprimido (modes.rs, refuse_std_file). }
+procedure RefuseStdFile(const Name: AnsiString; H: THandle);
+begin
+  if IsStdFile(Name, H) then Fail(ERROR_IO, SAME_FILE);
+end;
+
 { las reglas de nombres (srep.cpp:569-583). Con un nombre, la extension .osr
   decide la direccion y el otro sale de el; sin ninguno, con las dos puntas
   redirigidas, es stdin/stdout. }
@@ -344,6 +354,9 @@ begin
     --verify derivan una arriba pero nunca la abren. }
   if (O.CmdMode in [cmCompress, cmDecompress]) and (FiName <> '-') and (FoutName <> '-') then
     RefuseSameFile(FiName, FoutName);
+  { `osrep - x < x`: la salida es de donde viene stdin }
+  if (O.CmdMode in [cmCompress, cmDecompress]) and (FiName = '-') and (FoutName <> '-') then
+    RefuseStdFile(FoutName, InHandle);
 end;
 
 { -------------------------------------------------------- compression --- }
@@ -451,7 +464,8 @@ end;
   temporal propio), y Named si es un -temp= que esta corrida abrio como
   archivo regular, con su identidad en NamedId: ese se borra al final como en
   el C++ (srep.cpp:1336), y al fallar como todo temporal, con RemoveIfStill. }
-function SpoolStdin(const O: TOptions; out Owned, Named: Boolean; out NamedId: TFileId): AnsiString;
+function SpoolStdin(const O: TOptions; const FoutName: AnsiString; out Owned, Named: Boolean;
+                    out NamedId: TFileId): AnsiString;
 var junk: TFileId;
 begin
   Owned := False;
@@ -460,6 +474,14 @@ begin
     Fail(ERROR_IO, 'Reading data to compress from stdin without tempfile isn''t supported for this method');
   if O.HasTempFile then
   begin
+    { no sobre un archivo que la corrida lee o escribe, antes de que el open
+      lo trunque: el de stdin (el spool releeria nada), aquel al que va
+      stdout cuando va ahi el comprimido, el comprimido o -index= si ya
+      existen (uno nuevo se ve despues del spool, en Compress) }
+    RefuseStdFile(O.TempFile, InHandle);
+    if FoutName = '-' then RefuseStdFile(O.TempFile, OutHandle)
+    else RefuseSameFile(O.TempFile, FoutName);
+    if O.IndexFile <> '' then RefuseSameFile(O.TempFile, O.IndexFile);
     try
       CopyStdinTo(O.TempFile, Named, NamedId);
     except
@@ -604,7 +626,7 @@ begin
 
   spoolOwned := False;
   spoolNamed := False;
-  if FiName = '-' then inputPath := SpoolStdin(O, spoolOwned, spoolNamed, spoolId)
+  if FiName = '-' then inputPath := SpoolStdin(O, FoutName, spoolOwned, spoolNamed, spoolId)
   else inputPath := FiName;
   try
     { con '-' el tamano no se puede medir al leer, asi que vale el declarado
@@ -636,6 +658,13 @@ begin
       if O.IndexFile <> '' then
       begin
         RefuseSameFile(O.IndexFile, inputPath);
+        { ni sobre un comprimido que ya existe (uno que no, se ve abajo, ya
+          con el indice creado), el archivo de stdin, o aquel al que va stdout
+          con el comprimido: rechazados despues del open, ya estaban
+          truncados }
+        if FoutName <> '-' then RefuseSameFile(O.IndexFile, FoutName)
+        else RefuseStdFile(O.IndexFile, OutHandle);
+        if FiName = '-' then RefuseStdFile(O.IndexFile, InHandle);
         indexS := CreateWriteRaw(O.IndexFile);
         if indexS = nil then
           Fail(ERROR_IO, 'Can''t open index file ' + O.IndexFile + ' for write');
@@ -775,6 +804,10 @@ begin
     if FiName <> '-' then RefuseSameFile(O.VmFile, FiName);
     if O.IndexFile <> '' then RefuseSameFile(O.VmFile, O.IndexFile);
     if FoutName <> '-' then RefuseSameFile(O.VmFile, FoutName);
+    { los que abrio el shell: el comprimido que llega por stdin, y el archivo
+      al que va stdout }
+    if FiName = '-' then RefuseStdFile(O.VmFile, InHandle);
+    if FoutName = '-' then RefuseStdFile(O.VmFile, OutHandle);
   end;
 
   { -dup primero: el C++ lo detecta en cada descompresion, con o sin la
@@ -835,7 +868,16 @@ begin
     sink := CreateRaw(sinkPath);
     if sink = nil then Fail(ERROR_IO, 'Can''t open ' + FoutName + ' for write');
     { el spool de stdout es un temporal, que se borra igual }
-    if stdoutSpool = '' then ClaimOutput(sinkPath, sink.Handle);
+    if stdoutSpool = '' then
+    begin
+      ClaimOutput(sinkPath, sink.Handle);
+      { -vmfile= contra la salida otra vez, ahora que existe: con otra
+        escritura de una salida que todavia no existia (./o.out) el chequeo
+        de arriba no vio nada, y el primer derrame truncaba la salida y el
+        final del decode la borraba. Rechazada aca, la salida nueva se borra
+        como cualquier otra (modes.rs, decompress). }
+      if O.HasVmFile then RefuseSameFile(O.VmFile, FoutName);
+    end;
 
     { -index= de vuelta: las listas salen del archivo nombrado }
     { un directorio: el File::open del Rust lo abre y falla al leerlo (un

@@ -1137,6 +1137,36 @@ same_refused 'cp "$I/far.osr" far.osr; "$B" -v0 -mem1mb -vmblock=128kb -vmfile=.
 same_refused 'cp "$I/ok.ix" ok.ix; "$B" -v0 -vmfile=./ok.ix -d -index=ok.ix "$I/okf.osr" o.out' ok.ix
 fails 3 'Input and output files should have different names' \
     '"$B" -v0 -vmfile=o.out -d "$I/far.osr" o.out'; gone o.out
+SAME='Input and output files should have different names'
+# -vmfile= once more after the output is created: under another spelling of
+# an output that did not exist yet the first check saw nothing, the first
+# spill truncated the output and the end of the decode removed it -- exit 0
+# and nothing left, the archive included with -delete
+same_refused 'cp "$I/far.osr" far.osr; "$B" -v0 -delete -mem1mb -vmblock=128kb -vmfile=./o.out -d far.osr o.out' far.osr
+gone o.out
+fails 3 "$SAME" 'ln -s o.out v; "$B" -v0 -mem1mb -vmblock=128kb -vmfile=v -d "$I/far.osr" o.out'; gone o.out
+# The files the shell opened for stdin and stdout count too, though no name on
+# the command line gives them away: the output, -temp=, -index= or -vmfile=
+# as the file stdin is read from, and -temp=, -index= or -vmfile= as the file
+# stdout goes to when the archive or the decoded data does
+same_refused 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 - in.bin < in.bin' in.bin
+same_refused 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 -b0 - in.bin < in.bin' in.bin
+same_refused 'cp "$I/bad.osr" bad.osr; "$B" -v0 -d - bad.osr < bad.osr' bad.osr
+same_refused 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 -temp=in.bin - o.osr < in.bin' in.bin; gone o.osr
+same_refused 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 --format=v4 -m3f -index=in.bin - o.osr < in.bin' in.bin
+gone o.osr
+same_refused 'cp "$I/far.osr" far.osr; "$B" -v0 -mem1mb -vmblock=128kb -vmfile=far.osr -d - o.out < far.osr' far.osr
+gone o.out
+fails 3 "$SAME" '"$B" -v0 --seed=7 -temp=./o.osr < "$I/in.bin" > o.osr'; kept o.osr
+fails 3 "$SAME" '"$B" -v0 --seed=7 --format=v4 -m3f -index=./o.osr - - < "$I/in.bin" > o.osr'; kept o.osr
+fails 3 "$SAME" '"$B" -v0 -mem1mb -vmblock=128kb -vmfile=o.out -d "$I/far.osr" - > o.out'; kept o.out
+# A refusal leaves every file as it was: a name that already exists is
+# checked before the open that would truncate it, not after
+old() { [ "$(cat "$F/w/$1")" = old ] || fail "a refused run changed $1"; }
+fails 3 "$SAME" 'echo old > o.osr; "$B" -v0 --seed=7 --format=v4 -m3f -index=./o.osr "$I/in.bin" o.osr'; old o.osr
+fails 3 "$SAME" 'echo old > o.osr; "$B" -v0 --seed=7 -temp=./o.osr - o.osr < "$I/in.bin"'; old o.osr
+fails 3 "$SAME" 'echo old > k.ix; "$B" -v0 --seed=7 --format=v4 -m3f -index=k.ix -temp=./k.ix - o.osr < "$I/in.bin"'
+old k.ix
 # -i opens no output, so a file under the derived name is nobody's business;
 # and two devices are not a regular file to lose
 fails 0 '' 'cp "$I/ok.osr" ok.osr; ln ok.osr ok; "$B" -i ok.osr'
@@ -1163,6 +1193,12 @@ fails 0 '' 'echo keep > ./-; "$B" -v0 --seed=7 -delete < "$I/in.bin" > o.osr'; k
 # allocate memory"); the ports divided by zero (a panic, "Division by zero")
 fails 4 OutOfMemory '"$B" -v0 --seed=7 -b0 "$I/in.bin" o.osr'; gone o.osr
 fails 3 'Encode(OutOfMemory)' '"$B" -v0 --seed=7 -b0 -dup "$I/in.bin" o.osr'; gone o.osr
+# and a ring past 64 bits: -b2^63 wrapped the two headroom blocks to 0 in the
+# Rust (a panic, exit 101, with the archive's header left behind), and a -d
+# within a block of 2^64 rounded up to a small ring (an abort, exit 134)
+for b in -b9223372036854775808b -b9223372036854775809b "-d18446744073709551615b -b3m"; do
+    fails 4 OutOfMemory '"$B" -v0 --seed=7 '"$b"' "$I/in.bin" o.osr'; gone o.osr
+done
 pass=$((pass + 1))
 
 say "--verify: what it accepts, what it catches, and what it admits it misses"

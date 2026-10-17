@@ -124,6 +124,23 @@ pub fn same_file(a: &Path, b: &Path) -> bool {
     }
 }
 
+/// One of the two standard handles.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Std {
+    In,
+    Out,
+}
+
+/// Whether `p` leads to the regular file that stdin is read from (`< x`), or
+/// that stdout is written to (`> x`): the shell opened it, so no name on the
+/// command line says so. A terminal, a pipe or a device is no file to lose.
+pub fn is_std_file(p: &Path, which: Std) -> bool {
+    match file_id::of_std(which) {
+        Some(id) => file_id::of_path_regular(p) == Some(id),
+        None => false,
+    }
+}
+
 // ------------------------------------------------- outputs of a failed run --
 
 /// The files this run created or truncated under a name it was given -- the
@@ -211,6 +228,18 @@ mod file_id {
             .ok()
             .filter(|m| m.file_type().is_file())
             .map(|m| id(&m))
+    }
+
+    /// `fstat` on fd 0 or 1, through a duplicate (a closed fd fails the
+    /// `dup`, and is no file): a regular file only.
+    pub(super) fn of_std(which: super::Std) -> Option<FileId> {
+        use std::os::fd::AsFd;
+        let fd = match which {
+            super::Std::In => std::io::stdin().as_fd().try_clone_to_owned(),
+            super::Std::Out => std::io::stdout().as_fd().try_clone_to_owned(),
+        }
+        .ok()?;
+        of_handle(&File::from(fd))
     }
 }
 
@@ -303,6 +332,26 @@ mod file_id {
             .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
             .open(p)
             .ok()?;
+        of_handle(&f)
+    }
+
+    /// `GetStdHandle(STD_INPUT_HANDLE / STD_OUTPUT_HANDLE)`, then `of_handle`
+    /// (`GetFileType == FILE_TYPE_DISK`, `GetFileInformationByHandle`). The
+    /// handle is only borrowed: `ManuallyDrop` never closes it. No handle at
+    /// all (std maps `INVALID_HANDLE_VALUE` to null) is no file.
+    pub(super) fn of_std(which: super::Std) -> Option<FileId> {
+        use std::mem::ManuallyDrop;
+        use std::os::windows::io::FromRawHandle;
+        let h = match which {
+            super::Std::In => std::io::stdin().as_raw_handle(),
+            super::Std::Out => std::io::stdout().as_raw_handle(),
+        };
+        if h.is_null() {
+            return None;
+        }
+        // SAFETY: the process's own standard handle, open for as long as the
+        // process is; wrapped only to query it, and never closed.
+        let f = ManuallyDrop::new(unsafe { File::from_raw_handle(h) });
         of_handle(&f)
     }
 }
