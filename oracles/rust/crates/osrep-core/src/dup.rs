@@ -133,6 +133,7 @@ pub fn encode(
     let body_file = File::open(body.path())?;
     let mut body_file = std::io::BufReader::new(body_file);
     let mut out = File::create(output)?;
+    crate::util::claim_output(output, &out);
     // The progress the caller sees is the encoder's, against the *body*: the
     // dedup pass has already run by the time there is anything to report, and
     // the C++ has the same shape (its `-bar` lives in srep_main, which only

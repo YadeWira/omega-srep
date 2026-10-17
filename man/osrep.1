@@ -445,6 +445,16 @@ Compression / decompression / archive-format error.
 .TP
 .B 5
 Out of memory.
+.PP
+A run that fails (exit status 2, 3 or 4) removes the output it had created or
+truncated: the archive, the decompressed file, and the
+.B -index=
+file. A file that already existed under the output name is removed too, since
+opening it for writing had already truncated it. Nothing else is removed:
+not stdout, a pipe, a FIFO or a device, not a symlink named as the output
+(the file it points to keeps what was written), not the input, and not a file
+the run failed before opening. A run stopped by a signal (Ctrl-C) removes
+nothing.
 
 .SH ENVIRONMENT
 .TP

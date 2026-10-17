@@ -1022,6 +1022,77 @@ pass=$((pass + 1))
 cmp -s "$TMP/inert_base.osr" "$TMP/inert.osr" || fail "-rem changed the archive"
 pass=$((pass + 1))
 
+say "a failed run takes back its output, and nothing else"
+# Through 2.3.0 a run that failed left what it had written on disk: the blocks
+# decoded before a DigestMismatch, an archive cut short by OutOfMemory, an
+# empty -index= file, the start of a -dup post-pass. The C++ 1.0.7 does too:
+# its "delete output files on error" (srep.cpp:1339) is only reached by its
+# `goto cleanup` paths, and error() exits first. The port removes the regular
+# files it created or truncated in that run -- including one that existed
+# before, which the open had already truncated -- and never stdout, a FIFO, a
+# device, a symlink named as the output, the input, or a file it did not open.
+F="$TMP/fail"; mkdir -p "$F"
+{ head -c 1048576 tests/corpus/text.bin; head -c 2097152 tests/corpus/random.bin; } > "$F/in.bin"
+"$RS" -v0 --seed=7 -b1mb "$F/in.bin" "$F/ok.osr" >/dev/null 2>&1 || fail "fail: could not write ok.osr"
+"$RS" -v0 --seed=7 --format=v4 -m3f -b1mb -index="$F/ok.ix" "$F/in.bin" "$F/okf.osr" >/dev/null 2>&1 \
+    || fail "fail: could not write okf.osr"
+"$RS" -v0 --seed=7 -dup --format=v4 "$F/in.bin" "$F/dup.osr" >/dev/null 2>&1 || fail "fail: could not write dup.osr"
+# a flipped word three quarters in: the last block's digest fails after the
+# first ones have been written out
+cp "$F/ok.osr" "$F/bad.osr"
+printf '\125\252\125\252' | dd of="$F/bad.osr" bs=1 seek=$(( $(stat -c%s "$F/ok.osr") * 3 / 4 )) conv=notrunc 2>/dev/null
+# the first unique chunk of the ODUP meta (no checksum in v4) made ~2 GiB
+# long: the post-pass writes the whole body to the output, then runs out
+python3 - "$F/dup.osr" "$F/badmeta.osr" <<'PY'
+import struct, sys
+b = bytearray(open(sys.argv[1], 'rb').read())
+assert b[-4:] == b'ODUP'
+at = len(b) - 12 - struct.unpack('<Q', b[-12:-4])[0]
+assert b[at:at + 4] == b'DUPR' and b[at + 24] == 0
+b[at + 28] = 0x7f
+open(sys.argv[2], 'wb').write(b)
+PY
+# $1 = expected exit code, $2 = text the error must contain, $3 = a bash
+# line run in a fresh $F/w with "$B" the binary
+fails() {
+    rm -rf "$F/w"; mkdir "$F/w"
+    local rc=0
+    (cd "$F/w" && B="$RS" I="$F" timeout 60 bash -c "$3") </dev/null >"$F/o" 2>"$F/e" || rc=$?
+    [ "$rc" -eq "$1" ] || fail "[$3]: exit $rc, not $1: $(cat "$F/e")"
+    grep -qF "$2" "$F/e" || fail "[$3]: the error does not say '$2': $(cat "$F/e")"
+}
+gone() { for f; do [ ! -e "$F/w/$f" ] && [ ! -L "$F/w/$f" ] || fail "a failed run left $f behind"; done; }
+kept() { for f; do [ -e "$F/w/$f" ] || [ -L "$F/w/$f" ] || fail "a failed run removed $f"; done; }
+fails 4 'DigestMismatch { block: 2 }' '"$B" -v0 -d "$I/bad.osr" o.out'; gone o.out
+fails 4 'DigestMismatch { block: 2 }' 'echo keep > o.out; "$B" -v0 -d "$I/bad.osr" o.out'; gone o.out
+fails 4 'DigestMismatch' 'cp "$I/bad.osr" a.osr; "$B" -v0 -d -delete a.osr o.out'; gone o.out; kept a.osr
+fails 3 "Can't open index file x.ix for read" '"$B" -v0 -d -index=x.ix "$I/okf.osr" o.out'; gone o.out
+fails 4 'dedup failed, rc=1' '"$B" -v0 -d "$I/badmeta.osr" o.out'; gone o.out
+# OutOfMemory: two 3 GiB blocks in a 1 GiB address space
+for c in "" "--format=v4 -m3f -index=x.ix" "-dup"; do
+    want=OutOfMemory; rc=4; [ "$c" = -dup ] && { want='Encode(OutOfMemory)'; rc=3; }
+    fails $rc "$want" '(ulimit -v 1048576; exec "$B" -v0 --seed=7 -b3g '"$c"' "$I/in.bin" x.osr)'; gone x.osr x.ix
+done
+fails 4 OutOfMemory 'echo keep > x.osr; (ulimit -v 1048576; exec "$B" -v0 --seed=7 -b3g "$I/in.bin" x.osr)'; gone x.osr
+fails 4 OutOfMemory 'cp "$I/in.bin" a.bin; (ulimit -v 1048576; exec "$B" -v0 --seed=7 -delete -b3g a.bin x.osr)'
+gone x.osr; kept a.bin
+# -index= is created before the input is opened
+fails 3 "Can't open nope.bin for read" '"$B" -v0 --seed=7 --format=v4 -m3f -index=x.ix nope.bin x.osr'; gone x.ix x.osr
+# never opened, so never removed
+fails 3 "Can't open nope.bin for read" 'echo keep > x.osr; "$B" -v0 --seed=7 nope.bin x.osr'
+[ "$(cat "$F/w/x.osr")" = keep ] || fail "a run that never opened x.osr changed it"
+# what is not a regular file it opened by that name stays
+fails 4 'DigestMismatch' 'echo t > t.out; ln -s t.out l.out; "$B" -v0 -d "$I/bad.osr" l.out'
+[ -L "$F/w/l.out" ] || fail "a failed run removed the symlink it wrote through"
+fails 4 'Illegal seek' 'mkfifo fo; (timeout 10 cat fo >/dev/null) & "$B" -v0 -d "$I/bad.osr" fo; r=$?; wait; exit $r'
+[ -p "$F/w/fo" ] || fail "a failed run removed the FIFO it wrote to"
+fails 4 'DigestMismatch' '"$B" -v0 -d "$I/bad.osr" /dev/null'
+fails 0 'DigestMismatch' '"$B" -v0 -d "$I/bad.osr" - | wc -c'
+# the input under another name for the output: truncated by the open (the
+# string compare in the filename rules does not see it), never removed
+fails 4 'Container(Truncated)' 'cp "$I/bad.osr" a.osr; "$B" -v0 -d a.osr ./a.osr'; kept a.osr
+pass=$((pass + 1))
+
 say "--verify: what it accepts, what it catches, and what it admits it misses"
 # The one thing v5 can do that v4 cannot: answer "is this archive sound?"
 # without reconstructing it. v4 carries no checksum anywhere, so the only

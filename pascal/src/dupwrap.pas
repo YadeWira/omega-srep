@@ -79,6 +79,7 @@ begin
         que sobre un FIFO se bloqueaba }
       os := CreateWriteRaw(OutPath);
       if os = nil then raise EDup.Create('Io');
+      ClaimOutput(OutPath, os.Handle);
       { el `?` de encoder::encode convierte su error en DupError::Encode: una
         falla de E/S ahi es Encode(Io), no el Io suelto de los otros pasos }
       try

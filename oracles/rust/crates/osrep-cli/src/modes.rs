@@ -92,13 +92,21 @@ pub fn run(o: &Options) -> Result<i32, RunError> {
 
     let (finame, foutname) = resolve_names(o)?;
 
-    match o.cmdmode {
+    let result = match o.cmdmode {
         CmdMode::Info => info(o, &finame),
         CmdMode::Verify => verify(o, &finame),
         // `resolve_names` always derives an output for these two.
         CmdMode::Compress => compress(o, &finame, foutname.as_deref().unwrap_or("-")),
         CmdMode::Decompress => decompress(o, &finame, foutname.as_deref().unwrap_or("-")),
+    };
+    // A failed run takes back the files it created or truncated (the archive,
+    // the decoded file, `-index=`), so no partial output is left behind. By
+    // now every handle is closed: they were locals of the mode that returned.
+    if result.is_err() {
+        let input = (finame != "-").then(|| Path::new(finame.as_str()));
+        osrep_core::util::remove_claimed_outputs(input);
     }
+    result
 }
 
 /// The filename rules (`srep.cpp:569-583`).
@@ -462,12 +470,14 @@ fn compress(o: &Options, finame: &str, foutname: &str) -> Result<i32, RunError> 
     let mut index_file = if o.index_file.is_empty() {
         None
     } else {
-        Some(File::create(&o.index_file).map_err(|_| {
+        let f = File::create(&o.index_file).map_err(|_| {
             err(
                 ERROR_IO,
                 format!("Can't open index file {} for write", o.index_file),
             )
-        })?)
+        })?;
+        osrep_core::util::claim_output(Path::new(&o.index_file), &f);
+        Some(f)
     };
 
     let written = {
@@ -526,6 +536,7 @@ fn compress(o: &Options, finame: &str, foutname: &str) -> Result<i32, RunError> 
             } else {
                 let mut out = File::create(foutname)
                     .map_err(|_| err(ERROR_IO, format!("Can't open {foutname} for write")))?;
+                osrep_core::util::claim_output(Path::new(foutname), &out);
                 osrep_core::encoder::encode(
                     &mut input,
                     &mut out,
@@ -688,6 +699,10 @@ fn decompress(o: &Options, finame: &str, foutname: &str) -> Result<i32, RunError
         .truncate(true)
         .open(&sink_path)
         .map_err(|_| err(ERROR_IO, format!("Can't open {foutname} for write")))?;
+    // The stdout spool is a `TempFile`, removed either way.
+    if spool.is_none() {
+        osrep_core::util::claim_output(&sink_path, &sink);
+    }
 
     // `-index=` on the way back: the match lists come from the named file
     // instead of the archive (`srep.cpp:606` opens it "rb" for decompression).

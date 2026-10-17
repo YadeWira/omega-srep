@@ -904,6 +904,7 @@ pub fn decode_streaming(meta: &[u8], body_path: &Path, out_path: &Path) -> Resul
         .truncate(true)
         .open(out_path)
         .map_err(|_| DEDUP_ERR_INVAL)?;
+    crate::util::claim_output(out_path, &fo);
 
     // (offset in the output file, length) per unique chunk, in order.
     let mut unique_slots: Vec<(u64, u32)> = Vec::new();

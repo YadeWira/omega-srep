@@ -266,6 +266,18 @@ diferencias.
   acarreos como 9,995) en Linux y bajo wine x64/x86: cero diferencias.
   `pascal_cli_conformance.sh` tiene la red rápida, con tamaños de `text.bin`
   barridos para caer en empates.
+* **Toda salida con nombre que se abre para escribir se anota con
+  `ClaimOutput`** (`claim_output` en el Rust), justo después del open que
+  funcionó: es lo que `Run` (`run` en `modes.rs`) borra si la corrida falla.
+  Un open nuevo sin la anotación vuelve a dejar un archivo a medias, y nada
+  falla salvo la sección «una corrida que falla se lleva su salida» de
+  `pascal_cli_conformance.sh` si el caso está ahí. La anotación guarda la
+  identidad del archivo (dispositivo e inodo; volumen e índice en Windows) y
+  solo si es un archivo regular, así que stdout, un FIFO, `/dev/null` o `NUL`
+  nunca se borran; antes de borrar se vuelve a mirar el nombre sin seguir
+  symlinks y se salta la entrada. Hay que borrar con los handles ya cerrados
+  (los `finally` de `Compress`/`Decompress` lo hacen antes de que la
+  excepción llegue a `Run`). Los temporales no van ahí: se borran solos.
 * **`{$IFDEF}` con un símbolo mal escrito evalúa falso en silencio.** FPC no
   avisa. A ytool le costó **toda la vida de su port**: un `CPU64BITS` (que no
   existe; el correcto es `CPU64`) hizo que *toda* build de 64 bits tomara la

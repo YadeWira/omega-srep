@@ -1,11 +1,12 @@
 //! Small helpers ported from `oracles/cxx/Compression/Common.h`, plus the
 //! scratch-file guard the `-dup` wrapper and the CLI's stdin/stdout spooling
-//! both need.
+//! both need, and the list of outputs a failed run removes.
 
-use std::fs::OpenOptions;
+use std::fs::{File, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// A scratch file, removed when it goes out of scope.
@@ -46,6 +47,174 @@ impl TempFile {
 impl Drop for TempFile {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+// ------------------------------------------------- outputs of a failed run --
+
+/// The files this run created or truncated under a name it was given -- the
+/// archive, the decoded file, `-index=` -- so that a run that fails can take
+/// them back instead of leaving a partial file on disk.
+///
+/// The C++ means to do this ("Delete output files on error", `srep.cpp:1339`)
+/// but only its `goto cleanup` paths reach that code; every `error()` exits on
+/// the spot, so through 2.3.0 a failed run left its output behind (an archive
+/// cut short by `OutOfMemory`, the blocks decoded before a `DigestMismatch`).
+///
+/// Only what was opened as a regular file is ever claimed: stdout, a pipe, a
+/// FIFO or a device (`/dev/null`, `NUL`, `CON`) never is. A claim records the
+/// file's identity, and the removal goes through only if the name still
+/// refers to that same file, not through a symlink, and not to the input.
+/// Scratch files are not here: `TempFile` removes those whatever happens.
+static CLAIMED: Mutex<Vec<(PathBuf, FileId)>> = Mutex::new(Vec::new());
+
+/// Device and inode on Unix; volume serial number and file index on Windows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FileId(u64, u64);
+
+/// Record `file`, just opened for writing as `path`, as an output to remove if
+/// the run fails. Not a regular file: nothing to take back, nothing recorded.
+pub fn claim_output(path: &Path, file: &File) {
+    if let Some(id) = file_id::of_handle(file) {
+        if let Ok(mut v) = CLAIMED.lock() {
+            v.push((path.to_path_buf(), id));
+        }
+    }
+}
+
+/// The run failed: remove every claimed output, after its handle is closed
+/// (Windows cannot delete a file that is still open without
+/// `FILE_SHARE_DELETE`). `input` is never removed, under whatever name it was
+/// also opened for writing (`osrep -d a.osr ./a.osr`).
+pub fn remove_claimed_outputs(input: Option<&Path>) {
+    let claims = match CLAIMED.lock() {
+        Ok(mut v) => std::mem::take(&mut *v),
+        Err(_) => return,
+    };
+    let keep = input.and_then(file_id::of_path);
+    for (path, id) in claims {
+        if Some(id) == keep {
+            continue;
+        }
+        if file_id::of_name(&path) == Some(id) {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+}
+
+#[cfg(unix)]
+mod file_id {
+    use super::FileId;
+    use std::fs::{File, Metadata};
+    use std::os::unix::fs::MetadataExt;
+    use std::path::Path;
+
+    fn id(m: &Metadata) -> FileId {
+        FileId(m.dev(), m.ino())
+    }
+
+    /// `fstat`: a regular file only.
+    pub(super) fn of_handle(f: &File) -> Option<FileId> {
+        f.metadata()
+            .ok()
+            .filter(|m| m.file_type().is_file())
+            .map(|m| id(&m))
+    }
+
+    /// `lstat`: the name itself is a regular file (a symlink is not).
+    pub(super) fn of_name(p: &Path) -> Option<FileId> {
+        std::fs::symlink_metadata(p)
+            .ok()
+            .filter(|m| m.file_type().is_file())
+            .map(|m| id(&m))
+    }
+
+    /// `stat`: whatever the name leads to.
+    pub(super) fn of_path(p: &Path) -> Option<FileId> {
+        std::fs::metadata(p).ok().map(|m| id(&m))
+    }
+}
+
+#[cfg(windows)]
+mod file_id {
+    use super::FileId;
+    use std::ffi::c_void;
+    use std::fs::{File, OpenOptions};
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::AsRawHandle;
+    use std::path::Path;
+
+    const FILE_TYPE_DISK: u32 = 1;
+    const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+
+    /// `BY_HANDLE_FILE_INFORMATION`; the three `FILETIME`s as two words each.
+    #[repr(C)]
+    #[derive(Default)]
+    struct Info {
+        attributes: u32,
+        times: [u32; 6],
+        volume_serial: u32,
+        size_high: u32,
+        size_low: u32,
+        links: u32,
+        index_high: u32,
+        index_low: u32,
+    }
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetFileType(h: *mut c_void) -> u32;
+        fn GetFileInformationByHandle(h: *mut c_void, info: *mut Info) -> i32;
+    }
+
+    /// The attributes and the identity of an open handle.
+    fn info(f: &File) -> Option<(u32, FileId)> {
+        let mut i = Info::default();
+        // SAFETY: a live handle owned by `f`, and an `Info` laid out as the
+        // Windows structure it is written into.
+        if unsafe { GetFileInformationByHandle(f.as_raw_handle(), &mut i) } == 0 {
+            return None;
+        }
+        let index = (u64::from(i.index_high) << 32) | u64::from(i.index_low);
+        Some((i.attributes, FileId(u64::from(i.volume_serial), index)))
+    }
+
+    /// A disk file that is not a directory: `NUL`, `CON` and pipes are not
+    /// `FILE_TYPE_DISK`.
+    pub(super) fn of_handle(f: &File) -> Option<FileId> {
+        // SAFETY: a live handle owned by `f`.
+        if unsafe { GetFileType(f.as_raw_handle()) } != FILE_TYPE_DISK {
+            return None;
+        }
+        info(f)
+            .filter(|(a, _)| a & FILE_ATTRIBUTE_DIRECTORY == 0)
+            .map(|(_, id)| id)
+    }
+
+    /// The name itself, not what a reparse point (a symlink, a junction)
+    /// leads to; the handle is closed before this returns.
+    pub(super) fn of_name(p: &Path) -> Option<FileId> {
+        let f = OpenOptions::new()
+            .access_mode(0)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(p)
+            .ok()?;
+        info(&f)
+            .filter(|(a, _)| a & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT) == 0)
+            .map(|(_, id)| id)
+    }
+
+    /// Whatever the name leads to.
+    pub(super) fn of_path(p: &Path) -> Option<FileId> {
+        let f = OpenOptions::new()
+            .access_mode(0)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(p)
+            .ok()?;
+        info(&f).map(|(_, id)| id)
     }
 }
 

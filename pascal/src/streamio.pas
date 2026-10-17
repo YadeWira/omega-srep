@@ -63,6 +63,20 @@ function PathSize(const Path: AnsiString): QWord;
   "Can't read from input file" en un Windows real (wine no lo muestra). }
 function OsRead(H: THandle; var Buf; N: LongInt): LongInt;
 
+{ Las salidas de una corrida que falla (util.rs, claim_output): lo que se
+  creo o trunco con un nombre dado -- el archivo, la salida de -d, -index= --
+  para que una corrida que falla no deje un archivo a medias. El C++ lo
+  intenta ("Delete output files on error", srep.cpp:1339), pero solo llegan
+  ahi sus `goto cleanup`; cada error() sale en el acto.
+  ClaimOutput anota H, recien abierto como Path, si es un archivo regular:
+  stdout, un pipe, un FIFO o un dispositivo (/dev/null, NUL, CON) nunca. Se
+  anota la identidad del archivo (dispositivo e inodo; en Windows el numero
+  de serie del volumen y el indice), y RemoveClaimedOutputs borra solo si el
+  nombre sigue siendo ese mismo archivo, no un symlink a el, y no la entrada
+  (Input, '' si es stdin). Hay que llamarlo con los handles ya cerrados. }
+procedure ClaimOutput(const Path: AnsiString; H: THandle);
+procedure RemoveClaimedOutputs(const Input: AnsiString);
+
 implementation
 
 uses
@@ -187,6 +201,123 @@ begin
 {$ENDIF}
   if h = THandle(-1) then Exit(nil);
   Result := TRawFileStream.Create(h);
+end;
+
+type
+  TFileId = record
+    A, B: QWord;
+  end;
+
+var
+  ClaimedPath: array of AnsiString;
+  ClaimedId: array of TFileId;
+
+{$IF DEFINED(UNIX)}
+{ fstat: un archivo regular, nada mas }
+function IdOfHandle(H: THandle; out Id: TFileId): Boolean;
+var st: BaseUnix.Stat;
+begin
+  Result := (fpFStat(H, st) = 0) and fpS_ISREG(st.st_mode);
+  Id.A := QWord(st.st_dev);
+  Id.B := QWord(st.st_ino);
+end;
+
+{ lstat: el nombre mismo es un archivo regular (un symlink no) }
+function IdOfName(const Path: AnsiString; out Id: TFileId): Boolean;
+var st: BaseUnix.Stat;
+begin
+  Result := (fpLStat(PChar(Path), st) = 0) and fpS_ISREG(st.st_mode);
+  Id.A := QWord(st.st_dev);
+  Id.B := QWord(st.st_ino);
+end;
+
+{ stat: lo que sea a lo que lleve el nombre }
+function IdOfPath(const Path: AnsiString; out Id: TFileId): Boolean;
+var st: BaseUnix.Stat;
+begin
+  Result := fpStat(PChar(Path), st) = 0;
+  Id.A := QWord(st.st_dev);
+  Id.B := QWord(st.st_ino);
+end;
+{$ELSE}
+const
+  ID_FILE_TYPE_DISK = 1;
+  ID_ATTR_DIRECTORY = $10;
+  ID_ATTR_REPARSE_POINT = $400;
+  ID_FLAG_BACKUP_SEMANTICS = $02000000;
+  ID_FLAG_OPEN_REPARSE_POINT = $00200000;
+
+function IdOfInfo(H: THandle; out Attr: DWord; out Id: TFileId): Boolean;
+var info: BY_HANDLE_FILE_INFORMATION;
+begin
+  FillChar(info, SizeOf(info), 0);
+  Result := GetFileInformationByHandle(H, info);
+  Attr := info.dwFileAttributes;
+  Id.A := QWord(info.dwVolumeSerialNumber);
+  Id.B := (QWord(info.nFileIndexHigh) shl 32) or QWord(info.nFileIndexLow);
+end;
+
+{ un archivo de disco que no es un directorio: NUL, CON y los pipes no son
+  FILE_TYPE_DISK }
+function IdOfHandle(H: THandle; out Id: TFileId): Boolean;
+var attr: DWord;
+begin
+  Id.A := 0; Id.B := 0;
+  if GetFileType(H) <> ID_FILE_TYPE_DISK then Exit(False);
+  Result := IdOfInfo(H, attr, Id) and ((attr and ID_ATTR_DIRECTORY) = 0);
+end;
+
+{ abre el nombre sin pedir acceso, para preguntar; Flags decide si sigue un
+  reparse point (un symlink, una juntura) }
+function IdOfOpen(const Path: AnsiString; Flags: DWord; out Attr: DWord; out Id: TFileId): Boolean;
+var w: UnicodeString; h: THandle;
+begin
+  Attr := 0; Id.A := 0; Id.B := 0;
+  w := UnicodeString(Path);
+  h := CreateFileW(PWideChar(w), 0, FILE_SHARE_READ or FILE_SHARE_WRITE or FILE_SHARE_DELETE,
+                   nil, OPEN_EXISTING, Flags, 0);
+  if h = INVALID_HANDLE_VALUE then Exit(False);
+  Result := IdOfInfo(h, Attr, Id);
+  CloseHandle(h);
+end;
+
+function IdOfName(const Path: AnsiString; out Id: TFileId): Boolean;
+var attr: DWord;
+begin
+  Result := IdOfOpen(Path, ID_FLAG_BACKUP_SEMANTICS or ID_FLAG_OPEN_REPARSE_POINT, attr, Id) and
+            ((attr and (ID_ATTR_DIRECTORY or ID_ATTR_REPARSE_POINT)) = 0);
+end;
+
+function IdOfPath(const Path: AnsiString; out Id: TFileId): Boolean;
+var attr: DWord;
+begin
+  Result := IdOfOpen(Path, ID_FLAG_BACKUP_SEMANTICS, attr, Id);
+end;
+{$ENDIF}
+
+procedure ClaimOutput(const Path: AnsiString; H: THandle);
+var id: TFileId; n: SizeInt;
+begin
+  if not IdOfHandle(H, id) then Exit;
+  n := Length(ClaimedPath);
+  SetLength(ClaimedPath, n + 1);
+  SetLength(ClaimedId, n + 1);
+  ClaimedPath[n] := Path;
+  ClaimedId[n] := id;
+end;
+
+procedure RemoveClaimedOutputs(const Input: AnsiString);
+var keep, now_: TFileId; hasKeep: Boolean; i: SizeInt;
+begin
+  hasKeep := (Input <> '') and IdOfPath(Input, keep);
+  for i := 0 to High(ClaimedPath) do
+  begin
+    if hasKeep and (keep.A = ClaimedId[i].A) and (keep.B = ClaimedId[i].B) then Continue;
+    if IdOfName(ClaimedPath[i], now_) and (now_.A = ClaimedId[i].A) and (now_.B = ClaimedId[i].B) then
+      SysUtils.DeleteFile(ClaimedPath[i]);
+  end;
+  ClaimedPath := nil;
+  ClaimedId := nil;
 end;
 
 function OsRead(H: THandle; var Buf; N: LongInt): LongInt;

@@ -594,6 +594,7 @@ begin
         indexS := CreateWriteRaw(O.IndexFile);
         if indexS = nil then
           Fail(ERROR_IO, 'Can''t open index file ' + O.IndexFile + ' for write');
+        ClaimOutput(O.IndexFile, indexS.Handle);
         enc.Index := indexS;
       end;
 
@@ -644,6 +645,7 @@ begin
             bloqueaba sobre un FIFO }
           outS := CreateWriteRaw(FoutName);
           if outS = nil then Fail(ERROR_IO, 'Can''t open ' + FoutName + ' for write');
+          ClaimOutput(FoutName, outS.Handle);
           try
             Encode(inS, outS, enc, KindOf(O), ContainerOf(O), @OnProgress);
           except
@@ -762,6 +764,8 @@ begin
     else sinkPath := FoutName;
     sink := CreateRaw(sinkPath);
     if sink = nil then Fail(ERROR_IO, 'Can''t open ' + FoutName + ' for write');
+    { el spool de stdout es un temporal, que se borra igual }
+    if stdoutSpool = '' then ClaimOutput(sinkPath, sink.Handle);
 
     { -index= de vuelta: las listas salen del archivo nombrado }
     { un directorio: el File::open del Rust lo abre y falla al leerlo (un
@@ -916,11 +920,19 @@ begin
     Fail(ERROR_CMDLINE, '-dup is incompatible with -m0; use -m3/-m4/-m5');
 
   ResolveNames(O, fi, fo);
-  case O.CmdMode of
-    cmInfo: Result := Info(O, fi);
-    cmVerify: Result := Verify(fi);
-    cmCompress: Result := Compress(O, fi, fo);
-  else Result := Decompress(O, fi, fo);
+  try
+    case O.CmdMode of
+      cmInfo: Result := Info(O, fi);
+      cmVerify: Result := Verify(fi);
+      cmCompress: Result := Compress(O, fi, fo);
+    else Result := Decompress(O, fi, fo);
+    end;
+  except
+    { una corrida que falla se lleva lo que creo o trunco (el archivo, la
+      salida de -d, -index=): no queda una salida a medias. Los handles ya
+      estan cerrados: los liberaron los finally de Compress y Decompress. }
+    if fi = '-' then RemoveClaimedOutputs('') else RemoveClaimedOutputs(fi);
+    raise;
   end;
 end;
 

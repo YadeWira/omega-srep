@@ -633,6 +633,99 @@ cp "$IN" "$TMP/del.bin"
 [ -e "$TMP/del.bin" ] || fail "-delete borro la entrada aunque hubo un warning"
 pass=$((pass + 1))
 
+say "una corrida que falla se lleva su salida, y nada mas"
+# Hasta la 2.3.0 (y en el C++ 1.0.7) una corrida que fallaba dejaba lo que
+# habia escrito: los bloques anteriores a un DigestMismatch, un archivo
+# cortado por OutOfMemory, un -index= vacio, el principio del post-paso de
+# -dup. Ahora se borran los archivos regulares que la corrida creo o trunco,
+# y nada mas: ni stdout, ni un FIFO, ni un dispositivo, ni un symlink nombrado
+# como salida, ni la entrada, ni un archivo que no abrio. Los dos binarios en
+# directorios aparte: el mismo codigo, el mismo stderr y lo mismo en disco
+# (nombre, tipo y tamano). Con wine, sin symlinks, FIFOs ni ulimit: el
+# OutOfMemory sale de -b3g en el .exe de 32 bits y de -b100000g en el de 64
+# (y en el Rust de referencia); en el nativo, de -b3g con 1 GiB de direcciones.
+F="$TMP/fail"; mkdir -p "$F/in"
+{ head -c 1048576 tests/corpus/text.bin; head -c 2097152 tests/corpus/random.bin; } > "$F/in/in.bin"
+"$RS" -v0 --seed=7 -b1mb "$F/in/in.bin" "$F/in/ok.osr" >/dev/null 2>&1 || fail "no se pudo armar ok.osr"
+"$RS" -v0 --seed=7 --format=v4 -b1mb "$F/in/in.bin" "$F/in/ok4.osr" >/dev/null 2>&1 || fail "no se pudo armar ok4.osr"
+"$RS" -v0 --seed=7 --format=v4 -m3f -b1mb -index="$F/in/ok.ix" "$F/in/in.bin" "$F/in/okf.osr" >/dev/null 2>&1 \
+    || fail "no se pudo armar okf.osr"
+"$RS" -v0 --seed=7 -dup --format=v4 "$F/in/in.bin" "$F/in/dup.osr" >/dev/null 2>&1 || fail "no se pudo armar dup.osr"
+for v in ok ok4; do
+    cp "$F/in/$v.osr" "$F/in/bad$v.osr"
+    printf '\125\252\125\252' | dd of="$F/in/bad$v.osr" bs=1 seek=$(( $(stat -c%s "$F/in/$v.osr") * 3 / 4 )) \
+        conv=notrunc 2>/dev/null
+done
+cp "$F/in/ok.ix" "$F/in/bad.ix"
+printf '\125\252\125\252' | dd of="$F/in/bad.ix" bs=1 seek=8 conv=notrunc 2>/dev/null
+# el primer chunk unico de la meta ODUP (sin checksum en v4) de ~2 GiB: el
+# post-paso escribe el cuerpo entero en la salida y despues se queda corto
+python3 - "$F/in/dup.osr" "$F/in/badmeta.osr" <<'PY'
+import struct, sys
+b = bytearray(open(sys.argv[1], 'rb').read())
+assert b[-4:] == b'ODUP'
+at = len(b) - 12 - struct.unpack('<Q', b[-12:-4])[0]
+assert b[at:at + 4] == b'DUPR' and b[at + 24] == 0
+b[at + 28] = 0x7f
+open(sys.argv[2], 'wb').write(b)
+PY
+FWINE=0
+if [ "$(head -c 2 "$PA")" = '#!' ] && grep -q wine "$PA"; then FWINE=1; fi
+if [ "$FWINE" = 1 ]; then
+    PRE_R=''; BIG_R=-b100000g; PRE_P=''
+    if grep -q 'x86_64' "$PA"; then BIG_P=-b100000g; else BIG_P=-b3g; fi
+else
+    PRE_R='ulimit -v 1048576;'; BIG_R=-b3g; PRE_P="$PRE_R"; BIG_P=-b3g
+fi
+# $1 = una linea de bash, corrida en un directorio nuevo con "$B" el binario,
+# los insumos en "$I" y $BIG el -b que no entra; $2.. = lo que no debe quedar
+fcase() {
+    local side bin pre big rc line="$1"; shift
+    for side in r p; do
+        rm -rf "${F:?}/$side"; mkdir "$F/$side"
+        if [ "$side" = r ]; then bin="$RSX"; pre="$PRE_R"; big="$BIG_R"; else bin="$PAX"; pre="$PRE_P"; big="$BIG_P"; fi
+        rc=0
+        (cd "$F/$side" && B="$bin" I="$F/in" BIG="$big" timeout 120 bash -c "$pre $line") \
+            </dev/null >"$F/$side.o" 2>"$F/$side.e" || rc=$?
+        echo "$rc" > "$F/$side.rc"
+        (cd "$F/$side" && find . -mindepth 1 -printf '%y %s %p\n' | LC_ALL=C sort) > "$F/$side.ls"
+    done
+    cmp -s "$F/r.rc" "$F/p.rc" || fail "[$line]: exit $(cat "$F/p.rc") en Pascal, $(cat "$F/r.rc") en Rust: $(cat "$F/p.e")"
+    [ "$(cat "$F/p.rc")" != 0 ] || [ "$line" != "${line%| wc -c}" ] || fail "[$line]: no fallo"
+    cmp -s "$F/r.e" "$F/p.e" || fail "[$line]: stderr difiere: '$(cat "$F/p.e")' vs '$(cat "$F/r.e")'"
+    cmp -s "$F/r.o" "$F/p.o" || fail "[$line]: stdout difiere"
+    cmp -s "$F/r.ls" "$F/p.ls" || fail "[$line]: queda otra cosa en disco: $(diff "$F/r.ls" "$F/p.ls" | head -4)"
+    for f; do [ ! -e "$F/p/$f" ] && [ ! -L "$F/p/$f" ] || fail "[$line]: quedo $f"; done
+    pass=$((pass + 1))
+}
+fcase '"$B" -v0 -d "$I/badok.osr" o.out' o.out
+fcase '"$B" -v0 -d "$I/badok4.osr" o.out' o.out
+fcase 'echo keep > o.out; "$B" -v0 -d "$I/badok.osr" o.out' o.out
+fcase 'cp "$I/badok.osr" a.osr; "$B" -v0 -d -delete a.osr o.out' o.out
+fcase '"$B" -v0 -d -index=x.ix "$I/okf.osr" o.out' o.out
+fcase '"$B" -v0 -d -index="$I/bad.ix" "$I/okf.osr" o.out' o.out
+fcase '"$B" -v0 -d "$I/badmeta.osr" o.out' o.out
+fcase '"$B" -v0 --seed=7 $BIG "$I/in.bin" x.osr' x.osr
+fcase '"$B" -v0 --seed=7 --format=v4 -m3f -index=x.ix $BIG "$I/in.bin" x.osr' x.osr x.ix
+fcase '"$B" -v0 --seed=7 -dup $BIG "$I/in.bin" x.osr' x.osr
+fcase 'echo keep > x.osr; "$B" -v0 --seed=7 $BIG "$I/in.bin" x.osr' x.osr
+fcase 'cp "$I/in.bin" a.bin; "$B" -v0 --seed=7 -delete $BIG a.bin x.osr' x.osr
+fcase '"$B" -v0 --seed=7 --format=v4 -m3f -index=x.ix nope.bin x.osr' x.osr x.ix
+fcase 'echo keep > x.osr; "$B" -v0 --seed=7 nope.bin x.osr'
+grep -q keep "$F/p/x.osr" || fail "una corrida que no abrio x.osr la cambio"
+# la entrada con otro nombre como salida: el open la trunca (la comparacion
+# de nombres no lo ve), pero no se borra
+fcase 'cp "$I/badok.osr" a.osr; "$B" -v0 -d a.osr ./a.osr'
+[ -e "$F/p/a.osr" ] || fail "se borro la entrada"
+fcase '"$B" -v0 -d "$I/badok.osr" - | wc -c'
+if [ "$FWINE" = 0 ]; then
+    fcase 'echo t > t.out; ln -s t.out l.out; "$B" -v0 -d "$I/badok.osr" l.out'
+    [ -L "$F/p/l.out" ] || fail "se borro el symlink por el que se escribio"
+    fcase 'mkfifo fo; (timeout 10 cat fo >/dev/null) & "$B" -v0 -d "$I/badok.osr" fo; r=$?; wait; exit $r'
+    [ -p "$F/p/fo" ] || fail "se borro el FIFO"
+    fcase '"$B" -v0 -d "$I/badok.osr" /dev/null'
+fi
+
 say "-bar: el contrato PROGRESS"
 "$PA" -bar --seed=7 "$IN" "$TMP/bar.osr" 2>&1 >/dev/null | grep -a '^PROGRESS' > "$TMP/bar" || true
 last=$(tail -1 "$TMP/bar")

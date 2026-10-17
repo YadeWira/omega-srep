@@ -9,6 +9,36 @@ Versions follow `<major>.<minor>.<patch>` for stable releases and
 written by the new default cannot be read by the previous release, which is
 what happened in 2.0.0.
 
+## [Unreleased]
+
+### Fixed
+
+- **A failed run no longer leaves a partial output file behind.** Through
+  2.3.0, compression that stopped with an error (`OutOfMemory` with a large
+  `-b` or `-a`, `-b2g` and up on the 32-bit Windows build, an I/O error) left
+  the archive written so far, and decompression of a damaged archive left the
+  blocks decoded before the error (`-d` stopping on `DigestMismatch` in the
+  sixth block of a 6 MB file left 5 MB), as did a `-dup` post-pass that failed
+  half way; `-index=` files were left too, empty when the input could not even
+  be opened (`-index=` is created first). The C++ 1.0.7 behaves the same: its
+  "delete output files on error" (`srep.cpp:1339`) is only reached by its
+  `goto cleanup` paths, and `error()` exits before. Now a run that fails with
+  exit 2, 3 or 4 removes the regular files it created or truncated under the
+  names it was given -- the archive, the decompressed file, `-index=` -- and
+  the exit code and the message are unchanged. A file that already existed
+  under the output name is removed as well: the open had already truncated
+  it, so its old contents were gone either way. Never removed: stdout, pipes,
+  FIFOs and devices (`/dev/null`; `NUL` and `CON` on Windows), a symlink named
+  as the output (the file it points to keeps what was written), the input
+  (also when the output name is another spelling of it, `osrep -d a.osr
+  ./a.osr`), and a file the run failed before opening (`osrep missing.bin
+  x.osr` leaves an existing `x.osr` alone). The files are closed before they
+  are removed, which Windows needs. The scratch files (the stdin/stdout
+  spools, the `-dup` bodies, the `-vmfile=` spill) were already removed on
+  failure. A run killed by a signal (Ctrl-C) removes nothing, as before. This
+  replaces the 2.3.0 known issue "When compression fails with exit 4, the
+  partial output file is left on disk".
+
 ## [2.3.0] — 2026-10-15
 
 **Byte-exact with the C++ 1.0.7 again, also with the default options.** Behaviours of
