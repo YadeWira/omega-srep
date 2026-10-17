@@ -9,7 +9,21 @@ Versions follow `<major>.<minor>.<patch>` for stable releases and
 written by the new default cannot be read by the previous release, which is
 what happened in 2.0.0.
 
-## [Unreleased]
+## [2.3.1] — 2026-10-17
+
+**Fixes for the files around a run: several ways to lose data, all with
+unusual command lines or redirections, and most of them inherited from the
+C++ 1.0.7.** `osrep` now follows one rule: no file a run writes is a file it
+reads, or another file it writes, whatever names, links, `/proc/self/fd/N`
+paths or shell redirections lead to it; each output is opened without
+truncation, compared by identity, and only then truncated. A failed run
+removes the outputs it created, an input that changes while it is read is
+refused instead of deleted by `-delete`, and closed or full standard streams
+never put text into an archive or throw data away. Also fixed: v4 archives of
+inputs ending in "ODUP" that `-d archive out` could not restore, and `-i` on
+v4 `-dup` archives. Archives of the same input and options are byte-identical
+to 2.3.0's, except with a leading-zero `-a` or `--seed=` value, which is now
+octal as in the C++ (below). Existing archives read as before.
 
 ### Changed
 
