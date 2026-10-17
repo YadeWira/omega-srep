@@ -318,6 +318,19 @@ if [ -x "$CXX_BIN/osrep" ]; then
         DUPX="$DUPX $name"
     done
 fi
+# Un archivo que termina en "ODUP" (aca, el v4 -dup de arriba): un Future-LZ
+# termina en sus ultimos literales, asi que el suyo termina en ese trailer,
+# meta y todo; -i lo lee entero como uno comun cuando el archivo de atras del
+# trailer no se sostiene. nestdup es el -dup del -dup (el trailer de afuera
+# es de verdad).
+odp() { # $1=nombre, el resto opciones del encoder; la entrada es v4dup.osr
+    local name="$1"; shift
+    (cd "$D" && "$RSX" -v0 --seed=7 -b64k "$@" v4dup.osr "$name.osr" >/dev/null 2>&1) \
+        || fail "no se pudo armar $name.osr"
+}
+odp odpf --format=v4 -m3f
+odp nestdup --format=v4 -m3 -dup
+[ "$(tail -c 4 "$D/odpf.osr")" = ODUP ] || fail "odpf.osr no termina en ODUP: no prueba nada"
 (cd "$D" && "$RSX" -v0 --seed=7 -m5 -b64k far.bin far.osr >/dev/null 2>&1) || fail "no se pudo armar far.osr"
 : > "$D/empty.osr"
 printf 'this is not an archive\n%.0s' 1 2 3 4 5 6 > "$D/text.osr"
@@ -352,7 +365,7 @@ check3() { # $1=archivo, el resto opciones de -d
 # eso lo cubren de sobra los truncados. Un byte cambiado se mira con -d.
 checkd() { # $1=archivo, el resto opciones de -d
     local f="$1"; shift
-    case "$name" in v5*|*dup*) check3 "$f" "$@" ;; *) same -v0 -d "$@" "$f" o.out ;; esac
+    case "$name" in v5*|*dup*|odp*) check3 "$f" "$@" ;; *) same -v0 -d "$@" "$f" o.out ;; esac
 }
 # $1=origen $2=posicion $3=destino: el byte en $2 pasa a 0 (o a 0xFF si ya era 0)
 zap() {
@@ -362,13 +375,14 @@ zap() {
     if [ "${b:-0}" -eq 0 ]; then v=255; else v=0; fi
     printf "$(printf '\\%03o' "$v")" | dd of="$3" bs=1 seek="$2" conv=notrunc 2>/dev/null
 }
-for name in v5 v5dup v4 v4dup v3 v3ix v2ix v1 $DUPX; do
+for name in v5 v5dup v4 v4dup v3 v3ix v2ix v1 $DUPX odpf nestdup; do
     a="$D/$name.osr"; n=$(stat -c%s "$a")
     ix=""; [ -e "$D/$name.ix" ] && ix="-index=$name.ix"
     # sano: -i tiene que describirlo, y los dos igual
     same -v0 -i $ix "$name.osr"
     grep -q 'ERROR' r.e && fail "-i $ix $name.osr: $(cat r.e)"
     case "$name" in *dup*) grep -q '^-dup: ' r.e || fail "-i $name.osr sin la linea -dup: $(cat r.e)" ;; esac
+    case "$name" in odp*) grep -q '^-dup: ' r.e && fail "-i $name.osr: una linea -dup en uno comun" ;; esac
     for c in 0 3 16 27 28 60 $((n / 2)) $((n - 32)) $((n - 24)) $((n - 1)); do
         [ "$c" -ge 0 ] && [ "$c" -lt "$n" ] || continue
         head -c "$c" "$a" > "$D/m.osr"

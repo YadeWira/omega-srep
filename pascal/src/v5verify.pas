@@ -361,17 +361,23 @@ begin
 
   { el v4 -dup tapa su archivo con la meta y el trailer ODUP
     (dup_wrapper.cpp:254-262); el -i del C++ lee el trailer como footer y
-    se rinde }
+    se rinde. El trailer solo se olfatea: un Future-LZ/I/O LZ comun termina
+    en sus ultimos literales, y el de un archivo que termina en "ODUP" (otro
+    v4 -dup, por ejemplo) trae algo con forma de trailer. Si el archivo de
+    atras no se sostiene, se lee entero como uno comun, como 2.3.0 y el -i
+    del C++. }
   try
     isDup := SplitOdup(B, bodyLen, metaAt, metaLen);
   except
-    on EV5 do Exit(False);
+    on EV5 do isDup := False;
   end;
-  if not isDup then bodyLen := n;
-  Result := InspectCore(B, bodyLen, StatsOutOfLine, Info);
-  if not Result then Exit;
-  Info.CompSize := n;
-  if isDup then Result := WithDup(B, metaAt, metaLen, Info);
+  if isDup then
+    if InspectCore(B, bodyLen, StatsOutOfLine, Info) then
+    begin
+      Info.CompSize := n;
+      if WithDup(B, metaAt, metaLen, Info) then Exit(True);
+    end;
+  Result := InspectCore(B, n, StatsOutOfLine, Info);
 end;
 
 { Archive::parse_with sobre los primeros Avail bytes de B }

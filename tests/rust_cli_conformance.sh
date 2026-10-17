@@ -668,6 +668,39 @@ for f in bad1 bad2 bad3; do
 done
 pass=$((pass + 1))
 
+say "-i on the plain archive of a file that ends in \"ODUP\", and on a -dup archive of one"
+# A Future-LZ or I/O LZ archive ends in its last literals, so the archive of a
+# v4 -dup archive ends in that archive's own trailer, meta and all. -i reads
+# behind a trailer only when the archive there holds up; otherwise it reads
+# the whole file as a plain archive, as the C++'s -i does. The -dup archive of
+# a -dup archive has a real trailer, and is described through it.
+"$RS" -dup --format=v4 --seed=7 tests/corpus/text.bin "$TMP/in4.osr" >/dev/null 2>&1 \
+    || fail "ODUP input: compress failed"
+[ "$(tail -c 4 "$TMP/in4.osr")" = ODUP ] || fail "ODUP input: the -dup archive does not end in ODUP"
+"$RS" --format=v4 --seed=7 -m3f "$TMP/in4.osr" "$TMP/od.osr" >/dev/null 2>&1 || fail "ODUP input -m3f: compress failed"
+[ "$(tail -c 4 "$TMP/od.osr")" = ODUP ] || fail "ODUP input -m3f: the archive does not end in ODUP"
+"$RS" -dup --format=v4 --seed=7 "$TMP/in4.osr" "$TMP/nest.osr" >/dev/null 2>&1 || fail "nested -dup: compress failed"
+for spec in "od Future-LZ" "nest Index-LZ"; do
+    set -- $spec
+    rc=0; "$RS" -i "$TMP/$1.osr" >/dev/null 2>"$TMP/od.err" || rc=$?
+    [ "$rc" -eq 0 ] || fail "-i on $1.osr: exit $rc, '$(cat "$TMP/od.err")'"
+    "$CXX_BIN/osrep" -i "$TMP/$1.osr" >/dev/null 2>"$TMP/odc.err" || true
+    chead=$(head -1 "$TMP/odc.err")
+    case "$chead" in "$2"*) ;; *) fail "-i on $1.osr: the C++ header is '$chead'" ;; esac
+    [ "$(head -c ${#chead} "$TMP/od.err")" = "$chead" ] \
+        || fail "-i on $1.osr: header '$(head -1 "$TMP/od.err")', the C++ says '$chead'"
+    case "$1" in
+        od) grep -q '^-dup: ' "$TMP/od.err" && fail "-i on od.osr: a -dup line for a plain archive" ;;
+        nest) grep -q '^-dup: ' "$TMP/od.err" || fail "-i on nest.osr: no -dup line" ;;
+    esac
+    grep -qF ".  $(show3 "$(stat -c%s "$TMP/in4.osr")") -> " "$TMP/od.err" \
+        || fail "-i on $1.osr: the size line is not the inner archive's size: '$(cat "$TMP/od.err")'"
+    rc=0; "$RS" --verify "$TMP/$1.osr" >/dev/null 2>"$TMP/od.err" || rc=$?
+    [ "$rc" -eq 2 ] && grep -qF "is a v1-v4 archive" "$TMP/od.err" \
+        || fail "--verify on $1.osr: exit $rc, '$(cat "$TMP/od.err")'"
+    pass=$((pass + 1))
+done
+
 say "-i on Future-LZ and I/O LZ: the size line, and the C++'s summary line"
 # The C++ prints its decoder's progress line there (timings included), then
 # the same "Decompression memory ..." summary as for Index-LZ; 2.3.0 printed

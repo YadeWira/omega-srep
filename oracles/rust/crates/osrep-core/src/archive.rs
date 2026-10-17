@@ -133,19 +133,29 @@ pub fn inspect_with(bytes: &[u8], stats_out_of_line: bool) -> Result<Info, Decod
 
     // v4 `-dup` hides its archive behind the meta and the ODUP trailer
     // (`dup_wrapper.cpp:254-262`); the C++'s own `-i` reads the trailer as
-    // a footer and gives up. The checks are the ones `-d` applies.
-    let (body, meta) = match crate::dup::split_odup(bytes)
-        .map_err(|_| DecodeError::BadData("ODUP trailer"))?
-    {
-        Some((n, meta)) => (&bytes[..n], Some(meta)),
-        None => (bytes, None),
-    };
+    // a footer and gives up. The trailer is only sniffed, though: a plain
+    // Future-LZ/I/O LZ archive ends in its last literals, so one of a file
+    // that ends in "ODUP" (another v4 `-dup` archive, say) carries what looks
+    // like a trailer. When the archive behind it does not hold up, the whole
+    // file is read as a plain archive, as 2.3.0 and the C++ `-i` read it.
+    if let Ok(Some((n, meta))) = crate::dup::split_odup(bytes) {
+        if let Ok(info) = inspect_v14(&bytes[..n], bytes.len(), stats_out_of_line)
+            .and_then(|info| with_dup(info, Some(meta)))
+        {
+            return Ok(info);
+        }
+    }
+    inspect_v14(bytes, bytes.len(), stats_out_of_line)
+}
+
+/// A v1-v4 archive occupying `body`, in a file of `total` bytes.
+fn inspect_v14(body: &[u8], total: usize, stats_out_of_line: bool) -> Result<Info, DecodeError> {
     let parsed = container::Archive::parse_with(body, stats_out_of_line)?;
     let hash = parsed
         .header
         .hash()
         .ok_or(DecodeError::BadData("unknown hash descriptor"))?;
-    let info = Info {
+    Ok(Info {
         mode: if parsed.header.version.index_lz() {
             "Index-LZ"
         } else if parsed.header.version.future_lz() {
@@ -158,7 +168,7 @@ pub fn inspect_with(bytes: &[u8], stats_out_of_line: bool) -> Result<Info, Decod
         round_matches: parsed.header.version.round_matches(),
         blocks: parsed.blocks.len(),
         origsize: parsed.origsize(),
-        compsize: bytes.len() as u64,
+        compsize: total as u64,
         // v4 keeps the whole list at the tail and records its size in the
         // footer; v1-v3 carry each block's own list inline.
         stat_size: if parsed.total_stat_size > 0 {
@@ -167,8 +177,7 @@ pub fn inspect_with(bytes: &[u8], stats_out_of_line: bool) -> Result<Info, Decod
             parsed.blocks.iter().map(|b| b.header.statsize as u64).sum()
         },
         dup: None,
-    };
-    with_dup(info, meta)
+    })
 }
 
 /// Fold a `-dup` meta into what the blocks say: the original size becomes

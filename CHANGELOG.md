@@ -20,7 +20,11 @@ what happened in 2.0.0.
   footer and Future-LZ/I/O LZ for more blocks. 1.0.7's own `-i` fails on them
   too, after its header line ("Not found Omega SREP compressed file footer",
   or a bogus block size), so there is no output to match; `-i` now describes
-  the archive behind the trailer, and refuses a trailer `-d` would refuse.
+  the archive behind the trailer, and refuses a trailer `-d` would refuse,
+  unless the whole file reads as a plain archive: a Future-LZ or I/O LZ
+  archive ends in its last literals, so the archive of a file that itself ends
+  in "ODUP" (any v4 `-dup` archive) ends in what looks like a trailer, and is
+  then described as 1.0.7 describes it.
   `--verify` on such an archive now gives the "v1-v4 archive, cannot be
   verified" answer instead of "Not an Omega SREP".
 - **`-i` on a `-dup` archive reports the size `-d` restores.** v5 `-dup` gave
