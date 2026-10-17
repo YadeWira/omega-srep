@@ -1521,16 +1521,22 @@ fails 3 'Input and output files should have different names' \
 cmp -s "$F/w/k.ix" "$F/ok.ix" || fail "-d -index=k.ix ... ./k.ix changed k.ix"
 pass=$((pass + 1))
 
-say "one file under two names is refused, and scratch files go only if opened"
+say "no file a run writes is a file it reads, or another it writes"
 # The C++ refuses an output with the input's name ("Input and output files
-# should have different names", exit 3) by comparing the strings, so
+# should have different names", exit 3) by comparing the two strings, so
 # `osrep x.bin ./x.bin` truncated the input and exited 0 with an archive of
-# nothing, and `-d a.osr ./a.osr` lost the archive. The ports compare file
-# identity too (device and inode; volume and file index on Windows) for every
-# pair a run reads and writes: input and output, -index= and the input (when
-# compressing) or the output (when decompressing), the -temp= spool and the
-# archive, -vmfile= and anything the decoder reads or writes. Only regular
-# files: /dev/null as both is not a loss.
+# nothing. The ports follow one rule (osrep-core/src/util.rs, "the files of
+# one run"; pascal/src/streamio.pas): every file a run writes -- the archive
+# or the decoded file, -index= when compressing, -temp=, -vmfile=, its scratch
+# files, and stdout's file when the output is - -- is opened without
+# truncation and refused, with that message, if it is a file the run reads
+# (the input or stdin's file, -index= when decompressing) or another file it
+# writes, by identity (device and inode; volume and file index on Windows);
+# only then is it truncated. The names that already exist are compared before
+# the first open, so a refusal leaves every file as it was. Only regular files
+# count: /dev/null as input and output is no loss. Every case below is a
+# repro from a review of the r231 branches; through 2.3.0 each one lost or
+# changed a file, most of them with exit 0.
 # $1 = a bash line that must be refused; $2.. = files left as they were,
 # compared with the copy of the same name in $F
 same_refused() {
@@ -1538,34 +1544,38 @@ same_refused() {
     fails 3 'Input and output files should have different names' "$line"
     for f; do cmp -s "$F/w/$f" "$F/$f" || fail "[$line] changed $f"; done
 }
+SAME='Input and output files should have different names'
+# other spellings and links of the input, and of -index= on the way back
 same_refused 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 in.bin ./in.bin' in.bin
 same_refused 'cp "$I/in.bin" in.bin; ln in.bin y.bin; "$B" -v0 --seed=7 in.bin y.bin' in.bin
 same_refused 'cp "$I/in.bin" in.bin; ln -s in.bin y.bin; "$B" -v0 --seed=7 in.bin y.bin' in.bin
 same_refused 'cp "$I/ok.osr" ok.osr; ln ok.osr ok; "$B" -v0 -d ok.osr' ok.osr
 same_refused 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 --format=v4 -m3f -index=./in.bin in.bin o.osr' in.bin
-fails 3 'Input and output files should have different names' \
-    '"$B" -v0 --seed=7 --format=v4 -m3f -index=o.osr "$I/in.bin" ./o.osr'; gone o.osr
-fails 3 'Input and output files should have different names' \
-    '"$B" -v0 --seed=7 -temp=t.tmp - ./t.tmp < "$I/in.bin"'; gone t.tmp
+same_refused 'cp "$I/ok.ix" ok.ix; "$B" -v0 -d -index=ok.ix "$I/okf.osr" ./ok.ix' ok.ix
+# two outputs that are one file: refused when the second is opened, and the
+# first, new, taken back
+fails 3 "$SAME" '"$B" -v0 --seed=7 --format=v4 -m3f -index=o.osr "$I/in.bin" ./o.osr'; gone o.osr
+fails 3 "$SAME" '"$B" -v0 --seed=7 -temp=t.tmp - ./t.tmp < "$I/in.bin"'; gone t.tmp
+# -vmfile= over what the decoder reads
 same_refused 'cp "$I/far.osr" far.osr; "$B" -v0 -mem1mb -vmblock=128kb -vmfile=./far.osr -d far.osr o.out' far.osr
 same_refused 'cp "$I/ok.ix" ok.ix; "$B" -v0 -vmfile=./ok.ix -d -index=ok.ix "$I/okf.osr" o.out' ok.ix
-fails 3 'Input and output files should have different names' \
-    '"$B" -v0 -vmfile=o.out -d "$I/far.osr" o.out'; gone o.out
-SAME='Input and output files should have different names'
-# -vmfile= once more after the output is created: under another spelling of
-# an output that did not exist yet the first check saw nothing, the first
-# spill truncated the output and the end of the decode removed it -- exit 0
-# and nothing left, the archive included with -delete
+# -vmfile= is opened at the first spill: named like a new output, it is
+# refused when that spill comes, and a decode that never spills never opens
+# it. Under another spelling the output did not exist yet, so nothing caught
+# it before the spill truncated the output: exit 0 and nothing left, the
+# archive included with -delete
+fails 3 "$SAME" '"$B" -v0 -mem1mb -vmblock=128kb -vmfile=o.out -d "$I/far.osr" o.out'; gone o.out
 same_refused 'cp "$I/far.osr" far.osr; "$B" -v0 -delete -mem1mb -vmblock=128kb -vmfile=./o.out -d far.osr o.out' far.osr
 gone o.out
 fails 3 "$SAME" 'ln -s o.out v; "$B" -v0 -mem1mb -vmblock=128kb -vmfile=v -d "$I/far.osr" o.out'; gone o.out
+fails 0 '' '"$B" -v0 -vmfile=o.out -d "$I/far.osr" o.out'
+cmp -s "$F/w/o.out" "$F/far.bin" || fail "-vmfile=o.out with no spill: the decode differs"
 # The files the shell opened for stdin and stdout count too, though no name on
-# the command line gives them away: the output, -temp=, -index= or -vmfile=
-# as the file stdin is read from, and -temp=, -index= or -vmfile= as the file
-# stdout goes to when the archive or the decoded data does
+# the command line gives them away: as the output, -temp=, -index= or -vmfile=
 same_refused 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 - in.bin < in.bin' in.bin
 same_refused 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 -b0 - in.bin < in.bin' in.bin
 same_refused 'cp "$I/bad.osr" bad.osr; "$B" -v0 -d - bad.osr < bad.osr' bad.osr
+same_refused 'cp "$I/ok.osr" ok.osr; "$B" -v0 -d - ok.osr < ok.osr' ok.osr
 same_refused 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 -temp=in.bin - o.osr < in.bin' in.bin; gone o.osr
 same_refused 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 --format=v4 -m3f -index=in.bin - o.osr < in.bin' in.bin
 gone o.osr
@@ -1574,17 +1584,58 @@ gone o.out
 fails 3 "$SAME" '"$B" -v0 --seed=7 -temp=./o.osr < "$I/in.bin" > o.osr'; kept o.osr
 fails 3 "$SAME" '"$B" -v0 --seed=7 --format=v4 -m3f -index=./o.osr - - < "$I/in.bin" > o.osr'; kept o.osr
 fails 3 "$SAME" '"$B" -v0 -mem1mb -vmblock=128kb -vmfile=o.out -d "$I/far.osr" - > o.out'; kept o.out
+# and as each other, or as the input: stdout appended to (`>> x`) or opened
+# read-write (`1<> x`) on the file the run reads, stdin and stdout one file.
+# Through 2.3.0 all exit 0: the input damaged, or with -delete gone
+same_refused 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 -delete in.bin - >> in.bin' in.bin
+same_refused 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 in.bin - 1<> in.bin' in.bin
+same_refused 'cp "$I/ok.osr" ok.osr; "$B" -v0 -delete -d ok.osr - >> ok.osr' ok.osr
+same_refused 'cp "$I/ok.osr" ok.osr; "$B" -v0 -d ok.osr - >> ok.osr' ok.osr
+same_refused 'cp "$I/ok.osr" ok.osr; "$B" -v0 -d ok.osr - 1<> ok.osr' ok.osr
+same_refused 'cp "$I/ok.ix" ok.ix; "$B" -v0 -d -index=ok.ix "$I/okf.osr" - >> ok.ix' ok.ix
+same_refused 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 - - < in.bin >> in.bin' in.bin
+same_refused 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 - - < in.bin 1<> in.bin' in.bin
+same_refused 'cp "$I/ok.osr" ok.osr; "$B" -v0 -d - - < ok.osr 1<> ok.osr' ok.osr
+# names under /dev and /proc that lead to a file the run reads: stdin's file,
+# stdout's, or the input itself once it is open (on fd 3, before the output)
+same_refused 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 -delete in.bin /dev/stdin < in.bin' in.bin
+same_refused 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 -delete in.bin /dev/stdout 1<> in.bin' in.bin
+same_refused 'cp "$I/ok.osr" ok.osr; "$B" -v0 -d -delete ok.osr /dev/stdin < ok.osr' ok.osr
+same_refused 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 -delete in.bin /proc/self/fd/3' in.bin
+same_refused 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 -temp=/dev/stdin - o.osr < in.bin' in.bin
+same_refused 'cp "$I/far.osr" far.osr; "$B" -v0 -mem1mb -vmblock=128kb -vmfile=/proc/self/fd/0 -d - o.out < far.osr' far.osr
+gone o.out
+# With stdin closed both builds hold fd 0 on `/` (stdio.rs), and the Rust
+# runtime's own /dev/null for it is closed again, so fd 3 is the input in
+# both, as with stdin open. It stayed open through r231-stdfds: the input
+# went to fd 4, /proc/self/fd/3 was a /dev/null, and `-d -delete y.osr
+# /proc/self/fd/3 <&-` decoded into it and deleted y.osr (exit 0)
+same_refused 'cp "$I/ok.osr" ok.osr; "$B" -v0 -d -delete ok.osr /proc/self/fd/3 <&-' ok.osr
+same_refused 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 -delete in.bin /proc/self/fd/3 <&-' in.bin
+fails 3 "Can't open /proc/self/fd/4 for write" \
+    'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 -delete in.bin /proc/self/fd/4 <&- 3>&- 4>&-'
+cmp -s "$F/w/in.bin" "$F/in.bin" || fail "-delete in.bin /proc/self/fd/4 <&-: in.bin changed"
+fails 3 "Can't open index file /proc/self/fd/3 for write" \
+    'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 --format=v4 -m3f -index=/proc/self/fd/3 -delete in.bin o.osr <&- 3>&-'
+cmp -s "$F/w/in.bin" "$F/in.bin" || fail "-index=/proc/self/fd/3 <&-: in.bin changed"
 # A refusal leaves every file as it was: a name that already exists is
-# checked before the open that would truncate it, not after
+# compared before the first open, not after the one that would truncate it
 old() { [ "$(cat "$F/w/$1")" = old ] || fail "a refused run changed $1"; }
 fails 3 "$SAME" 'echo old > o.osr; "$B" -v0 --seed=7 --format=v4 -m3f -index=./o.osr "$I/in.bin" o.osr'; old o.osr
 fails 3 "$SAME" 'echo old > o.osr; "$B" -v0 --seed=7 -temp=./o.osr - o.osr < "$I/in.bin"'; old o.osr
 fails 3 "$SAME" 'echo old > k.ix; "$B" -v0 --seed=7 --format=v4 -m3f -index=k.ix -temp=./k.ix - o.osr < "$I/in.bin"'
 old k.ix
+fails 3 "$SAME" 'echo old > o.out; "$B" -v0 -vmfile=./o.out -d "$I/far.osr" o.out'; old o.out
+# The one exception: -temp= or -index= a symlink to an output that does not
+# exist yet. The open through the symlink creates the output's file, and a
+# name is never removed through a symlink, so the refused run leaves it
+fails 3 "$SAME" 'ln -s o.osr lnk; "$B" -v0 --seed=7 -temp=lnk - o.osr < "$I/far.bin"'; kept lnk o.osr
+fails 3 "$SAME" 'ln -s o.osr lnk; "$B" -v0 --seed=7 --format=v4 -m3f -index=lnk "$I/in.bin" o.osr'; kept lnk o.osr
 # -i opens no output, so a file under the derived name is nobody's business;
 # and two devices are not a regular file to lose
 fails 0 '' 'cp "$I/ok.osr" ok.osr; ln ok.osr ok; "$B" -i ok.osr'
 fails 0 '' '"$B" -v0 --seed=7 /dev/null /dev/../dev/null'
+fails 3 "$SAME" '"$B" -v0 --seed=7 /dev/null /dev/null'
 # -temp= is removed when the run ends, as the C++ does (srep.cpp:1336), and on
 # failure like every scratch file -- only a regular file this run opened, by
 # the name it opened (a symlink named as it stays, and so does its target)
@@ -1609,10 +1660,21 @@ fails 4 OutOfMemory '"$B" -v0 --seed=7 -b0 "$I/in.bin" o.osr'; gone o.osr
 fails 3 'Encode(OutOfMemory)' '"$B" -v0 --seed=7 -b0 -dup "$I/in.bin" o.osr'; gone o.osr
 # and a ring past 64 bits: -b2^63 wrapped the two headroom blocks to 0 in the
 # Rust (a panic, exit 101, with the archive's header left behind), and a -d
-# within a block of 2^64 rounded up to a small ring (an abort, exit 134)
-for b in -b9223372036854775808b -b9223372036854775809b "-d18446744073709551615b -b3m"; do
-    fails 4 OutOfMemory '"$B" -v0 --seed=7 '"$b"' "$I/in.bin" o.osr'; gone o.osr
+# within a block of 2^64 rounded up to a small ring (an abort, exit 134). A
+# few bytes short of 2^64 the Pascal wrapped instead: it added the ring's
+# 64-byte tail to the size and got a small number, then wrote an archive of
+# nothing with exit 0 (deleting the input with -delete), or crashed, or said
+# "Out of memory" where the Rust says OutOfMemory
+for b in -b9223372036854775808b -b9223372036854775809b "-d18446744073709551615b -b3m" \
+         -b9223372036854775776b -b9223372036854775790b -b9223372036854775807b \
+         "-d9223372036854775806b -b4611686018427387903b"; do
+    fails 4 'ERROR! OutOfMemory' 'cp "$I/in.bin" a.bin; "$B" -v0 --seed=7 -delete '"$b"' a.bin o.osr'
+    gone o.osr; kept a.bin
 done
+# the match finder's tables sized for stdin's 25 GiB default, in a 1 GiB
+# address space: the Rust aborted on the allocation (exit 134, the archive's
+# header left on disk) where the Pascal said "Out of memory"
+fails 4 'ERROR! OutOfMemory' '(ulimit -v 1048576; exec "$B" -v0 --seed=7 -b3g - x.osr < "$I/in.bin")'; gone x.osr
 pass=$((pass + 1))
 
 say "--verify: what it accepts, what it catches, and what it admits it misses"
@@ -1726,9 +1788,10 @@ done
 # O_PATH (on /dev/null, `-delete x /dev/stdin <&-` deleted x).
 for spec in "fdin.bin|--seed=7 -delete fdin.bin" "fdref.osr|-delete -d fdref.osr"; do
     keep=${spec%%|*}; args=${spec#*|}
-    for o in - /dev/stdout /proc/self/fd/1 /dev/stdin /proc/self/fd/0 /dev/fd/0; do
+    for o in - /dev/stdout /proc/self/fd/1 /dev/stdin /proc/self/fd/0 /dev/fd/0 /dev/stderr /proc/self/fd/2; do
         case $o in
         */0|/dev/stdin) rs="'<&- 2>/dev/null' '<&- >/dev/null 2>&-' '<&- >&- 2>&-'";;
+        */2|/dev/stderr) rs="'2>&-' '<&- 2>&-' '>/dev/null 2>&-'";;
         *) rs="'>&- 2>/dev/null' '>/dev/full 2>/dev/null' '<&- >&- 2>&-'";;
         esac
         eval "set -- $rs"
@@ -1740,6 +1803,10 @@ for spec in "fdin.bin|--seed=7 -delete fdin.bin" "fdref.osr|-delete -d fdref.osr
         done
     done
 done
+# the -temp= spool of an archive that has nowhere to go is removed all the same
+rm -rf "$TMP/fdq"; mkdir "$TMP/fdq"
+rc=0; (cd "$TMP/fdq" && "$RS" --seed=7 -temp=t.tmp - - <"$TMP/fdin.bin" >&- 2>/dev/null) || rc=$?
+[ "$rc" -ne 0 ] && [ ! -e "$TMP/fdq/t.tmp" ] || fail "fd [-temp=t.tmp - - >&-]: exit $rc, $(ls "$TMP/fdq")"
 for o in /dev/stdout /proc/self/fd/1 /dev/stdin /proc/self/fd/0; do
     rc=0; "$RS" --seed=7 "$TMP/fdin.bin" "$o" <&- >&- 2>"$TMP/fd.err" || rc=$?
     [ "$rc" -eq 3 ] && grep -q "Can't open $o for write" "$TMP/fd.err" \

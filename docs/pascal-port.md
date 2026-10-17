@@ -278,44 +278,46 @@ diferencias.
   acarreos como 9,995) en Linux y bajo wine x64/x86: cero diferencias.
   `pascal_cli_conformance.sh` tiene la red rápida, con tamaños de `text.bin`
   barridos para caer en empates.
-* **Toda salida con nombre que se abre para escribir se anota con
-  `ClaimOutput`** (`claim_output` en el Rust), justo después del open que
-  funcionó: es lo que `Run` (`run` en `modes.rs`) borra si la corrida falla.
-  Un open nuevo sin la anotación vuelve a dejar un archivo a medias, y nada
-  falla salvo la sección «una corrida que falla se lleva su salida» de
-  `pascal_cli_conformance.sh` si el caso está ahí. La anotación guarda la
-  identidad del archivo (dispositivo e inodo; volumen e índice en Windows) y
-  solo si es un archivo regular, así que stdout, un FIFO, `/dev/null` o `NUL`
-  nunca se borran; antes de borrar se vuelve a mirar el nombre sin seguir
-  symlinks (`RemoveIfStill`) y se saltan los archivos que la corrida lee (la
-  entrada, y `-index=` al descomprimir: `RemoveClaimedOutputs([...])`). Hay
-  que borrar con los handles ya cerrados (los `finally` de
-  `Compress`/`Decompress` lo hacen antes de que la excepción llegue a `Run`).
-  Los temporales no van ahí: se borran solos. Los que nombra el usuario
-  (`-temp=`, `-vmfile=`) siguen la misma regla de identidad: se borran solo
-  si se abrieron, son regulares y el nombre sigue siendo ese archivo (con
-  `-vmfile=/dev/null` como root, un `DeleteFile` a secas borraba el
-  dispositivo).
-* **Dos nombres para un mismo archivo se rechazan por identidad, no por
-  texto.** El C++ compara `finame` con `foutname` como cadenas, así que
-  `osrep x.bin ./x.bin` truncaba la entrada al abrir la salida y salía con 0.
-  `RefuseSameFile` (`refuse_same_file` en el Rust) compara dispositivo e
-  inodo (volumen e índice en Windows) de cada par que la corrida lee y
-  escribe, siempre ANTES del open que truncaría a uno con el otro: entrada y
-  salida (`ResolveNames`), `-index=` contra la entrada y la salida, el spool
-  de `-temp=` contra la salida y `-index=` (antes de crearlo si ya existen, y
-  otra vez después de llenarlo: es la entrada real) y `-vmfile=` contra todo
-  lo que lee o escribe el decoder (y otra vez contra la salida apenas se la
-  crea: `-vmfile=./o.out` con `o.out` que no existía no se veía antes). Los
-  archivos que abrió el shell para stdin y stdout no tienen nombre en la
-  línea de comandos: `RefuseStdFile` (`refuse_std_file`) compara un nombre
-  con el handle (`InHandle`/`OutHandle`; `fstat` del fd 0/1, o
-  `GetFileType`+`GetFileInformationByHandle` en Windows). Un open nuevo de
-  algo con nombre del usuario necesita su chequeo en el mismo lugar en los
-  dos ports, o el orden de los errores deja de coincidir. Bajo wine un
-  symlink de Unix nombrado como salida se sigue (se borra el destino y queda
-  el symlink colgando); un symlink de NTFS es un reparse point y el código
-  hace lo correcto, así que el caso del symlink va solo en el gate nativo.
+* **Todo archivo que la corrida escribe se abre con `CreateOutput` o
+  `CreateScratch`, o es un temporal de `CreateTempExclusive`**
+  (`src/streamio.pas`, `src/spillfile.pas`; en el Rust `create_output`,
+  `NamedScratch::create` y `TempFile`, en `osrep-core/src/util.rs`). La regla
+  es una: **ningún archivo que la corrida escribe es uno que lee, ni otro
+  que escribe**, por identidad (dispositivo e inodo; volumen e índice en
+  Windows) y no por nombre. El C++ compara `finame` con `foutname` como
+  cadenas, así que `osrep x.bin ./x.bin`, un hard link, `/dev/stdin < x`,
+  `/proc/self/fd/3` o `osrep x - >> x` truncaban la entrada al abrir la
+  salida y salían con 0; cada parche por nombre o por par de opciones dejaba
+  otra combinación afuera. `CheckFiles` (`check_files` en `modes.rs`) anota
+  lo que se lee (la entrada o el archivo de stdin, `-index=` al
+  descomprimir) y el archivo de stdout si la salida es `-` (que se compara,
+  nunca se trunca), y compara los nombres de salida que ya existen antes de
+  abrir nada, así un rechazo deja todo como estaba. Después cada salida se
+  abre **sin truncar** (`O_CREAT` sin `O_TRUNC`, primero con `O_EXCL` para
+  saber si existía; `OPEN_ALWAYS` y `ERROR_ALREADY_EXISTS` en Windows), se
+  compara la identidad del handle, y recién ahí se trunca: en Unix solo un
+  archivo regular, como `O_TRUNC`; en Windows sea lo que sea, como el
+  `OpenOptions` del Rust 1.77 (`NUL` sigue dando "Can't open NUL for
+  write"). Un open nuevo que no pase por ahí vuelve a abrir la puerta, y
+  nada lo nota salvo que el caso esté en las secciones de
+  `pascal_cli_conformance.sh` y `rust_cli_conformance.sh`. El rechazo puede
+  pasar adentro del decoder (`-vmfile=`, en el primer derrame) o del dedup,
+  donde el open fallido se convierte en otro error: por eso es una bandera
+  (`SameFileRefused`, `refused()`) que `Run` mira al final, y no un tipo de
+  error que atraviese cuatro capas. Las salidas, no los temporales, quedan
+  anotadas para borrarse si la corrida falla (`RemoveClaimedOutputs`): solo
+  si son regulares y el nombre sigue siendo ese archivo sin seguir symlinks
+  (`RemoveIfStill`), y con los handles ya cerrados (los `finally` de
+  `Compress`/`Decompress` lo hacen antes de que la excepción llegue a
+  `Run`). Un temporal se borra con `DeleteTemp`, que además deja de
+  contarlo: su número de inodo puede volver como otro archivo, y al
+  descomprimir un `-dup` el derrame del cuerpo se borra antes de que el
+  post-paso abra la salida. Nada se anota hasta `BeginRun`: las herramientas de prueba abren
+  como siempre (y en el Rust, los tests que comparten el proceso no ven los
+  archivos de los otros). Bajo wine un symlink de Unix nombrado como salida
+  se sigue (se borra el destino y queda el symlink colgando); un symlink de
+  NTFS es un reparse point y el código hace lo correcto, así que esos casos
+  van solo en el gate nativo.
 * **`{$IFDEF}` con un símbolo mal escrito evalúa falso en silencio.** FPC no
   avisa. A ytool le costó **toda la vida de su port**: un `CPU64BITS` (que no
   existe; el correcto es `CPU64`) hizo que *toda* build de 64 bits tomara la
@@ -481,7 +483,10 @@ diferencias.
   **lo libera `ZFree` a mano** (`HtFree`, `DcFree`, el `finally` de
   `Encode`); olvidarlo no rompe nada, pero deja el mapeo hasta que termina el
   proceso. Si el mapeo falla, cae a `SetLength` con el mismo argumento, y el
-  error por falta de memoria es el de siempre. Resultado: `-m0` 398 MB,
+  error por falta de memoria es el de siempre, `EOutOfMemory`, que `Encode`
+  convierte en `OutOfMemory` como el Rust (cuyas tablas salen de
+  `zeroed_vec_of`: un `vec!` que no entraba abortaba el proceso, exit 134,
+  con la cabecera del archivo en disco). Resultado: `-m0` 398 MB,
   stdin `-m3` 10 MB (el Rust toca 975).
 * **Una prueba de CDC necesita una entrada que distinga las dos rutas.** El
   hash de frontera se elige por la CPU (SSE4.2: CRC32C; si no, polinomial) y
@@ -582,7 +587,12 @@ diferencias.
   da EBADF (fin de archivo, ver abajo), y la salida `/dev/stdin` o
   `/proc/self/fd/0` falla igual (con `/dev/null`, `osrep -delete x
   /dev/stdin <&-` borraba `x`). El Rust hace lo mismo desde un `.init_array` que
-  corre antes que su runtime (`osrep-cli/src/stdio.rs`); como su `stdout()`
+  corre antes que su runtime (`osrep-cli/src/stdio.rs`). Su runtime ve
+  igual POLLNVAL en ese fd 0 de `O_PATH` y abre uno más, `/dev/null` en el
+  fd 3, que `main` cierra de entrada (`drop_runtime_null`): abierto, corría
+  en uno todos los fd siguientes respecto del Pascal, y `/proc/self/fd/3`
+  llevaba a un `/dev/null` (`-d -delete y.osr /proc/self/fd/3 <&-`
+  decodificaba ahí, salía con 0 y borraba `y.osr`). Como su `stdout()`
   se traga el EBADF, los datos van por el handle crudo (`data_stdout`, con
   el mismo `LineWriter` de 1024), y los mensajes, que nunca deben fallar,
   con escrituras que ignoran el error (`eprint!` y `print!` hacen panic con
@@ -823,7 +833,11 @@ diferencias.
   mismos ceros, sin chequear nada en el lazo más caliente. Para que eso valga,
   `RingEnsure` siempre pide `RING_TAIL` bytes detrás de la ranura que llena,
   la cola nace en cero (`ZTryNew`) y nunca se escribe, y `SliceCheck` la
-  excluye, porque para el Rust el anillo termina antes. El digest de `-m3` fue
+  excluye, porque para el Rust el anillo termina antes. Y el tope del anillo
+  se chequea restándole la cola, no sumándosela: `ringSize + RING_TAIL` daba
+  la vuelta con un anillo a menos de 64 bytes de 2^64
+  (`-b9223372036854775776b`), el chequeo pasaba, y salía un archivo de nada
+  con exit 0 (o SIGSEGV) donde el Rust dice `OutOfMemory`. El digest de `-m3` fue
   la segunda lectura de este tipo: la rama `perf8-lparam` arregló la del lote
   y el Rust siguió entrando en pánico en la otra (`-m3 -l17 -b4kb`), mientras
   el Pascal ya leía los ceros y daba el archivo correcto. Si alguna vez

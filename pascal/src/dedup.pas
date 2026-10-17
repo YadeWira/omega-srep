@@ -784,9 +784,10 @@ begin
   try
     try
       fb := TFileStream.Create(BodyPath, fmOpenRead or fmShareDenyNone);
-      fo := CreateRaw(OutPath);
+      { una salida de la corrida (streamio.pas, CreateOutput): leida tambien,
+        porque una referencia copia de lo que ya salio }
+      fo := CreateOutput(OutPath, True);
       if fo = nil then Abort;
-      ClaimOutput(OutPath, fo.Handle);
     except
       raise EDedup.CreateCode(DEDUP_ERR_INVAL);
     end;

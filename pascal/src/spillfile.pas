@@ -12,6 +12,9 @@ unit SpillFile;
       nombre esperado se seguia: el contenido descomprimido se escribia donde
       apuntara, fuera del directorio temporal, y ahi quedaba. Si el nombre ya
       existe, falla -- una sola vez, sin reintentar, igual que el Rust.
+    * anotado como uno de los archivos que la corrida escribe (streamio.pas,
+      NoteTemp; el TempFile del Rust): una salida que lleva a el con otro
+      nombre (/proc/self/fd/N) se rechaza. Se borra con DeleteTemp.
 
   Todo lo que depende de la plataforma vive aca. La cadena de $IF termina en
   $FATAL: un simbolo mal escrito no puede caer en silencio en la otra rama
@@ -40,7 +43,7 @@ function CreateTempExclusive(const Prefix: AnsiString;
 
 implementation
 
-uses SysUtils
+uses SysUtils, StreamIO
 {$IF DEFINED(UNIX)}
   , BaseUnix, Unix
 {$ELSEIF DEFINED(WINDOWS)}
@@ -134,6 +137,7 @@ begin
           IntToStr(NowNanos) + '-' + IntToStr(n);
   h := OpenExclusive(Path);
   if h = feInvalidHandle then Exit;
+  NoteTemp(h);
   Result := TOwnedHandleStream.Create(h);
 end;
 

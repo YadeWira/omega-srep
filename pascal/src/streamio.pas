@@ -70,39 +70,105 @@ type
     A, B: QWord;
   end;
 
-{ Un nombre que esta corrida abrio para escribir (util.rs, OpenedName).
-  RegularFileId da la identidad de H si es un archivo regular: stdout, un
-  pipe, un FIFO o un dispositivo (/dev/null, NUL, CON) no lo son, asi que
-  nunca se borran -- tampoco como root, que si podria borrar /dev/null.
-  RemoveIfStill borra Path solo si el nombre sigue siendo ese mismo archivo, y
-  no por un symlink (el archivo al que lleva conserva lo escrito). Con los
-  handles ya cerrados: Windows no borra un archivo abierto. }
-function RegularFileId(H: THandle; out Id: TFileId): Boolean;
-procedure RemoveIfStill(const Path: AnsiString; const Id: TFileId);
+{ ----------------------------------------- los archivos de una corrida ---
 
-{ Si dos nombres llevan al mismo archivo regular (siguiendo symlinks): un hard
-  link, ./x por x. Un nombre que no existe, un directorio, un FIFO o un
-  dispositivo no son el mismo que nada (util.rs, same_file). }
-function SameRegularFile(const A, B: AnsiString): Boolean;
+  util.rs, "the files of one run": los archivos que una corrida lee y
+  escribe, por identidad, y la regla que siguen: NINGUN ARCHIVO QUE LA
+  CORRIDA ESCRIBE ES UNO QUE LEE, NI OTRO QUE ESCRIBE.
 
-{ Si Path lleva al archivo regular del que se lee stdin (`< x`) o al que va
-  stdout (`> x`), con H su handle (InHandle, OutHandle): los abrio el shell,
-  asi que ningun nombre de la linea de comandos lo dice. Una terminal, un
-  pipe o un dispositivo no son un archivo que perder (util.rs, is_std_file). }
-function IsStdFile(const Path: AnsiString; H: THandle): Boolean;
+  Los nombres no lo pueden decir: x, ./x, un hard link o un symlink, /dev/stdin,
+  /proc/self/fd/3, X en Windows y el archivo de una redireccion del shell
+  (`< x`, `>> x`, `1<> x`) pueden ser el mismo archivo, y hasta la 2.3.0
+  cualquiera de ellos hacia de la entrada una salida: `osrep x.bin ./x.bin`
+  truncaba la entrada y salia con 0 y un archivo de nada. Entonces:
 
-{ Las salidas de una corrida que falla (util.rs, claim_output): lo que se
-  creo o trunco con un nombre dado -- el archivo, la salida de -d, -index= --
-  para que una corrida que falla no deje un archivo a medias. El C++ lo
-  intenta ("Delete output files on error", srep.cpp:1339), pero solo llegan
-  ahi sus `goto cleanup`; cada error() sale en el acto.
-  ClaimOutput anota H, recien abierto como Path, si es un archivo regular
-  (RegularFileId), y RemoveClaimedOutputs borra cada uno con RemoveIfStill,
-  salvo que sea el mismo archivo que alguna de las entradas de la corrida
-  (Inputs: la entrada, y -index= al descomprimir; '' no cuenta). Hay que
-  llamarlo con los handles ya cerrados. }
-procedure ClaimOutput(const Path: AnsiString; H: THandle);
-procedure RemoveClaimedOutputs(const Inputs: array of AnsiString);
+    * lo que la corrida lee se anota antes de abrir nada: la entrada con
+      nombre o el archivo de stdin, y -index= al descomprimir (NoteRead,
+      NoteReadStdin);
+    * el archivo de stdout, si la salida es '-', se compara como cualquier
+      salida y se anota como escrito, pero nunca se trunca (NoteStdout);
+    * los nombres que la corrida va a escribir y ya existen se comparan antes
+      del primer open (CheckNames): dos nombres de un archivo que existe se
+      rechazan antes de truncar cualquiera de los dos;
+    * despues cada archivo se abre para escribir SIN truncar, su identidad sale
+      del handle abierto, y se rechaza si la corrida lo lee o ya lo escribe;
+      uno rechazado que este open creo se borra, uno que existia queda como
+      estaba. Recien ahi se trunca y se anota como escrito: el archivo, la
+      salida de -d, -index= al comprimir, la del post-paso de -dup
+      (CreateOutput), el spool de -temp= y el derrame de -vmfile=
+      (CreateScratch), y los temporales (spillfile.pas, NoteTemp).
+
+  Un rechazo es "Input and output files should have different names", exit
+  3, sea cual sea el error que el que llamo hizo del open fallido
+  (SameFileRefused). Solo cuentan los archivos regulares: una terminal, un
+  pipe, un FIFO o un dispositivo (/dev/null, NUL) no son un archivo que
+  perder, y /dev/null como entrada y salida sigue andando.
+
+  Nada se anota hasta BeginRun: las herramientas de prueba abren sus salidas
+  como siempre. }
+
+{ empieza a anotar los archivos de esta corrida: la CLI, una vez, antes de
+  abrir nada }
+procedure BeginRun;
+{ un archivo que la corrida lee, por nombre: la entrada, -index= al
+  descomprimir }
+procedure NoteRead(const Path: AnsiString);
+{ el archivo del que se lee stdin (`< x`), si la entrada es '-' }
+procedure NoteReadStdin;
+{ el archivo al que va stdout (`> x`, `>> x`, `1<> x`), si la salida es '-':
+  se escribe, nunca se trunca. False si la corrida lo lee: rechazado. }
+function NoteStdout: Boolean;
+{ los nombres que la corrida va a escribir (la salida, -index= al comprimir,
+  -temp=, -vmfile=), antes de abrir ninguno: los que existen no pueden ser un
+  archivo que la corrida lee, el de stdout, ni uno el otro. False:
+  rechazado. Cada uno se compara otra vez al abrirlo; esto es lo que evita
+  que una corrida rechazada haya truncado el primero de dos nombres de un
+  archivo cuando llega al segundo. }
+function CheckNames(const Names: array of AnsiString): Boolean;
+{ si un open se rechazo por la regla: el que llamo informa el rechazo, sea
+  cual sea el error que hizo del open fallido }
+function SameFileRefused: Boolean;
+
+{ Una salida de la corrida -- el archivo, la salida de -d, -index= al
+  comprimir, la del post-paso de -dup -- abierta con la regla (ReadToo: para
+  leer tambien) y borrada si la corrida falla (RemoveClaimedOutputs); nil si
+  no se pudo abrir o se rechazo. Mismo open que CreateRaw / CreateWriteRaw,
+  pero sin truncar hasta haber comparado. }
+function CreateOutput(const Path: AnsiString; ReadToo: Boolean): TRawFileStream;
+
+type
+  { un temporal con un nombre que dio el usuario (-temp=, -vmfile=): si es
+    un archivo regular que esta corrida abrio, se borra al final como en el
+    C++ (srep.cpp:1336, decompress.cpp:233) -- solo mientras el nombre siga
+    siendo ese archivo, y no por un symlink (util.rs, NamedScratch) }
+  TNamedScratch = record
+    Named: Boolean;
+    Path: AnsiString;
+    Id: TFileId;
+  end;
+
+{ Path abierto con la regla para escribir (y leer, con ReadToo) y truncado;
+  THandle(-1) si no se pudo abrir o se rechazo (el errno / GetLastError es el
+  del open). Un nombre que no se pudo abrir no es de esta corrida: Named
+  queda en falso y RemoveScratch no lo toca. }
+function CreateScratch(const Path: AnsiString; ReadToo: Boolean; out Scratch: TNamedScratch): THandle;
+{ con los handles ya cerrados: Windows no borra un archivo abierto }
+procedure RemoveScratch(var Scratch: TNamedScratch);
+
+{ un temporal propio, recien creado en exclusiva (spillfile.pas): cuenta como
+  escrito mientras exista. DeleteTemp lo borra y deja de contarlo: su numero
+  puede volver como otro archivo. }
+procedure NoteTemp(H: THandle);
+procedure DeleteTemp(const Path: AnsiString);
+
+{ La corrida fallo: borra las salidas que creo o trunco, para que no quede un
+  archivo a medias. El C++ lo intenta ("Delete output files on error",
+  srep.cpp:1339), pero solo llegan ahi sus `goto cleanup`; cada error() sale
+  en el acto. Solo archivos regulares, y un nombre se borra solo mientras
+  siga siendo el archivo que se abrio, no por un symlink. Un archivo que la
+  corrida lee nunca esta entre ellos: se rechaza antes de abrirlo para
+  escribir. Con los handles ya cerrados. }
+procedure RemoveClaimedOutputs;
 
 implementation
 
@@ -114,7 +180,7 @@ uses
 {$ELSE}
   {$FATAL streamio.pas: no hay implementacion para esta plataforma}
 {$ENDIF}
-  SysUtils;
+  SysUtils, OutRaw;
 
 {$IF DEFINED(WINDOWS)}
 const
@@ -230,9 +296,15 @@ begin
   Result := TRawFileStream.Create(h);
 end;
 
+type
+  TFileIdArray = array of TFileId;
+
 var
+  Armed: Boolean = False;
+  Refused: Boolean = False;
+  Reads, Writes: TFileIdArray;
   ClaimedPath: array of AnsiString;
-  ClaimedId: array of TFileId;
+  ClaimedId: TFileIdArray;
 
 {$IF DEFINED(UNIX)}
 { fstat: un archivo regular, nada mas }
@@ -249,15 +321,6 @@ function IdOfName(const Path: AnsiString; out Id: TFileId): Boolean;
 var st: BaseUnix.Stat;
 begin
   Result := (fpLStat(PChar(Path), st) = 0) and fpS_ISREG(st.st_mode);
-  Id.A := QWord(st.st_dev);
-  Id.B := QWord(st.st_ino);
-end;
-
-{ stat: lo que sea a lo que lleve el nombre }
-function IdOfPath(const Path: AnsiString; out Id: TFileId): Boolean;
-var st: BaseUnix.Stat;
-begin
-  Result := fpStat(PChar(Path), st) = 0;
   Id.A := QWord(st.st_dev);
   Id.B := QWord(st.st_ino);
 end;
@@ -319,12 +382,6 @@ begin
             ((attr and (ID_ATTR_DIRECTORY or ID_ATTR_REPARSE_POINT)) = 0);
 end;
 
-function IdOfPath(const Path: AnsiString; out Id: TFileId): Boolean;
-var attr: DWord;
-begin
-  Result := IdOfOpen(Path, ID_FLAG_BACKUP_SEMANTICS, attr, Id);
-end;
-
 { el nombre lleva a un archivo de disco que no es un directorio (IdOfHandle
   sobre lo que abre) }
 function IdOfPathRegular(const Path: AnsiString; out Id: TFileId): Boolean;
@@ -340,59 +397,286 @@ begin
 end;
 {$ENDIF}
 
-function RegularFileId(H: THandle; out Id: TFileId): Boolean;
+{ ---------------------------------------------- abrir sin truncar --- }
+
+{$IF DEFINED(UNIX)}
+{ open(O_CREAT) sin O_TRUNC, y si el archivo ya estaba (util.rs,
+  open_no_truncate): primero en exclusiva (O_EXCL) y, si el nombre existe, un
+  open comun. Un symlink colgado falla los dos, y el tercer open crea lo que
+  nombra, como File::create; cualquier otra falla del open exclusivo da con
+  el tercero el error que daba File::create. }
+function OpenNoTrunc(const Path: AnsiString; ReadToo: Boolean; out Existed: Boolean): THandle;
+var acc: cint;
+
+  function OpenWith(Flags: cint): THandle;
+  begin
+    repeat
+      Result := fpOpen(PChar(Path), Flags, &666);
+    until (Result <> THandle(-1)) or (fpgeterrno <> ESysEINTR);
+  end;
+
 begin
-  Result := IdOfHandle(H, Id);
+  if ReadToo then acc := O_RDWR else acc := O_WRONLY;
+  Existed := False;
+  Result := OpenWith(acc or O_CREAT or O_EXCL);
+  if Result <> THandle(-1) then Exit;
+  if fpgeterrno = ESysEEXIST then
+  begin
+    Result := OpenWith(acc);
+    if Result <> THandle(-1) then
+    begin
+      Existed := True;
+      Exit;
+    end;
+    if fpgeterrno <> ESysENOENT then Exit(THandle(-1));
+  end
+  else Existed := True;
+  Result := OpenWith(acc or O_CREAT);
+end;
+
+{ el O_TRUNC despues de comparar: sobre un archivo regular, y sobre nada mas
+  (un FIFO, una terminal o /dev/null ignoran O_TRUNC, y ftruncate falla ahi) }
+function TruncateOpened(H: THandle; Regular: Boolean): Boolean;
+begin
+  Result := (not Regular) or (fpFtruncate(H, 0) = 0);
+end;
+
+function SaveOsError: LongInt;
+begin
+  Result := fpgeterrno;
+end;
+
+procedure RestoreOsError(E: LongInt);
+begin
+  fpseterrno(E);
+end;
+{$ELSE}
+{ CreateFileW con OPEN_ALWAYS, la disposicion del OpenOptions del Rust 1.77
+  para create+truncate, pero sin su truncado (RustOpen), y si el archivo ya
+  estaba (ERROR_ALREADY_EXISTS). El mismo acceso y el mismo share mode. }
+function OpenNoTrunc(const Path: AnsiString; ReadToo: Boolean; out Existed: Boolean): THandle;
+var w: UnicodeString; acc: DWord;
+begin
+  w := UnicodeString(Path);
+  acc := GENERIC_WRITE;
+  if ReadToo then acc := acc or GENERIC_READ;
+  Result := CreateFileW(PWideChar(w), acc, FILE_SHARE_READ or FILE_SHARE_WRITE or FILE_SHARE_DELETE,
+                        nil, OPEN_ALWAYS, 0, 0);
+  Existed := (Result <> INVALID_HANDLE_VALUE) and (GetLastError = ERROR_ALREADY_EXISTS);
+  if Result = INVALID_HANDLE_VALUE then Result := THandle(-1);
+end;
+
+{ el truncado del create+truncate del Rust 1.77 (#115745): el fin de archivo
+  en 0 sea lo que sea el handle, y si falla, falla el open (NUL o un pipe:
+  "Can't open NUL for write", como antes) }
+function TruncateOpened(H: THandle; Regular: Boolean): Boolean;
+var eof: Int64;
+begin
+  eof := 0;
+  Result := SetFileInformationByHandle(H, FILE_END_OF_FILE_INFO_CLASS, @eof, SizeOf(eof));
+end;
+
+function SaveOsError: LongInt;
+begin
+  Result := LongInt(GetLastError);
+end;
+
+procedure RestoreOsError(E: LongInt);
+begin
+  SetLastError(DWord(E));
+end;
+{$ENDIF}
+
+{ ------------------------------------------ los archivos de una corrida --- }
+
+function SameId(const A, B: TFileId): Boolean; inline;
+begin
+  Result := (A.A = B.A) and (A.B = B.B);
+end;
+
+function InIds(const L: TFileIdArray; const Id: TFileId): Boolean;
+var i: SizeInt;
+begin
+  Result := False;
+  for i := 0 to High(L) do
+    if SameId(L[i], Id) then Exit(True);
+end;
+
+procedure AddId(var L: TFileIdArray; const Id: TFileId);
+begin
+  SetLength(L, Length(L) + 1);
+  L[High(L)] := Id;
+end;
+
+procedure DropId(var L: TFileIdArray; const Id: TFileId);
+var i: SizeInt;
+begin
+  for i := 0 to High(L) do
+    if SameId(L[i], Id) then
+    begin
+      L[i] := L[High(L)];
+      SetLength(L, Length(L) - 1);
+      Exit;
+    end;
+end;
+
+function Taken(const Id: TFileId): Boolean;
+begin
+  Result := InIds(Reads, Id) or InIds(Writes, Id);
 end;
 
 procedure RemoveIfStill(const Path: AnsiString; const Id: TFileId);
 var now_: TFileId;
 begin
-  if IdOfName(Path, now_) and (now_.A = Id.A) and (now_.B = Id.B) then
+  if IdOfName(Path, now_) and SameId(now_, Id) then
     SysUtils.DeleteFile(Path);
 end;
 
-function SameRegularFile(const A, B: AnsiString): Boolean;
-var ia, ib: TFileId;
+procedure BeginRun;
 begin
-  Result := IdOfPathRegular(A, ia) and IdOfPathRegular(B, ib) and (ia.A = ib.A) and (ia.B = ib.B);
+  Armed := True;
 end;
 
-function IsStdFile(const Path: AnsiString; H: THandle): Boolean;
-var ih, ip: TFileId;
+procedure NoteRead(const Path: AnsiString);
+var id: TFileId;
 begin
-  Result := IdOfHandle(H, ih) and IdOfPathRegular(Path, ip) and (ih.A = ip.A) and (ih.B = ip.B);
+  if Armed and IdOfPathRegular(Path, id) then AddId(Reads, id);
 end;
 
-procedure ClaimOutput(const Path: AnsiString; H: THandle);
-var id: TFileId; n: SizeInt;
+procedure NoteReadStdin;
+var id: TFileId;
 begin
-  if not IdOfHandle(H, id) then Exit;
-  n := Length(ClaimedPath);
-  SetLength(ClaimedPath, n + 1);
-  SetLength(ClaimedId, n + 1);
-  ClaimedPath[n] := Path;
-  ClaimedId[n] := id;
+  if Armed and IdOfHandle(InHandle, id) then AddId(Reads, id);
 end;
 
-procedure RemoveClaimedOutputs(const Inputs: array of AnsiString);
-var keep: array of TFileId; k: TFileId; i, j, n: SizeInt; isInput: Boolean;
+function NoteStdout: Boolean;
+var id: TFileId;
 begin
-  SetLength(keep, Length(Inputs));
+  Result := True;
+  if not (Armed and IdOfHandle(OutHandle, id)) then Exit;
+  if Taken(id) then
+  begin
+    Refused := True;
+    Exit(False);
+  end;
+  AddId(Writes, id);
+end;
+
+function CheckNames(const Names: array of AnsiString): Boolean;
+var ids: TFileIdArray; id: TFileId; i, j, n: SizeInt;
+begin
+  Result := True;
+  SetLength(ids, Length(Names));
   n := 0;
-  for i := 0 to High(Inputs) do
-    if (Inputs[i] <> '') and IdOfPath(Inputs[i], k) then
+  for i := 0 to High(Names) do
+    if IdOfPathRegular(Names[i], id) then
     begin
-      keep[n] := k;
+      ids[n] := id;
       Inc(n);
     end;
-  for i := 0 to High(ClaimedPath) do
+  for i := 0 to n - 1 do
   begin
-    isInput := False;
-    for j := 0 to n - 1 do
-      if (keep[j].A = ClaimedId[i].A) and (keep[j].B = ClaimedId[i].B) then isInput := True;
-    if not isInput then RemoveIfStill(ClaimedPath[i], ClaimedId[i]);
+    for j := 0 to i - 1 do
+      if SameId(ids[j], ids[i]) then
+      begin
+        Refused := True;
+        Exit(False);
+      end;
+    if Taken(ids[i]) then
+    begin
+      Refused := True;
+      Exit(False);
+    end;
   end;
+end;
+
+function SameFileRefused: Boolean;
+begin
+  Result := Refused;
+end;
+
+{ Path abierto con la regla (util.rs, Files::open): sin truncar, rechazado si
+  es un archivo que la corrida lee o escribe, y recien despues truncado.
+  IsReg e Id: si es un archivo regular, y su identidad. }
+function OpenChecked(const Path: AnsiString; ReadToo: Boolean; out IsReg: Boolean;
+                     out Id: TFileId): THandle;
+var existed: Boolean; now_: TFileId; e: LongInt;
+begin
+  IsReg := False;
+  Id.A := 0; Id.B := 0;
+  Result := OpenNoTrunc(Path, ReadToo, existed);
+  if Result = THandle(-1) then Exit;
+  IsReg := IdOfHandle(Result, Id);
+  if Armed and IsReg and Taken(Id) then
+  begin
+    Refused := True;
+    FileClose(Result);
+    if (not existed) and IdOfName(Path, now_) and SameId(now_, Id) then SysUtils.DeleteFile(Path);
+    Exit(THandle(-1));
+  end;
+  if existed and not TruncateOpened(Result, IsReg) then
+  begin
+    e := SaveOsError;
+    FileClose(Result);
+    RestoreOsError(e);
+    Exit(THandle(-1));
+  end;
+  if Armed and IsReg then AddId(Writes, Id);
+end;
+
+function CreateOutput(const Path: AnsiString; ReadToo: Boolean): TRawFileStream;
+var h: THandle; isReg: Boolean; id: TFileId; n: SizeInt;
+begin
+  h := OpenChecked(Path, ReadToo, isReg, id);
+  if h = THandle(-1) then Exit(nil);
+  if Armed and isReg then
+  begin
+    n := Length(ClaimedPath);
+    SetLength(ClaimedPath, n + 1);
+    SetLength(ClaimedId, n + 1);
+    ClaimedPath[n] := Path;
+    ClaimedId[n] := id;
+  end;
+  Result := TRawFileStream.Create(h);
+end;
+
+function CreateScratch(const Path: AnsiString; ReadToo: Boolean; out Scratch: TNamedScratch): THandle;
+var isReg: Boolean; id: TFileId;
+begin
+  Scratch.Named := False;
+  Scratch.Path := Path;
+  Scratch.Id.A := 0; Scratch.Id.B := 0;
+  Result := OpenChecked(Path, ReadToo, isReg, id);
+  if Result = THandle(-1) then Exit;
+  Scratch.Named := isReg;
+  Scratch.Id := id;
+end;
+
+procedure RemoveScratch(var Scratch: TNamedScratch);
+begin
+  if not Scratch.Named then Exit;
+  Scratch.Named := False;
+  RemoveIfStill(Scratch.Path, Scratch.Id);
+  DropId(Writes, Scratch.Id);
+end;
+
+procedure NoteTemp(H: THandle);
+var id: TFileId;
+begin
+  if Armed and IdOfHandle(H, id) then AddId(Writes, id);
+end;
+
+procedure DeleteTemp(const Path: AnsiString);
+var id: TFileId;
+begin
+  if IdOfName(Path, id) then DropId(Writes, id);
+  SysUtils.DeleteFile(Path);
+end;
+
+procedure RemoveClaimedOutputs;
+var i: SizeInt;
+begin
+  for i := 0 to High(ClaimedPath) do RemoveIfStill(ClaimedPath[i], ClaimedId[i]);
   ClaimedPath := nil;
   ClaimedId := nil;
 end;

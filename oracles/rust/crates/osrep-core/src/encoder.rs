@@ -526,9 +526,11 @@ pub fn encode<R: Read + Seek, W: Write>(
                 Kind::Inmem | Kind::Cdc | Kind::CdcZpaq | Kind::Digest
             );
             let precompute_digests = kind == Kind::Digest;
-            // `None` when `bitarr` does not fit (a huge `-aN`): the C++'s
-            // "Can't allocate memory", exit 4 here. No `bitarr` at all when
-            // the scan fell back to `compress<0>` (see `accelerator` above).
+            // `None` when a table does not fit (`bitarr` with a huge `-aN`,
+            // the others sized for stdin's 25 GiB default under a memory
+            // limit): the C++'s "Can't allocate memory", exit 4 here. No
+            // `bitarr` at all when the scan fell back to `compress<0>` (see
+            // `accelerator` above).
             Some(
                 HashTable::new(
                     round_matches,
@@ -571,7 +573,8 @@ pub fn encode<R: Read + Seek, W: Write>(
         dict_min_match,
         dict_chunk,
         base_len,
-    );
+    )
+    .ok_or(EncodeError::OutOfMemory)?;
 
     let mut compsize = container::ARCHIVE_HEADER_SIZE as u64 + seed_size as u64;
 

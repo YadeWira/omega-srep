@@ -33,9 +33,12 @@
 //!   before. Not `/dev/null`: the output can also be named `/dev/stdin` or
 //!   `/proc/self/fd/0`, and `osrep -delete x /dev/stdin <&-` wrote the
 //!   archive into `/dev/null` and deleted `x`; on a directory that open
-//!   fails with EISDIR as for fds 1 and 2. (The runtime then sees POLLNVAL
-//!   on fd 0 and opens one more `/dev/null`, which lands on fd 3 and does
-//!   nothing.)
+//!   fails with EISDIR as for fds 1 and 2. The runtime then sees POLLNVAL
+//!   on fd 0 and opens one more `/dev/null`, on fd 3; [`reserve`] closes it
+//!   again first thing in `main`. Left open it shifted every later fd by
+//!   one from the Pascal's, and was a `/dev/null` a name could reach:
+//!   `osrep -d -delete y.osr /proc/self/fd/3 <&-` decoded into it, exited 0
+//!   and deleted `y.osr`.
 //!
 //! On Windows nothing is reopened: handles are not numbered like fds, and a
 //! missing std handle is null. [`data_stdout`] fails on a null handle with
@@ -77,8 +80,9 @@ pub fn out_text(s: &str) {
 /// input), fds 1 and 2 on `/` read-only (see the module comment). If the
 /// open fails the runtime aborts, and so does this.
 #[cfg(target_os = "linux")]
-mod reserve {
+pub mod reserve {
     use std::os::raw::{c_char, c_int};
+    use std::sync::atomic::{AtomicI32, Ordering};
 
     extern "C" {
         fn fcntl(fd: c_int, cmd: c_int, ...) -> c_int;
@@ -107,8 +111,39 @@ mod reserve {
                     if r == -1 {
                         abort();
                     }
+                    if fd == 0 {
+                        // The runtime will see POLLNVAL on this O_PATH fd and
+                        // open /dev/null read-write on the lowest free fd:
+                        // remembered, for `drop_runtime_null`.
+                        let mut n = 3;
+                        while fcntl(n, F_GETFD) != -1 {
+                            n += 1;
+                        }
+                        RUNTIME_NULL.store(n, Ordering::Relaxed);
+                    }
                 }
             }
+        }
+    }
+
+    pub static RUNTIME_NULL: AtomicI32 = AtomicI32::new(-1);
+
+    /// Closes the `/dev/null` the runtime opened for the O_PATH fd 0, so the
+    /// fds after 2 are numbered as in the Pascal (the input on fd 3), and no
+    /// `/proc/self/fd/N` leads to a `/dev/null` the Pascal does not have.
+    /// Only that fd, and only if it is `/dev/null` (character device 1:3).
+    pub fn drop_runtime_null() {
+        use std::os::fd::FromRawFd;
+        use std::os::unix::fs::{FileTypeExt, MetadataExt};
+        let n = RUNTIME_NULL.swap(-1, Ordering::Relaxed);
+        if n < 3 {
+            return;
+        }
+        // SAFETY: n was free before the runtime ran; only its /dev/null is closed
+        let f = unsafe { std::fs::File::from_raw_fd(n) };
+        match f.metadata() {
+            Ok(m) if m.file_type().is_char_device() && m.rdev() == 0x103 => drop(f),
+            _ => std::mem::forget(f),
         }
     }
 

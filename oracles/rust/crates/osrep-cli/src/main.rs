@@ -19,6 +19,8 @@ use std::process::ExitCode;
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 fn main() -> ExitCode {
+    #[cfg(target_os = "linux")]
+    stdio::reserve::drop_runtime_null();
     let argv: Vec<String> = std::env::args().skip(1).collect();
 
     // `--version` / `--help` are answered before either parser runs

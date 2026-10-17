@@ -192,9 +192,9 @@ what happened in 2.0.0.
   directory `/` (fd 0 with `O_PATH`, so it still reads as empty), so opening
   it again for writing cannot land on `/dev/null`; `osrep -delete x
   /dev/stdin <&-` deleted `x` in both builds. The released Pascal binary
-  already failed with `-` on Linux (exit 4, `x` kept). The C++ 1.0.7 does
-  not: `-delete x - >&-` opens its input on fd 1, its writes to stdout fail
-  silently, and it exits 0 and deletes `x`.
+  already failed with `-` on Linux (exit 4, `x` kept). The C++ 1.0.7 opens
+  its input on fd 1 and its writes to stdout fail silently: with a small `x`
+  it exits 0 and deletes it; a larger one can hang or fail.
 - **A closed or missing stdin reads as empty in both builds.** On Windows
   with no stdin handle, and on Linux with fd 0 opened write-only, the Pascal
   said "Can't read from stdin" or "Can't read from input file" (exit 3)
@@ -219,22 +219,21 @@ what happened in 2.0.0.
   `error()` exits before. Now a run that fails with exit 2, 3 or 4 removes
   the regular files it created or truncated under the names it was given --
   the archive, the decompressed file, and the `-index=` file that
-  compression writes (on decompression `-index=` is read, and never removed)
-  -- and the exit code and the message are unchanged. A file that already
-  existed under the output name is removed as well: the open had already
-  truncated it, so its old contents were gone either way. Never removed:
-  stdout, pipes, FIFOs and devices (`/dev/null`; `NUL` and `CON` on Windows),
-  a symlink named as the output (the file it points to keeps what was
-  written), a file the run reads (the input, `-index=` when decompressing),
-  under whatever name, and a file the run failed before opening (`osrep
-  missing.bin x.osr` leaves an existing `x.osr` alone). What is removed is
-  the name: another hard link to the output keeps the partial bytes, like
-  the file behind a symlink. The files are closed before they are removed,
-  which Windows needs. The scratch files (the stdin/stdout spools, the `-dup`
-  bodies, the `-vmfile=` spill) were already removed on failure. A run killed
-  by a signal (Ctrl-C) removes nothing, as before. This replaces the 2.3.0
-  known issue "When compression fails with exit 4, the partial output file
-  is left on disk".
+  compression writes (on decompression `-index=` is read) -- and the exit
+  code and the message are unchanged. A file that already existed under the
+  output name is removed as well: the run had truncated it, so its old
+  contents were gone either way. Never removed: stdout, pipes, FIFOs and
+  devices (`/dev/null`; `NUL` and `CON` on Windows), a symlink named as the
+  output (the file it points to keeps what was written), a file the run
+  reads (it is never opened for writing, see below), and a file the run
+  failed before opening (`osrep missing.bin x.osr` leaves an existing `x.osr`
+  alone). What is removed is the name: another hard link to the output keeps
+  the partial bytes, like the file behind a symlink. The files are closed
+  before they are removed, which Windows needs. The scratch files (the
+  stdin/stdout spools, the `-dup` bodies, the `-vmfile=` spill) were already
+  removed on failure. A run killed by a signal (Ctrl-C) removes nothing, as
+  before. This replaces the 2.3.0 known issue "When compression fails with
+  exit 4, the partial output file is left on disk".
 - **Decoding a damaged archive no longer leaves its intact leading blocks
   on disk** (that is the entry above, seen from the other side). To keep
   them, give an output name that is a symlink to a regular file, e.g.
@@ -243,45 +242,47 @@ what happened in 2.0.0.
   Not `-` (decoded to a scratch file first, so nothing reaches stdout) and
   not a pipe or a FIFO (the decoder seeks its output: "Illegal seek");
   Windows has no `/dev/stdout`.
-- **The output could be the input under another name, and the input was
-  lost.** `osrep x.bin ./x.bin` (or a hard link, or a symlink to `x.bin`)
-  truncated `x.bin` when it opened the output, compressed what was left --
-  nothing -- and exited 0 with an archive of nothing; `osrep -d a.osr
-  ./a.osr` lost the archive the same way. The C++ refuses an output named
-  like the input ("Input and output files should have different names",
-  exit 3) by comparing the two strings, and the ports copied that. They now
-  also compare file identity (device and inode; volume serial number and
-  file index on Windows), before the open that would truncate one with the
-  other, with the same message and exit code: the input and the output;
-  `-index=` and the input when compressing, or the output when
-  decompressing (`osrep -d -index=k.ix x.osr ./k.ix` emptied the index);
-  the `-temp=` spool and the archive or `-index=`; and `-vmfile=` and the
-  archive, the index or the output (the first spill truncated it, and the
-  end of the run removed it: `osrep -delete -vmfile=./o.out -d f.osr o.out`
-  exited 0 with neither `f.osr` nor `o.out` left; an output that does not
-  exist yet is checked again once it is created). The files the shell
-  opened for stdin and stdout count as names too: the output, `-temp=`,
-  `-index=` and `-vmfile=` are refused as the file stdin is read from
-  (`osrep - x < x` truncated `x` before reading it; `osrep -temp=d - o.osr
-  < d` wrote an archive of nothing and deleted `d`), and `-temp=`,
-  `-index=` and `-vmfile=` as the file stdout goes to when the archive or
-  the decoded data does (`osrep -temp=./o.osr < x > o.osr` exited 0 and
-  deleted `o.osr`). A refused run leaves every file as it was: a name that
-  already exists is checked before the open that would truncate it. Only
-  regular files count: `/dev/null` and `/dev/../dev/null` as input and
-  output lose nothing and still run (the same string twice is refused by
-  the C++'s own check).
+- **A file could be written under one name while it was read, or written,
+  under another.** The C++ refuses an output named like the input ("Input
+  and output files should have different names", exit 3) by comparing the
+  two strings, and the ports did the same. Any other name for the file got
+  through, and opening the output truncated the input before it was read:
+  `osrep x.bin ./x.bin` and `osrep x - >> x` exited 0 with an archive of
+  nothing, and with `-delete` deleted `x`; `-index=`, `-temp=` and
+  `-vmfile=` could land on the input, the output or each other the same way.
+  The ports now follow one rule: no file a run writes is a file it reads or
+  another file it writes. Every file a run writes -- the archive or the
+  decoded file, `-index=` when compressing, the `-temp=` spool, the
+  `-vmfile=` spill, its scratch files, and stdout's file when the output is
+  `-` -- is opened without truncation and compared by identity (device and
+  inode; volume serial number and file index on Windows) with the files it
+  reads (the input or stdin's file, and `-index=` when decompressing) and
+  the ones it already writes. A match is refused with the C++'s message and
+  exit 3; otherwise the file is truncated then, and not before. Comparing
+  files rather than names covers every spelling, link, redirection and
+  `/dev` or `/proc` path at once. The names that already exist are compared
+  before anything is opened, so a refused run leaves every file as it was,
+  with one exception: `-temp=` or `-index=` naming a symlink to an output
+  that does not exist yet creates that file before the output is refused,
+  and it is left. `-vmfile=` is compared when it is opened, at the decode's
+  first spill: a decode that never spills never opens it. Only regular files
+  count: `/dev/null` as input and output, a terminal, a pipe or a device
+  lose nothing and still run.
 - **On a 32-bit build, `-b4g` (and any multiple of 4 GiB) wrapped around to
   0**: the Pascal `.exe` failed with "Division by zero" (exit 4) and the Rust
   i686 build panicked (exit 101); `-b4097m` became 1 MiB and wrote a
   different archive from the 64-bit builds'. A `-b` past the address space
   now saturates, and the run fails with `OutOfMemory` (exit 4), like
-  `-b5g`. On 64-bit builds the Rust wrapped too, a little higher: `-b` of
-  2^63 bytes or a little more made the ring's two headroom blocks 0 and
-  panicked (exit 101, the archive's header left behind), and a `-d` within a
-  block of 2^64 rounded up to a small ring and aborted on the in-memory
-  dictionary (exit 134; the Pascal said "Out of memory"). The ring size is
-  now checked in both ports: `OutOfMemory`, exit 4. `-b0` divided by zero on every build (a panic in the Rust); it is
+  `-b5g`. On 64-bit builds the ring wrapped too, higher up: in the Rust,
+  `-b` of 2^63 bytes or a little more made the ring's two headroom blocks 0
+  and panicked (exit 101, the archive's header left behind), and a `-d`
+  within a block of 2^64 rounded up to a small ring and aborted on the
+  in-memory dictionary (exit 134; the Pascal said "Out of memory"); in the
+  Pascal, a ring a few bytes short of 2^64 (`-b9223372036854775776b`) wrapped
+  when its 64-byte tail was added, and the run wrote an archive of nothing
+  with exit 0 (deleting the input with `-delete`), crashed, or said "Out of
+  memory". The ring size is now checked in both ports: `OutOfMemory`, exit 4.
+  `-b0` divided by zero on every build (a panic in the Rust); it is
   `OutOfMemory` too, which is what the C++ says ("Can't allocate memory: 0 mb
   required", exit 5). And on Linux the Pascal, when the system would not map
   the whole ring, fell back to growing it block by block: with `-b100000g`
@@ -289,6 +290,12 @@ what happened in 2.0.0.
   and a small `-b` under a memory limit it compressed where the Rust
   reported `OutOfMemory`. A ring that cannot be mapped is now
   `OutOfMemory`, as in the Rust.
+- **A match-finder table that did not fit aborted the Rust oracle.** The
+  tables (and the in-memory dictionary's) were allocated with `vec!`, which
+  aborts on failure: compressing from stdin without `-s`, which sizes them
+  for 25 GiB, under a 1 GiB address-space limit exited 134 with the
+  archive's header left on disk, where the Pascal said "Out of memory". Both
+  say `OutOfMemory`, exit 4, and remove the archive.
 - **`-vmfile=<path>` was deleted even when opening it failed**: with a
   read-only file, `osrep -mem1mb -vmblock=128kb -vmfile=ro -d x.osr out`
   failed with `PermissionDenied` and removed `ro`. As root,

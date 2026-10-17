@@ -193,7 +193,10 @@ enum VmPath {
     /// the open has worked (a name this run could not open is not its to
     /// remove: through 2.3.0 a read-only `-vmfile=` was deleted by the failed
     /// open), and only if it is a regular file (`-vmfile=/dev/null` run as
-    /// root removed the device node).
+    /// root removed the device node). It is opened under the rule of `util`
+    /// ("the files of one run"): a `-vmfile=` that is the archive, the index
+    /// or the output under another name is refused at the first spill,
+    /// before it is truncated.
     Given(NamedScratch),
 }
 
@@ -239,8 +242,7 @@ impl VirtualMemory {
             }
             let spill = match &self.vmfile {
                 Some(p) => {
-                    let file = open(p)?;
-                    let named = NamedScratch::new(p, &file);
+                    let (file, named) = NamedScratch::create(p, true)?;
                     (file, VmPath::Given(named))
                 }
                 None => {

@@ -886,16 +886,21 @@ if [ "$FWINE" = 0 ]; then
     fcase '"$B" -v0 --seed=7 -b256mb -d1g -dh1mb "$I/in.bin" x.osr' x.osr
 fi
 
-say "un archivo con dos nombres se rechaza; los temporales con nombre, solo si se abrieron"
+say "ningun archivo que la corrida escribe es uno que lee, ni otro que escribe"
 # El C++ rechaza una salida con el nombre de la entrada comparando los textos
 # ("Input and output files should have different names", exit 3), asi que
 # `osrep x.bin ./x.bin` truncaba la entrada y salia con 0 y un archivo de
-# nada, y `-d a.osr ./a.osr` perdia el archivo. Los ports comparan ademas la
-# identidad (dispositivo e inodo; volumen e indice en Windows) en cada par que
-# la corrida lee y escribe: entrada y salida, -index= y la entrada (al
-# comprimir) o la salida (al descomprimir), el spool de -temp= y el archivo,
-# -vmfile= y lo que el decoder lee o escribe. Solo archivos regulares. Con
-# wine tambien: los hard links llegan con el mismo indice. Ademas: -temp= se
+# nada. Los ports siguen una regla (src/streamio.pas, "los archivos de una
+# corrida"; util.rs del Rust): todo archivo que la corrida escribe -- el
+# archivo o la salida de -d, -index= al comprimir, -temp=, -vmfile=, los
+# temporales, y el archivo de stdout si la salida es - -- se abre sin truncar
+# y se rechaza, con ese mensaje, si es un archivo que la corrida lee (la
+# entrada o el de stdin, -index= al descomprimir) u otro que escribe, por
+# identidad (dispositivo e inodo; volumen e indice en Windows, y con wine los
+# hard links y las redirecciones del shell llegan con el mismo indice); recien
+# despues se trunca. Los nombres que ya existen se comparan antes del primer
+# open, asi un rechazo deja todo como estaba. Solo archivos regulares. Cada
+# caso es una repro de una revision de las ramas r231. Ademas: -temp= se
 # borra al terminar (como el C++, srep.cpp:1336), -vmfile= solo si se pudo
 # abrir, -delete con stdin no borra un archivo "-", y -b0 es OutOfMemory.
 cp "$D/far.osr" "$D/far.bin" "$F/in/"
@@ -922,30 +927,39 @@ scase() {
     for f; do cmp -s "$F/p/$f" "$F/in/$f" || fail "[$line]: cambio $f"; done
     pass=$((pass + 1))
 }
+# otras escrituras y links de la entrada, y de -index= a la vuelta
 scase 3 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 in.bin ./in.bin' in.bin
 scase 3 'cp "$I/in.bin" in.bin; ln in.bin y.bin; "$B" -v0 --seed=7 in.bin y.bin' in.bin
 scase 3 'cp "$I/ok.osr" ok.osr; ln ok.osr ok; "$B" -v0 -d ok.osr' ok.osr
 scase 3 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 --format=v4 -m3f -index=./in.bin in.bin o.osr' in.bin
+scase 3 'cp "$I/ok.ix" ok.ix; "$B" -v0 -d -index=ok.ix "$I/okf.osr" ./ok.ix' ok.ix
+# dos salidas que son un archivo: se rechaza al abrir la segunda, y la
+# primera, nueva, se borra
 scase 3 '"$B" -v0 --seed=7 --format=v4 -m3f -index=o.osr "$I/in.bin" ./o.osr'
 scase 3 '"$B" -v0 --seed=7 -temp=t.tmp - ./t.tmp < "$I/in.bin"'
+# -vmfile= sobre lo que lee el decoder
 scase 3 'cp "$I/far.osr" far.osr; "$B" -v0 -mem1mb -vmblock=128kb -vmfile=./far.osr -d far.osr o.out' far.osr
 scase 3 'cp "$I/ok.ix" ok.ix; "$B" -v0 -vmfile=./ok.ix -d -index=ok.ix "$I/okf.osr" o.out' ok.ix
-scase 3 '"$B" -v0 -vmfile=o.out -d "$I/far.osr" o.out'
 scase 3 'echo x > o.out; "$B" -v0 -vmfile=./o.out -d "$I/far.osr" o.out'
-# -vmfile= otra vez despues de crear la salida: con otra escritura de una
-# salida que no existia, el primer chequeo no veia nada, el primer derrame la
-# truncaba y el final del decode la borraba -- exit 0 y nada en disco, con
-# -delete tampoco el archivo (bajo wine el Pascal fallaba por el recurso
-# compartido y el Rust win64 la borraba igual)
+grep -qx x "$F/p/o.out" || fail "-vmfile=./o.out: cambio o.out"
+# -vmfile= se abre en el primer derrame: con el nombre de una salida nueva se
+# rechaza cuando llega ese derrame, y un decode que no derrama nunca lo abre.
+# Con otra escritura la salida todavia no existia, nada lo veia antes, el
+# derrame la truncaba y el final del decode la borraba -- exit 0 y nada en
+# disco, con -delete tampoco el archivo (bajo wine el Pascal fallaba por el
+# recurso compartido y el Rust win64 la borraba igual)
+scase 3 '"$B" -v0 -mem1mb -vmblock=128kb -vmfile=o.out -d "$I/far.osr" o.out'
 scase 3 'cp "$I/far.osr" far.osr; "$B" -v0 -delete -mem1mb -vmblock=128kb -vmfile=./o.out -d far.osr o.out' far.osr
 [ ! -e "$F/p/o.out" ] || fail "-vmfile=./o.out: quedo la salida rechazada"
+scase 0 '"$B" -v0 -vmfile=o.out -d "$I/far.osr" o.out'
+cmp -s "$F/p/o.out" "$F/in/far.bin" || fail "-vmfile=o.out sin derrame: la vuelta difiere"
 # los archivos que abrio el shell para stdin y stdout tambien cuentan, aunque
-# ningun nombre de la linea los delate: la salida, -temp=, -index= o -vmfile=
-# como el archivo del que se lee stdin, y -temp=, -index= o -vmfile= como
-# aquel al que va stdout cuando va ahi el comprimido o lo descomprimido
+# ningun nombre de la linea los delate: como la salida, -temp=, -index= o
+# -vmfile=
 scase 3 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 - in.bin < in.bin' in.bin
 scase 3 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 -b0 - in.bin < in.bin' in.bin
 scase 3 'cp "$I/badok.osr" badok.osr; "$B" -v0 -d - badok.osr < badok.osr' badok.osr
+scase 3 'cp "$I/ok.osr" ok.osr; "$B" -v0 -d - ok.osr < ok.osr' ok.osr
 scase 3 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 -temp=in.bin - o.osr < in.bin' in.bin
 scase 3 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 --format=v4 -m3f -index=in.bin - o.osr < in.bin' in.bin
 scase 3 'cp "$I/far.osr" far.osr; "$B" -v0 -mem1mb -vmblock=128kb -vmfile=far.osr -d - o.out < far.osr' far.osr
@@ -953,8 +967,21 @@ scase 3 '"$B" -v0 --seed=7 -temp=./o.osr < "$I/in.bin" > o.osr'
 scase 3 '"$B" -v0 --seed=7 --format=v4 -m3f -index=./o.osr - - < "$I/in.bin" > o.osr'
 scase 3 '"$B" -v0 -mem1mb -vmblock=128kb -vmfile=o.out -d "$I/far.osr" - > o.out'
 [ -e "$F/p/o.out" ] || fail "-vmfile= sobre stdout: se borro"
-# un rechazo deja todo como estaba: un nombre que ya existe se mira antes del
-# open que lo truncaria, no despues
+# y como uno al otro, o como la entrada: stdout agregado (`>> x`) o abierto
+# para leer y escribir (`1<> x`) sobre el archivo que la corrida lee, stdin y
+# stdout el mismo archivo. Hasta la 2.3.0 todos con exit 0: la entrada
+# danada, o con -delete borrada
+scase 3 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 -delete in.bin - >> in.bin' in.bin
+scase 3 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 in.bin - 1<> in.bin' in.bin
+scase 3 'cp "$I/ok.osr" ok.osr; "$B" -v0 -delete -d ok.osr - >> ok.osr' ok.osr
+scase 3 'cp "$I/ok.osr" ok.osr; "$B" -v0 -d ok.osr - >> ok.osr' ok.osr
+scase 3 'cp "$I/ok.osr" ok.osr; "$B" -v0 -d ok.osr - 1<> ok.osr' ok.osr
+scase 3 'cp "$I/ok.ix" ok.ix; "$B" -v0 -d -index=ok.ix "$I/okf.osr" - >> ok.ix' ok.ix
+scase 3 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 - - < in.bin >> in.bin' in.bin
+scase 3 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 - - < in.bin 1<> in.bin' in.bin
+scase 3 'cp "$I/ok.osr" ok.osr; "$B" -v0 -d - - < ok.osr 1<> ok.osr' ok.osr
+# un rechazo deja todo como estaba: un nombre que ya existe se compara antes
+# del primer open, no despues del que lo truncaria
 scase 3 'echo old > o.osr; "$B" -v0 --seed=7 --format=v4 -m3f -index=./o.osr "$I/in.bin" o.osr'
 grep -qx old "$F/p/o.osr" || fail "-index=./o.osr: cambio o.osr"
 scase 3 'echo old > o.osr; "$B" -v0 --seed=7 -temp=./o.osr - o.osr < "$I/in.bin"'
@@ -978,21 +1005,55 @@ scase 3 '"$B" -v0 --seed=7 -b0 -dup "$I/in.bin" o.osr'
 # un anillo que no entra en 64 bits: -b2^63 daba la vuelta a 0 los dos
 # bloques de margen en el Rust (panic, exit 101), y un -d a un bloque de 2^64
 # redondeaba a un anillo chico (el Rust abortaba, el Pascal decia "Out of
-# memory" desde el diccionario en memoria)
-scase 4 '"$B" -v0 --seed=7 -b9223372036854775808b "$I/in.bin" o.osr'
-scase 4 '"$B" -v0 --seed=7 -b9223372036854775809b "$I/in.bin" o.osr'
-scase 4 '"$B" -v0 --seed=7 -d18446744073709551615b -b3m "$I/in.bin" o.osr'
-scase 4 '"$B" -v0 --seed=7 -m0 -d18446744073709551615b -b3m "$I/in.bin" o.osr'
+# memory" desde el diccionario en memoria). A unos bytes de 2^64 el que daba
+# la vuelta era el Pascal: sumaba al anillo su cola de 64 bytes y quedaba un
+# numero chico, y escribia un archivo de nada con exit 0 (con -delete, sin la
+# entrada), o reventaba, o decia "Out of memory" donde el Rust dice
+# OutOfMemory
+for b in -b9223372036854775808b -b9223372036854775809b "-d18446744073709551615b -b3m" \
+         "-m0 -d18446744073709551615b -b3m" -b9223372036854775776b -b9223372036854775790b \
+         -b9223372036854775807b "-d9223372036854775806b -b4611686018427387903b"; do
+    scase 4 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 -delete '"$b"' in.bin o.osr' in.bin
+done
 if [ "$FWINE" = 0 ]; then
     scase 3 'ln -s o.out v; "$B" -v0 -mem1mb -vmblock=128kb -vmfile=v -d "$I/far.osr" o.out'
     [ -L "$F/p/v" ] && [ ! -e "$F/p/o.out" ] || fail "-vmfile= por un symlink a la salida"
     scase 3 'cp "$I/in.bin" in.bin; ln -s in.bin y.bin; "$B" -v0 --seed=7 in.bin y.bin' in.bin
     scase 0 '"$B" -v0 --seed=7 /dev/null /dev/../dev/null'
+    scase 3 '"$B" -v0 --seed=7 /dev/null /dev/null'
     scase 0 'ln -s target t.tmp; "$B" -v0 --seed=7 -temp=t.tmp - o.osr < "$I/in.bin"'
     [ -L "$F/p/t.tmp" ] && [ -s "$F/p/target" ] || fail "-temp= por un symlink: se borro algo"
+    # la unica excepcion: -temp= o -index= un symlink a una salida que todavia
+    # no existe. El open por el symlink crea el archivo de la salida, y un
+    # nombre nunca se borra por un symlink, asi que la corrida rechazada lo deja
+    scase 3 'ln -s o.osr lnk; "$B" -v0 --seed=7 -temp=lnk - o.osr < "$I/far.bin"'
+    scase 3 'ln -s o.osr lnk; "$B" -v0 --seed=7 --format=v4 -m3f -index=lnk "$I/in.bin" o.osr'
     # el open falla: el nombre no es de esta corrida (antes se borraba)
     scase 4 'echo x > ro; chmod 444 ro; "$B" -v0 -mem1mb -vmblock=128kb -vmfile=ro -d "$I/far.osr" o.out'
     [ -e "$F/p/ro" ] || fail "-vmfile= de solo lectura: se borro"
+    # nombres de /dev y /proc que llevan a un archivo que la corrida lee: el de
+    # stdin, el de stdout, o la entrada misma una vez abierta (en el fd 3,
+    # antes que la salida). Con stdin cerrado los dos binarios tienen el fd 0
+    # sobre "/" (src/stdfds.pas), y el /dev/null que el runtime del Rust abre
+    # para el se cierra al empezar main: el fd 3 es la entrada en los dos.
+    # Hasta la rama r231-stdfds quedaba abierto, la entrada iba al fd 4, el fd
+    # 3 era un /dev/null, y `-d -delete y.osr /proc/self/fd/3 <&-` decodificaba
+    # ahi y borraba y.osr en el Rust (exit 0)
+    scase 3 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 -delete in.bin /dev/stdin < in.bin' in.bin
+    scase 3 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 -delete in.bin /dev/stdout 1<> in.bin' in.bin
+    scase 3 'cp "$I/ok.osr" ok.osr; "$B" -v0 -d -delete ok.osr /dev/stdin < ok.osr' ok.osr
+    scase 3 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 -delete in.bin /proc/self/fd/3' in.bin
+    scase 3 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 -temp=/dev/stdin - o.osr < in.bin' in.bin
+    scase 3 'cp "$I/far.osr" far.osr; "$B" -v0 -mem1mb -vmblock=128kb -vmfile=/proc/self/fd/0 -d - o.out < far.osr' far.osr
+    scase 3 'cp "$I/ok.osr" ok.osr; "$B" -v0 -d -delete ok.osr /proc/self/fd/3 <&-' ok.osr
+    scase 3 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 -delete in.bin /proc/self/fd/3 <&-' in.bin
+    scase 3 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 -delete in.bin /proc/self/fd/4 <&- 3>&- 4>&-' in.bin
+    grep -qF "Can't open /proc/self/fd/4 for write" "$F/p.e" || fail "/proc/self/fd/4 <&-: $(cat "$F/p.e")"
+    scase 3 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 --format=v4 -m3f -index=/proc/self/fd/3 -delete in.bin o.osr <&- 3>&-' in.bin
+    # las tablas del match finder dimensionadas para los 25 GiB por defecto de
+    # stdin, con 1 GiB de direcciones: el Rust abortaba (exit 134, con la
+    # cabecera en disco) y el Pascal decia "Out of memory"
+    scase 4 '(ulimit -v 1048576; exec "$B" -v0 --seed=7 -b3g - x.osr < "$I/in.bin")'
 else
     # bajo wine el error del open es el de Windows: el codigo y que quede
     rm -rf "${F:?}/p"; mkdir "$F/p"; echo x > "$F/p/ro"; chmod 444 "$F/p/ro"
@@ -1001,6 +1062,22 @@ else
     [ "$rc" = 4 ] && [ -e "$F/p/ro" ] && [ ! -e "$F/p/o.out" ] \
         || fail "-vmfile= de solo lectura bajo wine: exit $rc, $(ls "$F/p")"
     pass=$((pass + 1))
+    # Windows no distingue mayusculas: x.bin y X.BIN son un archivo, que el
+    # Rust de Linux no ve, asi que se compara con lo que tiene que dar
+    for line in 'cp "$I/in.bin" in.bin; "$PAX" -v0 --seed=7 in.bin IN.BIN' \
+                'cp "$I/ok.osr" ok.osr; "$PAX" -v0 -d ok.osr OK.OSR' \
+                'cp "$I/in.bin" in.bin; "$PAX" -v0 --seed=7 --format=v4 -m3f -index=IN.BIN in.bin o.osr' \
+                'cp "$I/far.osr" far.osr; "$PAX" -v0 -mem1mb -vmblock=128kb -vmfile=FAR.OSR -d far.osr o.out'; do
+        rm -rf "${F:?}/p"; mkdir "$F/p"
+        rc=0; (cd "$F/p" && PAX="$PAX" I="$F/in" bash -c "$line") </dev/null >/dev/null 2>"$F/p.e" || rc=$?
+        [ "$rc" = 3 ] && grep -qF 'Input and output files should have different names' "$F/p.e" \
+            && [ "$(find "$F/p" -type f | wc -l)" = 1 ] \
+            || fail "[$line] bajo wine: exit $rc, '$(cat "$F/p.e")', $(ls "$F/p")"
+        for f in in.bin ok.osr far.osr; do
+            [ ! -e "$F/p/$f" ] || cmp -s "$F/p/$f" "$F/in/$f" || fail "[$line] bajo wine: cambio $f"
+        done
+        pass=$((pass + 1))
+    done
     # El .exe de 32 bits: un -b que no entra en 4 GiB se satura en vez de dar
     # la vuelta. -b4g y sus multiplos quedaban en 0 ("Division by zero"; el
     # Rust i686, panic) y -b4097m en 1 MiB, otro archivo. Ahora OutOfMemory,
@@ -1295,6 +1372,7 @@ $FD/fix/a.osr|-d
 /dev/null|--seed=7 -dup in.txt o.osr
 /dev/null|--seed=7 --format=v4 -m3f in.txt o.osr
 $FD/fix/in.txt|--seed=7 -s$fdsize - o.osr
+$FD/fix/in.txt|--seed=7 -temp=t.tmp -s$fdsize - -
 /dev/null|--seed=7 in.txt -
 /dev/null|--seed=7 -m0 in.txt -
 /dev/null|--seed=7 --format=v4 in.txt -
@@ -1321,9 +1399,10 @@ pass=$((pass + 1))
 # En Linux tambien con la salida /dev/stdout o /proc/self/fd/1, que reabren
 # lo que hay detras del fd 1: reservado sobre un directorio, el open falla.
 # Y lo mismo con el fd 0 cerrado y la salida /dev/stdin, /proc/self/fd/0 o
-# /dev/fd/0: sobre /dev/null, `-delete x /dev/stdin <&-` borraba x.
+# /dev/fd/0: sobre /dev/null, `-delete x /dev/stdin <&-` borraba x; y con el
+# fd 2 cerrado y la salida /dev/stderr o /proc/self/fd/2.
 if [ "$WINE" = 0 ]; then
-    FDOUTS="- /dev/stdout /proc/self/fd/1 /dev/stdin /proc/self/fd/0 /dev/fd/0"
+    FDOUTS="- /dev/stdout /proc/self/fd/1 /dev/stdin /proc/self/fd/0 /dev/fd/0 /dev/stderr /proc/self/fd/2"
 else
     FDOUTS="-"
 fi
@@ -1332,6 +1411,7 @@ for spec in "in.txt|--seed=7 -delete in.txt" "a.osr|-delete -d a.osr"; do
     for o in $FDOUTS; do
         case $o in
         */0|/dev/stdin) FDRS="'<&- 2>/dev/null' '<&- >/dev/null 2>&-' '<&- >&- 2>&-'";;
+        */2|/dev/stderr) FDRS="'2>&-' '<&- 2>&-' '>/dev/null 2>&-'";;
         *) FDRS="'>&- 2>/dev/null' '>&- 2>&-' '<&- >&- 2>&-' '>/dev/full 2>/dev/null'";;
         esac
         eval "set -- $FDRS"

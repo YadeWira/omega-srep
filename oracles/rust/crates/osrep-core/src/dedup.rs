@@ -941,14 +941,9 @@ pub fn decode_streaming(meta: &[u8], body_path: &Path, out_path: &Path) -> Resul
     let (records, _unique_count) = parse_meta(meta)?;
 
     let mut fb = File::open(body_path).map_err(|_| DEDUP_ERR_INVAL)?;
-    let mut fo = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(out_path)
-        .map_err(|_| DEDUP_ERR_INVAL)?;
-    crate::util::claim_output(out_path, &fo);
+    // An output of the run (`util::create_output`): read as well as written,
+    // because a ref copies from what is already out.
+    let mut fo = crate::util::create_output(out_path, true).map_err(|_| DEDUP_ERR_INVAL)?;
 
     // (offset in the output file, length) per unique chunk, in order.
     let mut unique_slots: Vec<(u64, u32)> = Vec::new();

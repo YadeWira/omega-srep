@@ -83,11 +83,10 @@ begin
     bs := nil; os := nil;
     try
       bs := TFileStream.Create(body, fmOpenRead or fmShareDenyNone);
-      { File::create(output)?: O_WRONLY y sin el open previo de TFileStream,
-        que sobre un FIFO se bloqueaba }
-      os := CreateWriteRaw(OutPath);
+      { una salida de la corrida (streamio.pas, CreateOutput): O_WRONLY y sin
+        el open previo de TFileStream, que sobre un FIFO se bloqueaba }
+      os := CreateOutput(OutPath, False);
       if os = nil then raise EDup.Create('Io');
-      ClaimOutput(OutPath, os.Handle);
       { el `?` de encoder::encode convierte su error en DupError::Encode: una
         falla de E/S ahi es Encode(Io), no el Io suelto de los otros pasos }
       try
@@ -114,7 +113,7 @@ begin
       bs.Free;
     end;
   finally
-    DeleteFile(body);
+    DeleteTemp(body);
   end;
 end;
 
@@ -448,7 +447,7 @@ begin
           on X: EDedup do raise EDup.Create(X.Message);
         end;
       finally
-        DeleteFile(body);
+        DeleteTemp(body);
       end;
       Exit(True);
     end;
@@ -480,8 +479,8 @@ begin
         on X: EDedup do raise EDup.Create(X.Message);
       end;
     finally
-      DeleteFile(body);
-      if decoded <> '' then DeleteFile(decoded);
+      DeleteTemp(body);
+      if decoded <> '' then DeleteTemp(decoded);
     end;
     Result := True;
   finally

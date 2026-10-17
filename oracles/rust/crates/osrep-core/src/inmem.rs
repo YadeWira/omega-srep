@@ -46,14 +46,15 @@ impl DictionaryCompressor {
     ///
     /// `hashsize_hint` is the `-dh` value; when zero the table is sized from
     /// the dictionary itself. `hashsize` counts *bytes* in the C++, and the
-    /// table is `TIndex` (8-byte) elements inside it.
+    /// table is `TIndex` (8-byte) elements inside it. `None` when the table
+    /// cannot be allocated, which the encoder reports as `OutOfMemory`.
     pub fn new(
         inmem_dictsize: u64,
         hashsize_hint: u64,
         min_match: usize,
         l: usize,
         base_len: usize,
-    ) -> Self {
+    ) -> Option<Self> {
         let mut hasharr: Vec<u64> = Vec::new();
         let mut hashmask: u64 = 0;
         if inmem_dictsize != 0 {
@@ -72,16 +73,16 @@ impl DictionaryCompressor {
             hashmask = hashsize / 8 - 1;
             // `BigAllocZero(hashsize)` zeroes hashsize bytes, i.e. hashsize/8
             // elements.
-            hasharr = vec![0u64; (hashsize / 8) as usize];
+            hasharr = crate::util::zeroed_vec_of(usize::try_from(hashsize / 8).ok()?)?;
         }
-        DictionaryCompressor {
+        Some(DictionaryCompressor {
             l,
             min_match,
             base_len,
             max_dist: inmem_dictsize,
             hashmask,
             hasharr,
-        }
+        })
     }
 
     /// `DictionaryCompressor::prepare_buffer` (`compress_inmem.cpp:56`): for

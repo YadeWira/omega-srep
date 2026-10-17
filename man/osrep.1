@@ -489,9 +489,8 @@ file that compression writes. A file that already existed under the output
 name is removed too, since opening it for writing had already truncated it.
 Nothing else is removed: not stdout, a pipe, a FIFO or a device, not a symlink
 named as the output (the file it points to keeps what was written), not a file
-the run reads (the input, and
-.B -index=
-when decompressing), and not a file the run failed before opening. What is
+the run reads (it is never written, see below), and not a file the run failed
+before opening. What is
 removed is the name: another hard link to the output keeps what was written.
 A run stopped by a signal (Ctrl-C) removes nothing. To keep the blocks of a
 damaged archive that decode before the error, give an output name that is a
@@ -505,33 +504,37 @@ Not
 .B -
 and not a pipe or a FIFO: the decoder seeks its output.
 .PP
-Two names for one file are refused with exit status 3 ("Input and output
-files should have different names"), as an output named like the input is:
-the input and the output (\fBx.bin\fR and \fB./x.bin\fR, a hard link, a
-symlink),
+No file a run writes may be a file it reads or another file it writes: the
+archive or the decompressed file,
 .B -index=
-and the input or the output, the
+when compressing, the
 .B -temp=
-file and the output or
-.BR -index= ,
 and
 .B -vmfile=
-and any file the decompression reads or writes. The files the shell opened
-for stdin and stdout count too: the output,
-.BR -temp= ,
+files, and the file stdout goes to when the output is
+.BR - ,
+against the input (or the file stdin is read from), the
 .B -index=
-and
-.B -vmfile=
-are refused as the file stdin is read from
-.RB ( "osrep - x < x" ),
-and
-.BR -temp= ,
+file when decompressing, and one another. Files are compared, not names, so
+another spelling, a link, a shell redirection
+.RB ( "osrep x - >> x" )
+or a
+.B /dev
+or
+.B /proc
+path is the same file. Such a run is refused with exit status 3 ("Input and
+output files should have different names"), the message for an output named
+like the input, before the file is truncated; a file that already exists
+under two of the names is refused before anything is opened, so the refused
+run changes no file. The one exception is a
+.B -temp=
+or
 .B -index=
-and
+that is a symlink to an output that does not exist yet: the file it creates
+is left. The
 .B -vmfile=
-as the file stdout goes to when the output is
-.BR - .
-A refused run changes no file. Only regular files are compared.
+file is compared when the decompression first needs it. Only regular files are
+compared.
 
 .SH ENVIRONMENT
 .TP

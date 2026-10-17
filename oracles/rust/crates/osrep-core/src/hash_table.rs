@@ -20,7 +20,7 @@
 
 use std::io::{Read, Seek};
 
-use crate::util::{lb, roundup_to_power_of_two, zeroed_vec};
+use crate::util::{lb, roundup_to_power_of_two, zeroed_vec, zeroed_vec_of};
 use crate::vmac::{VDigest, DIGEST_SIZE};
 
 /// Bytes of one CDC chunk's hash pair: `vhash1` then `vhash2`.
@@ -63,8 +63,9 @@ pub struct SliceHash {
 }
 
 impl SliceHash {
-    /// `SliceHash::SliceHash` (`hash_table.cpp:29-38`).
-    pub fn new(filesize: u64, l: usize, min_match: usize, io_accelerator: i32) -> SliceHash {
+    /// `SliceHash::SliceHash` (`hash_table.cpp:29-38`). `None` when its
+    /// table cannot be allocated.
+    pub fn new(filesize: u64, l: usize, min_match: usize, io_accelerator: i32) -> Option<SliceHash> {
         let slices_in_block = (32 / 4) as usize; // sizeof(entry)*CHAR_BIT/BITS
         let slice_size = l / slices_in_block;
         // With L below `slices_in_block` the slice is empty and the C++
@@ -90,14 +91,14 @@ impl SliceHash {
         // memory -- so the port keeps that entry, zeroed.
         // A second one covers a non-power-of-two `-c`, where the last chunk
         // stored can be `filesize / L` itself (see `HashTable::new`).
-        SliceHash {
+        Some(SliceHash {
             active: memreq != 0,
-            h: vec![0u32; memreq as usize + 2],
+            h: zeroed_vec_of(usize::try_from(memreq).ok()?.checked_add(2)?)?,
             l,
             slices_in_block,
             slice_size,
             check_slices,
-        }
+        })
     }
 
     pub fn is_empty(&self) -> bool {
@@ -246,8 +247,9 @@ pub struct HashTable {
 
 impl HashTable {
     /// `HashTable::HashTable` (`hash_table.cpp:142-169`) for the non-CDC,
-    /// non-in-memory modes. `None` when `bitarr` cannot be allocated (the
-    /// C++'s `ERROR_MEMORY`); the other tables abort like any `vec!`.
+    /// non-in-memory modes. `None` when a table cannot be allocated (the
+    /// C++'s `ERROR_MEMORY` for `bitarr`; for the others `BigAlloc` fails the
+    /// same way), which the encoder reports as `OutOfMemory`.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         round_matches: bool,
@@ -269,7 +271,7 @@ impl HashTable {
         let chunknum_mask = (roundup_to_power_of_two(total_chunks + 2) - 1) as u32;
         let hash_mask = !chunknum_mask;
         let hashsize = roundup_to_power_of_two(min_hash_size(total_chunks));
-        let slicehash = SliceHash::new(filesize, l, min_match, io_accelerator);
+        let slicehash = SliceHash::new(filesize, l, min_match, io_accelerator)?;
         // One slot past the last whole chunk in `hasharr` and `digestarr`.
         // When `L` does not divide the block size (`-l`/`-c` not a power of
         // two, which only earns a warning), blocks after the first start
@@ -306,21 +308,21 @@ impl HashTable {
             chunknum_mask,
             hash_mask,
             hashsize1: hashsize - 1,
-            chunkarr: vec![0u32; hashsize as usize],
+            chunkarr: zeroed_vec_of(usize::try_from(hashsize).ok()?)?,
             hasharr: if content_defined_chunking {
                 Vec::new()
             } else {
-                vec![0u32; slots]
+                zeroed_vec_of(slots)?
             },
             curchunk: 0,
             startarr: if content_defined_chunking {
-                vec![0u64; total_chunks as usize]
+                zeroed_vec_of(usize::try_from(total_chunks).ok()?)?
             } else {
                 Vec::new()
             },
             slicehash,
             digestarr: if compare_digests {
-                vec![[0u8; DIGEST_SIZE]; slots]
+                zeroed_vec_of(slots)?
             } else {
                 Vec::new()
             },

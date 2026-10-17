@@ -428,10 +428,9 @@ type
     SpillOpen: Boolean;
     Spill: THandleStream;          { con -vmfile= o el temporal, dueno de su handle }
     SpillPath: AnsiString;
-    { -vmfile=: la identidad de lo que se abrio, si es un archivo regular
-      (util.rs, NamedScratch); sin ella no se borra }
-    SpillNamed: Boolean;
-    SpillNamedId: TFileId;
+    { -vmfile=: lo que se abrio, si es un archivo regular (util.rs,
+      NamedScratch); si no, no se borra }
+    Scratch: TNamedScratch;
     TotalRead, TotalWrite: QWord;
   end;
 
@@ -450,7 +449,7 @@ begin
   VM.SpillOpen := False;
   VM.Spill := nil;
   VM.SpillPath := '';
-  VM.SpillNamed := False;
+  VM.Scratch.Named := False;
   VM.TotalRead := 0;
   VM.TotalWrite := 0;
 end;
@@ -464,8 +463,7 @@ begin
   begin
     VM.Spill.Free;
     VM.Spill := nil;
-    if not VM.HasVmFile then DeleteFile(VM.SpillPath)
-    else if VM.SpillNamed then RemoveIfStill(VM.SpillPath, VM.SpillNamedId);
+    if VM.HasVmFile then RemoveScratch(VM.Scratch) else DeleteTemp(VM.SpillPath);
     VM.SpillOpen := False;
   end;
 end;
@@ -477,15 +475,16 @@ begin
   if VM.HasVmFile then
   begin
     VM.SpillPath := VM.VmFileName;
-    { FileCreate y no TFileStream.Create: el open del Rust es
-      read+write+create+truncate, y si falla su errno es el error que se
-      imprime (un Io(Os ..)), que la excepcion de TFileStream no conserva }
+    { abierto con la regla de los archivos de la corrida (streamio.pas,
+      CreateScratch): sin truncar, rechazado si es el archivo, el indice o la
+      salida con otro nombre, y truncado recien despues. Con el handle crudo y
+      no TFileStream.Create: si el open falla su errno es el error que se
+      imprime (un Io(Os ..)), que la excepcion de TFileStream no conserva, y
+      el nombre no es de esta corrida y no se borra (hasta la 2.3.0 se
+      borraba: un -vmfile= de solo lectura desaparecia) }
     ClearOsError;
-    h := FileCreate(VM.SpillPath);
-    { si el open fallo, el nombre no es de esta corrida y no se borra (hasta
-      la 2.3.0 se borraba: un -vmfile= de solo lectura desaparecia) }
+    h := CreateScratch(VM.SpillPath, True, VM.Scratch);
     if h = THandle(-1) then Fail(deIo, LastOsFault);
-    VM.SpillNamed := RegularFileId(h, VM.SpillNamedId);
     VM.Spill := TOwnedHandleStream.Create(h);
   end
   else

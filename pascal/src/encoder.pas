@@ -464,6 +464,11 @@ begin
              fileSize);
     except
       on EHtBitArrMemory do raise EEncode.Create('OutOfMemory');
+      { las otras tablas, dimensionadas para los 25 GiB por defecto de stdin
+        con un tope de memoria: el Rust abortaba ahi (exit 134, con la
+        cabecera del archivo en disco) y aca salia "Out of memory"; los dos
+        dicen OutOfMemory (hash_table.rs, HashTable::new) }
+      on EOutOfMemory do raise EEncode.Create('OutOfMemory');
     end;
   { EncodeError::OutOfMemory: el anillo no entra en el espacio de direcciones
     (-b2g en i386). Antes salia "Range check error" del SetLength y el Rust
@@ -472,9 +477,19 @@ begin
     DictionaryCompressor::new): con un -d que no entra, el que fallaba era
     DcInit, con otro mensaje. }
   ringOk := CheckedRingSize(Opts.DictSize, bufsize, ringSize);
-  if not ringOk or (ringSize + RING_TAIL > QWord(High(SizeInt))) then
+  { la cola se resta del tope y no se suma al anillo: con un anillo a menos de
+    RING_TAIL de 2^64 la suma daba la vuelta a un numero chico, y -b cerca de
+    2^63 escribia un archivo vacio con exit 0 (o SIGSEGV), donde el Rust dice
+    OutOfMemory }
+  if not ringOk or (ringSize > QWord(High(SizeInt)) - RING_TAIL) then
     raise EEncode.Create('OutOfMemory');
-  DcInit(inmem, Opts.DictSize, Opts.DictHashSize, dictMinMatch, dictChunk, baseLen);
+  { la tabla del diccionario en memoria: lo mismo que las del match finder
+    (inmem.rs, DictionaryCompressor::new) }
+  try
+    DcInit(inmem, Opts.DictSize, Opts.DictHashSize, dictMinMatch, dictChunk, baseLen);
+  except
+    on EOutOfMemory do raise EEncode.Create('OutOfMemory');
+  end;
   CdcHasherInit(chunkKey);
 
   { El anillo: el diccionario redondeado a bloques enteros, mas dos de margen.
