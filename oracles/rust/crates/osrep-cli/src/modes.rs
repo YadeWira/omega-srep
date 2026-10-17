@@ -622,7 +622,10 @@ fn decompress(o: &Options, finame: &str, foutname: &str) -> Result<i32, RunError
     // without the flag on the command line. It rewrites the archive's tail, so
     // it needs both names to be real files.
     if finame != "-" && foutname != "-" {
-        match dup::decode(Path::new(finame), Path::new(foutname), &opts) {
+        // With `-index=`, a plain v1-v3 archive's lists are in the index, and
+        // the walk that tells it from a `-dup` one has to know.
+        let out_of_line = !o.index_file.is_empty();
+        match dup::decode_with(Path::new(finame), Path::new(foutname), &opts, out_of_line) {
             Ok(true) => {
                 if o.delete_input {
                     let _ = std::fs::remove_file(finame);

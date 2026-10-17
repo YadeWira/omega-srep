@@ -668,18 +668,106 @@ for f in bad1 bad2 bad3; do
 done
 pass=$((pass + 1))
 
-say "-i on the plain archive of a file that ends in \"ODUP\", and on a -dup archive of one"
-# A Future-LZ or I/O LZ archive ends in its last literals, so the archive of a
-# v4 -dup archive ends in that archive's own trailer, meta and all. -i reads
-# behind a trailer only when the archive there holds up; otherwise it reads
-# the whole file as a plain archive, as the C++'s -i does. The -dup archive of
-# a -dup archive has a real trailer, and is described through it.
+say "a file that ends in \"ODUP\": its Future-LZ/I/O LZ archive is a plain one"
+# Every v4 -dup archive ends in "ODUP", and a Future-LZ or I/O LZ archive ends
+# in its last literals -- so one of a v4 -dup archive ends in that archive's
+# own trailer, meta and all. 2.3.0 and the C++ 1.0.7 took it for a -dup
+# archive, cut it there and failed on what was left ("unexpected end of file"
+# in the C++, Decode(Container(Truncated)) in the ports): the archive could not
+# be restored. -d now takes the trailer only when the archive behind it holds
+# up, and decodes the file as a plain archive when the whole of it does. The
+# writer is untouched: the archives are the C++'s, byte for byte. Index-LZ
+# ends in its footer, which no trailer can match, and always decoded.
 "$RS" -dup --format=v4 --seed=7 tests/corpus/text.bin "$TMP/in4.osr" >/dev/null 2>&1 \
     || fail "ODUP input: compress failed"
 [ "$(tail -c 4 "$TMP/in4.osr")" = ODUP ] || fail "ODUP input: the -dup archive does not end in ODUP"
-"$RS" --format=v4 --seed=7 -m3f "$TMP/in4.osr" "$TMP/od.osr" >/dev/null 2>&1 || fail "ODUP input -m3f: compress failed"
-[ "$(tail -c 4 "$TMP/od.osr")" = ODUP ] || fail "ODUP input -m3f: the archive does not end in ODUP"
+for m in m0 m0f m0o m1 m1f m1o m2 m2f m2o m3 m3f m3o m4 m4f m4o m5 m5f m5o; do
+    for h in "" -hash-; do
+        rm -f "$TMP/od.osr" "$TMP/odc.osr" "$TMP/od.out"
+        "$RS" --format=v4 --seed=7 $h -$m "$TMP/in4.osr" "$TMP/od.osr" >/dev/null 2>&1 \
+            || fail "ODUP input -$m $h: compress failed"
+        "$CXX_BIN/osrep" --seed=7 $h -$m "$TMP/in4.osr" "$TMP/odc.osr" >/dev/null 2>&1 \
+            || fail "ODUP input -$m $h: the C++ compress failed"
+        cmp -s "$TMP/od.osr" "$TMP/odc.osr" || fail "ODUP input -$m $h: not the C++'s bytes"
+        "$RS" -d "$TMP/od.osr" "$TMP/od.out" >/dev/null 2>"$TMP/od.err" \
+            || fail "ODUP input -$m $h: -d failed: $(cat "$TMP/od.err")"
+        cmp -s "$TMP/od.out" "$TMP/in4.osr" || fail "ODUP input -$m $h: -d wrote something else"
+        case "$m" in *f|*o)
+            # the case the fix is about: the file ends in the inner trailer,
+            # and the C++ 1.0.7 cannot restore it (its tempfile goes in $TMP)
+            [ "$(tail -c 4 "$TMP/od.osr")" = ODUP ] || fail "ODUP input -$m $h: the archive does not end in ODUP"
+            rc=0; TMPDIR="$TMP" "$CXX_BIN/osrep" -d "$TMP/odc.osr" "$TMP/od.out" >/dev/null 2>&1 || rc=$?
+            [ "$rc" -ne 0 ] || fail "ODUP input -$m $h: the C++ restored it; the CHANGELOG says it cannot"
+            ;;
+        esac
+        pass=$((pass + 1))
+    done
+done
+# -index=: the lists are in the index, and the walk has to read them there
+for m in m3f m5o; do
+    rm -f "$TMP/od.osr" "$TMP/od.ix" "$TMP/od.out"
+    "$RS" --format=v4 --seed=7 -$m -index="$TMP/od.ix" "$TMP/in4.osr" "$TMP/od.osr" >/dev/null 2>&1 \
+        || fail "ODUP input -$m -index=: compress failed"
+    "$RS" -d -index="$TMP/od.ix" "$TMP/od.osr" "$TMP/od.out" >/dev/null 2>"$TMP/od.err" \
+        && cmp -s "$TMP/od.out" "$TMP/in4.osr" || fail "ODUP input -$m -index=: -d: $(cat "$TMP/od.err")"
+    pass=$((pass + 1))
+done
+# A v5 archive that ends in its own footer is never sniffed for a trailer:
+# the footer ends in a CRC-32C, which spells "ODUP" once in 2^32 archives,
+# and 2.3.0 then refused a sound archive with "the -dup meta is missing or
+# corrupt". One is made by choosing bits nothing reads (v5odup); a v5 body
+# under a real ODUP trailer is still sniffed (tests/dup_native_roundtrip.sh).
+v5odup() {
+python3 - "$1" <<'PY2'
+import struct, sys
+# Make a v5 archive's footer CRC spell "ODUP" and keep it valid: the high half
+# of meta_offset, which nothing reads when there is no meta, is solved for.
+# This project's CRC-32C starts at 0 and has no final xor, so it is linear.
+T = []
+for i in range(256):
+    c = i
+    for _ in range(8):
+        c = (c >> 1) ^ (0x82F63B78 if c & 1 else 0)
+    T.append(c)
+def crc(b):
+    c = 0
+    for x in b:
+        c = T[(c ^ x) & 0xFF] ^ (c >> 8)
+    return c
+p = sys.argv[1]; b = bytearray(open(p, "rb").read()); f = len(b) - 32
+base = bytearray(b[f:f + 28]); base[20:24] = bytes(4)
+want = struct.unpack("<I", b"ODUP")[0] ^ crc(base)
+cols = []
+for i in range(32):
+    u = bytearray(28); u[20 + i // 8] = 1 << (i % 8); cols.append([crc(u), 1 << i])
+pick = 0
+for bit in reversed(range(32)):
+    r = next((k for k in range(len(cols)) if cols[k][0] >> bit & 1), None)
+    if r is None: continue
+    v, m = cols.pop(r)
+    for c in cols:
+        if c[0] >> bit & 1: c[0] ^= v; c[1] ^= m
+    if want >> bit & 1: want ^= v; pick ^= m
+assert want == 0
+base[20:24] = struct.pack("<I", pick)
+b[f:f + 28] = base; b[f + 28:f + 32] = struct.pack("<I", crc(base))
+assert b[-4:] == b"ODUP"
+open(p, "wb").write(b)
+PY2
+}
+"$RS" --seed=7 tests/corpus/text.bin "$TMP/v5o.osr" >/dev/null 2>&1
+v5odup "$TMP/v5o.osr" || fail "v5 ending in ODUP: could not make one"
+rm -f "$TMP/od.out"
+"$RS" -d "$TMP/v5o.osr" "$TMP/od.out" >/dev/null 2>"$TMP/od.err" && cmp -s "$TMP/od.out" tests/corpus/text.bin \
+    || fail "v5 ending in ODUP: -d: '$(cat "$TMP/od.err")'"
+pass=$((pass + 1))
+# -i and --verify: the plain archive, described as the C++ describes it, and
+# the -dup archive of the -dup archive (whose trailer is a real one)
+"$RS" --format=v4 --seed=7 -m3f "$TMP/in4.osr" "$TMP/od.osr" >/dev/null 2>&1
 "$RS" -dup --format=v4 --seed=7 "$TMP/in4.osr" "$TMP/nest.osr" >/dev/null 2>&1 || fail "nested -dup: compress failed"
+rm -f "$TMP/od.out"
+"$RS" -d "$TMP/nest.osr" "$TMP/od.out" >/dev/null 2>&1 && cmp -s "$TMP/od.out" "$TMP/in4.osr" \
+    || fail "nested -dup: does not round-trip"
 for spec in "od Future-LZ" "nest Index-LZ"; do
     set -- $spec
     rc=0; "$RS" -i "$TMP/$1.osr" >/dev/null 2>"$TMP/od.err" || rc=$?

@@ -29,8 +29,16 @@ function DupEncode(const InPath, OutPath: AnsiString; const Opts: TEncodeOptions
                    Paranoid: Boolean; Mode: TDupMode; Progress: TEncodeProgress = nil): QWord;
 
 { True si el archivo era -dup y corrio el post-paso; False si es uno comun,
-  lo que es un EXITO: el que llama lo decodifica el mismo. }
-function DupDecode(const InPath, OutPath: AnsiString; const Opts: TFutureLzOptions): Boolean;
+  lo que es un EXITO: el que llama lo decodifica el mismo. StatsOutOfLine es
+  el -index= de -d: las listas de un v1-v3 comun estan en el indice, y el
+  recorrido que lo distingue de un -dup tiene que saberlo (decode_with). }
+function DupDecode(const InPath, OutPath: AnsiString; const Opts: TFutureLzOptions;
+                   StatsOutOfLine: Boolean = False): Boolean;
+
+{ container::walk sin el bloque terminador: los primeros Len bytes de S se
+  recorren como un v1-v4 entero, que termina donde dicen sus bloques (o su
+  footer). OrigSize, la suma de los bloques. }
+function WalksAsPlain(S: TStream; Len: QWord; StatsOutOfLine: Boolean; out OrigSize: QWord): Boolean;
 
 implementation
 
@@ -130,18 +138,27 @@ begin
     if ReadUpTo(S, Result[0], N) <> N then raise EDup.Create('Truncated');
 end;
 
-{ la meta de un v5, o nil si no es v5 o no la trae }
-function V5Meta(S: TStream; Len: QWord): TBytes;
+{ la meta de un v5, o nil si no la trae. Plain: un v5 sin la flag de -dup
+  que termina en un footer v5 valido, que no lleva trailer ODUP (v5_meta) }
+function V5Meta(S: TStream; Len: QWord; out Plain: Boolean): TBytes;
 var head, tail, blob: TBytes; h: TV5Header; f: TV5Footer; blobLen, ending: QWord;
     crc: DWord;
 begin
   Result := nil;
+  Plain := False;
   if Len < V5_HEADER_SIZE + V5_FOOTER_SIZE then Exit;
   head := ReadAt(S, 0, V5_HEADER_SIZE);
   if not IsV5(head) then Exit;
   if DecodeV5Header(head, h) <> ceOK then raise EDup.Create('BadDup');
-  if (h.Flags and V5_FLAG_HAS_DUP) = 0 then Exit;
   tail := ReadAt(S, Len - V5_FOOTER_SIZE, V5_FOOTER_SIZE);
+  if (h.Flags and V5_FLAG_HAS_DUP) = 0 then
+  begin
+    { sin un footer valido al final se olfatea el trailer: un cuerpo v5 bajo
+      un trailer ODUP es lo que escribe la herramienta de F5.3a
+      (tests/dup_native_roundtrip.sh) }
+    Plain := DecodeV5Footer(tail, 0, f) = ceOK;
+    Exit;
+  end;
   if DecodeV5Footer(tail, 0, f) <> ceOK then raise EDup.Create('BadDup');
   blobLen := QWord(f.MetaSize);
   if f.MetaOffset > High(QWord) - blobLen then raise EDup.Create('BadDup');
@@ -173,10 +190,129 @@ begin
   for i := 7 downto 0 do metaSize := (metaSize shl 8) or QWord(sz[i]);
   if (metaSize > Len - ODUP_TRAILER_SIZE) or (metaSize < 4) then raise EDup.Create('BadDup');
   Result := ReadAt(S, Len - ODUP_TRAILER_SIZE - metaSize, metaSize);
-  { un trailer ODUP cuya meta no es .dupref es casi seguro una casualidad }
+  { un trailer ODUP cuya meta no es .dupref se rechaza (salvo que el archivo
+    entero se lea como uno comun, que lo decide DupDecode) }
   if not ((Result[0] = Ord('D')) and (Result[1] = Ord('U')) and (Result[2] = Ord('P')) and
           (Result[3] = Ord('R'))) then raise EDup.Create('BadDup');
   IsDup := True;
+end;
+
+{ seek + read sin excepciones: False si no se pudo leer todo }
+function PeekAt(S: TStream; Off: QWord; var Buf; N: QWord): Boolean;
+begin
+  Result := False;
+  if Off > QWord(High(Int64)) then Exit;
+  if S.Seek(Int64(Off), soBeginning) <> Int64(Off) then Exit;
+  Result := ReadUpTo(S, Buf, N) = N;
+end;
+
+function LE32At(const B: array of Byte; At: LongInt): DWord;
+begin
+  Result := DWord(B[At]) or (DWord(B[At + 1]) shl 8) or (DWord(B[At + 2]) shl 16) or
+            (DWord(B[At + 3]) shl 24);
+end;
+
+{ Los mismos chequeos que Archive::parse_with (y InspectCore), en el mismo
+  orden, leyendo solo el header, los headers de bloque y (v4) el footer: -d
+  no carga el archivo. La tabla del v4 se lee de a una entrada, a medida que
+  los bloques llegan a ella, asi que un footer que dice tener una tabla
+  enorme no cuesta nada hasta que los bloques la respaldan. }
+function WalksAsPlain(S: TStream; Len: QWord; StatsOutOfLine: Boolean; out OrigSize: QWord): Boolean;
+var
+  hb: TBytes;
+  h: TArchiveHeader;
+  fh: TFooterHead;
+  bh: array[0..BLOCK_HEADER_SIZE - 1] of Byte;
+  e: array[0..3] of Byte;
+  bhs, pos, tableSize, tableAt, entries, mls, need, inlineStat, tableSum, nb, ent: QWord;
+  lit, orig, st: DWord;
+  isV4: Boolean;
+begin
+  Result := False;
+  OrigSize := 0;
+  if Len < ARCHIVE_HEADER_SIZE then Exit;
+  SetLength(hb, ARCHIVE_HEADER_SIZE);
+  if not PeekAt(S, 0, hb[0], ARCHIVE_HEADER_SIZE) then Exit;
+  if DecodeArchiveHeader(hb, h) <> ceOK then Exit;
+  bhs := BLOCK_HEADER_SIZE + QWord(h.HashSize);
+  pos := ARCHIVE_HEADER_SIZE + QWord(h.HashSeedSize);
+  if pos > Len then Exit;
+  isV4 := h.Version = 4;
+  tableAt := 0;
+  entries := 0;
+  fh.TotalStatSize := 0;
+  if isV4 then
+  begin
+    if Len < pos + INDEX_LZ_FOOTER_SIZE then Exit;
+    SetLength(hb, INDEX_LZ_FOOTER_SIZE);
+    if not PeekAt(S, Len - INDEX_LZ_FOOTER_SIZE, hb[0], INDEX_LZ_FOOTER_SIZE) then Exit;
+    if DecodeFooterHead(hb, 0, fh) <> ceOK then Exit;
+    if fh.FooterSize < INDEX_LZ_FOOTER_SIZE then Exit;
+    tableSize := QWord(fh.FooterSize) - INDEX_LZ_FOOTER_SIZE;
+    if QWord(fh.FooterSize) > Len then Exit;
+    if fh.TotalStatSize > Len - QWord(fh.FooterSize) then Exit;
+    mls := Len - QWord(fh.FooterSize) - fh.TotalStatSize;
+    if (mls < pos) or ((tableSize mod 4) <> 0) then Exit;
+    tableAt := Len - QWord(fh.FooterSize);
+    entries := tableSize div 4;
+  end
+  else
+    mls := Len;
+
+  nb := 0;
+  tableSum := 0;
+  while pos <> mls do
+  begin
+    if mls - pos < bhs then Exit;
+    if not PeekAt(S, pos, bh[0], BLOCK_HEADER_SIZE) then Exit;
+    lit := LE32At(bh, 0);
+    orig := LE32At(bh, 4);
+    st := LE32At(bh, 8);
+    { el terminador: los decoders paran ahi, pero ningun encoder lo escribe,
+      y un -dup v1-v3 con el comienzo de la meta en cero se leeria como su
+      propio cuerpo }
+    if (not isV4) and (lit = 0) and (orig = 0) then Exit;
+    if isV4 then
+    begin
+      if (nb >= entries) or (st <> 0) then Exit;
+      if not PeekAt(S, tableAt + 4 * nb, e[0], 4) then Exit;
+      ent := QWord(LE32At(e, 0));
+      tableSum := tableSum + ent;
+      inlineStat := 0;
+    end
+    else if StatsOutOfLine then
+      inlineStat := 0
+    else
+      inlineStat := st;
+    need := bhs + inlineStat + QWord(lit);
+    if mls - pos < need then Exit;
+    OrigSize := OrigSize + QWord(orig);
+    Inc(nb);
+    pos := pos + need;
+  end;
+  { cada entrada se sumo en el camino: el conteo coincide solo si los
+    bloques las usaron todas }
+  if isV4 then
+    if (entries <> nb) or (tableSum <> fh.TotalStatSize) or
+       (mls + fh.TotalStatSize <> tableAt) then Exit;
+  Result := True;
+end;
+
+{ dup_holds: el archivo delante de la meta se recorre entero, y la meta no
+  pide mas cuerpo que el que decodifican sus bloques (la regla de with_dup,
+  que aplica -i tambien) }
+function DupHolds(S: TStream; Len: QWord; const Meta: TBytes; StatsOutOfLine: Boolean): Boolean;
+var orig: QWord; sm: TMetaSummary;
+begin
+  Result := False;
+  if not WalksAsPlain(S, Len - ODUP_TRAILER_SIZE - QWord(Length(Meta)), StatsOutOfLine, orig) then
+    Exit;
+  try
+    SummarizeMeta(Meta, sm);
+  except
+    on EDedup do Exit;
+  end;
+  Result := sm.BodySize <= orig;
 end;
 
 { El cuerpo de un -dup, decodificado como lo hace dup.rs: un v5 directo por
@@ -228,13 +364,15 @@ begin
   end;
 end;
 
-function DupDecode(const InPath, OutPath: AnsiString; const Opts: TFutureLzOptions): Boolean;
+function DupDecode(const InPath, OutPath: AnsiString; const Opts: TFutureLzOptions;
+                   StatsOutOfLine: Boolean): Boolean;
 var
   s: TRawFileStream;
   bodyIn: TFileStream;
-  len, bodyLen: QWord;
+  len, bodyLen, orig: QWord;
   meta: TBytes;
-  isOdup: Boolean;
+  isOdup, isV5Plain, holds: Boolean;
+  sniffErr: AnsiString;
   body, decoded: AnsiString;
 begin
   Result := False;
@@ -244,10 +382,34 @@ begin
   if s = nil then raise EDup.Create('Io');
   try
     len := SeekOrIo(s, 0, soEnd);
-    meta := V5Meta(s, len);
+    meta := V5Meta(s, len, isV5Plain);
     isOdup := False;
-    if meta = nil then meta := OdupMeta(s, len, isOdup);
-    if (meta = nil) and not isOdup then Exit(False);
+    { un v5 que termina en su propio footer no lleva trailer ODUP: sus
+      ultimos cuatro bytes son el CRC del footer, que es "ODUP" en uno de cada
+      2^32 archivos, y 2.3.0 entonces rechazaba un archivo sano }
+    if (meta = nil) and isV5Plain then Exit(False);
+    if meta = nil then
+    begin
+      { decode_odup: el trailer se olfatea, y un Future-LZ/I/O LZ comun
+        termina en sus ultimos literales, asi que el de un archivo que termina
+        en "ODUP" (cualquier v4 -dup) termina en algo con forma de trailer,
+        meta y todo. 2.3.0 y el C++ 1.0.7 lo cortaban y fallaban con lo que
+        quedaba. El trailer se toma solo si el archivo de atras se sostiene;
+        si no, y el archivo entero se recorre como uno comun, se decodifica
+        como uno comun (y sus bloques pasan sus chequeos, digests incluidos).
+        Si ninguno se sostiene, corre el camino -dup y falla con el error de
+        siempre: un -dup danado no se decodifica a su cuerpo. }
+      sniffErr := '';
+      try
+        meta := OdupMeta(s, len, isOdup);
+      except
+        on X: EDup do sniffErr := X.Message;
+      end;
+      if (sniffErr = '') and not isOdup then Exit(False);
+      holds := (sniffErr = '') and DupHolds(s, len, meta, StatsOutOfLine);
+      if (not holds) and WalksAsPlain(s, len, StatsOutOfLine, orig) then Exit(False);
+      if sniffErr <> '' then raise EDup.Create(sniffErr);
+    end;
 
     if not isOdup then
     begin

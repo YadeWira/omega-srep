@@ -13,6 +13,37 @@ what happened in 2.0.0.
 
 ### Fixed
 
+- **Data loss: the v4 Future-LZ or I/O LZ archive of a file that ends in
+  "ODUP" could not be decompressed.** `--format=v4 -mNf` and `-mNo` end the
+  archive with the last block's literal bytes, so the archive of any file whose
+  last bytes are "ODUP" -- every v4 `-dup` archive, ours or the C++'s, and any
+  other file that happens to end that way -- ends in that file's own ODUP
+  trailer, `.dupref` meta and all. `-d` took it for a `-dup` archive, cut the
+  file at the "trailer" and failed on what was left:
+  `Decode(Container(Truncated))` (exit 3), or "the -dup meta is missing or
+  corrupt" (exit 4) when the bytes in front of "ODUP" did not make a trailer.
+  Compression exited 0, so the loss showed only when the archive was needed.
+  In every release with the ODUP trailer, 2.3.0 included, and in the C++ 1.0.7,
+  whose `-d` fails the same way ("unexpected end of file"). The archives are
+  sound (byte for byte the C++'s) and now decode: `-d` takes the trailer only
+  when the archive behind it holds up -- it walks as a whole archive, and the
+  meta asks for no more body than its blocks decode to -- and otherwise, when
+  the whole file walks as a plain archive, decodes it as one, block digests
+  checked as always. When neither holds, the `-dup` error is the one it was,
+  so a damaged `-dup` archive is still refused, not decoded to its dedup body:
+  neither walk accepts the zero-length terminator block, which no encoder
+  writes and which a v1-v3 `-dup` archive (the C++ writes those) would read as
+  if the start of its meta were zeroed. With `-index=`, the walk takes a v1-v3
+  archive's match lists from the index, as `-d` does. Never affected: Index-LZ
+  (the default `-mN`), whose last bytes are its footer's signature, and the
+  `-dup` archive of such a file, whose trailer is its own. The writer is
+  unchanged; `docs/format-spec.md` §2, which put a misidentification at
+  ≈1/2^64, now describes the rule.
+- **Data loss, rarer: a v5 archive whose footer CRC spelled "ODUP"** (one
+  archive in 2^32) was sniffed for a v4 trailer and refused with "the -dup
+  meta is missing or corrupt". A v5 archive without the `-dup` flag that ends
+  in a valid v5 footer is no longer sniffed; a v5 body under a real ODUP
+  trailer (what the F5.3a tooling writes) still is.
 - **`osrep -i` on a v4 `-dup` archive said "Not an Omega SREP compressed
   file"**, exit 4, for the archives `--format=v4 -dup` writes and for every
   `-dup` archive of the C++ 1.0.7 (`-m3`, `-m3f`, `-m3o`...). The `.dupref`
@@ -21,10 +52,8 @@ what happened in 2.0.0.
   too, after its header line ("Not found Omega SREP compressed file footer",
   or a bogus block size), so there is no output to match; `-i` now describes
   the archive behind the trailer, and refuses a trailer `-d` would refuse,
-  unless the whole file reads as a plain archive: a Future-LZ or I/O LZ
-  archive ends in its last literals, so the archive of a file that itself ends
-  in "ODUP" (any v4 `-dup` archive) ends in what looks like a trailer, and is
-  then described as 1.0.7 describes it.
+  unless the whole file reads as a plain archive (the archive of a file that
+  ends in "ODUP", above), which it then describes as 1.0.7 does.
   `--verify` on such an archive now gives the "v1-v4 archive, cannot be
   verified" answer instead of "Not an Omega SREP".
 - **`-i` on a `-dup` archive reports the size `-d` restores.** v5 `-dup` gave

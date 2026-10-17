@@ -137,20 +137,37 @@ pub fn inspect_with(bytes: &[u8], stats_out_of_line: bool) -> Result<Info, Decod
     // Future-LZ/I/O LZ archive ends in its last literals, so one of a file
     // that ends in "ODUP" (another v4 `-dup` archive, say) carries what looks
     // like a trailer. When the archive behind it does not hold up, the whole
-    // file is read as a plain archive, as 2.3.0 and the C++ `-i` read it.
-    if let Ok(Some((n, meta))) = crate::dup::split_odup(bytes) {
-        if let Ok(info) = inspect_v14(&bytes[..n], bytes.len(), stats_out_of_line)
-            .and_then(|info| with_dup(info, Some(meta)))
-        {
-            return Ok(info);
+    // file is read as a plain archive, as 2.3.0 and the C++ `-i` read it --
+    // the same rule `-d` follows (`dup::decode`), and like it, without the
+    // zero-length terminator block no encoder writes: a `-dup` archive
+    // whose meta was zeroed would otherwise read as its own body.
+    match crate::dup::split_odup(bytes) {
+        Ok(None) => inspect_v14(bytes, bytes.len(), stats_out_of_line, false),
+        sniffed => {
+            if let Ok(Some((n, meta))) = sniffed {
+                if let Ok(info) = inspect_v14(&bytes[..n], bytes.len(), stats_out_of_line, true)
+                    .and_then(|info| with_dup(info, Some(meta)))
+                {
+                    return Ok(info);
+                }
+            }
+            inspect_v14(bytes, bytes.len(), stats_out_of_line, true)
         }
     }
-    inspect_v14(bytes, bytes.len(), stats_out_of_line)
 }
 
-/// A v1-v4 archive occupying `body`, in a file of `total` bytes.
-fn inspect_v14(body: &[u8], total: usize, stats_out_of_line: bool) -> Result<Info, DecodeError> {
+/// A v1-v4 archive occupying `body`, in a file of `total` bytes. `strict`
+/// refuses one that ends in a terminator block.
+fn inspect_v14(
+    body: &[u8],
+    total: usize,
+    stats_out_of_line: bool,
+    strict: bool,
+) -> Result<Info, DecodeError> {
     let parsed = container::Archive::parse_with(body, stats_out_of_line)?;
+    if strict && parsed.terminated {
+        return Err(DecodeError::BadData("terminator block"));
+    }
     let hash = parsed
         .header
         .hash()

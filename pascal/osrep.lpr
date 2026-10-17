@@ -712,7 +712,9 @@ begin
   begin
     isDup := False;
     try
-      isDup := DupDecode(FiName, FoutName, opts);
+      { con -index=, las listas de un v1-v3 comun estan en el indice, y el
+        recorrido que lo distingue de un -dup tiene que saberlo }
+      isDup := DupDecode(FiName, FoutName, opts, O.IndexFile <> '');
     except
       on X: Exception do DupFail(X);
     end;

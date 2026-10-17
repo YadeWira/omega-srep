@@ -184,16 +184,71 @@ form above followed by an ODUP trailer:
 
 Decoder algorithm:
 
-1. Read last 4 bytes; if `≠ "ODUP"`, treat as standard `.osr` and
-   skip steps 2–4.
-2. Read `meta_size` uint64 LE at filesize − 12.
-3. Validate that `meta[0..3] == "DUPR"` (Section 3.1). If not,
-   refuse the archive — the ODUP+DUPR magic-pair guard makes
-   accidental misidentification ≈1/2^64.
-4. Read meta blob and slice off the trailing 12+meta_size bytes.
-   The remainder is the standard `.osr` archive containing the
-   unique-chunk body. Decompress it via the standard path and feed
-   the result to the dedup post-pass (Section 3.3).
+1. A file that starts with the v5 magic is never sniffed: v5 keeps its
+   meta inside the container, and its last 4 bytes are the footer's
+   CRC-32C, which spells "ODUP" once in 2^32 archives.
+2. Read last 4 bytes; if `≠ "ODUP"`, treat as standard `.osr` and
+   skip the rest.
+3. Read `meta_size` uint64 LE at filesize − 12; it must fit the file
+   and be at least 4, and the meta must start with `"DUPR"`
+   (Section 3.1).
+4. The candidate body is the first `filesize − 12 − meta_size` bytes.
+   Take the `-dup` reading only if it **holds up**: the body walks as a
+   complete standard archive (Section 1: header, every block header,
+   and for v4 the footer and its table, ending exactly where they
+   say, with no zero-length terminator block), and the meta asks for
+   no more body than those blocks decode to (the sum of its unique
+   chunks ≤ the sum of the blocks' `origsize`). Then decompress the
+   body via the standard path and feed the result to the dedup
+   post-pass (Section 3.3).
+5. If it does not hold up (or step 3 failed), and the **whole file**
+   walks as a complete standard archive by the same rules, decode the
+   whole file as a standard `.osr` -- whose blocks then pass their own
+   checks, digests included.
+6. Otherwise refuse the archive as a damaged `-dup` archive.
+
+**The magic pair is not a guard against misidentification.** An older
+revision of this document said the `ODUP` + `DUPR` pair made an
+accidental match ≈1/2^64. That holds for random bytes, not for the
+files people compress: the v1/v2/v3 containers (`-mNo`, `-mNf`) end in
+the last block's literal bytes, so the archive of any file that itself
+ends in `ODUP` -- every `-dup` archive in this format, and any file that
+merely ends in those four bytes -- ends in that file's own trailer, meta
+and all, and passes steps 2-3 with certainty. Decoders up to osrep 2.3.0
+and the C++ 1.0.7 stopped at step 3, cut such a file short and failed on
+what was left: the archive could not be restored. The archives
+themselves are well formed, and steps 4-5 restore them.
+
+Why the walk decides it:
+
+* **Index-LZ (v4) never collides.** Its last 4 bytes are the footer's
+  `~BULAT_ZIGANSHIN_SIGNATURE` (`E8 E7 CA D9`), which is not `"ODUP"`;
+  so a plain Index-LZ archive never has a trailer to sniff, and a `-dup`
+  archive whose body is Index-LZ cannot also walk as a plain one.
+* **A plain v1-v3 archive cut at a fake trailer does not walk.** The
+  cut falls inside the last block's literals, and the walk retraces the
+  same block headers as the whole file, so it runs out of bytes. For
+  the cut to land on a block boundary, the "meta" would have to begin
+  with a block header -- and it begins with `"DUPR"`, which as a block's
+  `literal_bytes` (0x52505544) needs over 1.3 GB of block behind it.
+* **A real v1-v3 `-dup` archive does not walk whole** for the same
+  reason: after its last block comes `"DUPR"`. Damaged, it could: if the
+  start of the meta is zeroed, the bytes read as the zero-length
+  terminator block the decoders stop on (`srep.cpp:1147`), and the file
+  would decode to the dedup body instead of the original. No encoder
+  writes that block, so neither walk accepts it. What is left is damage
+  that turns the meta into a well-formed final block (fields that sum
+  exactly to the rest of the file): the block's digest then fails, and
+  only with `-hash-`, which has no digests to fail, could it decode to
+  the wrong bytes -- the same exposure `-hash-` has to any damage.
+
+**The writer cannot avoid the collision without changing the format.**
+v1-v3 have no footer, so the last bytes of the archive are the input's
+last literals. Appending the zero-length terminator block when an
+archive would end in `ODUP` would make it unambiguous (and readable by
+1.0.7, whose decoder stops on that block), but the archive would then
+differ from the C++'s, byte for byte, for those inputs; this release
+keeps the writer as it is and resolves the ambiguity in the reader.
 
 ## 3. `.dupref` meta blob
 
@@ -296,7 +351,8 @@ whole input and rarely align.
   SREP `.srep`. Magic bytes were intentionally changed (commit
   `09543d3`) to enforce the no-retro-compat decision.
 - The ODUP trailer is detected by sniffing the last 4 bytes; an
-  archive without it decompresses as a standard `.osr`. Old-style
+  archive without it decompresses as a standard `.osr`, and so does one
+  with it when only the whole file holds up as one (Section 2). Old-style
   consumers (no ODUP awareness) reading an ODUP archive will fail
   with a clean format-violation error somewhere in the trailing
   bytes — they are not silently misinterpreted.

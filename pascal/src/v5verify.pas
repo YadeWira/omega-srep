@@ -270,7 +270,7 @@ begin
   VerifyCore(B, False, R, st);
 end;
 
-function InspectCore(const B: TBytes; Avail: QWord; StatsOutOfLine: Boolean;
+function InspectCore(const B: TBytes; Avail: QWord; StatsOutOfLine, NoTerminator: Boolean;
                      out Info: TArchiveInfo): Boolean; forward;
 
 { el InspectV14 de --verify es el inspect entero: un v4 -dup tambien es "un
@@ -329,7 +329,7 @@ begin
 end;
 
 function InspectWith(const B: TBytes; StatsOutOfLine: Boolean; out Info: TArchiveInfo): Boolean;
-var r: TVerifyReport; st, n, bodyLen, metaAt, metaLen: QWord; hi: THashInfo; isDup: Boolean;
+var r: TVerifyReport; st, n, bodyLen, metaAt, metaLen: QWord; hi: THashInfo; isDup, sniffed: Boolean;
 begin
   n := QWord(Length(B));
   Info.HasDup := False;
@@ -365,23 +365,28 @@ begin
     en sus ultimos literales, y el de un archivo que termina en "ODUP" (otro
     v4 -dup, por ejemplo) trae algo con forma de trailer. Si el archivo de
     atras no se sostiene, se lee entero como uno comun, como 2.3.0 y el -i
-    del C++. }
+    del C++ -- la misma regla que sigue -d (DupDecode), y como ahi, sin el
+    bloque terminador que ningun encoder escribe: un -dup con la meta en
+    cero se leeria como su propio cuerpo. }
+  sniffed := True;
   try
     isDup := SplitOdup(B, bodyLen, metaAt, metaLen);
+    sniffed := isDup;
   except
     on EV5 do isDup := False;
   end;
   if isDup then
-    if InspectCore(B, bodyLen, StatsOutOfLine, Info) then
+    if InspectCore(B, bodyLen, StatsOutOfLine, True, Info) then
     begin
       Info.CompSize := n;
       if WithDup(B, metaAt, metaLen, Info) then Exit(True);
     end;
-  Result := InspectCore(B, n, StatsOutOfLine, Info);
+  Result := InspectCore(B, n, StatsOutOfLine, sniffed, Info);
 end;
 
-{ Archive::parse_with sobre los primeros Avail bytes de B }
-function InspectCore(const B: TBytes; Avail: QWord; StatsOutOfLine: Boolean;
+{ Archive::parse_with sobre los primeros Avail bytes de B. Uno
+  que termina en un bloque terminador no sirve con NoTerminator }
+function InspectCore(const B: TBytes; Avail: QWord; StatsOutOfLine, NoTerminator: Boolean;
                      out Info: TArchiveInfo): Boolean;
 var
   h: TArchiveHeader;
@@ -439,7 +444,11 @@ begin
     lit := L32(B, pos);
     orig := L32(B, pos + 4);
     st := L32(B, pos + 8);
-    if (not isV4) and (lit = 0) and (orig = 0) then Break;   { el terminador }
+    if (not isV4) and (lit = 0) and (orig = 0) then   { el terminador }
+    begin
+      if NoTerminator then Exit;
+      Break;
+    end;
     if isV4 then
     begin
       if nb >= QWord(Length(table)) then Exit;
