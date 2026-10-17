@@ -54,6 +54,7 @@ RS=$RUST_TARGET/release/osrep
 if [ -n "${OSREP_PORT_BIN:-}" ]; then
     RS="$OSREP_PORT_BIN"
 fi
+warn_shared_wine "$RS"
 [[ -x "$RS" ]] || fail "missing $RS"
 OSREP_BIN="$RS"
 

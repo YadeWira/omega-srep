@@ -23,6 +23,7 @@ cargo_rs build --release -p osrep-conformance >/dev/null 2>&1 || fail "no compil
 RS=$RUST_TARGET/release/encode_conformance
 
 ET="${OSREP_PASCAL_ENCODETOOL:-pascal/bin/encodetool}"
+warn_shared_wine "$ET"
 if [ ! -x "$ET" ]; then
     command -v fpc >/dev/null 2>&1 || { say "sin fpc -- salteando"; exit 0; }
     mkdir -p pascal/bin/units-linux

@@ -28,6 +28,7 @@ CPP="$CXX_BIN/osrep"
 ET="${OSREP_PASCAL_ENCODETOOL:-pascal/bin/encodetool}"
 DT="${OSREP_PASCAL_DECODETOOL:-pascal/bin/decodetool}"
 VT="${OSREP_PASCAL_VERIFYTOOL:-pascal/bin/verifytool}"
+warn_shared_wine "$ET" "$DT" "$VT"
 for t in "$ET" "$DT" "$VT"; do [ -x "$t" ] || fail "falta $t (pascal/build.sh)"; done
 
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT

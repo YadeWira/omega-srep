@@ -21,6 +21,7 @@ fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 
 RS="${OSREP_RUST_BIN:-$RUST_TARGET/x86_64-unknown-linux-gnu/release/osrep}"
 PA="${OSREP_PASCAL_BIN:-pascal/bin/osrep-linux-x86_64}"
+warn_shared_wine "$PA"
 
 [ -x "$RS" ] || { say "sin binario Rust en $RS -- salteando"; exit 0; }
 if [ ! -x "$PA" ]; then

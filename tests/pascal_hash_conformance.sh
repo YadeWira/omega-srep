@@ -22,6 +22,7 @@ say()  { printf '  %s\n' "$*"; }
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 
 PA="${OSREP_PASCAL_HASHTOOL:-pascal/bin/hashtool}"
+warn_shared_wine "$PA"
 if [ ! -x "$PA" ]; then
     command -v fpc >/dev/null 2>&1 || { say "sin fpc -- salteando"; exit 0; }
     mkdir -p pascal/bin/units-linux

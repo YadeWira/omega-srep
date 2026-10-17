@@ -359,6 +359,22 @@ EOF
     if [[ -f "$libstdcxx_dll" ]]; then cp "$libstdcxx_dll" "$build_dir/"; fi
     if [[ -f "$libgcc_dll" ]]; then cp "$libgcc_dll" "$build_dir/"; fi
 
+    # A private WINEPREFIX, not the shared ~/.wine: every wine process on one
+    # prefix talks to one wineserver, and a `wineserver -k` from any other job
+    # on that prefix ends ours mid-run, usually with exit 0 and no output
+    # (docs/pascal-port.md, "Un `wineserver -k` ajeno"). A WINEPREFIX the
+    # caller set is used as is. The private one lives in $RUN_TMPROOT, is
+    # booted here, outside the 30 s timeouts below (a first boot takes a
+    # while), and is removed by on_exit even on a failure: it is ~1.4 GB, and
+    # $RUN_TMPROOT is usually on a tmpfs.
+    local own_prefix=""
+    if [[ -z "${WINEPREFIX:-}" ]]; then
+        own_prefix="$RUN_TMPROOT/wineprefix"
+        export WINEPREFIX="$own_prefix"
+        run_logged "wineboot -i (private WINEPREFIX $own_prefix)" "$LOGDIR/s4-wineboot.log" \
+            env WINEDEBUG=-all WINEDLLOVERRIDES="mscoree,mshtml=" timeout 300 wineboot -i
+    fi
+
     echo "  -> Wine smoke test: --help"
     export WINEDEBUG=-all
     run_logged "wine osrep.exe --help" "$LOGDIR/s4-wine-help.log" \
@@ -379,6 +395,7 @@ EOF
         return 1
     fi
     unset WINEDEBUG
+    [[ -z "$own_prefix" ]] || unset WINEPREFIX
 
     STAGE_STATUS[s4]="PASS"
 }
@@ -420,6 +437,14 @@ on_exit() {
         printf '  %-58s %s\n' "${STAGE_LABEL[$s]}" "${STAGE_STATUS[$s]}"
     done
     echo "==================================================================="
+
+    # Stage 4's private wine prefix goes whatever happened (it is not
+    # evidence, and it is big). It is ours alone: wait for its wineserver to
+    # exit first, so the prefix is not removed from under it.
+    if [[ -d "$RUN_TMPROOT/wineprefix" ]]; then
+        WINEPREFIX="$RUN_TMPROOT/wineprefix" timeout 60 wineserver -w || true
+        rm -rf "${RUN_TMPROOT:?}/wineprefix"
+    fi
 
     # Keep logs (and the mingw build tree) around for post-mortem on
     # failure; on a clean pass there's nothing worth digging through,

@@ -33,6 +33,7 @@ source tests/_paths.sh
 CPP="${OSREP_CPP_BIN:-$CXX_BIN/osrep}"
 RS="${OSREP_RUST_BIN:-$RUST_TARGET/release/osrep}"
 PORT="${OSREP_PORT_BIN:-pascal/bin/osrep-linux-x86_64}"
+warn_shared_wine "$PORT"
 
 if [ -z "${OSREP_CPP_BIN:-}" ] && [ ! -x "$CPP" ]; then
     make_cxx bin/osrep >/dev/null 2>&1 || { echo "cannot build $CPP" >&2; exit 2; }

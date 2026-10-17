@@ -21,6 +21,7 @@ fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 
 RS="${OSREP_RUST_BIN:-$RUST_TARGET/x86_64-unknown-linux-gnu/release/osrep}"
 DT="${OSREP_PASCAL_DECODETOOL:-pascal/bin/decodetool}"
+warn_shared_wine "$DT"
 [ -x "$RS" ] || { say "sin binario Rust -- salteando"; exit 0; }
 if [ ! -x "$DT" ]; then
     command -v fpc >/dev/null 2>&1 || { say "sin fpc -- salteando"; exit 0; }

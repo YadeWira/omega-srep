@@ -37,6 +37,7 @@ OSREP=$CXX_BIN/osrep
 [ -x "$OSREP" ] || make_cxx bin/osrep >/dev/null 2>&1
 
 DT="${OSREP_PASCAL_DECODETOOL:-pascal/bin/decodetool}"
+warn_shared_wine "$DT"
 if [ ! -x "$DT" ]; then
     command -v fpc >/dev/null 2>&1 || { say "sin fpc -- salteando"; exit 0; }
     mkdir -p pascal/bin/units-linux

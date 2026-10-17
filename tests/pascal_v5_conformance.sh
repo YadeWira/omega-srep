@@ -29,6 +29,7 @@ RS="${OSREP_RUST_BIN:-$RUST_TARGET/x86_64-unknown-linux-gnu/release/osrep}"
 [ -x "$RS" ] || fail "no hay encoder Rust en $RS"
 
 DT="${OSREP_PASCAL_DECODETOOL:-pascal/bin/decodetool}"
+warn_shared_wine "$DT"
 if [ ! -x "$DT" ]; then
     command -v fpc >/dev/null 2>&1 || { say "sin fpc -- salteando"; exit 0; }
     mkdir -p pascal/bin/units-linux
@@ -88,7 +89,7 @@ fail_diag() { # $1=mensaje $2=archivo $3=salida del Pascal, el resto opciones
         for f in rust:rs:"${RS_RC:-?}" pascal:pa:"${PA_RC:-?}"; do
             IFS=: read -r who p code <<<"$f"
             printf '  %s: rc=%s\n    stdout: %s\n    stderr: %s\n' "$who" "$code" \
-                "$(tr '\n' '|' <"$TMP/$p.o" 2>/dev/null)" "$(tr '\n' '|' <"$TMP/$p.e" 2>/dev/null)"
+                "$(tr '\n' '|' 2>/dev/null <"$TMP/$p.o")" "$(tr '\n' '|' 2>/dev/null <"$TMP/$p.e")"
         done
         for f in "$keep/rust.out" "$keep/pascal.out" "$keep/again.out"; do
             [ ! -e "$f" ] || printf '  %s: %s bytes, md5 %s\n' "$(basename "$f")" \
@@ -96,9 +97,11 @@ fail_diag() { # $1=mensaje $2=archivo $3=salida del Pascal, el resto opciones
         done
         printf '  el Pascal otra vez: rc=%s, stdout: %s, stderr: %s\n' "$rc2" \
             "$(tr '\n' '|' <"$keep/again.o")" "$(tr '\n' '|' <"$keep/again.e")"
-        # decodetool siempre escribe "ok ..." antes de salir con 0
-        [ "${PA_RC:-}" != 0 ] || [ -s "$TMP/pa.o" ] || [ -s "$TMP/pa.e" ] || printf '%s\n' \
-            "  el Pascal salio 0 sin escribir nada: no termino. Bajo wine, es lo que da" \
+        # decodetool siempre escribe algo: "ok ..." al salir con 0, un mensaje
+        # al salir con cualquier otro codigo. Mudo, con el codigo que sea (bajo
+        # wine casi siempre 0, tambien 1 y 131), es que no termino.
+        [ -z "${PA_RC:-}" ] || [ -s "$TMP/pa.o" ] || [ -s "$TMP/pa.e" ] || printf '%s\n' \
+            "  el Pascal salio $PA_RC sin escribir nada: no termino. Bajo wine, es lo que da" \
             "  un wineserver que se va (un \`wineserver -k\` en el mismo WINEPREFIX)."
         printf '  guardado en %s\n' "$keep"
     } >&2
@@ -111,7 +114,8 @@ fail_diag() { # $1=mensaje $2=archivo $3=salida del Pascal, el resto opciones
 compare() { # $1=etiqueta $2=archivo $3=original o "-", el resto opciones
     local label="$1" arc="$2" src="$3"; shift 3
     local want got
-    PA_RC=; rm -f "$TMP/pa.o" "$TMP/pa.e"
+    # nada de un caso anterior puede pasar por evidencia de este
+    PA_RC=; rm -f "$TMP/pa.o" "$TMP/pa.e" "$TMP/r.out" "$TMP/p.out"
     run_rs "$arc" "$TMP/r.out" "$@"
     [ "$RS_RC" -eq 0 ] || fail_diag "[$label $*] el Rust no decodifico su propio archivo" "$arc" - "$@"
     want=$(cat "$TMP/rs.o")
@@ -290,6 +294,7 @@ say "$pass comprobaciones hasta aca; $accepted mutaciones que el Rust acepta"
 
 say "lo que el Rust acepta de esas mutaciones, el Pascal lo reconstruye igual"
 for k in "$TMP"/k.*.osr; do
+    rm -f "$TMP/r.out" "$TMP/p.out"
     run_rs "$k" "$TMP/r.out"
     [ "$RS_RC" -eq 0 ] || continue
     run_pa "$k" "$TMP/p.out"
