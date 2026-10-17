@@ -75,7 +75,8 @@ type
     procedure Flush;
     { si el stdout del Rust (un LineWriter de 1024 bytes) ya habria escrito
       algo al fd antes de terminar el encode: con un '\n' en lo escrito, o
-      con 1024 bytes o mas. Si no, todo esperaba al flush final. }
+      con MAS de 1024 bytes (con 1024 justos el buffer esta lleno pero
+      todavia no escribio). Si no, todo esperaba al flush final. }
     function RustWroteEarly: Boolean;
     property Written: QWord read FCount;
   end;
@@ -137,11 +138,13 @@ begin
   end;
   Inc(FCount, QWord(Result));
   { el primer write(2) del LineWriter del Rust: con el primer '\n' o al
-    llegar a 1024 bytes. Si ese falla, el Rust falla ahi, dentro del encode
+    pasar de 1024 bytes (un write que deja su buffer justo lleno, 1024, no
+    escribe nada; el primero, la cabecera, es chico, asi que nunca va
+    directo al fd por ser >= 1024). Si ese falla, el Rust falla ahi, dentro del encode
     y antes del progreso que sigue; aca tambien (un stdout cerrado o
     /dev/full: el mismo stderr que el Rust). Despues sigue el buffer
     grande; un lector que se va a mitad puede fallar en otro punto. }
-  if (not FDrained) and (FSawNewline or (FCount >= 1024)) then
+  if (not FDrained) and (FSawNewline or (FCount > 1024)) then
   begin
     FDrained := True;
     Drain;
@@ -161,7 +164,7 @@ end;
 
 function TCountWriter.RustWroteEarly: Boolean;
 begin
-  Result := FSawNewline or (FCount >= 1024);
+  Result := FSawNewline or (FCount > 1024);
 end;
 
 { ------------------------------------------------------------ helpers --- }

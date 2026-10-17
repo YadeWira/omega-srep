@@ -30,14 +30,18 @@ what happened in 2.0.0.
   stdout handle. The archive or decompressed data for a closed (or missing)
   stdout now fails as any stdout write failure does, and `-delete` keeps its
   input: "Can't write to stdout", exit 3, when decompressing; when
-  compressing, "Io", exit 4, once the archive has reached 1024 bytes or a
-  newline byte during the encode, and "Can't write to stdout", exit 3, for a
-  smaller archive with no newline byte, which is written only at the end.
-  Naming the output `/dev/stdout`, `/dev/stderr` or `/proc/self/fd/N` for a
-  closed fd fails too ("Can't open /dev/stdout for write", exit 3): a closed
-  fd 1 or 2 is reserved on the directory `/`, so opening it again for
-  writing cannot land on `/dev/null`. The released Pascal binary already
-  failed with `-` on Linux, and so does the C++.
+  compressing, "Io", exit 4, once the archive has passed 1024 bytes or
+  contains a newline byte during the encode, and "Can't write to stdout",
+  exit 3, for an archive of at most 1024 bytes with no newline byte, which
+  is written only at the end. Naming the output `/dev/stdin`, `/dev/stdout`,
+  `/dev/stderr` or `/proc/self/fd/N` for a closed fd fails too ("Can't open
+  /dev/stdout for write", exit 3): a closed fd 0, 1 or 2 is reserved on the
+  directory `/` (fd 0 with `O_PATH`, so it still reads as empty), so opening
+  it again for writing cannot land on `/dev/null`; `osrep -delete x
+  /dev/stdin <&-` deleted `x` in both builds. The released Pascal binary
+  already failed with `-` on Linux (exit 4, `x` kept). The C++ 1.0.7 does
+  not: `-delete x - >&-` opens its input on fd 1, its writes to stdout fail
+  silently, and it exits 0 and deletes `x`.
 - **A closed or missing stdin reads as empty in both builds.** On Windows
   with no stdin handle, and on Linux with fd 0 opened write-only, the Pascal
   said "Can't read from stdin" or "Can't read from input file" (exit 3)

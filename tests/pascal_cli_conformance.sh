@@ -775,8 +775,40 @@ mkdir -p "$FD/fix"
 fdsize=$(stat -c%s "$FD/fix/in.txt")
 "$RS" --seed=7 -b64kb "$FD/fix/in.txt" "$FD/fix/a.osr" >/dev/null 2>&1 || fail "fd: el Rust no comprime"
 head -c 2000 "$FD/fix/a.osr" > "$FD/fix/bad.osr"
+# El borde del primer write del LineWriter del Rust: con un archivo de 1024
+# bytes justos y sin '\n' todavia no escribio nada (exit 3, "Can't write to
+# stdout"); con 1025, ya dentro del encode ("Io", exit 4). El Pascal usaba
+# >= 1024. Entradas sin '\n' cuyo archivo mide 1024 y 1025, en v5 y v4, con
+# la primera semilla que no mete un '\n' en ninguno de los dos.
+tr -d '\n' < tests/corpus/random.bin | head -c 1000 > "$FD/nonl.bin"
+fdedge() {   # $1=largo de la entrada para 1024 $2=flags; deja la semilla en FDSEED
+    local n=$1 f=$2 s k ok
+    head -c "$n" "$FD/nonl.bin" > "$FD/fix/e$n.bin"; head -c $((n + 1)) "$FD/nonl.bin" > "$FD/fix/e$((n + 1)).bin"
+    FDSEED=
+    for s in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16; do
+        ok=1
+        for k in 0 1; do
+            # shellcheck disable=SC2086
+            "$RS" --seed=$s $f "$FD/fix/e$((n + k)).bin" "$FD/e.osr" >/dev/null 2>&1 || fail "fd: el Rust no comprime e$((n + k)).bin"
+            [ "$(stat -c%s "$FD/e.osr")" -eq $((1024 + k)) ] || fail "fd: e$((n + k)).bin no da un archivo de $((1024 + k)) bytes [$f]"
+            [ "$(tr -cd '\n' < "$FD/e.osr" | wc -c)" -eq 0 ] || ok=0
+        done
+        [ "$ok" = 1 ] && { FDSEED=$s; return; }
+    done
+    fail "fd: ninguna semilla da archivos sin '\n' [$f]"
+}
+fdedge 904 ""; FDS5=$FDSEED
+fdedge 920 --format=v4; FDS4=$FDSEED
+rm -f "$FD/e.osr"
+# Solo en Linux: la salida o la entrada nombrada /dev/stdin o
+# /proc/self/fd/0 (bajo wine no abren, y el Rust de Linux si)
+FDLINUX=
 if [ "$WINE" = 0 ]; then
     FDCOMBOS="n 0 1 2 01 02 12 012 f1 f2 w0"
+    FDLINUX="/dev/null|--seed=7 in.txt /dev/stdin
+/dev/null|-d a.osr /proc/self/fd/0
+/dev/null|--seed=7 /dev/stdin o.osr
+/dev/null|-d /dev/stdin o.dec"
 else
     FDCOMBOS="n 1 2 12 f1 f2"
     FDEXE=$(grep -o '[^ "]*\.exe' "$PA" | head -1)
@@ -881,6 +913,11 @@ $FD/fix/in.txt|--seed=7 -s$fdsize - o.osr
 /dev/null|--seed=7 -m0 in.txt -
 /dev/null|--seed=7 --format=v4 in.txt -
 /dev/null|--seed=7 -bar --format=v4 in.txt -
+/dev/null|--seed=$FDS5 e904.bin -
+/dev/null|--seed=$FDS5 e905.bin -
+/dev/null|--seed=$FDS4 --format=v4 e920.bin -
+/dev/null|--seed=$FDS4 --format=v4 -bar e921.bin -
+$FDLINUX
 /dev/null|-d a.osr o.dec
 $FD/fix/a.osr|-d - o.dec
 /dev/null|-d a.osr -
@@ -897,11 +934,22 @@ pass=$((pass + 1))
 # -delete con stdout cerrado o lleno: la salida falla y la entrada se queda.
 # En Linux tambien con la salida /dev/stdout o /proc/self/fd/1, que reabren
 # lo que hay detras del fd 1: reservado sobre un directorio, el open falla.
-if [ "$WINE" = 0 ]; then FDOUTS="- /dev/stdout /proc/self/fd/1"; else FDOUTS="-"; fi
+# Y lo mismo con el fd 0 cerrado y la salida /dev/stdin, /proc/self/fd/0 o
+# /dev/fd/0: sobre /dev/null, `-delete x /dev/stdin <&-` borraba x.
+if [ "$WINE" = 0 ]; then
+    FDOUTS="- /dev/stdout /proc/self/fd/1 /dev/stdin /proc/self/fd/0 /dev/fd/0"
+else
+    FDOUTS="-"
+fi
 for spec in "in.txt|--seed=7 -delete in.txt" "a.osr|-delete -d a.osr"; do
     keep=${spec%%|*}; args=${spec#*|}
     for o in $FDOUTS; do
-        for r in '>&- 2>/dev/null' '>&- 2>&-' '<&- >&- 2>&-' '>/dev/full 2>/dev/null'; do
+        case $o in
+        */0|/dev/stdin) FDRS="'<&- 2>/dev/null' '<&- >/dev/null 2>&-' '<&- >&- 2>&-'";;
+        *) FDRS="'>&- 2>/dev/null' '>&- 2>&-' '<&- >&- 2>&-' '>/dev/full 2>/dev/null'";;
+        esac
+        eval "set -- $FDRS"
+        for r; do
             [ "$WINE" = 1 ] && [ "$r" = '<&- >&- 2>&-' ] && continue
             rm -rf "$FD/q"; mkdir -p "$FD/q"; cp "$FD/fix/"* "$FD/q/"
             rc=0; (cd "$FD/q" && eval "\"\$PAX\" $args $o $r") || rc=$?

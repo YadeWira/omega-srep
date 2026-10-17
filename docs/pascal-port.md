@@ -508,8 +508,8 @@ diferencias.
   borraba la entrada); `-d` los metía en los datos. El C++ 1.0.7 hace lo
   mismo, al comprimir y al descomprimir. `src/stdfds.pas` va primera en el
   `uses` y reserva los tres al inicializarse (antes de que `SysUtils` abra
-  `/etc/localtime`). Pero solo el fd 0 va al `/dev/null` de
-  lectura-escritura del Rust: en el fd 1 ahí todo se escribe con éxito y
+  `/etc/localtime`). Pero ninguno va al `/dev/null` de lectura-escritura
+  del Rust: en el fd 1 ahí todo se escribe con éxito y
   `osrep -delete x - >&-` tiraba el archivo y borraba `x`. Los fd 1 y 2 se
   abren sobre el **directorio `/`, solo lectura**, así que escribir ahí es
   EBADF, lo mismo que un fd cerrado; y un `/dev/null` de solo lectura no
@@ -517,15 +517,19 @@ diferencias.
   `/proc/self/fd/1`, y abrir eso para escribir reabre lo que hay detrás del
   fd (`osrep -delete x /dev/stdout >&-` escribía en `/dev/null` y borraba
   `x`); con un directorio el `open` falla con EISDIR, "Can't open
-  /dev/stdout for write". El Rust hace lo mismo desde un `.init_array` que
+  /dev/stdout for write". El fd 0 va sobre `/` también, con `O_PATH`: leerlo
+  da EBADF (fin de archivo, ver abajo), y la salida `/dev/stdin` o
+  `/proc/self/fd/0` falla igual (con `/dev/null`, `osrep -delete x
+  /dev/stdin <&-` borraba `x`). El Rust hace lo mismo desde un `.init_array` que
   corre antes que su runtime (`osrep-cli/src/stdio.rs`); como su `stdout()`
   se traga el EBADF, los datos van por el handle crudo (`data_stdout`, con
   el mismo `LineWriter` de 1024), y los mensajes, que nunca deben fallar,
   con escrituras que ignoran el error (`eprint!` y `print!` hacen panic con
   `2>/dev/full`). Ese `LineWriter` hace su primer `write` con el primer
-  `'\n'` o a los 1024 bytes, adentro del encode: si falla, el error es "Io"
-  (exit 4) y el progreso que venía no sale; un archivo más chico y sin
-  `'\n'` falla recién en el flush final, "Can't write to stdout" (exit 3).
+  `'\n'` o pasados los 1024 bytes (con 1024 justos el buffer queda lleno y
+  no escribe), adentro del encode: si falla, el error es "Io" (exit 4) y el
+  progreso que venía no sale; un archivo de hasta 1024 bytes y sin `'\n'`
+  falla recién en el flush final, "Can't write to stdout" (exit 3).
   `TCountWriter` vacía su buffer una vez en ese mismo punto, o un stdout
   cerrado o lleno daba otro stderr (`--format=v4 x -`). Las lecturas de stdin siguen la
   regla del std del Rust: EBADF, o `ERROR_INVALID_HANDLE` en Windows, es fin

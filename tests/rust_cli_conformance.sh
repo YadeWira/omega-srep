@@ -1128,11 +1128,18 @@ for r in '<&- 2>&-' '>&- 2>&-' '<&- >&- 2>&-' '2>/dev/full' '<&- >/dev/full 2>/d
 done
 # Also with the output named /dev/stdout or /proc/self/fd/1, which opens the
 # file behind fd 1 again: a closed fd 1 is reserved on a directory, so that
-# open fails (EISDIR) instead of landing on /dev/null.
+# open fails (EISDIR) instead of landing on /dev/null. The same for fd 0 and
+# /dev/stdin, /proc/self/fd/0, /dev/fd/0: fd 0 is reserved on `/` with
+# O_PATH (on /dev/null, `-delete x /dev/stdin <&-` deleted x).
 for spec in "fdin.bin|--seed=7 -delete fdin.bin" "fdref.osr|-delete -d fdref.osr"; do
     keep=${spec%%|*}; args=${spec#*|}
-    for o in - /dev/stdout /proc/self/fd/1; do
-        for r in '>&- 2>/dev/null' '>/dev/full 2>/dev/null' '<&- >&- 2>&-'; do
+    for o in - /dev/stdout /proc/self/fd/1 /dev/stdin /proc/self/fd/0 /dev/fd/0; do
+        case $o in
+        */0|/dev/stdin) rs="'<&- 2>/dev/null' '<&- >/dev/null 2>&-' '<&- >&- 2>&-'";;
+        *) rs="'>&- 2>/dev/null' '>/dev/full 2>/dev/null' '<&- >&- 2>&-'";;
+        esac
+        eval "set -- $rs"
+        for r; do
             rm -rf "$TMP/fdq"; mkdir "$TMP/fdq"; cp "$TMP/fdin.bin" "$TMP/fdref.osr" "$TMP/fdq/"
             rc=0; (cd "$TMP/fdq" && eval '"$RS"' "$args" "$o" "$r") || rc=$?
             [ "$rc" -ne 0 ] || fail "fd [$args $o $r]: exit 0 with nowhere to write"
@@ -1140,10 +1147,41 @@ for spec in "fdin.bin|--seed=7 -delete fdin.bin" "fdref.osr|-delete -d fdref.osr
         done
     done
 done
-for o in /dev/stdout /proc/self/fd/1; do
-    rc=0; "$RS" --seed=7 "$TMP/fdin.bin" "$o" >&- 2>"$TMP/fd.err" || rc=$?
+for o in /dev/stdout /proc/self/fd/1 /dev/stdin /proc/self/fd/0; do
+    rc=0; "$RS" --seed=7 "$TMP/fdin.bin" "$o" <&- >&- 2>"$TMP/fd.err" || rc=$?
     [ "$rc" -eq 3 ] && grep -q "Can't open $o for write" "$TMP/fd.err" \
-        || fail "fd [$o >&-]: exit $rc, '$(cat "$TMP/fd.err")', not \"Can't open $o for write\" (exit 3)"
+        || fail "fd [$o <&- >&-]: exit $rc, '$(cat "$TMP/fd.err")', not \"Can't open $o for write\" (exit 3)"
+done
+# When an archive sent to a closed or full stdout fails: Rust's LineWriter
+# of 1024 bytes writes at the first newline byte or once MORE than 1024
+# bytes are buffered, inside the encode ("Io", exit 4); an archive of 1024
+# bytes or less with no newline byte waits for the final flush ("Can't write
+# to stdout", exit 3). Exactly 1024 is the edge (the Pascal said "Io"): an
+# input with no newline byte whose archive is 1024 bytes, and one byte more.
+tr -d '\n' < tests/corpus/random.bin | head -c 1000 > "$TMP/fdnonl.bin"
+for spec in "904|" "920|--format=v4"; do
+    n=${spec%%|*}; f=${spec#*|}
+    head -c "$n" "$TMP/fdnonl.bin" > "$TMP/fde0.bin"; head -c $((n + 1)) "$TMP/fdnonl.bin" > "$TMP/fde1.bin"
+    seed=
+    for s in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16; do
+        ok=1
+        for k in 0 1; do
+            # shellcheck disable=SC2086
+            "$RS" --seed=$s $f "$TMP/fde$k.bin" "$TMP/fde.osr" 2>/dev/null || fail "fd edge: compress"
+            [ "$(stat -c%s "$TMP/fde.osr")" -eq $((1024 + k)) ] || fail "fd edge [$f $n+$k]: the archive is not $((1024 + k)) bytes"
+            [ "$(tr -cd '\n' < "$TMP/fde.osr" | wc -c)" -eq 0 ] || ok=0
+        done
+        [ "$ok" = 1 ] && { seed=$s; break; }
+    done
+    [ -n "$seed" ] || fail "fd edge [$f]: no seed gives archives without a newline byte"
+    for r in '>&-' '>/dev/full'; do
+        for k in 0 1; do
+            rc=0; eval '"$RS" --seed=$seed $f "$TMP/fde$k.bin" - 2>"$TMP/fd.err"' "$r" || rc=$?
+            if [ "$k" = 0 ]; then want="3 Can't write to stdout"; else want="4 Io"; fi
+            [ "$rc" -eq "${want%% *}" ] && grep -q "ERROR! ${want#* }\$" "$TMP/fd.err" \
+                || fail "fd edge [$f $((1024 + k))-byte archive $r]: exit $rc, '$(tail -c 60 "$TMP/fd.err")', not '${want#* }' (exit ${want%% *})"
+        done
+    done
 done
 for r in '>&-' '>/dev/full' '<&- >&- 2>&-'; do
     for a in --version --help; do

@@ -12,7 +12,7 @@
 //!   message meant for stderr went into the archive (`osrep x x.osr 2>&- <&-`
 //!   in the C++ and the Pascal). Rust's runtime already reopens a closed fd on
 //!   `/dev/null` before `main`; [`reserve_std_fds`] runs before that and does
-//!   it itself, so it can treat fds 1 and 2 differently:
+//!   it itself, so it can put them somewhere else:
 //! * **Data for a closed stdout is an error, not a discard.** `/dev/null`
 //!   accepts everything, so `osrep -delete x - >&-` wrote the archive
 //!   nowhere, exited 0 and deleted `x`. A closed fd 1 or 2 is reopened on
@@ -27,8 +27,15 @@
 //!   writing opens the file behind the fd again, and `/dev/null` would take
 //!   it (`osrep -delete x /dev/stdout >&-` deleted `x`); a directory fails
 //!   with EISDIR, "Can't open /dev/stdout for write". A closed stdin is
-//!   reopened on `/dev/null` and reads as empty, as in Rust, the C++ and the
-//!   Pascal before.
+//!   reserved on `/` too, but with `O_PATH`: reading it gives EBADF, which
+//!   `std::io::stdin()` takes as end of file (the Pascal's `StdinRead` does
+//!   the same), so it reads as empty, as in Rust, the C++ and the Pascal
+//!   before. Not `/dev/null`: the output can also be named `/dev/stdin` or
+//!   `/proc/self/fd/0`, and `osrep -delete x /dev/stdin <&-` wrote the
+//!   archive into `/dev/null` and deleted `x`; on a directory that open
+//!   fails with EISDIR as for fds 1 and 2. (The runtime then sees POLLNVAL
+//!   on fd 0 and opens one more `/dev/null`, which lands on fd 3 and does
+//!   nothing.)
 //!
 //! On Windows nothing is reopened: handles are not numbered like fds, and a
 //! missing std handle is null. [`data_stdout`] fails on a null handle with
@@ -66,9 +73,9 @@ pub fn out_text(s: &str) {
 /// Runs from `.init_array`, before the Rust runtime's own check of fds 0-2
 /// (`sys::pal::unix::init`, which would reopen a closed fd 1 or 2 read-write
 /// on `/dev/null`). Same order as the runtime, so each open lands on the fd
-/// it replaces: fd 0 on `/dev/null` read-write as the runtime does, fds 1
-/// and 2 on `/` read-only (see the module comment). If the open fails the
-/// runtime aborts, and so does this.
+/// it replaces: fd 0 on `/` with `O_PATH` (reads give EBADF, an empty
+/// input), fds 1 and 2 on `/` read-only (see the module comment). If the
+/// open fails the runtime aborts, and so does this.
 #[cfg(target_os = "linux")]
 mod reserve {
     use std::os::raw::{c_char, c_int};
@@ -82,7 +89,8 @@ mod reserve {
 
     const F_GETFD: c_int = 1;
     const O_RDONLY: c_int = 0;
-    const O_RDWR: c_int = 2;
+    // x86, x86_64, arm and aarch64 alike (asm-generic/fcntl.h)
+    const O_PATH: c_int = 0o10000000;
     const EBADF: c_int = 9;
 
     extern "C" fn reserve_std_fds() {
@@ -92,7 +100,7 @@ mod reserve {
             unsafe {
                 if fcntl(fd, F_GETFD) == -1 && *__errno_location() == EBADF {
                     let r = if fd == 0 {
-                        open(b"/dev/null\0".as_ptr().cast(), O_RDWR)
+                        open(b"/\0".as_ptr().cast(), O_PATH)
                     } else {
                         open(b"/\0".as_ptr().cast(), O_RDONLY)
                     };
