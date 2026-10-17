@@ -184,14 +184,20 @@ form above followed by an ODUP trailer:
 
 Decoder algorithm:
 
-1. A file that starts with the v5 magic is never sniffed: v5 keeps its
-   meta inside the container, and its last 4 bytes are the footer's
-   CRC-32C, which spells "ODUP" once in 2^32 archives.
+1. A v5 file (it starts with the v5 magic) is not sniffed when it has
+   `FLAG_HAS_DUP` (its meta is inside the container) or ends in a valid
+   v5 footer (whose last 4 bytes are the footer's CRC-32C, which spells
+   "ODUP" once in 2^32 archives). A v5 body under an ODUP trailer is
+   sniffed.
 2. Read last 4 bytes; if `≠ "ODUP"`, treat as standard `.osr` and
    skip the rest.
 3. Read `meta_size` uint64 LE at filesize − 12; it must fit the file
    and be at least 4, and the meta must start with `"DUPR"`
-   (Section 3.1).
+   (Section 3.1). Read only those 4 bytes of the meta here: in a file
+   that is not a `-dup` archive, `meta_size` is arbitrary, up to the
+   file's length. The meta itself is read in step 4 once the body walks,
+   or, on the way to step 6, once the body has decoded; a `meta_size`
+   too large for the decoder's buffers is a damaged `-dup` archive.
 4. The candidate body is the first `filesize − 12 − meta_size` bytes.
    Take the `-dup` reading only if it **holds up**: the body walks as a
    complete standard archive (Section 1: header, every block header,
@@ -216,8 +222,10 @@ ends in `ODUP` -- every `-dup` archive in this format, and any file that
 merely ends in those four bytes -- ends in that file's own trailer, meta
 and all, and passes steps 2-3 with certainty. Decoders up to osrep 2.3.0
 and the C++ 1.0.7 stopped at step 3, cut such a file short and failed on
-what was left: the archive could not be restored. The archives
-themselves are well formed, and steps 4-5 restore them.
+what was left: `-d archive out` failed. (They sniff only when input and
+output are both named files, so `osrep -d - out < archive` restores it
+with them.) The archives themselves are well formed, and steps 4-5
+restore them.
 
 Why the walk decides it:
 
@@ -225,12 +233,15 @@ Why the walk decides it:
   `~BULAT_ZIGANSHIN_SIGNATURE` (`E8 E7 CA D9`), which is not `"ODUP"`;
   so a plain Index-LZ archive never has a trailer to sniff, and a `-dup`
   archive whose body is Index-LZ cannot also walk as a plain one.
-* **A plain v1-v3 archive cut at a fake trailer does not walk.** The
-  cut falls inside the last block's literals, and the walk retraces the
-  same block headers as the whole file, so it runs out of bytes. For
-  the cut to land on a block boundary, the "meta" would have to begin
-  with a block header -- and it begins with `"DUPR"`, which as a block's
-  `literal_bytes` (0x52505544) needs over 1.3 GB of block behind it.
+* **A plain v1-v3 archive is never taken for a `-dup` one.** A fake
+  `meta_size` can put the cut anywhere, but the prefix walks only if the
+  cut falls on a block boundary of the whole archive (the walk retraces
+  the same block headers, and otherwise runs out of bytes or ends inside
+  a block). The bytes after the cut -- the "meta" -- are then the next
+  block's header, so that block would have `literal_bytes` = `"DUPR"`
+  (0x52505544) and an `origsize` equal to the `.dupref` version, 1. No
+  encoder writes a block whose original size is smaller than its
+  literals, which are part of it.
 * **A real v1-v3 `-dup` archive does not walk whole** for the same
   reason: after its last block comes `"DUPR"`. Damaged, it could: if the
   start of the meta is zeroed, the bytes read as the zero-length

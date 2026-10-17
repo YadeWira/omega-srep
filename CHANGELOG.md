@@ -13,8 +13,8 @@ what happened in 2.0.0.
 
 ### Fixed
 
-- **Data loss: the v4 Future-LZ or I/O LZ archive of a file that ends in
-  "ODUP" could not be decompressed.** `--format=v4 -mNf` and `-mNo` end the
+- **Data loss: `-d archive out` failed on the v4 Future-LZ or I/O LZ
+  archive of a file that ends in "ODUP".** `--format=v4 -mNf` and `-mNo` end the
   archive with the last block's literal bytes, so the archive of any file whose
   last bytes are "ODUP" -- every v4 `-dup` archive, ours or the C++'s, and any
   other file that happens to end that way -- ends in that file's own ODUP
@@ -22,9 +22,12 @@ what happened in 2.0.0.
   file at the "trailer" and failed on what was left:
   `Decode(Container(Truncated))` (exit 3), or "the -dup meta is missing or
   corrupt" (exit 4) when the bytes in front of "ODUP" did not make a trailer.
-  Compression exited 0, so the loss showed only when the archive was needed.
-  In every release with the ODUP trailer, 2.3.0 included, and in the C++ 1.0.7,
-  whose `-d` fails the same way ("unexpected end of file"). The archives are
+  Compression exited 0, so the failure showed only at `-d` time. In every
+  release with the ODUP trailer, 2.3.0 included, and in the C++ 1.0.7, whose
+  `-d` fails the same way ("unexpected end of file"). Those releases do
+  restore it through a pipe: the trailer is only sniffed when input and
+  output are both named files, so `osrep -d - out < archive` (or
+  `osrep -d archive - > out`) works with 2.3.0 and 1.0.7. The archives are
   sound (byte for byte the C++'s) and now decode: `-d` takes the trailer only
   when the archive behind it holds up -- it walks as a whole archive, and the
   meta asks for no more body than its blocks decode to -- and otherwise, when
@@ -33,17 +36,35 @@ what happened in 2.0.0.
   so a damaged `-dup` archive is still refused, not decoded to its dedup body:
   neither walk accepts the zero-length terminator block, which no encoder
   writes and which a v1-v3 `-dup` archive (the C++ writes those) would read as
-  if the start of its meta were zeroed. With `-index=`, the walk takes a v1-v3
-  archive's match lists from the index, as `-d` does. Never affected: Index-LZ
-  (the default `-mN`), whose last bytes are its footer's signature, and the
+  if the start of its meta were zeroed. With `-index=`, the walk knows a v1-v3
+  archive's match lists are in the index, not inside its blocks (it does not
+  read the index). Never affected: Index-LZ (the default `--format=v4 -mN`),
+  whose last bytes are its footer's signature, and the
   `-dup` archive of such a file, whose trailer is its own. The writer is
   unchanged; `docs/format-spec.md` §2, which put a misidentification at
   ≈1/2^64, now describes the rule.
 - **Data loss, rarer: a v5 archive whose footer CRC spelled "ODUP"** (one
   archive in 2^32) was sniffed for a v4 trailer and refused with "the -dup
-  meta is missing or corrupt". A v5 archive without the `-dup` flag that ends
-  in a valid v5 footer is no longer sniffed; a v5 body under a real ODUP
-  trailer (what the F5.3a tooling writes) still is.
+  meta is missing or corrupt" by `-d archive out` (`osrep -d - out <
+  archive` restored it). A v5 archive without the `-dup` flag that ends in a
+  valid v5 footer is no longer sniffed; a v5 body under a real ODUP trailer
+  (what the F5.3a tooling writes) still is.
+- **`-d` allocated whatever the 8 bytes before a sniffed "ODUP" said, and the
+  win32 Pascal build could overrun its heap with it.** Those 8 bytes are the
+  trailer's `meta_size`, and in a file that is not a v4 `-dup` archive (the
+  plain archive of a file ending in "ODUP", above, or any file given to `-d`)
+  they are arbitrary, up to the file's length. `-d` read that much "meta"
+  before checking anything else: as much memory as the file (360 MB for a
+  400 MB archive). In the win32 build (`osrep-windows-x86.exe`) a value
+  between 2^31 and 2^32 failed with `Io` (exit 3), not with the other
+  builds' answer, and one above 2^32 was cut by `SetLength` to its
+  low 32 bits while the read went on for the full length: a heap overflow
+  with bytes from the file, in every Pascal release since 2.2.0. Now only the
+  four bytes where the meta would start are read (for `DUPR`); the meta is
+  read once the archive in front of it walks, or, for a `-dup` archive that
+  will fail anyway, once its body has decoded, and a size no buffer of the
+  build can hold is "the -dup meta is missing or corrupt" (exit 4). Rust and
+  Pascal alike (Rust i686 cut the length the same way, without the overflow).
 - **`osrep -i` on a v4 `-dup` archive said "Not an Omega SREP compressed
   file"**, exit 4, for the archives `--format=v4 -dup` writes and for every
   `-dup` archive of the C++ 1.0.7 (`-m3`, `-m3f`, `-m3o`...). The `.dupref`
