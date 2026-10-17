@@ -20,6 +20,9 @@ if [ ! -x "$OSREP" ]; then
     echo "missing $OSREP" >&2
     exit 1
 fi
+# A wine wrapper on the shared prefix gets a warning here, so every script
+# that runs `$OSREP` gives one, not only the harnesses that check by hand.
+warn_shared_wine "$OSREP"
 
 # `$OSREP_V4`: the flag that forces the v4 container, or empty when the binary
 # under test has no such option.

@@ -176,9 +176,17 @@ compare "spill" "$TMP/spill.osr" "$TMP/far.bin"
 compare "spill" "$TMP/spill.osr" "$TMP/far.bin" --mem=1048576 --vmblock=131072
 compare "spill" "$TMP/spill.osr" "$TMP/far.bin" --mem=524288 --vmblock=65536
 compare "spill" "$TMP/spill.osr" "$TMP/far.bin" --mem=2097152 --vmblock=262144
-got=$("$DT" "$TMP/spill.osr" "$TMP/p.out" --mem=1048576 --vmblock=131072 2>/dev/null)
+# Por run_pa y fail_diag, como el resto: un Pascal que muere aca deja su
+# evidencia y un FAIL, no un `set -e` mudo. Sin corrida del Rust: lo que haya
+# en rs.* y r.out es de otro caso, y no se guarda como si fuera de este.
+RS_RC=; rm -f "$TMP/rs.o" "$TMP/rs.e" "$TMP/r.out" "$TMP/p.out"
+run_pa "$TMP/spill.osr" "$TMP/p.out" --mem=1048576 --vmblock=131072
+[ "$PA_RC" -eq 0 ] || fail_diag "[spill vmw] el Pascal fallo" \
+    "$TMP/spill.osr" "$TMP/p.out" --mem=1048576 --vmblock=131072
+got=$(cat "$TMP/pa.o")
 vmw=$(printf '%s' "$got" | sed -n 's/.*vmw=\([0-9]*\).*/\1/p')
-[ "${vmw:-0}" -gt 0 ] || fail "el caso de spill no derramo nada (vmw=$vmw): el test seria vacio"
+[ "${vmw:-0}" -gt 0 ] || fail_diag "el caso de spill no derramo nada (vmw=$vmw): el test seria vacio" \
+    "$TMP/spill.osr" "$TMP/p.out" --mem=1048576 --vmblock=131072
 pass=$((pass + 1))
 
 say "el contenedor danado: los dos fallan con el mismo error"

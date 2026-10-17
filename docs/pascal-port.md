@@ -192,8 +192,12 @@ prefix compartido mata los `.exe` en curso y el harness ve un FAIL que no es
 del port (ver «Un `wineserver -k` ajeno», en Trampas conocidas). Uno por
 campaña o por revisión, creado una vez con
 `WINEPREFIX=<dir> WINEDLLOVERRIDES='mscoree,mshtml=' wineboot -i`. Si ni el
-wrapper ni el entorno nombran un `WINEPREFIX`, los harnesses lo avisan por
-stderr (`warn_shared_wine`, en `tests/_paths.sh`) y siguen.
+wrapper ni el entorno nombran un `WINEPREFIX`, los harnesses `pascal_*`,
+`rust_cli_conformance.sh`, `cxx_sort_tie_divergence.sh` y todo script que
+tome el binario de `tests/_osrep_bin.sh` (`OSREP_BIN`) lo avisan por stderr
+(`warn_shared_wine`, en `tests/_paths.sh`) y siguen.
+`tests/harness_selftest.sh` prueba ese aviso y que el FAIL del spill de
+`pascal_v5_conformance.sh` guarde su evidencia.
 
 ## Fases
 
@@ -655,7 +659,8 @@ diferencias.
   la de wine64 al lado, sin un FAIL. Por eso
   **toda corrida bajo wine va en un `WINEPREFIX` propio** (los wrappers, ver
   «Para los targets Windows» arriba; `tests/local_hardening.sh` se arma uno
-  temporal) y **nunca `wineserver -k` sobre uno compartido**; sobre el propio,
+  temporal, en `OSREP_WINEPREFIX_ROOT` si se lo da, para no ocupar ~1,4 GB
+  de `/tmp`) y **nunca `wineserver -k` sobre uno compartido**; sobre el propio,
   sí. `pascal_v5_conformance.sh` guarda ahora, al fallar, el archivo, su md5,
   el código y las dos salidas de cada lado y una segunda corrida del Pascal,
   y avisa cuando el Pascal terminó sin escribir nada, con el código que sea
