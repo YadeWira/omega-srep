@@ -17,6 +17,7 @@ use osrep_core::util::TempFile;
 
 use crate::args::{self, CmdMode, Format, Lz, Options};
 use crate::report;
+use crate::stdio;
 
 // Program exit codes (`srep.cpp:45-51`).
 pub const NO_ERRORS: i32 = 0;
@@ -363,7 +364,7 @@ fn bad_chunk_params(o: &Options) -> Option<String> {
 
 fn compress(o: &Options, finame: &str, foutname: &str) -> Result<i32, RunError> {
     if o.dup && (o.method == 1 || o.method == 2) {
-        eprintln!(
+        ewriteln!(
             "  WARNING: -dup with -m{} does CDC twice; -m3/-m4/-m5 recommended",
             o.method
         );
@@ -411,7 +412,7 @@ fn compress(o: &Options, finame: &str, foutname: &str) -> Result<i32, RunError> 
     };
     if let Some(l) = window {
         if !l.is_power_of_two() {
-            eprintln!(
+            ewriteln!(
                 "Warning: -l parameter should be power of 2, otherwise compressed file may be corrupt"
             );
             warnings += 1;
@@ -509,9 +510,10 @@ fn compress(o: &Options, finame: &str, foutname: &str) -> Result<i32, RunError> 
             let mut input = File::open(&input_path)
                 .map_err(|_| err(ERROR_IO, format!("Can't open {finame} for read")))?;
             // `-` means stdout, not a file called "-".
+            // Through the handle itself: a closed stdout is an error
+            // (`stdio.rs`), not a discard.
             if foutname == "-" {
-                let stdout = std::io::stdout();
-                let mut out = CountWriter::new(stdout.lock());
+                let mut out = CountWriter::new(stdio::data_stdout());
                 osrep_core::encoder::encode(
                     &mut input,
                     &mut out,
@@ -722,7 +724,7 @@ fn decompress(o: &Options, finame: &str, foutname: &str) -> Result<i32, RunError
 
     if let Some(t) = &spool {
         let mut f = File::open(t.path()).map_err(|_| err(ERROR_IO, "tempfile"))?;
-        let mut stdout = std::io::stdout().lock();
+        let mut stdout = stdio::data_stdout();
         std::io::copy(&mut f, &mut stdout).map_err(|_| err(ERROR_IO, "Can't write to stdout"))?;
         stdout.flush().map_err(|_| err(ERROR_IO, "Can't write to stdout"))?;
     }
@@ -857,9 +859,9 @@ fn info(o: &Options, finame: &str) -> Result<i32, RunError> {
     // Index-LZ leaves the line open for the size that follows; the others close
     // it here (`srep.cpp:1074-1075`).
     if info.mode == "Index-LZ" {
-        eprint!("{head}");
+        ewrite!("{head}");
     } else {
-        eprintln!("{head}");
+        ewriteln!("{head}");
     }
 
     // The C++ reaches the size line only for Index-LZ, where it derives the
@@ -871,7 +873,7 @@ fn info(o: &Options, finame: &str) -> Result<i32, RunError> {
         } else {
             0.0
         };
-        eprintln!(
+        ewriteln!(
             ".  {} -> {}: {pct:.2}%",
             report::show3(info.origsize),
             report::show3(info.compsize)
@@ -887,7 +889,7 @@ fn info(o: &Options, finame: &str) -> Result<i32, RunError> {
         // Only v1 stores 3-word records, and the C++ reaches this line for
         // Index-LZ (4-word) alone.
         report::print_info("", 0, maximum_save, info.stat_size, false, info.compsize);
-        eprintln!();
+        ewriteln!();
     }
     Ok(NO_ERRORS)
 }

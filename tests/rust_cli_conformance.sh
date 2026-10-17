@@ -1103,6 +1103,54 @@ else
 fi
 pass=$((pass + 1))
 
+say "closed or full stdin/stdout/stderr: no text inside an output, no data thrown away"
+# Not against the C++: 1.0.7 opens its output on the first free fd, so with
+# `<&- 2>&-` the archive lands on fd 2 and the progress and summary lines are
+# written into it (exit 0), and the Pascal did the same until 2.3.0. The
+# rules both ports now follow (oracles/rust/crates/osrep-cli/src/stdio.rs,
+# pascal/src/stdfds.pas): a closed fd 0-2 is reserved before anything is
+# opened; a closed stdin reads as empty; data for a closed or failing stdout
+# is an error, so -delete keeps its input; messages to a closed or failing
+# stderr/stdout are dropped without changing the exit code (2.3.0's Rust
+# panicked, exit 101, with the archive half written).
+head -c 300000 tests/corpus/text.bin > "$TMP/fdin.bin"
+head -c 50000 tests/corpus/random.bin >> "$TMP/fdin.bin"
+"$RS" --seed=7 -b64kb "$TMP/fdin.bin" "$TMP/fdref.osr" >/dev/null 2>&1 || fail "fd: reference compress"
+for r in '<&- 2>&-' '>&- 2>&-' '<&- >&- 2>&-' '2>/dev/full' '<&- >/dev/full 2>/dev/full'; do
+    rm -f "$TMP/fd.osr" "$TMP/fd.out"
+    rc=0; eval '"$RS" --seed=7 -b64kb "$TMP/fdin.bin" "$TMP/fd.osr"' "$r" || rc=$?
+    [ "$rc" -eq 0 ] || fail "fd [$r]: compress exit $rc"
+    cmp -s "$TMP/fd.osr" "$TMP/fdref.osr" || fail "fd [$r]: the archive differs from the one written with every fd open"
+    rc=0; eval '"$RS" -d "$TMP/fdref.osr" "$TMP/fd.out"' "$r" || rc=$?
+    [ "$rc" -eq 0 ] || fail "fd [$r]: decompress exit $rc"
+    cmp -s "$TMP/fd.out" "$TMP/fdin.bin" || fail "fd [$r]: the decompressed data differs from the input"
+done
+for spec in "fdin.bin|--seed=7 -delete fdin.bin -" "fdref.osr|-delete -d fdref.osr -"; do
+    keep=${spec%%|*}; args=${spec#*|}
+    for r in '>&- 2>/dev/null' '>/dev/full 2>/dev/null' '<&- >&- 2>&-'; do
+        rm -rf "$TMP/fdq"; mkdir "$TMP/fdq"; cp "$TMP/fdin.bin" "$TMP/fdref.osr" "$TMP/fdq/"
+        rc=0; (cd "$TMP/fdq" && eval '"$RS"' "$args" "$r") || rc=$?
+        [ "$rc" -ne 0 ] || fail "fd [$args $r]: exit 0 with nowhere to write"
+        [ -e "$TMP/fdq/$keep" ] || fail "fd [$args $r]: -delete removed $keep"
+    done
+done
+for r in '>&-' '>/dev/full' '<&- >&- 2>&-'; do
+    for a in --version --help; do
+        rc=0; eval '"$RS" $a' "$r" || rc=$?
+        [ "$rc" -eq 0 ] || fail "fd [$a $r]: exit $rc"
+    done
+done
+for r in '2>&-' '2>/dev/full'; do
+    rc=0; eval '"$RS" -bogus' "$r" || rc=$?
+    [ "$rc" -eq 2 ] || fail "fd [-bogus $r]: exit $rc"
+done
+rm -f "$TMP/fd.osr" "$TMP/fd.out"
+rc=0; "$RS" --seed=7 -s10 - "$TMP/fd.osr" <&- 2>/dev/null || rc=$?
+[ "$rc" -eq 0 ] || fail "fd [- <&-]: exit $rc"
+"$RS" -d "$TMP/fd.osr" "$TMP/fd.out" 2>/dev/null || fail "fd [- <&-]: the archive does not decode"
+[ -e "$TMP/fd.out" ] && [ ! -s "$TMP/fd.out" ] || fail "fd [- <&-]: a closed stdin is not an empty input"
+pass=$((pass + 1))
+
 say "what each binary reports on stderr"
 # Its own script because it compares the two binaries' *text*, which nothing
 # else here does -- the rest diff archives and exit codes. That gap is how a

@@ -500,6 +500,29 @@ diferencias.
 * **El runtime del Rust ignora SIGPIPE; FPC no.** Sin el `fpSignal(SIGPIPE,
   SIG_IGN)` del principio de `Main`, `osrep -d x.osr - | head` moría por la
   señal (rc 141) donde el Rust da `Can't write to stdout` (rc 3).
+* **El runtime del Rust reabre los fd 0-2 cerrados; FPC no.** Antes de
+  `main`, el std del Rust hace `poll` de los tres y abre `/dev/null` en el
+  que falte. FPC arranca con el hueco, y el primer `open` lo toma: con
+  `osrep x x.osr <&- 2>&-` la salida quedaba en el fd 2 y el progreso y el
+  resumen se escribían **adentro del archivo**, con exit 0 (y `-delete`
+  borraba la entrada); `-d` los metía en los datos. El C++ 1.0.7 hace lo
+  mismo al comprimir. `src/stdfds.pas` va primera en el `uses` y reserva los
+  tres al inicializarse (antes de que `SysUtils` abra `/etc/localtime`).
+  Pero no copia el `/dev/null` de lectura-escritura del Rust para el fd 1:
+  ahí todo se escribe con éxito y `osrep -delete x - >&-` tiraba el archivo
+  y borraba `x`. El fd 1 se abre **solo lectura**, así que escribir ahí es
+  EBADF, lo mismo que un fd cerrado, y el Rust hace lo mismo desde un
+  `.init_array` que corre antes que su runtime (`osrep-cli/src/stdio.rs`);
+  como su `stdout()` se traga el EBADF, los datos van por el handle crudo
+  (`data_stdout`, con el mismo `LineWriter` de 1024), y los mensajes, que
+  nunca deben fallar, con escrituras que ignoran el error (`eprint!` y
+  `print!` hacen panic con `2>/dev/full`). Las lecturas de stdin siguen la
+  regla del std del Rust: EBADF, o `ERROR_INVALID_HANDLE` en Windows, es fin
+  de archivo (`StdinRead`). En Windows un handle que falta es nulo y no se
+  reserva nada. Bajo wine se prueba con un lanzador que pasa handles nulos
+  por `STARTUPINFO`; cerrar los fd de unix bajo wine da otra cosa (un stdin
+  cerrado falla con `ERROR_INVALID_FUNCTION`, y con los tres cerrados se
+  rompe el propio wine).
 * **El directorio temporal de FPC no es el de Rust.** En Unix, `GetTempDir`
   mira `TEMP`, después `TMP` y recién después `TMPDIR`. `std::env::temp_dir()`
   mira **solo** `TMPDIR` (o `/tmp`). Con `TEMP` apuntando a otro lado, el spill

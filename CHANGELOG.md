@@ -9,6 +9,38 @@ Versions follow `<major>.<minor>.<patch>` for stable releases and
 written by the new default cannot be read by the previous release, which is
 what happened in 2.0.0.
 
+## [Unreleased]
+
+### Fixed
+
+- **With stderr closed, progress and summary text went into the output
+  file.** A process started with fd 2 closed and fd 0 or 1 closed too
+  (`osrep x x.osr <&- 2>&-`, `>&- 2>&-`) opened its output on fd 2, so every
+  line meant for stderr was written into the archive: exit 0, an archive
+  that fails with `Container(Truncated)`, and with `-delete` the input was
+  gone. `-d` wrote the same text into the decompressed data, also with exit
+  0, and `-d x.osr -` into what it sent to stdout. The released Pascal
+  binary (2.2.0 to 2.3.0) does this, and the C++ 1.0.7 when compressing;
+  the Rust oracle did not. Every fd 0-2 that is closed at startup is now reserved before
+  anything is opened, as the Rust runtime does.
+- **Data sent to a closed stdout is an error.** The Rust oracle reopened a
+  closed stdout on `/dev/null`, so `osrep -delete x - >&-` wrote the archive
+  nowhere, exited 0 and deleted `x`; its Windows build did the same with no
+  stdout handle. The archive or decompressed data for a closed (or missing)
+  stdout now fails as any stdout write failure does ("Io", exit 4, when
+  compressing; "Can't write to stdout", exit 3, when decompressing) and
+  `-delete` keeps its input. The released Pascal binary already failed
+  there on Linux, and so does the C++.
+- **A closed or missing stdin reads as empty in both builds.** On Windows
+  with no stdin handle, and on Linux with fd 0 opened write-only, the Pascal
+  said "Can't read from stdin" or "Can't read from input file" (exit 3)
+  where the Rust and the C++ read an empty input.
+- **A full or failing stderr no longer stops the Rust oracle.** `osrep x
+  x.osr 2>/dev/full` panicked (exit 101) after writing 60 bytes of the
+  archive, and `--version`/`--help` panicked on a failing stdout. Messages
+  that cannot be written are dropped and the exit code is that of the work,
+  as in the Pascal binary and the C++.
+
 ## [2.3.0] — 2026-10-15
 
 **Byte-exact with the C++ 1.0.7 again, also with the default options.** Behaviours of

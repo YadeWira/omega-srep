@@ -22,8 +22,12 @@ program osrep;
 {$OVERFLOWCHECKS OFF}
 
 uses
-  { OsText primero: en Windows pone la RTL en UTF-8 al inicializarse, y
-    tiene que ser antes que cualquier otra unidad (src/ostext.pas) }
+  { StdFds primero: reserva los fd 0-2 que lleguen cerrados antes de que
+    nada abra un archivo (src/stdfds.pas) }
+  StdFds,
+  { OsText despues: en Windows pone la RTL en UTF-8 al inicializarse, y
+    tiene que ser antes que cualquier otra unidad (src/ostext.pas); StdFds
+    no crea strings, y en Windows no hace nada }
   OsText,
   { Windows antes que SysUtils: trae su propio DeleteFile (con PChar) }
   {$IFDEF WINDOWS} Windows, {$ENDIF}
@@ -163,6 +167,21 @@ begin
   {$ENDIF}
 end;
 
+{ Una lectura de stdin como la del std del Rust (handle_ebadf): EBADF, o
+  ERROR_INVALID_HANDLE en Windows (el handle falta), es fin de archivo y no
+  un error. En Linux un stdin cerrado ya es /dev/null (src/stdfds.pas); esto
+  queda para un fd 0 abierto solo para escribir (`0>archivo`) y, en Windows,
+  para un proceso sin handle de entrada. }
+function StdinRead(var Buf; N: LongInt): LongInt;
+begin
+  Result := OsRead(InHandle, Buf, N);
+  {$IFDEF UNIX}
+  if (Result < 0) and (FpGetErrno = ESysEBADF) then Result := 0;
+  {$ELSE}
+  if (Result < 0) and (GetLastError = ERROR_INVALID_HANDLE) then Result := 0;
+  {$ENDIF}
+end;
+
 { std::fs::metadata(path).len() con unwrap_or(0): sin abrir el archivo }
 function FileSizeOf(const Path: AnsiString): QWord;
 begin
@@ -189,7 +208,7 @@ begin
   try
     SetLength(buf, 1 shl 20);
     repeat
-      n := OsRead(InHandle, buf[0], Length(buf));
+      n := StdinRead(buf[0], Length(buf));
       if n < 0 then Fail(ERROR_IO, 'Can''t read from input file');
       { el std::io::copy del Rust falla igual al leer o al escribir, y los dos
         dan el mismo texto: con el disco lleno tambien es "Can't read" }
@@ -213,8 +232,13 @@ end;
   agotar la memoria. Lo demas se lee hasta el EOF, sin preguntar el largo: un
   FIFO, <(cmd) o un archivo de /proc no lo saben (THandleStream.Size daba -1
   o 0) y el Rust los lee igual. False si falla una lectura. }
-function SlurpArchive(H: THandle; out B: TBytes): Boolean;
+function SlurpArchive(H: THandle; IsStdin: Boolean; out B: TBytes): Boolean;
 var used, room: SizeInt; n: LongInt;
+
+  function ReadSome(var Buf; N: LongInt): LongInt;
+  begin
+    if IsStdin then Result := StdinRead(Buf, N) else Result := OsRead(H, Buf, N);
+  end;
 
   function Word32(At: LongInt): DWord;
   begin
@@ -228,7 +252,7 @@ begin
   used := 0;
   while used < 8 do
   begin
-    n := OsRead(H, B[used], 8 - used);
+    n := ReadSome(B[used], 8 - used);
     if n < 0 then Exit;
     if n = 0 then Break;
     Inc(used, n);
@@ -247,7 +271,7 @@ begin
     room := Length(B) - used;
     { FileRead toma LongInt: pasado 2 GiB la cuenta truncada saldria negativa }
     if room > SizeInt(IO_SLICE) then room := SizeInt(IO_SLICE);
-    n := OsRead(H, B[used], LongInt(room));
+    n := ReadSome(B[used], LongInt(room));
     if n < 0 then Exit;
     Inc(used, n);
   until n = 0;
@@ -260,13 +284,13 @@ var s: TRawFileStream; ok: Boolean;
 begin
   if FiName = '-' then
   begin
-    if not SlurpArchive(InHandle, Result) then Fail(ERROR_IO, 'Can''t read from stdin');
+    if not SlurpArchive(InHandle, True, Result) then Fail(ERROR_IO, 'Can''t read from stdin');
     Exit;
   end;
   s := OpenReadRaw(FiName);
   if s = nil then Fail(ERROR_IO, 'Can''t open ' + FiName + ' for read');
   try
-    ok := SlurpArchive(s.Handle, Result);
+    ok := SlurpArchive(s.Handle, False, Result);
   finally
     s.Free;
   end;

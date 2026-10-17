@@ -1,0 +1,146 @@
+//! The three standard streams, when they are closed, full or missing.
+//!
+//! Three rules, kept identical in the Pascal (`pascal/src/stdfds.pas`):
+//!
+//! * **Messages never fail the program.** Text for stderr (and `--help` /
+//!   `--version` for stdout) goes out with [`ewrite!`]/[`ewriteln!`] and
+//!   [`out_text`], which drop write errors. `eprint!`/`print!` panic on any
+//!   error other than EBADF: `osrep x x.osr 2>/dev/full` died with exit 101
+//!   after writing 60 bytes of the archive. The C++ and the Pascal ignore it.
+//! * **A file never lands on fd 0, 1 or 2.** If the program is started with
+//!   one of them closed, the first `open` reuses that number, and every
+//!   message meant for stderr went into the archive (`osrep x x.osr 2>&- <&-`
+//!   in the C++ and the Pascal). Rust's runtime already reopens a closed fd on
+//!   `/dev/null` before `main`; [`reserve_std_fds`] runs before that and does
+//!   it itself, so it can treat fd 1 differently:
+//! * **Data for a closed stdout is an error, not a discard.** `/dev/null`
+//!   accepts everything, so `osrep -delete x - >&-` wrote the archive
+//!   nowhere, exited 0 and deleted `x`. A closed fd 1 is reopened read-only,
+//!   so writing to it fails with EBADF, which is what writing to a closed fd
+//!   does; the archive and the decoded data go through [`data_stdout`], a
+//!   plain handle that reports that error instead of swallowing it as
+//!   `std::io::stdout()` does. The result is the same as any other stdout
+//!   write failure (a reader that went away): "Io" or "Can't write to
+//!   stdout", and nothing deleted. A closed stdin reads as empty, as in Rust,
+//!   the C++ and the Pascal before.
+//!
+//! On Windows nothing is reopened: handles are not numbered like fds, and a
+//! missing std handle is null. [`data_stdout`] fails on a null handle with
+//! `ERROR_INVALID_HANDLE`, and on a handle that is there but not writable
+//! (wine gives one when the Unix fd is closed) with the error `WriteFile`
+//! gives; `std::io::stdout()` swallowed both.
+
+use std::fs::File;
+use std::io::{LineWriter, Write};
+use std::mem::ManuallyDrop;
+
+/// `eprint!` that ignores write errors instead of panicking.
+macro_rules! ewrite {
+    ($($arg:tt)*) => {{
+        use std::io::Write as _;
+        let _ = write!(std::io::stderr(), $($arg)*);
+    }};
+}
+
+/// `eprintln!` that ignores write errors instead of panicking.
+macro_rules! ewriteln {
+    ($($arg:tt)*) => {{
+        use std::io::Write as _;
+        let _ = writeln!(std::io::stderr(), $($arg)*);
+    }};
+}
+
+/// `print!` of a text (`--help`, `--version`) that ignores write errors.
+pub fn out_text(s: &str) {
+    let mut out = std::io::stdout().lock();
+    let _ = out.write_all(s.as_bytes());
+    let _ = out.flush();
+}
+
+/// Runs from `.init_array`, before the Rust runtime's own check of fds 0-2
+/// (`sys::pal::unix::init`, which would reopen a closed fd 1 read-write on
+/// `/dev/null`). Same order and same `/dev/null` as the runtime, so each open
+/// lands on the fd it replaces; only fd 1 is opened read-only. If `/dev/null`
+/// cannot be opened the runtime aborts, and so does this.
+#[cfg(target_os = "linux")]
+mod reserve {
+    use std::os::raw::{c_char, c_int};
+
+    extern "C" {
+        fn fcntl(fd: c_int, cmd: c_int, ...) -> c_int;
+        fn open(path: *const c_char, flags: c_int, ...) -> c_int;
+        fn abort() -> !;
+        fn __errno_location() -> *mut c_int;
+    }
+
+    const F_GETFD: c_int = 1;
+    const O_RDONLY: c_int = 0;
+    const O_RDWR: c_int = 2;
+    const EBADF: c_int = 9;
+
+    extern "C" fn reserve_std_fds() {
+        for fd in 0..3 {
+            // SAFETY: plain libc calls on integers and a NUL-terminated
+            // literal; nothing else is running yet.
+            unsafe {
+                if fcntl(fd, F_GETFD) == -1 && *__errno_location() == EBADF {
+                    let flags = if fd == 1 { O_RDONLY } else { O_RDWR };
+                    if open(b"/dev/null\0".as_ptr().cast(), flags) == -1 {
+                        abort();
+                    }
+                }
+            }
+        }
+    }
+
+    #[used]
+    #[link_section = ".init_array"]
+    static RESERVE_STD_FDS: extern "C" fn() = reserve_std_fds;
+}
+
+/// stdout as a plain file handle, never closed by us.
+pub struct RawStdout(Option<ManuallyDrop<File>>);
+
+impl Write for RawStdout {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        match &mut self.0 {
+            Some(f) => f.write(buf),
+            // ERROR_INVALID_HANDLE: no std handle at all
+            None => Err(std::io::Error::from_raw_os_error(6)),
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Where the archive or the decoded data goes when the output is `-`.
+///
+/// The same `LineWriter` of 1024 bytes as `std::io::stdout()`, so a failure
+/// is reported at the same point as before (`tests/rust_cli_conformance.sh`
+/// pins when that is "Io" and when "Can't write to stdout"), but over the
+/// handle itself: a write error is an error, also EBADF.
+pub fn data_stdout() -> LineWriter<RawStdout> {
+    #[cfg(unix)]
+    let f = {
+        use std::os::fd::FromRawFd;
+        // SAFETY: fd 1 is open (reserve_std_fds / the runtime saw to it),
+        // and ManuallyDrop keeps it from being closed.
+        Some(ManuallyDrop::new(unsafe { File::from_raw_fd(1) }))
+    };
+    #[cfg(windows)]
+    let f = {
+        use std::os::windows::io::{AsRawHandle, FromRawHandle};
+        // null when the handle is missing or INVALID_HANDLE_VALUE
+        let h = std::io::stdout().as_raw_handle();
+        if h.is_null() {
+            None
+        } else {
+            // SAFETY: a handle the process holds; ManuallyDrop keeps it
+            // from being closed.
+            Some(ManuallyDrop::new(unsafe { File::from_raw_handle(h) }))
+        }
+    };
+    LineWriter::new(RawStdout(f))
+}

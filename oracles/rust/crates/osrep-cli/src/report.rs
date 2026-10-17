@@ -102,7 +102,7 @@ impl Bar {
         // The leading newline is the C++'s: the human progress line ends with
         // backspaces, never a newline, so without it a naive \n-splitting
         // consumer would glue "PROGRESS ..." onto stale text.
-        eprint!("\nPROGRESS {} {}\n", show_plain(done), show_plain(total));
+        ewrite!("\nPROGRESS {} {}\n", show_plain(done), show_plain(total));
         let _ = std::io::stderr().flush();
     }
 }
@@ -146,7 +146,7 @@ impl Stats {
         } else {
             0.0
         };
-        eprint!(
+        ewrite!(
             "\r{percents}%: {} of {}: real {mbps:.0} mb/s ({secs:.3} sec)",
             show3(done),
             show3(total)
@@ -165,7 +165,7 @@ impl Stats {
             0.0
         };
         let secs = self.started.elapsed().as_secs_f64();
-        eprintln!(
+        ewriteln!(
             "\r{} -> {}: {ratio:.2}%.  {secs:.3} sec",
             show3(read),
             show3(written)
@@ -193,7 +193,7 @@ pub fn print_info(
     } else {
         0.0
     };
-    eprint!(
+    ewrite!(
         "{prefix}Decompression memory{with_maximum_save} is {} mb.  {} matches = {} bytes = {pct:.2}% of file",
         max_ram.div_ceil(MB),
         show3(stat_size / per_match),
