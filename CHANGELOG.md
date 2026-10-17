@@ -9,6 +9,78 @@ Versions follow `<major>.<minor>.<patch>` for stable releases and
 written by the new default cannot be read by the previous release, which is
 what happened in 2.0.0.
 
+## [Unreleased]
+
+### Changed
+
+- **Numbers on the command line are read the way the C++ 1.0.7 reads
+  them.** 1.0.7 has three number parsers and the ports had one for all of
+  them; a differential run of 1,171 option spellings against the C++, the
+  Rust and the Pascal found 212 that one side accepted and the other refused
+  and 23 that wrote other archives. Now:
+  - **`-aX[/Y]`** is `strtol(.., 0)` (`srep.cpp:343-348`): **a leading `0` is
+    octal**, so `-a010` is `-a8` (it was 10) and `-a08`/`-a09` are invalid
+    options; after the `/` white space and a sign are read and an empty value
+    is 0, so `-a4/` is `-a4/0` (it was refused) and `-a1/=8` is refused (it was
+    `-a1/8`). **A leading-zero `-a` value now writes another archive than
+    2.3.0 when the octal reading changes the scan variant Y**: an explicit
+    `/Y` with a leading zero (`-a1/010` scans with Y 8, 2.3.0 with 10), or a
+    leading-zero X whose octal value is below 16 when there is no `/Y`,
+    because the default Y is min(X, 16) (`-a010` scans with Y 8, 2.3.0 with
+    10). The new bytes are 1.0.7's. Otherwise X only sizes the bit array and
+    the archive does not change: `-a020`, `-a010/8` and `-a010/0x10` write
+    2.3.0's bytes (all checked with `-l130` on a file of random runs between
+    runs of zeros).
+  - **`-v`, `-t` and `-da`** are `parseInt` (`Common.cpp:234-242`): an optional
+    `=`, then decimal digits only. `-t+4`, `-v-1`, `-t0x10` and `-da0x5` are now
+    invalid options (exit 2), as in 1.0.7; `-t010` is still 10. None of the
+    three changes an archive.
+  - **`--seed=N`** is `strtoull(.., 0)` with nothing left over
+    (`dup_wrapper.cpp:117-132`): **`--seed=010` is now 8** (it was 10, so a
+    seed written with a leading zero gives another archive than in 2.3.0,
+    1.0.7's), `--seed=08` is invalid, the whole 64-bit range is accepted (a
+    seed above 2^63-1 used to be invalid: an error with `-dup`, and without it
+    silently a random seed), white space and a sign are read, and
+    `--seed==8` is invalid (it was 8). **A negative seed is accepted and
+    wraps, as `strtoull` does**: `--seed=-1` is 2^64-1 and gives 1.0.7's
+    archive for it; refusing it would be a departure from the C++ for no
+    gain in what a seed can express. An invalid seed without `-dup` is still
+    silently ignored, as in 1.0.7.
+  - The size options (`-l`, `-c`, `-b`, `-s`, `-mBYTES`, `-mem`, `-d...`,
+    `-vmblock=`, `-pc`) already matched `parseMem64`: an optional `=`, decimal
+    digits (`-l010` is 10), one unit letter `b`/`k`/`m`/`g`/`^` and anything
+    after it ignored (`-b8mb`).
+
+  Kept on purpose, where 1.0.7's behaviour is not portable or not worth
+  copying:
+  - **A value too large for its field is an invalid option.** 1.0.7 wraps
+    it silently, it never refuses or saturates one: `-v`, `-t` and `-da`
+    (`parseInt`, a `size_t`) past 2^64, or 2^32 in a 32-bit build; the size
+    options (`parseMem64`) past 2^64, and past 2^32 in `-l`, `-c`, `-dl`,
+    `-dc` and `-mBYTES`; and `N^` with N of 64 or more. The ports also refuse
+    `-v`, `-t` and `-da` from 2^63 to 2^64-1, which 1.0.7's 64-bit build
+    still reads.
+  - **`-a` is read at the Linux width on every platform.** 1.0.7 reads it
+    with `strtol` into a `long` and then keeps the low 32 bits in an
+    `unsigned`; `strtol` saturates instead of wrapping, at 2^63-1 on Linux
+    and at 2^31-1 on Windows, where `long` is 32 bits. The ports refuse a
+    value past 2^63-1, and between 2^31 and 2^63-1 keep its low 32 bits as
+    1.0.7's Linux build does, also in the Windows `.exe`. So an `-a` value
+    above 2^31-1 differs from 1.0.7's Windows build: `-a4294967304` is `-a8`
+    in the ports and in 1.0.7 on Linux, while 1.0.7 on Windows takes it as
+    2^31-1 and cannot allocate the bit array (exit 5); `-a1/4294967304` is
+    `-a1/8` in the ports and exits 3 there.
+  - **A `0b` prefix is junk.** 1.0.7 built with glibc 2.38 or later reads
+    `-a0b101` and `--seed=0b101` as binary; its Windows build does not.
+  - **`--chunk-avg=`, `--chunk-min=`, `--chunk-max=` and `--chunk-buf=` stay
+    strict: decimal digits only.** 1.0.7 reads them with `strtoull(.., 10)`
+    and ignores what follows (`--chunk-avg=8k` is 8, an empty or
+    non-numeric value 0); copying that would turn typos into tiny chunk
+    sizes without a word.
+
+  `tests/rust_cli_conformance.sh` checks the archives, the exit codes and the
+  error text of these spellings directly against the C++.
+
 ## [2.3.0] — 2026-10-15
 
 **Byte-exact with the C++ 1.0.7 again, also with the default options.** Behaviours of

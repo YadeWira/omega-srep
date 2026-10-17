@@ -309,6 +309,17 @@ diferencias.
   que `RING_TAIL` pasó de 4 a 64; y `bitarr` mide unos `accel` bytes por
   chunk, así que se pide antes que las otras tablas y un tamaño que no entra
   en `SizeInt` (i386) es `OutOfMemory`, no un `QWord` truncado en silencio.
+* **El C++ tiene tres parsers de números, no uno.** `-aX[/Y]` es
+  `strtol(.., 0)` (octal con un `0` adelante, `0x` hex, espacios y signo, un
+  vacío es 0), `--seed=` es `strtoull(.., 0)` con todo el valor como número,
+  `-v`/`-t`/`-da` son `parseInt` (solo dígitos decimales, un `=` opcional) y
+  los tamaños son `parseMem64` (decimal, una letra de unidad y lo que siga se
+  ignora). Hasta la 2.3.0 los ports leían los tres primeros con un parser
+  propio (decimal o `0x`, con signo): `-a010` era 10 y no 8, y `--seed=010`
+  daba otro archivo que el C++. Un parser nuevo de opción se compara contra
+  el C++ con un barrido de grafías (ceros adelante, `0x`, signo, espacios,
+  vacío, basura al final, desborde), no solo con valores "normales";
+  `tests/rust_cli_conformance.sh` tiene uno.
 * **Los records de Future-LZ no son «literales y después match».** `lit_len` es
   el hueco hasta el *origen* del próximo match, el match se copia *hacia
   adelante* a `src + distance`, y el cursor avanza al origen, no más allá del

@@ -405,6 +405,79 @@ if "$CXX_BIN/osrep" -m4 --seed=7 -bogus tests/corpus/text.bin "$TMP/a.osr" >/dev
 fi
 pass=$((pass + 1))
 
+say "numbers on the command line are read the way the C++ reads them"
+# srep.cpp reads -aX[/Y] with strtol(.., 0) (srep.cpp:343-348): a leading 0 is
+# octal and 0x is hex, and after the '/' white space and a sign are skipped and
+# an empty value is 0. -v, -t and -da are parseInt (Common.cpp:234-242): an
+# optional '=', then decimal digits and nothing else. --seed= is
+# strtoull(.., 0) with the whole value required to be the number
+# (dup_wrapper.cpp:117-132). Through 2.3.0 the ports read -a010 as 10 (1.0.7:
+# 8), refused -a4/ and -a4/' 8' and took -a1/=8, took a sign or 0x in -v/-t/-da,
+# and read --seed=010 as 10, refused seeds past 2^63, white space and a minus,
+# and took --seed==8. The cases below pin 1.0.7's behaviour; not all of them
+# differed in 2.3.0. The ones that did: the archives of -a010, -a1/010, -a4/,
+# -a1/' 010' and -a2/<tab>2; the verdicts of -a08, -a09/2, -a1/08, -a1/=8,
+# -a1/=010 and -a4/' +4', of a sign or 0x in -t, -v and -da, and of
+# --seed==8, --seed=08 and --seed=09; and the seed archives of 010, 0010, a
+# leading space or tab, a minus and anything past 2^63-1 (with -dup these
+# were refused). The rest already matched; they are here so the new parsers
+# cannot break them. Not checked against the C++ here, on purpose (see
+# CHANGELOG): values past 2^64 or past what the field holds (the C++ wraps
+# them; the ports refuse them), a 0b prefix (glibc 2.38 reads it as binary
+# in a C++ build, MinGW does not), and the -a values 1.0.7 has no compress<>
+# instance for (the plain scan, above).
+# First the archives. On zruns.bin with -l130 the scan variant Y shows in the
+# bytes; X only does through the default Y = min(X, 16) (srep.cpp:634), so
+# -a010 (Y 8, 2.3.0 ran 10) is the case that pins an octal X. -a010/0x10,
+# -a0x2/02, -a1/+8 and -a020 wrote these bytes in 2.3.0 too.
+for o in "-a010" "-a1/010" "-a010/0x10" "-a0x2/02" "-a4/" "-a1/+8" "-a020"; do
+    diff_case_t1 "$TMP/zruns.bin" -l130 "$o"
+done
+diff_case_t1 "$TMP/zruns.bin" -l130 "-a1/ 010"
+diff_case_t1 "$TMP/zruns.bin" -l130 $'-a2/\t2'
+diff_case_t1 "$TMP/zruns.bin" -l130 -t=010 -v=1 -da=010
+# Then what each side accepts: the same exit code and, for a refusal, the same
+# stderr byte for byte.
+same_verdict() {
+    local rc_c=0 rc_p=0
+    "$CXX_BIN/osrep" -t1 "$@" tests/corpus/tiny.bin "$TMP/nv_c.osr" >/dev/null 2>"$TMP/nv_c.err" || rc_c=$?
+    "$RS" "$@" tests/corpus/tiny.bin "$TMP/nv_p.osr" >/dev/null 2>"$TMP/nv_p.err" || rc_p=$?
+    [ "$rc_c" -eq "$rc_p" ] || fail "$*: exit $rc_p, the C++ $rc_c ($(tail -1 "$TMP/nv_c.err"))"
+    if [ "$rc_c" -ge 2 ]; then
+        cmp -s "$TMP/nv_c.err" "$TMP/nv_p.err" || fail "$*: stderr differs: $(tail -1 "$TMP/nv_p.err")"
+    fi
+    rm -f "$TMP/nv_c.osr" "$TMP/nv_p.osr"
+    pass=$((pass + 1))
+}
+for a in -a08 -a09/2 -a1/08 -a1/=8 -a1/=010 -a0x -a0x/2 -a4/0x -a4/0xg "-a4/ " -a4/- -a4/+ \
+         "-a8 " -a8x -a1/2/3 -a010 -a0X4/0x4 -a04/04 -a4/0 "-a4/ +4" -a4/-0; do
+    same_verdict -m4o -l32 "$a"
+done
+for o in -t -v -da; do
+    for v in "" = ==1 +1 -1 -0 0x10 0X10 "1 " " 1" 1k 08 010 =010; do
+        [ "$o$v" = "-v" ] && continue   # plain -v is verbosity 1
+        same_verdict -m3 "$o$v"
+    done
+done
+for v in "" = =8 08 09 0x 0xg "8 " 8x 8k - " " -18446744073709551616 18446744073709551616; do
+    same_verdict -dup -m3 "--seed=$v"
+done
+# A seed is the same seed on both sides: the archives must be equal.
+for v in 010 0010 0x10 0XfF " 8" $'\t8' +8 -1 -0x1 -8 9223372036854775808 \
+         18446744073709551615 0xFFFFFFFFFFFFFFFF 0 00; do
+    for m in "-m3" "-dup -m3"; do
+        # shellcheck disable=SC2086
+        "$CXX_BIN/osrep" $m "--seed=$v" tests/corpus/text.bin "$TMP/sd_c.osr" >/dev/null 2>&1 \
+            || fail "cpp $m --seed=$v failed"
+        # shellcheck disable=SC2086
+        "$RS" $m --format=v4 "--seed=$v" tests/corpus/text.bin "$TMP/sd_p.osr" >/dev/null 2>&1 \
+            || fail "port $m --seed=$v failed"
+        cmp -s "$TMP/sd_c.osr" "$TMP/sd_p.osr" || fail "$m --seed='$v': not the C++'s archive"
+        pass=$((pass + 1))
+    done
+done
+rm -f "$TMP/sd_c.osr" "$TMP/sd_p.osr" "$TMP/nv_c.err" "$TMP/nv_p.err"
+
 say "a directory as the input is \"Can't open\", not an allocation abort"
 # A directory opens on Unix and reports a huge size (i64::MAX on ext4), which
 # sized the match finder: 2.2.0 aborted with exit 134 ("memory allocation of
