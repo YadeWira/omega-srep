@@ -16,6 +16,8 @@
 //!
 //! Every integer is little-endian and unaligned (`docs/format-spec.md` §1.6).
 
+use std::io::{Read, Seek, SeekFrom};
+
 /// `BULAT_ZIGANSHIN_SIGNATURE` (`Compression.h:19`).
 pub const BULAT_ZIGANSHIN_SIGNATURE: u32 = 0x2635_1817;
 /// `SREP_SIGNATURE` = `"OSRP"` little-endian (`srep.cpp:27`).
@@ -442,8 +444,10 @@ pub enum Trailer {
 
 /// Sniff the `-dup` ODUP trailer, mirroring `dup_wrapper.cpp`'s decision: the
 /// magic alone selects the `-dup` path, and a meta blob that does not then
-/// start with `DUPR` is a hard error rather than a fallback, because the
-/// magic pair makes an accidental match ~2^-64.
+/// start with `DUPR` is a hard error rather than a fallback. That is the
+/// harnesses' framing check, not `-d`'s: the magic pair is no guard against a
+/// plain Future-LZ/I/O LZ archive of a file that itself ends in a trailer,
+/// which carries that trailer verbatim (`dup::decode_odup`).
 pub fn split_trailer(bytes: &[u8]) -> Result<Trailer, ContainerError> {
     if bytes.len() < 12 || bytes[bytes.len() - 4..] != ODUP_MAGIC {
         return Ok(Trailer::Plain);
@@ -505,6 +509,9 @@ pub struct Archive {
     /// Bytes after the last block structure (0 for a well-formed archive; the
     /// decoder tolerates a zero-length terminator block, so a parse may too).
     pub trailing_bytes: usize,
+    /// The walk stopped on a zero-length terminator block. The decoders stop
+    /// there too, but no encoder writes one.
+    pub terminated: bool,
 }
 
 impl Archive {
@@ -548,6 +555,15 @@ impl Archive {
 
     /// Walk the container without decoding any LZ payload.
     pub fn parse(bytes: &[u8]) -> Result<Archive, ContainerError> {
+        Self::parse_with(bytes, false)
+    }
+
+    /// `parse`, for an archive written with `-index=` when `stats_out_of_line`
+    /// is set: a v1-v3 block header still records its match-list size, but
+    /// the list itself went to the index file (`srep.cpp:623`), so the block
+    /// is only its header and its literals. v4 keeps its list at the tail
+    /// either way, and the flag does not change how it is read.
+    pub fn parse_with(bytes: &[u8], stats_out_of_line: bool) -> Result<Archive, ContainerError> {
         let header = ArchiveHeader::decode(bytes)?;
         let block_header_size = BLOCK_HEADER_SIZE + header.hash_size as usize;
         let mut pos = ARCHIVE_HEADER_SIZE + header.hash_seed_size as usize;
@@ -591,6 +607,7 @@ impl Archive {
         // begins; for v1/v2/v3 they run to EOF.
         let mut blocks: Vec<BlockInfo> = Vec::new();
         let mut trailing_bytes = 0usize;
+        let mut terminated = false;
         loop {
             if pos == match_list_start {
                 break;
@@ -607,6 +624,7 @@ impl Archive {
                 // (`srep.cpp:1147`). The encoder never writes one.
                 pos += block_header_size;
                 trailing_bytes = match_list_start - pos;
+                terminated = true;
                 break;
             }
             let stat_size = if let Some(f) = &footer {
@@ -624,7 +642,7 @@ impl Archive {
             };
             // v4 keeps the match list out of line, so it is not part of the
             // per-block region here.
-            let inline_stat = if footer.is_some() { 0 } else { stat_size };
+            let inline_stat = if footer.is_some() || stats_out_of_line { 0 } else { stat_size };
             let need = block_header_size + inline_stat + bh.literal_bytes as usize;
             if match_list_start - pos < need {
                 return Err(ContainerError::BlockTiling {
@@ -662,8 +680,139 @@ impl Archive {
             total_stat_size: footer.as_ref().map_or(0, |f| f.total_stat_size),
             footer,
             trailing_bytes,
+            terminated,
         })
     }
+}
+
+// ------------------------------------------------------------- walk --
+
+/// What [`walk`] learns about an archive without holding it in memory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Walk {
+    pub header: ArchiveHeader,
+    pub blocks: u64,
+    /// The sum of the block headers' sizes, as [`Archive::origsize`].
+    pub origsize: u64,
+    /// As [`Archive::terminated`].
+    pub terminated: bool,
+}
+
+/// [`Archive::parse_with`] over the first `len` bytes of a seekable file,
+/// reading only the archive header, the block headers and (v4) the footer and
+/// its table: the same checks, in the same order, with the same verdicts, so
+/// `-d` can ask "is this a well-formed archive?" of a file it does not load.
+pub fn walk<R: Read + Seek>(
+    r: &mut R,
+    len: u64,
+    stats_out_of_line: bool,
+) -> Result<Walk, ContainerError> {
+    fn read_at<R: Read + Seek>(r: &mut R, off: u64, buf: &mut [u8]) -> Result<(), ContainerError> {
+        r.seek(SeekFrom::Start(off)).map_err(|_| ContainerError::Truncated)?;
+        r.read_exact(buf).map_err(|_| ContainerError::Truncated)
+    }
+
+    let mut head = [0u8; ARCHIVE_HEADER_SIZE];
+    if len < ARCHIVE_HEADER_SIZE as u64 {
+        return Err(ContainerError::Truncated);
+    }
+    read_at(r, 0, &mut head)?;
+    let header = ArchiveHeader::decode(&head)?;
+    let block_header_size = (BLOCK_HEADER_SIZE + header.hash_size as usize) as u64;
+    let mut pos = (ARCHIVE_HEADER_SIZE + header.hash_seed_size as usize) as u64;
+    if pos > len {
+        return Err(ContainerError::Truncated);
+    }
+
+    // v4: the table is read an entry at a time, as the blocks reach it, so a
+    // footer that claims a huge one costs nothing until blocks back it up.
+    let (table, total_stat_size, match_list_start) = if header.version.index_lz() {
+        if len < pos + INDEX_LZ_FOOTER_SIZE as u64 {
+            return Err(ContainerError::Truncated);
+        }
+        let mut fb = [0u8; INDEX_LZ_FOOTER_SIZE];
+        read_at(r, len - INDEX_LZ_FOOTER_SIZE as u64, &mut fb)?;
+        let head = FooterHead::decode(&fb)?;
+        let table_size = head
+            .footer_size
+            .checked_sub(INDEX_LZ_FOOTER_SIZE as u32)
+            .ok_or(ContainerError::FooterExceedsFile)? as u64;
+        let start = len
+            .checked_sub(u64::from(head.footer_size))
+            .and_then(|v| v.checked_sub(head.total_stat_size))
+            .ok_or(ContainerError::FooterExceedsFile)?;
+        if start < pos || table_size % 4 != 0 {
+            return Err(ContainerError::FooterExceedsFile);
+        }
+        // (where the table starts, how many entries)
+        let table = (len - u64::from(head.footer_size), table_size / 4);
+        (Some(table), head.total_stat_size, start)
+    } else {
+        (None, 0, len)
+    };
+
+    let mut blocks = 0u64;
+    let mut origsize = 0u64;
+    let mut table_sum = 0u64;
+    let mut terminated = false;
+    let mut bh_bytes = [0u8; BLOCK_HEADER_SIZE];
+    loop {
+        if pos == match_list_start {
+            break;
+        }
+        let tiling = ContainerError::BlockTiling {
+            consumed: pos as usize,
+            expected: match_list_start as usize,
+        };
+        if match_list_start - pos < block_header_size {
+            return Err(tiling);
+        }
+        read_at(r, pos, &mut bh_bytes)?;
+        let bh = BlockHeader::decode(&bh_bytes)?;
+        if table.is_none() && bh.literal_bytes == 0 && bh.origsize == 0 {
+            terminated = true;
+            break;
+        }
+        let stat_size = match table {
+            Some((at, entries)) => {
+                if blocks >= entries || bh.statsize != 0 {
+                    return Err(ContainerError::TableMismatch);
+                }
+                let mut e = [0u8; 4];
+                read_at(r, at + 4 * blocks, &mut e)?;
+                let e = u64::from(u32::from_le_bytes(e));
+                table_sum += e;
+                e
+            }
+            None => u64::from(bh.statsize),
+        };
+        let inline_stat = if table.is_some() || stats_out_of_line { 0 } else { stat_size };
+        let need = block_header_size + inline_stat + u64::from(bh.literal_bytes);
+        if match_list_start - pos < need {
+            return Err(tiling);
+        }
+        blocks += 1;
+        origsize += u64::from(bh.origsize);
+        pos += need;
+    }
+
+    if let Some((at, entries)) = table {
+        // Every entry was summed on the way: the count matches only when the
+        // blocks used them all.
+        if entries != blocks
+            || table_sum != total_stat_size
+            || match_list_start + total_stat_size != at
+        {
+            return Err(ContainerError::TableMismatch);
+        }
+    }
+
+    Ok(Walk {
+        header,
+        blocks,
+        origsize,
+        terminated,
+    })
 }
 
 #[cfg(test)]

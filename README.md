@@ -125,9 +125,15 @@ the Pascal is diffed against. See `oracles/README.md`.
   overhead is negligible (~12 bytes per unique chunk).
 
   **Decoder robustness:** the decompressor auto-detects the ODUP
-  trailer and additionally validates that the meta blob starts with
-  the `DUPR` magic — the combined probability of a non-dup archive
-  being misidentified is ~1/2^64. The `tests/dup_corruption_fuzz.sh`
+  trailer, validates that the meta blob starts with the `DUPR` magic,
+  and takes the trailer only when the archive behind it walks as a
+  whole archive that the meta fits. A plain `-mNf`/`-mNo` archive of a
+  file that itself ends in `ODUP` (any v4 `-dup` archive) ends in that
+  file's trailer, so the magic pair alone is no guard: such a file is
+  decoded as a plain archive when the whole of it walks as one
+  (`docs/format-spec.md` §2; with osrep 2.3.0 and the C++ 1.0.7,
+  `-d archive out` fails on it, and `osrep -d - out < archive` restores
+  it). The `tests/dup_corruption_fuzz.sh`
   suite exercises 27 deliberate-corruption variants (magic flips,
   truncations, out-of-range size fields, mid-meta byte-flips); every
   variant is required to error cleanly with no crash and no silent

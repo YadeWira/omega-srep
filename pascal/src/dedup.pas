@@ -72,6 +72,20 @@ function EncodeStreaming(const InPath, BodyPath: AnsiString; const P: TDupParams
   archivo de salida). }
 procedure DecodeStreaming(const Meta: TBytes; const BodyPath, OutPath: AnsiString);
 
+type
+  { dedup::MetaSummary: lo que dice una meta del archivo que restaura, para -i }
+  TMetaSummary = record
+    Chunks, Unique: QWord;
+    BodySize: QWord;     { lo que el cuerpo tiene que traer: los chunks unicos }
+    OutputSize: QWord;   { lo que escribe DecodeStreaming }
+  end;
+
+{ summarize_meta: la meta sin el cuerpo. La tabla pasa las mismas reglas que
+  DecodeStreaming (las de ParseMeta, y una referencia solo a un chunk unico
+  ya visto), asi que lo que acepta es lo que el decoder repetiria. Lanza
+  EDedup con el codigo. }
+procedure SummarizeMeta(const Meta: TBytes; out S: TMetaSummary);
+
 implementation
 
 const
@@ -536,6 +550,38 @@ begin
       raise EDedup.CreateCode(DEDUP_ERR_BAD_TAG);
     RecPush(Recs, tag, v);
     Inc(k);
+  end;
+end;
+
+procedure SummarizeMeta(const Meta: TBytes; out S: TMetaSummary);
+var recs: TRecs; uniqueCount, n, len, idx: QWord; uniqueLen: array of DWord;
+begin
+  ParseMeta(Meta, recs, uniqueCount);
+  S.Chunks := recs.N;
+  S.Unique := 0;
+  S.BodySize := 0;
+  S.OutputSize := 0;
+  SetLength(uniqueLen, 0);
+  n := 0;
+  while n < recs.N do
+  begin
+    if recs.W[n].Tag = TAG_UNIQUE then
+    begin
+      if S.Unique >= QWord(Length(uniqueLen)) then
+        SetLength(uniqueLen, Length(uniqueLen) * 2 + 64);
+      uniqueLen[S.Unique] := DWord(recs.W[n].Payload);
+      Inc(S.Unique);
+      len := recs.W[n].Payload;
+      S.BodySize := S.BodySize + len;
+    end
+    else
+    begin
+      idx := recs.W[n].Payload;
+      if idx >= S.Unique then raise EDedup.CreateCode(DEDUP_ERR_BAD_REF);
+      len := uniqueLen[idx];
+    end;
+    S.OutputSize := S.OutputSize + len;
+    Inc(n);
   end;
 end;
 

@@ -307,6 +307,38 @@ dmk v3 --format=v4 -m3f
 dmk v3ix --format=v4 -m3f -index=v3ix.ix
 dmk v2ix --format=v4 -m5o -index=v2ix.ix
 dmk v1 --format=v4 -m3o
+# -dup con el trailer ODUP detras de un Future-LZ o un I/O LZ: el Rust solo lo
+# escribe sobre Index-LZ, el C++ sobre cualquiera (y con -index=). -i los
+# describe despues de 2.3.0; antes decia "Not an Omega SREP".
+DUPX=""
+if [ -x "$CXX_BIN/osrep" ]; then
+    for spec in "v3dup -m3f" "v2dup -m3o" "v3dupix -m3f -index=v3dupix.ix"; do
+        set -- $spec; name="$1"; shift
+        (cd "$D" && "$ROOT/$CXX_BIN/osrep" --seed=7 -b64k -dup --chunk-hash=gear "$@" in.bin "$name.osr" >/dev/null 2>&1) \
+            || fail "no se pudo armar $name.osr con el C++"
+        DUPX="$DUPX $name"
+    done
+fi
+# Un archivo que termina en "ODUP" (aca, el v4 -dup de arriba): un Future-LZ
+# o un I/O LZ termina en sus ultimos literales, asi que el suyo termina en ese
+# trailer, meta y todo. 2.3.0 y el C++ 1.0.7 lo tomaban por un -dup y
+# -d archivo salida fallaba (por stdin lo restauraban, ver abajo); -d ahora
+# lo decodifica como uno comun cuando el archivo
+# de atras del trailer no se sostiene y el entero si. Las mutaciones de abajo
+# le pegan al trailer de mentira; nestdup es el -dup del -dup (el trailer de
+# afuera es de verdad).
+odp() { # $1=nombre, el resto opciones del encoder; la entrada es v4dup.osr
+    local name="$1"; shift
+    (cd "$D" && "$RSX" -v0 --seed=7 -b64k "$@" v4dup.osr "$name.osr" >/dev/null 2>&1) \
+        || fail "no se pudo armar $name.osr"
+}
+odp odpf --format=v4 -m3f
+odp odpo --format=v4 -m3o -hash-
+odp odpfix --format=v4 -m3f -index=odpfix.ix
+odp nestdup --format=v4 -m3 -dup
+for name in odpf odpo odpfix; do
+    [ "$(tail -c 4 "$D/$name.osr")" = ODUP ] || fail "$name.osr no termina en ODUP: no prueba nada"
+done
 (cd "$D" && "$RSX" -v0 --seed=7 -m5 -b64k far.bin far.osr >/dev/null 2>&1) || fail "no se pudo armar far.osr"
 : > "$D/empty.osr"
 printf 'this is not an archive\n%.0s' 1 2 3 4 5 6 > "$D/text.osr"
@@ -335,13 +367,13 @@ check3() { # $1=archivo, el resto opciones de -d
     local f="$1"; shift
     same -v0 -d "$@" "$f" o.out
     same -v0 --verify "$f"
-    same -v0 -i "$f"
+    same -v0 -i "$@" "$f"
 }
 # --verify y -i no decodifican: sobre un v1-v4 solo parsean el contenedor, y
 # eso lo cubren de sobra los truncados. Un byte cambiado se mira con -d.
 checkd() { # $1=archivo, el resto opciones de -d
     local f="$1"; shift
-    case "$name" in v5*) check3 "$f" "$@" ;; *) same -v0 -d "$@" "$f" o.out ;; esac
+    case "$name" in v5*|*dup*|odp*) check3 "$f" "$@" ;; *) same -v0 -d "$@" "$f" o.out ;; esac
 }
 # $1=origen $2=posicion $3=destino: el byte en $2 pasa a 0 (o a 0xFF si ya era 0)
 zap() {
@@ -351,9 +383,20 @@ zap() {
     if [ "${b:-0}" -eq 0 ]; then v=255; else v=0; fi
     printf "$(printf '\\%03o' "$v")" | dd of="$3" bs=1 seek="$2" conv=notrunc 2>/dev/null
 }
-for name in v5 v5dup v4 v4dup v3 v3ix v2ix v1; do
+for name in v5 v5dup v4 v4dup v3 v3ix v2ix v1 $DUPX odpf odpo odpfix nestdup; do
     a="$D/$name.osr"; n=$(stat -c%s "$a")
     ix=""; [ -e "$D/$name.ix" ] && ix="-index=$name.ix"
+    # sano: -i tiene que describirlo, y los dos igual
+    same -v0 -i $ix "$name.osr"
+    grep -q 'ERROR' r.e && fail "-i $ix $name.osr: $(cat r.e)"
+    case "$name" in *dup*) grep -q '^-dup: ' r.e || fail "-i $name.osr sin la linea -dup: $(cat r.e)" ;; esac
+    case "$name" in odp*|nestdup)
+        grep -q '^-dup: ' r.e && [ "$name" != nestdup ] && fail "-i $name.osr: una linea -dup en uno comun"
+        same -v0 -d $ix "$name.osr" o.out
+        cmp -s o.out v4dup.osr || fail "-d $ix $name.osr no devolvio v4dup.osr"
+        same -v0 --verify "$name.osr"
+        ;;
+    esac
     for c in 0 3 16 27 28 60 $((n / 2)) $((n - 32)) $((n - 24)) $((n - 1)); do
         [ "$c" -ge 0 ] && [ "$c" -lt "$n" ] || continue
         head -c "$c" "$a" > "$D/m.osr"
@@ -370,11 +413,116 @@ for name in v5 v5dup v4 v4dup v3 v3ix v2ix v1; do
         m=$(stat -c%s "$D/$name.ix")
         for c in 0 4 $((m - 1)); do
             head -c "$c" "$D/$name.ix" > "$D/m.ix"; same -v0 -d -index=m.ix "$name.osr" o.out
+            same -v0 -i -index=m.ix "$name.osr"
         done
         for p in 0 3 8 12 $((m / 2)); do
             zap "$D/$name.ix" "$p" "$D/m.ix"; same -v0 -d -index=m.ix "$name.osr" o.out
         done
+        same -v0 -i "$name.osr"
+        same -v0 -i -index=nonexistent.ix "$name.osr"
     fi
+done
+# El archivo que termina en "ODUP", en cada modo v4 y con -hash-: los dos
+# escriben los mismos bytes (y el C++ tambien, asi que lo que el escribe se
+# decodifica igual), y los dos lo restauran.
+for m in m0 m0f m0o m1 m1f m1o m2 m2f m2o m3 m3f m3o m4 m4f m4o m5 m5f m5o m3f/-hash- m0o/-hash- m5/-hash-; do
+    h=""; case "$m" in */*) h="${m#*/}"; m="${m%%/*}" ;; esac
+    rm -f rw.osr pw.osr cw.osr
+    "$RSX" -v0 --seed=7 -b64k --format=v4 $h -$m v4dup.osr rw.osr >/dev/null 2>&1 || fail "-$m $h: el Rust no comprimio"
+    "$PAX" -v0 --seed=7 -b64k --format=v4 $h -$m v4dup.osr pw.osr >/dev/null 2>&1 || fail "-$m $h: el Pascal no comprimio"
+    cmp -s rw.osr pw.osr || fail "-$m $h de v4dup.osr: el Pascal escribio otros bytes"
+    if [ -n "$DUPX" ]; then
+        "$ROOT/$CXX_BIN/osrep" --seed=7 -b64k $h -$m v4dup.osr cw.osr >/dev/null 2>&1 \
+            && cmp -s rw.osr cw.osr || fail "-$m $h de v4dup.osr: no son los bytes del C++"
+    fi
+    same -v0 -d rw.osr o.out
+    cmp -s o.out v4dup.osr || fail "-d de -$m $h de v4dup.osr no devolvio la entrada"
+    same -v0 -i rw.osr
+    same -v0 --verify rw.osr
+done
+# un v5 que termina en su propio footer nunca se olfatea como trailer ODUP:
+# el footer termina en un CRC, que es "ODUP" en uno de cada 2^32 archivos, y
+# 2.3.0 entonces rechazaba un archivo sano con "the -dup meta is missing or
+# corrupt". Se arma uno eligiendo bits que nadie lee (v5odup): los dos lo
+# tienen que restaurar.
+v5odup() {
+python3 - "$1" <<'PY2'
+import struct, sys
+# Make a v5 archive's footer CRC spell "ODUP" and keep it valid: the high half
+# of meta_offset, which nothing reads when there is no meta, is solved for.
+# This project's CRC-32C starts at 0 and has no final xor, so it is linear.
+T = []
+for i in range(256):
+    c = i
+    for _ in range(8):
+        c = (c >> 1) ^ (0x82F63B78 if c & 1 else 0)
+    T.append(c)
+def crc(b):
+    c = 0
+    for x in b:
+        c = T[(c ^ x) & 0xFF] ^ (c >> 8)
+    return c
+p = sys.argv[1]; b = bytearray(open(p, "rb").read()); f = len(b) - 32
+base = bytearray(b[f:f + 28]); base[20:24] = bytes(4)
+want = struct.unpack("<I", b"ODUP")[0] ^ crc(base)
+cols = []
+for i in range(32):
+    u = bytearray(28); u[20 + i // 8] = 1 << (i % 8); cols.append([crc(u), 1 << i])
+pick = 0
+for bit in reversed(range(32)):
+    r = next((k for k in range(len(cols)) if cols[k][0] >> bit & 1), None)
+    if r is None: continue
+    v, m = cols.pop(r)
+    for c in cols:
+        if c[0] >> bit & 1: c[0] ^= v; c[1] ^= m
+    if want >> bit & 1: want ^= v; pick ^= m
+assert want == 0
+base[20:24] = struct.pack("<I", pick)
+b[f:f + 28] = base; b[f + 28:f + 32] = struct.pack("<I", crc(base))
+assert b[-4:] == b"ODUP"
+open(p, "wb").write(b)
+PY2
+}
+cp v5.osr m.osr
+v5odup m.osr || fail "no se pudo armar un v5 terminado en ODUP"
+same -v0 -d m.osr o.out
+cmp -s o.out in.bin || fail "un v5 terminado en ODUP no se restauro: $(cat r.e)"
+# 2.3.0 y el C++ 1.0.7 fallaban en -d archivo salida con odpf.osr, pero por
+# stdin lo restauraban (el trailer se olfatea solo entre dos archivos con
+# nombre): es el atajo que da el CHANGELOG, y los dos lo siguen haciendo
+rrc=0; "$RSX" -v0 -d - r.out <odpf.osr >/dev/null 2>r.e || rrc=$?
+prc=0; "$PAX" -v0 -d - p.out <odpf.osr >/dev/null 2>p.e || prc=$?
+[ "$rrc" -eq 0 ] && [ "$prc" -eq 0 ] && cmp -s r.out v4dup.osr && cmp -s p.out v4dup.osr \
+    || fail "-d - salida < odpf.osr: Rust $rrc '$(cat r.e)', Pascal $prc '$(cat p.e)'"
+rm -f r.out p.out
+dpass=$((dpass + 1))
+# Los 8 bytes delante de un "ODUP" olfateado no son un tamano para reservar:
+# en un comun son bytes de la entrada, hasta el largo del archivo, y -d leia
+# esa "meta" antes de recorrer nada (en win32, con mas de 2^31 salia Io; con
+# mas de 2^32 SetLength cortaba el largo y ReadUpTo desbordaba el heap). Un
+# archivo ralo de 1 TiB, con y sin "DUPR" donde empezaria la meta: ninguno es
+# un archivo osrep y ninguno lee la meta. Nativo, con el espacio de
+# direcciones limitado, volver a leerla es un fallo y no un OOM.
+PWINE=0
+if [ "$(head -c 2 "$PA")" = '#!' ] && grep -q wine "$PA"; then PWINE=1; fi
+FL=$((1 << 40))
+for spec in "4096 0" "64 1"; do
+    read -r back tag <<<"$spec"
+    rm -f sp.osr
+    truncate -s $((FL - 12)) sp.osr
+    python3 -c 'import struct, sys; sys.stdout.buffer.write(struct.pack("<Q", int(sys.argv[1])) + b"ODUP")' \
+        $((FL - 12 - back)) >>sp.osr
+    [ "$tag" = 1 ] && printf DUPR | dd of=sp.osr bs=1 seek="$back" conv=notrunc status=none
+    rrc=0; (ulimit -v 4194304; "$RSX" -v0 -d sp.osr o.out) </dev/null >/dev/null 2>r.e || rrc=$?
+    prc=0; ([ "$PWINE" = 1 ] || ulimit -v 4194304; "$PAX" -v0 -d sp.osr o.out) </dev/null >/dev/null 2>p.e || prc=$?
+    [ "$rrc" -eq "$prc" ] && cmp -s r.e p.e \
+        || fail "-d de un trailer ralo ($back, DUPR $tag): Pascal $prc '$(cat p.e)', Rust $rrc '$(cat r.e)'"
+    case "$tag" in
+        0) [ "$rrc" -eq 4 ] && grep -qxF "  ERROR! the -dup meta is missing or corrupt" r.e ;;
+        1) [ "$rrc" -eq 3 ] && grep -qxF "  ERROR! Decode(Container(NotAnOsrepFile))" r.e ;;
+    esac || fail "-d de un trailer ralo ($back, DUPR $tag): $rrc '$(cat r.e)'"
+    rm -f sp.osr o.out
+    dpass=$((dpass + 1))
 done
 # el largo del footer de un v4 una unidad menos: la tabla de tamanos deja de
 # ser multiplo de 4, que es otro sitio de TableMismatch que el de arriba

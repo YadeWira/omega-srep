@@ -622,7 +622,10 @@ fn decompress(o: &Options, finame: &str, foutname: &str) -> Result<i32, RunError
     // without the flag on the command line. It rewrites the archive's tail, so
     // it needs both names to be real files.
     if finame != "-" && foutname != "-" {
-        match dup::decode(Path::new(finame), Path::new(foutname), &opts) {
+        // With `-index=`, a plain v1-v3 archive's lists are in the index, and
+        // the walk that tells it from a `-dup` one has to know.
+        let out_of_line = !o.index_file.is_empty();
+        match dup::decode_with(Path::new(finame), Path::new(foutname), &opts, out_of_line) {
             Ok(true) => {
                 if o.delete_input {
                     let _ = std::fs::remove_file(finame);
@@ -842,12 +845,45 @@ literal run needs a decompress{}.",
 fn info(o: &Options, finame: &str) -> Result<i32, RunError> {
     let opts = decode_options(o);
     let bytes = read_archive(finame)?;
-    let info = archive::inspect(&bytes).map_err(|_| {
+    // `-index=`: the C++ opens it before it reads a byte of the archive
+    // (`srep.cpp:623`), and `-d` refuses a name it cannot open, so `-i` does
+    // too -- with `-d`'s message, not the C++'s "for write".
+    let mut index_file = if o.index_file.is_empty() {
+        None
+    } else {
+        Some(File::open(&o.index_file).map_err(|_| {
+            err(
+                ERROR_IO,
+                format!("Can't open index file {} for read", o.index_file),
+            )
+        })?)
+    };
+    let info = archive::inspect_with(&bytes, index_file.is_some()).map_err(|_| {
         err(
             ERROR_COMPRESSION,
             format!("Not an Omega SREP compressed file (.osr): {finame}"),
         )
     })?;
+
+    // v1-v3 with `-index=`: the lists the block headers announce have to be
+    // in the index, as the C++ checks block by block (`srep.cpp:1208-1209`).
+    // Index-LZ and v5 keep theirs in the archive and never read the index.
+    // At most the announced bytes are read, so an endless index ends here.
+    if let Some(f) = index_file.as_mut() {
+        if info.mode != "Index-LZ" && info.mode != "v5" {
+            let mut sink = std::io::sink();
+            let got = std::io::copy(&mut f.take(info.stat_size), &mut sink).unwrap_or(0);
+            if got != info.stat_size {
+                return Err(err(
+                    ERROR_COMPRESSION,
+                    format!(
+                        "Decompression problem: unexpected end of file {} or I/O error",
+                        o.index_file
+                    ),
+                ));
+            }
+        }
+    }
 
     let mut head = format!("{}:", info.mode);
     if info.base_len != 0 {
@@ -862,32 +898,48 @@ fn info(o: &Options, finame: &str) -> Result<i32, RunError> {
         eprintln!("{head}");
     }
 
-    // The C++ reaches the size line only for Index-LZ, where it derives the
-    // original size from the footer arithmetic. v5 carries the same answer in
-    // its header, so it gets the same line.
-    if info.mode == "Index-LZ" || info.mode == "v5" {
-        let pct = if info.origsize > 0 {
-            info.compsize as f64 * 100.0 / info.origsize as f64
-        } else {
-            0.0
-        };
+    // The size line. The C++ prints it this way for Index-LZ, deriving the
+    // original size from the footer arithmetic; for Future-LZ and I/O LZ it
+    // runs its decoder's progress line instead (timings and all, with the two
+    // sizes the other way round), and it cannot read v5. Every container gets
+    // the Index-LZ line here, so the same question has one answer.
+    let pct = if info.origsize > 0 {
+        info.compsize as f64 * 100.0 / info.origsize as f64
+    } else {
+        0.0
+    };
+    eprintln!(
+        ".  {} -> {}: {pct:.2}%",
+        report::show3(info.origsize),
+        report::show3(info.compsize)
+    );
+    // `-dup`: the size above is what the meta restores; the blocks hold the
+    // dedup pass's body, which is what the match search saw.
+    if let Some(d) = info.dup {
         eprintln!(
-            ".  {} -> {}: {pct:.2}%",
+            "-dup: {} chunks, {} unique: {} -> {} bytes",
+            report::show3(d.chunks),
+            report::show3(d.unique),
             report::show3(info.origsize),
-            report::show3(info.compsize)
+            report::show3(d.body_size)
         );
-        // The C++ reports the peak RAM its spill would need, which it computes
-        // by walking the match lists; the port does not measure a peak, so that
-        // one field is a placeholder. Everything else on the line is real.
-        let maximum_save = if opts.maximum_save == u32::MAX {
-            None
-        } else {
-            Some(u64::from(opts.maximum_save))
-        };
-        // Only v1 stores 3-word records, and the C++ reaches this line for
-        // Index-LZ (4-word) alone.
-        report::print_info("", 0, maximum_save, info.stat_size, false, info.compsize);
-        eprintln!();
     }
+    // The C++ reports the peak RAM its spill would need, which it computes
+    // by walking the match lists; the port does not measure a peak, so that
+    // one field is a placeholder. Everything else on the line is real.
+    let maximum_save = if opts.maximum_save == u32::MAX {
+        None
+    } else {
+        Some(u64::from(opts.maximum_save))
+    };
+    report::print_info(
+        "",
+        0,
+        maximum_save,
+        info.stat_size,
+        info.round_matches,
+        info.compsize,
+    );
+    eprintln!();
     Ok(NO_ERRORS)
 }

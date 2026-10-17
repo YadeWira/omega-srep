@@ -567,6 +567,346 @@ for m in m3 m4f m5o; do
     pass=$((pass + 1))
 done
 
+say "-i on a -dup archive: v4 (ODUP trailer, every container the C++ writes) and v5"
+# 2.3.0 and earlier said "Not an Omega SREP compressed file" on a v4 -dup
+# archive: the meta and the ODUP trailer sit after the archive, where Index-LZ
+# looks for its footer and Future-LZ/I/O LZ for more blocks. The C++'s own -i
+# fails on them too ("Not found ... footer" for Index-LZ, a bogus block size
+# for the others), after printing the header line, which is the part both
+# have to agree on. The size line is what -d writes, from the meta; the -dup
+# line counts the meta's chunks and gives the body the blocks decode to.
+# Gear chunking, so that the pass really drops chunks.
+python3 - "$TMP/dupg.bin" <<'PY2'
+import random, sys
+r = random.Random(5)
+u = bytes(r.randrange(256) for _ in range(1 << 17))
+open(sys.argv[1], "wb").write(u * 12 + b"tail" * 100)
+PY2
+# The meta's own numbers: chunks, unique, body bytes, restored bytes.
+dupmeta() {
+    python3 - "$1" <<'PY2'
+import struct, sys
+b = open(sys.argv[1], "rb").read()
+if b[:4] == b"OSR5":
+    off, size = struct.unpack("<QI", b[-16:-4])
+    m = b[off:off + size - 4]
+else:
+    size = struct.unpack("<Q", b[-12:-4])[0]
+    m = b[len(b) - 12 - size:len(b) - 12]
+chunks, unique = struct.unpack("<QQ", m[8:24])
+p, lens, body, out = 24, [], 0, 0
+for _ in range(chunks):
+    tag = m[p]; p += 1
+    if tag == 0:
+        n = struct.unpack("<I", m[p:p + 4])[0]; p += 4
+        lens.append(n); body += n; out += n
+    else:
+        v = s = 0
+        while True:
+            c = m[p]; p += 1; v |= (c & 0x7F) << s; s += 7
+            if c < 0x80: break
+        out += lens[v]
+print(chunks, unique, body, out)
+PY2
+}
+show3() { printf '%s' "$1" | sed ':a;s/\B[0-9]\{3\}\>/,&/;ta'; }
+insize=$(stat -c%s "$TMP/dupg.bin")
+for spec in "cxx -m3 Index-LZ" "cxx -m3f Future-LZ" "cxx -m4o I/O" "port4 -m3 Index-LZ" "port5 -m3 v5"; do
+    set -- $spec
+    rm -f "$TMP/di.osr" "$TMP/di.out"
+    case "$1" in
+        cxx)   "$CXX_BIN/osrep" -dup --chunk-hash=gear --seed=7 "$2" "$TMP/dupg.bin" "$TMP/di.osr" >/dev/null 2>&1 ;;
+        port4) "$RS" -dup --chunk-hash=gear --format=v4 --seed=7 "$2" "$TMP/dupg.bin" "$TMP/di.osr" >/dev/null 2>&1 ;;
+        port5) "$RS" -dup --chunk-hash=gear --seed=7 "$2" "$TMP/dupg.bin" "$TMP/di.osr" >/dev/null 2>&1 ;;
+    esac || fail "-dup $spec: compress failed"
+    "$RS" -d "$TMP/di.osr" "$TMP/di.out" >/dev/null 2>&1 && cmp -s "$TMP/dupg.bin" "$TMP/di.out" \
+        || fail "-dup $spec: does not round-trip"
+    read -r chunks unique body restored <<<"$(dupmeta "$TMP/di.osr")"
+    [ "$restored" -eq "$insize" ] && [ "$unique" -lt "$chunks" ] \
+        || fail "-dup $spec: the meta does not dedup ($chunks/$unique/$restored)"
+    rc=0; "$RS" -i "$TMP/di.osr" >/dev/null 2>"$TMP/di.err" || rc=$?
+    [ "$rc" -eq 0 ] || fail "-i on -dup $spec: exit $rc, '$(cat "$TMP/di.err")'"
+    arch=$(stat -c%s "$TMP/di.osr")
+    grep -qF ".  $(show3 "$insize") -> $(show3 "$arch"): " "$TMP/di.err" \
+        || fail "-i on -dup $spec: no size line for $insize -> $arch: '$(cat "$TMP/di.err")'"
+    want="-dup: $(show3 "$chunks") chunks, $(show3 "$unique") unique: $(show3 "$insize") -> $(show3 "$body") bytes"
+    grep -qxF -- "$want" "$TMP/di.err" || fail "-i on -dup $spec: no '$want' in '$(cat "$TMP/di.err")'"
+    case "$3" in
+        v5) head -1 "$TMP/di.err" | grep -qxF "v5: -hash=vmac" || fail "-i on -dup $spec: header '$(head -1 "$TMP/di.err")'" ;;
+        *)  "$CXX_BIN/osrep" -i "$TMP/di.osr" >/dev/null 2>"$TMP/dic.err" || true
+            chead=$(head -1 "$TMP/dic.err")
+            case "$chead" in "$3"*) ;; *) fail "-i on -dup $spec: the C++ header is '$chead'" ;; esac
+            [ "$(head -c ${#chead} "$TMP/di.err")" = "$chead" ] \
+                || fail "-i on -dup $spec: header '$(head -1 "$TMP/di.err")', the C++ says '$chead'" ;;
+    esac
+    # --verify answers what it answers for any v1-v4 archive.
+    if [ "$3" != v5 ]; then
+        rc=0; "$RS" --verify "$TMP/di.osr" >/dev/null 2>"$TMP/di.err" || rc=$?
+        [ "$rc" -eq 2 ] && grep -qF "is a v1-v4 archive" "$TMP/di.err" \
+            || fail "--verify on -dup $spec: exit $rc, '$(cat "$TMP/di.err")'"
+    fi
+    pass=$((pass + 1))
+done
+# A trailer -d refuses is one -i refuses: a meta_size past the file, a meta
+# that is not DUPR, a reference to a chunk not yet seen.
+"$CXX_BIN/osrep" -dup --chunk-hash=gear --seed=7 -m3 "$TMP/dupg.bin" "$TMP/di.osr" >/dev/null 2>&1
+python3 - "$TMP/di.osr" "$TMP" <<'PY2'
+import struct, sys
+b = open(sys.argv[1], "rb").read(); d = sys.argv[2]
+size = struct.unpack("<Q", b[-12:-4])[0]; at = len(b) - 12 - size
+open(d + "/bad1.osr", "wb").write(b[:-12] + struct.pack("<Q", len(b)) + b"ODUP")
+m = bytearray(b); m[at] ^= 1; open(d + "/bad2.osr", "wb").write(bytes(m))
+m = bytearray(b); p = at + 24
+while m[p] == 0: p += 5
+m[p + 1] = 0x7F; open(d + "/bad3.osr", "wb").write(bytes(m))
+PY2
+for f in bad1 bad2 bad3; do
+    rc=0; "$RS" -d "$TMP/$f.osr" "$TMP/di.out" >/dev/null 2>&1 || rc=$?
+    [ "$rc" -ne 0 ] || fail "-d accepted the broken -dup trailer $f"
+    rc=0; "$RS" -i "$TMP/$f.osr" >/dev/null 2>"$TMP/di.err" || rc=$?
+    [ "$rc" -eq 4 ] && grep -qxF "  ERROR! Not an Omega SREP compressed file (.osr): $TMP/$f.osr" "$TMP/di.err" \
+        || fail "-i on the broken -dup trailer $f: exit $rc, '$(cat "$TMP/di.err")'"
+done
+pass=$((pass + 1))
+
+say "a file that ends in \"ODUP\": its Future-LZ/I/O LZ archive is a plain one"
+# Every v4 -dup archive ends in "ODUP", and a Future-LZ or I/O LZ archive ends
+# in its last literals -- so one of a v4 -dup archive ends in that archive's
+# own trailer, meta and all. 2.3.0 and the C++ 1.0.7 took it for a -dup
+# archive, cut it there and failed on what was left ("unexpected end of file"
+# in the C++, Decode(Container(Truncated)) in the ports): `-d archive out`
+# failed. (`-d - out < archive` restored it: the trailer is only sniffed when
+# input and output are both named files.) -d now takes the trailer only when the archive behind it holds
+# up, and decodes the file as a plain archive when the whole of it does. The
+# writer is untouched: the archives are the C++'s, byte for byte. Index-LZ
+# ends in its footer, which no trailer can match, and always decoded.
+"$RS" -dup --format=v4 --seed=7 tests/corpus/text.bin "$TMP/in4.osr" >/dev/null 2>&1 \
+    || fail "ODUP input: compress failed"
+[ "$(tail -c 4 "$TMP/in4.osr")" = ODUP ] || fail "ODUP input: the -dup archive does not end in ODUP"
+for m in m0 m0f m0o m1 m1f m1o m2 m2f m2o m3 m3f m3o m4 m4f m4o m5 m5f m5o; do
+    for h in "" -hash-; do
+        rm -f "$TMP/od.osr" "$TMP/odc.osr" "$TMP/od.out"
+        "$RS" --format=v4 --seed=7 $h -$m "$TMP/in4.osr" "$TMP/od.osr" >/dev/null 2>&1 \
+            || fail "ODUP input -$m $h: compress failed"
+        "$CXX_BIN/osrep" --seed=7 $h -$m "$TMP/in4.osr" "$TMP/odc.osr" >/dev/null 2>&1 \
+            || fail "ODUP input -$m $h: the C++ compress failed"
+        cmp -s "$TMP/od.osr" "$TMP/odc.osr" || fail "ODUP input -$m $h: not the C++'s bytes"
+        "$RS" -d "$TMP/od.osr" "$TMP/od.out" >/dev/null 2>"$TMP/od.err" \
+            || fail "ODUP input -$m $h: -d failed: $(cat "$TMP/od.err")"
+        cmp -s "$TMP/od.out" "$TMP/in4.osr" || fail "ODUP input -$m $h: -d wrote something else"
+        case "$m" in *f|*o)
+            # the case the fix is about: the file ends in the inner trailer,
+            # and the C++ 1.0.7's `-d archive out` fails on it (its tempfile
+            # goes in $TMP) -- while through stdin, where it does not sniff,
+            # it restores it, which is the workaround the CHANGELOG gives
+            [ "$(tail -c 4 "$TMP/od.osr")" = ODUP ] || fail "ODUP input -$m $h: the archive does not end in ODUP"
+            rc=0; TMPDIR="$TMP" "$CXX_BIN/osrep" -d "$TMP/odc.osr" "$TMP/od.out" >/dev/null 2>&1 || rc=$?
+            [ "$rc" -ne 0 ] || fail "ODUP input -$m $h: the C++ restored it; the CHANGELOG says -d archive out fails"
+            rm -f "$TMP/od.out"
+            TMPDIR="$TMP" "$CXX_BIN/osrep" -d - "$TMP/od.out" <"$TMP/odc.osr" >/dev/null 2>&1 \
+                && cmp -s "$TMP/od.out" "$TMP/in4.osr" \
+                || fail "ODUP input -$m $h: the C++'s -d - out < archive did not restore it; the CHANGELOG says it does"
+            rm -f "$TMP/od.out"
+            "$RS" -d - "$TMP/od.out" <"$TMP/od.osr" >/dev/null 2>&1 && cmp -s "$TMP/od.out" "$TMP/in4.osr" \
+                || fail "ODUP input -$m $h: -d - out < archive did not restore it"
+            ;;
+        esac
+        pass=$((pass + 1))
+    done
+done
+# -index=: the lists are in the index, and the walk has to read them there
+for m in m3f m5o; do
+    rm -f "$TMP/od.osr" "$TMP/od.ix" "$TMP/od.out"
+    "$RS" --format=v4 --seed=7 -$m -index="$TMP/od.ix" "$TMP/in4.osr" "$TMP/od.osr" >/dev/null 2>&1 \
+        || fail "ODUP input -$m -index=: compress failed"
+    "$RS" -d -index="$TMP/od.ix" "$TMP/od.osr" "$TMP/od.out" >/dev/null 2>"$TMP/od.err" \
+        && cmp -s "$TMP/od.out" "$TMP/in4.osr" || fail "ODUP input -$m -index=: -d: $(cat "$TMP/od.err")"
+    pass=$((pass + 1))
+done
+# A v5 archive that ends in its own footer is never sniffed for a trailer:
+# the footer ends in a CRC-32C, which spells "ODUP" once in 2^32 archives,
+# and 2.3.0 then refused a sound archive with "the -dup meta is missing or
+# corrupt". One is made by choosing bits nothing reads (v5odup); a v5 body
+# under a real ODUP trailer is still sniffed (tests/dup_native_roundtrip.sh).
+v5odup() {
+python3 - "$1" <<'PY2'
+import struct, sys
+# Make a v5 archive's footer CRC spell "ODUP" and keep it valid: the high half
+# of meta_offset, which nothing reads when there is no meta, is solved for.
+# This project's CRC-32C starts at 0 and has no final xor, so it is linear.
+T = []
+for i in range(256):
+    c = i
+    for _ in range(8):
+        c = (c >> 1) ^ (0x82F63B78 if c & 1 else 0)
+    T.append(c)
+def crc(b):
+    c = 0
+    for x in b:
+        c = T[(c ^ x) & 0xFF] ^ (c >> 8)
+    return c
+p = sys.argv[1]; b = bytearray(open(p, "rb").read()); f = len(b) - 32
+base = bytearray(b[f:f + 28]); base[20:24] = bytes(4)
+want = struct.unpack("<I", b"ODUP")[0] ^ crc(base)
+cols = []
+for i in range(32):
+    u = bytearray(28); u[20 + i // 8] = 1 << (i % 8); cols.append([crc(u), 1 << i])
+pick = 0
+for bit in reversed(range(32)):
+    r = next((k for k in range(len(cols)) if cols[k][0] >> bit & 1), None)
+    if r is None: continue
+    v, m = cols.pop(r)
+    for c in cols:
+        if c[0] >> bit & 1: c[0] ^= v; c[1] ^= m
+    if want >> bit & 1: want ^= v; pick ^= m
+assert want == 0
+base[20:24] = struct.pack("<I", pick)
+b[f:f + 28] = base; b[f + 28:f + 32] = struct.pack("<I", crc(base))
+assert b[-4:] == b"ODUP"
+open(p, "wb").write(b)
+PY2
+}
+"$RS" --seed=7 tests/corpus/text.bin "$TMP/v5o.osr" >/dev/null 2>&1
+v5odup "$TMP/v5o.osr" || fail "v5 ending in ODUP: could not make one"
+rm -f "$TMP/od.out"
+"$RS" -d "$TMP/v5o.osr" "$TMP/od.out" >/dev/null 2>"$TMP/od.err" && cmp -s "$TMP/od.out" tests/corpus/text.bin \
+    || fail "v5 ending in ODUP: -d: '$(cat "$TMP/od.err")'"
+pass=$((pass + 1))
+# -i and --verify: the plain archive, described as the C++ describes it, and
+# the -dup archive of the -dup archive (whose trailer is a real one)
+"$RS" --format=v4 --seed=7 -m3f "$TMP/in4.osr" "$TMP/od.osr" >/dev/null 2>&1
+"$RS" -dup --format=v4 --seed=7 "$TMP/in4.osr" "$TMP/nest.osr" >/dev/null 2>&1 || fail "nested -dup: compress failed"
+rm -f "$TMP/od.out"
+"$RS" -d "$TMP/nest.osr" "$TMP/od.out" >/dev/null 2>&1 && cmp -s "$TMP/od.out" "$TMP/in4.osr" \
+    || fail "nested -dup: does not round-trip"
+for spec in "od Future-LZ" "nest Index-LZ"; do
+    set -- $spec
+    rc=0; "$RS" -i "$TMP/$1.osr" >/dev/null 2>"$TMP/od.err" || rc=$?
+    [ "$rc" -eq 0 ] || fail "-i on $1.osr: exit $rc, '$(cat "$TMP/od.err")'"
+    "$CXX_BIN/osrep" -i "$TMP/$1.osr" >/dev/null 2>"$TMP/odc.err" || true
+    chead=$(head -1 "$TMP/odc.err")
+    case "$chead" in "$2"*) ;; *) fail "-i on $1.osr: the C++ header is '$chead'" ;; esac
+    [ "$(head -c ${#chead} "$TMP/od.err")" = "$chead" ] \
+        || fail "-i on $1.osr: header '$(head -1 "$TMP/od.err")', the C++ says '$chead'"
+    case "$1" in
+        od) grep -q '^-dup: ' "$TMP/od.err" && fail "-i on od.osr: a -dup line for a plain archive" ;;
+        nest) grep -q '^-dup: ' "$TMP/od.err" || fail "-i on nest.osr: no -dup line" ;;
+    esac
+    grep -qF ".  $(show3 "$(stat -c%s "$TMP/in4.osr")") -> " "$TMP/od.err" \
+        || fail "-i on $1.osr: the size line is not the inner archive's size: '$(cat "$TMP/od.err")'"
+    rc=0; "$RS" --verify "$TMP/$1.osr" >/dev/null 2>"$TMP/od.err" || rc=$?
+    [ "$rc" -eq 2 ] && grep -qF "is a v1-v4 archive" "$TMP/od.err" \
+        || fail "--verify on $1.osr: exit $rc, '$(cat "$TMP/od.err")'"
+    pass=$((pass + 1))
+done
+
+say "the 8 bytes before a sniffed \"ODUP\" are not a size to allocate"
+# In a plain Future-LZ/I/O LZ archive of a file that ends in "ODUP", the
+# trailer's meta_size is the input's own bytes, anything up to the file's
+# length, and -d read that much "meta" before it walked anything: a 400 MB
+# archive took 360 MB more to decode, and the win32 Pascal build failed (Io)
+# or overran its heap buffer once the number passed 2^31 or 2^32. Now only the
+# 4 bytes where the meta would start are read, for "DUPR"; the meta itself
+# only once the archive in front of it walks, or once a -dup body has decoded.
+# The address space is capped well under the fake meta_size (-d needs ~20 MB):
+# reading it first is an allocation failure here, not an OOM.
+for spec in "plain -m3f" "tagged -m3o"; do
+    set -- $spec
+    rm -f "$TMP/fm.bin" "$TMP/fm.osr" "$TMP/fm.out"
+    python3 - "$RS" "$TMP/fm.bin" "$TMP/fm.osr" "$1" "$2" <<'PY2' || fail "fake meta_size $spec: could not make one"
+import random, struct, subprocess, sys
+rs, inp, osr, kind, mode = sys.argv[1:]
+n, ms = 64_000_000, 56_000_000
+d = bytearray(random.Random(11).randbytes(n))
+d[n - 12:n - 4] = struct.pack("<Q", ms); d[n - 4:] = b"ODUP"
+def pack():
+    open(inp, "wb").write(d)
+    subprocess.run([rs, "--format=v4", "--seed=7", mode, inp, osr], check=True,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return open(osr, "rb").read()
+a = pack()
+assert a[-12:] == d[-12:]
+if kind == "tagged":
+    # "DUPR" where the archive (blocks of literals: the data is random) puts
+    # the start of that meta: find which input bytes land there
+    at = len(a) - 12 - ms
+    i = d.find(a[at:at + 32])
+    assert i >= 0
+    d[i:i + 4] = b"DUPR"
+    a = pack()
+    assert a[at:at + 4] == b"DUPR" and a[-12:] == d[-12:]
+PY2
+    rc=0; (ulimit -v 40960; "$RS" -d "$TMP/fm.osr" "$TMP/fm.out") >/dev/null 2>"$TMP/fm.err" || rc=$?
+    [ "$rc" -eq 0 ] && cmp -s "$TMP/fm.out" "$TMP/fm.bin" \
+        || fail "fake meta_size $spec: -d in 40 MB: exit $rc, '$(cat "$TMP/fm.err")'"
+    rm -f "$TMP/fm.bin" "$TMP/fm.osr" "$TMP/fm.out"
+    pass=$((pass + 1))
+done
+# A sparse 1 TiB file: a meta_size near the file's length, with and without
+# "DUPR" where it would start. Neither is an archive, and neither meta is
+# read: no DUPR is the trailer's error, a DUPR in front of a body that does
+# not decode is the body's. Both read the meta (1 TiB) before this.
+FL=$((1 << 40))
+for spec in "4096 0 4 the -dup meta is missing or corrupt" "64 1 3 Decode(Container(NotAnOsrepFile))"; do
+    read -r back tag want msg <<<"$spec"
+    rm -f "$TMP/sp.osr" "$TMP/sp.out"
+    truncate -s $((FL - 12)) "$TMP/sp.osr"
+    python3 -c 'import struct, sys; sys.stdout.buffer.write(struct.pack("<Q", int(sys.argv[1])) + b"ODUP")' \
+        $((FL - 12 - back)) >>"$TMP/sp.osr"
+    [ "$tag" = 1 ] && printf DUPR | dd of="$TMP/sp.osr" bs=1 seek="$back" conv=notrunc status=none
+    rc=0; (ulimit -v 4194304; "$RS" -d "$TMP/sp.osr" "$TMP/sp.out") >/dev/null 2>"$TMP/sp.err" || rc=$?
+    [ "$rc" -eq "$want" ] && grep -qxF "  ERROR! $msg" "$TMP/sp.err" \
+        || fail "sparse fake trailer ($back, DUPR $tag): exit $rc, '$(cat "$TMP/sp.err")'"
+    rm -f "$TMP/sp.osr" "$TMP/sp.out"
+    pass=$((pass + 1))
+done
+
+say "-i on Future-LZ and I/O LZ: the size line, and the C++'s summary line"
+# The C++ prints its decoder's progress line there (timings included), then
+# the same "Decompression memory ..." summary as for Index-LZ; 2.3.0 printed
+# the header line alone. The summary is compared as written: the RAM figure is
+# a placeholder in the port, and these inputs need none.
+for m in m3f m3o m5f m1o m0f; do
+    "$CXX_BIN/osrep" -$m --seed=7 tests/corpus/text.bin "$TMP/cpp.osr" >/dev/null 2>&1
+    "$RS" -i "$TMP/cpp.osr" >/dev/null 2>"$TMP/rs.info" || fail "-$m: -i failed: $(cat "$TMP/rs.info")"
+    "$CXX_BIN/osrep" -i "$TMP/cpp.osr" >/dev/null 2>"$TMP/cpp.info"
+    arch=$(stat -c%s "$TMP/cpp.osr"); insize=$(stat -c%s tests/corpus/text.bin)
+    [ "$(sed -n 2p "$TMP/rs.info")" = ".  $(show3 "$insize") -> $(show3 "$arch"): $(python3 -c "print('%.2f' % ($arch * 100 / $insize))")%" ] \
+        || fail "-$m: -i size line '$(sed -n 2p "$TMP/rs.info")'"
+    [ "$(sed -n 3p "$TMP/rs.info")" = "$(grep -a '^Decompression memory' "$TMP/cpp.info")" ] \
+        || fail "-$m: -i summary '$(sed -n 3p "$TMP/rs.info")' vs the C++'s '$(grep -a '^Decompression memory' "$TMP/cpp.info")'"
+    pass=$((pass + 1))
+done
+
+say "-i -index=: the lists come from the index, as in the C++"
+# The C++ reads each block's list from the index named on the command line;
+# 2.3.0 ignored -index= and called the archive "Not an Omega SREP". Without
+# the index such an archive does not parse (its block headers announce lists
+# that are not there), and a short index is the C++'s "unexpected end".
+for m in m3f m5o; do
+    rm -f "$TMP/ix.osr" "$TMP/ix.ix"
+    "$CXX_BIN/osrep" -$m --seed=7 -b1mb -index="$TMP/ix.ix" tests/corpus/mixed.bin "$TMP/ix.osr" >/dev/null 2>&1
+    "$RS" -i -index="$TMP/ix.ix" "$TMP/ix.osr" >/dev/null 2>"$TMP/rs.info" || fail "-$m -index=: -i failed: $(cat "$TMP/rs.info")"
+    "$CXX_BIN/osrep" -i -index="$TMP/ix.ix" "$TMP/ix.osr" >/dev/null 2>"$TMP/cpp.info"
+    [ "$(head -1 "$TMP/rs.info")" = "$(head -1 "$TMP/cpp.info")" ] || fail "-$m -index=: -i header differs"
+    grep -qF ".  $(show3 "$(stat -c%s tests/corpus/mixed.bin)") -> " "$TMP/rs.info" \
+        || fail "-$m -index=: -i size line '$(sed -n 2p "$TMP/rs.info")'"
+    # The match count and the stat bytes; the C++ measures the RAM, the port does not.
+    [ "$(sed -n 3p "$TMP/rs.info" | sed 's/is [0-9]* mb/is N mb/')" = \
+      "$(grep -a '^Decompression memory' "$TMP/cpp.info" | sed 's/is [0-9]* mb/is N mb/')" ] \
+        || fail "-$m -index=: -i summary '$(sed -n 3p "$TMP/rs.info")' vs '$(grep -a '^Decompression memory' "$TMP/cpp.info")'"
+    rc=0; "$RS" -i "$TMP/ix.osr" >/dev/null 2>"$TMP/rs.info" || rc=$?
+    [ "$rc" -eq 4 ] || fail "-$m: -i without its index exited $rc"
+    head -c 10 "$TMP/ix.ix" > "$TMP/short.ix"
+    rc=0; "$RS" -i -index="$TMP/short.ix" "$TMP/ix.osr" >/dev/null 2>"$TMP/rs.info" || rc=$?
+    [ "$rc" -eq 4 ] && grep -qxF "  ERROR! Decompression problem: unexpected end of file $TMP/short.ix or I/O error" "$TMP/rs.info" \
+        || fail "-$m: -i with a short index: exit $rc, '$(cat "$TMP/rs.info")'"
+    rc=0; "$RS" -i -index="$TMP/none.ix" "$TMP/ix.osr" >/dev/null 2>"$TMP/rs.info" || rc=$?
+    [ "$rc" -eq 3 ] && grep -qxF "  ERROR! Can't open index file $TMP/none.ix for read" "$TMP/rs.info" \
+        || fail "-$m: -i with a missing index: exit $rc, '$(cat "$TMP/rs.info")'"
+    pass=$((pass + 1))
+done
+
 say "the CLI suite, with OSREP_BIN pointed at the Rust binary"
 # `futurelz_race_regression.sh` repeats 150x per case in the C++ gate; here the
 # point is that the CLI plumbing is right, not the race (which is a C++ bug the
