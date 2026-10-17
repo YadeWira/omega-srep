@@ -1436,6 +1436,185 @@ pass=$((pass + 1))
 cmp -s "$TMP/inert_base.osr" "$TMP/inert.osr" || fail "-rem changed the archive"
 pass=$((pass + 1))
 
+say "a failed run takes back its output, and nothing else"
+# Through 2.3.0 a run that failed left what it had written on disk: the blocks
+# decoded before a DigestMismatch, an archive cut short by OutOfMemory, an
+# empty -index= file, the start of a -dup post-pass. The C++ 1.0.7 does too:
+# its "delete output files on error" (srep.cpp:1339) is only reached by its
+# `goto cleanup` paths, and error() exits first. The port removes the regular
+# files it created or truncated in that run -- including one that existed
+# before, which the open had already truncated -- and never stdout, a FIFO, a
+# device, a symlink named as the output, the input, or a file it did not open.
+F="$TMP/fail"; mkdir -p "$F"
+{ head -c 1048576 tests/corpus/text.bin; head -c 2097152 tests/corpus/random.bin; } > "$F/in.bin"
+"$RS" -v0 --seed=7 -b1mb "$F/in.bin" "$F/ok.osr" >/dev/null 2>&1 || fail "fail: could not write ok.osr"
+"$RS" -v0 --seed=7 --format=v4 -m3f -b1mb -index="$F/ok.ix" "$F/in.bin" "$F/okf.osr" >/dev/null 2>&1 \
+    || fail "fail: could not write okf.osr"
+"$RS" -v0 --seed=7 -dup --format=v4 "$F/in.bin" "$F/dup.osr" >/dev/null 2>&1 || fail "fail: could not write dup.osr"
+# matches far enough back that -mem1mb -vmblock=128kb spills (opens -vmfile=)
+python3 - "$F/far.bin" <<'PY'
+import random, sys
+random.seed(7)
+far = [bytes(random.randrange(256) for _ in range(64 * 1024)) for _ in range(16)]
+open(sys.argv[1], "wb").write(b"".join(far) * 2)
+PY
+"$RS" -v0 --seed=7 -m5 -b64k "$F/far.bin" "$F/far.osr" >/dev/null 2>&1 || fail "fail: could not write far.osr"
+# a flipped word three quarters in: the last block's digest fails after the
+# first ones have been written out
+cp "$F/ok.osr" "$F/bad.osr"
+printf '\125\252\125\252' | dd of="$F/bad.osr" bs=1 seek=$(( $(stat -c%s "$F/ok.osr") * 3 / 4 )) conv=notrunc 2>/dev/null
+# the first unique chunk of the ODUP meta (no checksum in v4) made ~2 GiB
+# long: the post-pass writes the whole body to the output, then runs out
+python3 - "$F/dup.osr" "$F/badmeta.osr" <<'PY'
+import struct, sys
+b = bytearray(open(sys.argv[1], 'rb').read())
+assert b[-4:] == b'ODUP'
+at = len(b) - 12 - struct.unpack('<Q', b[-12:-4])[0]
+assert b[at:at + 4] == b'DUPR' and b[at + 24] == 0
+b[at + 28] = 0x7f
+open(sys.argv[2], 'wb').write(b)
+PY
+# $1 = expected exit code, $2 = text the error must contain, $3 = a bash
+# line run in a fresh $F/w with "$B" the binary
+fails() {
+    rm -rf "$F/w"; mkdir "$F/w"
+    local rc=0
+    (cd "$F/w" && B="$RS" I="$F" timeout 60 bash -c "$3") </dev/null >"$F/o" 2>"$F/e" || rc=$?
+    [ "$rc" -eq "$1" ] || fail "[$3]: exit $rc, not $1: $(cat "$F/e")"
+    [ -z "$2" ] || grep -qF -- "$2" "$F/e" || fail "[$3]: the error does not say '$2': $(cat "$F/e")"
+}
+gone() { for f; do [ ! -e "$F/w/$f" ] && [ ! -L "$F/w/$f" ] || fail "a failed run left $f behind"; done; }
+kept() { for f; do [ -e "$F/w/$f" ] || [ -L "$F/w/$f" ] || fail "a failed run removed $f"; done; }
+fails 4 'DigestMismatch { block: 2 }' '"$B" -v0 -d "$I/bad.osr" o.out'; gone o.out
+fails 4 'DigestMismatch { block: 2 }' 'echo keep > o.out; "$B" -v0 -d "$I/bad.osr" o.out'; gone o.out
+fails 4 'DigestMismatch' 'cp "$I/bad.osr" a.osr; "$B" -v0 -d -delete a.osr o.out'; gone o.out; kept a.osr
+fails 3 "Can't open index file x.ix for read" '"$B" -v0 -d -index=x.ix "$I/okf.osr" o.out'; gone o.out
+fails 4 'dedup failed, rc=1' '"$B" -v0 -d "$I/badmeta.osr" o.out'; gone o.out
+# OutOfMemory: two 3 GiB blocks in a 1 GiB address space
+for c in "" "--format=v4 -m3f -index=x.ix" "-dup"; do
+    want=OutOfMemory; rc=4; [ "$c" = -dup ] && { want='Encode(OutOfMemory)'; rc=3; }
+    fails $rc "$want" '(ulimit -v 1048576; exec "$B" -v0 --seed=7 -b3g '"$c"' "$I/in.bin" x.osr)'; gone x.osr x.ix
+done
+fails 4 OutOfMemory 'echo keep > x.osr; (ulimit -v 1048576; exec "$B" -v0 --seed=7 -b3g "$I/in.bin" x.osr)'; gone x.osr
+fails 4 OutOfMemory 'cp "$I/in.bin" a.bin; (ulimit -v 1048576; exec "$B" -v0 --seed=7 -delete -b3g a.bin x.osr)'
+gone x.osr; kept a.bin
+# -index= is created before the input is opened
+fails 3 "Can't open nope.bin for read" '"$B" -v0 --seed=7 --format=v4 -m3f -index=x.ix nope.bin x.osr'; gone x.ix x.osr
+# never opened, so never removed
+fails 3 "Can't open nope.bin for read" 'echo keep > x.osr; "$B" -v0 --seed=7 nope.bin x.osr'
+[ "$(cat "$F/w/x.osr")" = keep ] || fail "a run that never opened x.osr changed it"
+# what is not a regular file it opened by that name stays
+fails 4 'DigestMismatch' 'echo t > t.out; ln -s t.out l.out; "$B" -v0 -d "$I/bad.osr" l.out'
+[ -L "$F/w/l.out" ] || fail "a failed run removed the symlink it wrote through"
+fails 4 'Illegal seek' 'mkfifo fo; (timeout 10 cat fo >/dev/null) & "$B" -v0 -d "$I/bad.osr" fo; r=$?; wait; exit $r'
+[ -p "$F/w/fo" ] || fail "a failed run removed the FIFO it wrote to"
+fails 4 'DigestMismatch' '"$B" -v0 -d "$I/bad.osr" /dev/null'
+fails 0 'DigestMismatch' '"$B" -v0 -d "$I/bad.osr" - | wc -c'
+# the input under another name for the output is refused before the open (see
+# the next section), so there is nothing to remove and nothing truncated
+fails 3 'Input and output files should have different names' \
+    'cp "$I/bad.osr" a.osr; "$B" -v0 -d a.osr ./a.osr'
+cmp -s "$F/w/a.osr" "$F/bad.osr" || fail "-d a.osr ./a.osr changed a.osr"
+# what the run reads is never removed: -index= named as the output
+fails 3 'Input and output files should have different names' \
+    'cp "$I/ok.ix" k.ix; "$B" -v0 -d -index=k.ix "$I/okf.osr" ./k.ix'
+cmp -s "$F/w/k.ix" "$F/ok.ix" || fail "-d -index=k.ix ... ./k.ix changed k.ix"
+pass=$((pass + 1))
+
+say "one file under two names is refused, and scratch files go only if opened"
+# The C++ refuses an output with the input's name ("Input and output files
+# should have different names", exit 3) by comparing the strings, so
+# `osrep x.bin ./x.bin` truncated the input and exited 0 with an archive of
+# nothing, and `-d a.osr ./a.osr` lost the archive. The ports compare file
+# identity too (device and inode; volume and file index on Windows) for every
+# pair a run reads and writes: input and output, -index= and the input (when
+# compressing) or the output (when decompressing), the -temp= spool and the
+# archive, -vmfile= and anything the decoder reads or writes. Only regular
+# files: /dev/null as both is not a loss.
+# $1 = a bash line that must be refused; $2.. = files left as they were,
+# compared with the copy of the same name in $F
+same_refused() {
+    local line="$1" f; shift
+    fails 3 'Input and output files should have different names' "$line"
+    for f; do cmp -s "$F/w/$f" "$F/$f" || fail "[$line] changed $f"; done
+}
+same_refused 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 in.bin ./in.bin' in.bin
+same_refused 'cp "$I/in.bin" in.bin; ln in.bin y.bin; "$B" -v0 --seed=7 in.bin y.bin' in.bin
+same_refused 'cp "$I/in.bin" in.bin; ln -s in.bin y.bin; "$B" -v0 --seed=7 in.bin y.bin' in.bin
+same_refused 'cp "$I/ok.osr" ok.osr; ln ok.osr ok; "$B" -v0 -d ok.osr' ok.osr
+same_refused 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 --format=v4 -m3f -index=./in.bin in.bin o.osr' in.bin
+fails 3 'Input and output files should have different names' \
+    '"$B" -v0 --seed=7 --format=v4 -m3f -index=o.osr "$I/in.bin" ./o.osr'; gone o.osr
+fails 3 'Input and output files should have different names' \
+    '"$B" -v0 --seed=7 -temp=t.tmp - ./t.tmp < "$I/in.bin"'; gone t.tmp
+same_refused 'cp "$I/far.osr" far.osr; "$B" -v0 -mem1mb -vmblock=128kb -vmfile=./far.osr -d far.osr o.out' far.osr
+same_refused 'cp "$I/ok.ix" ok.ix; "$B" -v0 -vmfile=./ok.ix -d -index=ok.ix "$I/okf.osr" o.out' ok.ix
+fails 3 'Input and output files should have different names' \
+    '"$B" -v0 -vmfile=o.out -d "$I/far.osr" o.out'; gone o.out
+SAME='Input and output files should have different names'
+# -vmfile= once more after the output is created: under another spelling of
+# an output that did not exist yet the first check saw nothing, the first
+# spill truncated the output and the end of the decode removed it -- exit 0
+# and nothing left, the archive included with -delete
+same_refused 'cp "$I/far.osr" far.osr; "$B" -v0 -delete -mem1mb -vmblock=128kb -vmfile=./o.out -d far.osr o.out' far.osr
+gone o.out
+fails 3 "$SAME" 'ln -s o.out v; "$B" -v0 -mem1mb -vmblock=128kb -vmfile=v -d "$I/far.osr" o.out'; gone o.out
+# The files the shell opened for stdin and stdout count too, though no name on
+# the command line gives them away: the output, -temp=, -index= or -vmfile=
+# as the file stdin is read from, and -temp=, -index= or -vmfile= as the file
+# stdout goes to when the archive or the decoded data does
+same_refused 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 - in.bin < in.bin' in.bin
+same_refused 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 -b0 - in.bin < in.bin' in.bin
+same_refused 'cp "$I/bad.osr" bad.osr; "$B" -v0 -d - bad.osr < bad.osr' bad.osr
+same_refused 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 -temp=in.bin - o.osr < in.bin' in.bin; gone o.osr
+same_refused 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 --format=v4 -m3f -index=in.bin - o.osr < in.bin' in.bin
+gone o.osr
+same_refused 'cp "$I/far.osr" far.osr; "$B" -v0 -mem1mb -vmblock=128kb -vmfile=far.osr -d - o.out < far.osr' far.osr
+gone o.out
+fails 3 "$SAME" '"$B" -v0 --seed=7 -temp=./o.osr < "$I/in.bin" > o.osr'; kept o.osr
+fails 3 "$SAME" '"$B" -v0 --seed=7 --format=v4 -m3f -index=./o.osr - - < "$I/in.bin" > o.osr'; kept o.osr
+fails 3 "$SAME" '"$B" -v0 -mem1mb -vmblock=128kb -vmfile=o.out -d "$I/far.osr" - > o.out'; kept o.out
+# A refusal leaves every file as it was: a name that already exists is
+# checked before the open that would truncate it, not after
+old() { [ "$(cat "$F/w/$1")" = old ] || fail "a refused run changed $1"; }
+fails 3 "$SAME" 'echo old > o.osr; "$B" -v0 --seed=7 --format=v4 -m3f -index=./o.osr "$I/in.bin" o.osr'; old o.osr
+fails 3 "$SAME" 'echo old > o.osr; "$B" -v0 --seed=7 -temp=./o.osr - o.osr < "$I/in.bin"'; old o.osr
+fails 3 "$SAME" 'echo old > k.ix; "$B" -v0 --seed=7 --format=v4 -m3f -index=k.ix -temp=./k.ix - o.osr < "$I/in.bin"'
+old k.ix
+# -i opens no output, so a file under the derived name is nobody's business;
+# and two devices are not a regular file to lose
+fails 0 '' 'cp "$I/ok.osr" ok.osr; ln ok.osr ok; "$B" -i ok.osr'
+fails 0 '' '"$B" -v0 --seed=7 /dev/null /dev/../dev/null'
+# -temp= is removed when the run ends, as the C++ does (srep.cpp:1336), and on
+# failure like every scratch file -- only a regular file this run opened, by
+# the name it opened (a symlink named as it stays, and so does its target)
+fails 0 '' '"$B" -v0 --seed=7 -temp=t.tmp - o.osr < "$I/in.bin"'; gone t.tmp; kept o.osr
+fails 2 'is smaller than the' 'echo keep > t.tmp; "$B" -v0 --seed=7 -s10 -temp=t.tmp - o.osr < "$I/in.bin"'
+gone t.tmp
+fails 0 '' 'ln -s target t.tmp; "$B" -v0 --seed=7 -temp=t.tmp - o.osr < "$I/in.bin"'; kept t.tmp target
+fails 3 "Can't open tempfile" '"$B" -v0 --seed=7 -temp=nodir/t.tmp - o.osr < "$I/in.bin"'
+# -vmfile= is removed only if the open worked (through 2.3.0 a read-only one
+# was deleted by the failed open)
+fails 4 'PermissionDenied' \
+    'echo x > ro; chmod 444 ro; "$B" -v0 -mem1mb -vmblock=128kb -vmfile=ro -d "$I/far.osr" o.out'
+kept ro; gone o.out
+fails 0 '' '"$B" -v0 -mem1mb -vmblock=128kb -vmfile=v.vm -d "$I/far.osr" o.out'; gone v.vm
+cmp -s "$F/w/o.out" "$F/far.bin" || fail "-vmfile=: the decode differs"
+# -delete with stdin as the input deletes nothing (it removed a file named "-")
+fails 0 '' 'echo keep > ./-; "$B" -v0 --seed=7 -delete - o.osr < "$I/in.bin"'; kept ./-
+fails 0 '' 'echo keep > ./-; "$B" -v0 --seed=7 -delete < "$I/in.bin" > o.osr'; kept ./-
+# -b0: a block that holds nothing is OutOfMemory, as in the C++ ("Can't
+# allocate memory"); the ports divided by zero (a panic, "Division by zero")
+fails 4 OutOfMemory '"$B" -v0 --seed=7 -b0 "$I/in.bin" o.osr'; gone o.osr
+fails 3 'Encode(OutOfMemory)' '"$B" -v0 --seed=7 -b0 -dup "$I/in.bin" o.osr'; gone o.osr
+# and a ring past 64 bits: -b2^63 wrapped the two headroom blocks to 0 in the
+# Rust (a panic, exit 101, with the archive's header left behind), and a -d
+# within a block of 2^64 rounded up to a small ring (an abort, exit 134)
+for b in -b9223372036854775808b -b9223372036854775809b "-d18446744073709551615b -b3m"; do
+    fails 4 OutOfMemory '"$B" -v0 --seed=7 '"$b"' "$I/in.bin" o.osr'; gone o.osr
+done
+pass=$((pass + 1))
+
 say "--verify: what it accepts, what it catches, and what it admits it misses"
 # The one thing v5 can do that v4 cannot: answer "is this archive sound?"
 # without reconstructing it. v4 carries no checksum anywhere, so the only

@@ -211,14 +211,19 @@ begin
   s.Free;
 end;
 
-procedure CopyStdinTo(const Path: AnsiString);
+{ Named dice si Path quedo abierto como archivo regular, con su identidad en
+  Id (lo que hace falta para borrar un -temp= dado: util.rs, NamedScratch);
+  se anota apenas abre, asi vale tambien si la copia falla despues. }
+procedure CopyStdinTo(const Path: AnsiString; out Named: Boolean; out Id: TFileId);
 var f: TFileStream; buf: array of Byte; n: LongInt;
 begin
+  Named := False;
   try
     f := TFileStream.Create(Path, fmCreate);
   except
     Fail(ERROR_IO, 'Can''t open tempfile');
   end;
+  Named := RegularFileId(f.Handle, Id);
   try
     SetLength(buf, 1 shl 20);
     repeat
@@ -331,6 +336,30 @@ begin
   Result := (Length(O.Files) = 0) and (IsTerminal(InHandle) or IsTerminal(OutHandle));
 end;
 
+const
+  { srep.cpp:612, el rechazo del C++ a una salida con el nombre de la entrada }
+  SAME_FILE = 'Input and output files should have different names';
+
+{ El mismo rechazo cuando dos nombres que la corrida lee y escribe son un
+  mismo archivo regular escrito distinto (x.bin y ./x.bin, un hard link, un
+  symlink): abrir el segundo para escribir truncaria el primero. El C++
+  compara solo los textos, asi que `osrep x.bin ./x.bin` vaciaba la entrada y
+  salia con 0 y un archivo de nada (modes.rs, refuse_same_file). }
+procedure RefuseSameFile(const A, B: AnsiString);
+begin
+  if SameRegularFile(A, B) then Fail(ERROR_IO, SAME_FILE);
+end;
+
+{ El mismo rechazo para un nombre que es el archivo del que se lee stdin o al
+  que va stdout, con H su handle: los abrio el shell (`< x`, `> x`), asi que
+  ningun nombre de la linea de comandos los delata. `osrep - x < x` truncaba
+  x antes de leerlo, y `-temp=x ... > x` volcaba stdin en el archivo al que
+  iba el comprimido (modes.rs, refuse_std_file). }
+procedure RefuseStdFile(const Name: AnsiString; H: THandle);
+begin
+  if IsStdFile(Name, H) then Fail(ERROR_IO, SAME_FILE);
+end;
+
 { las reglas de nombres (srep.cpp:569-583). Con un nombre, la extension .osr
   decide la direccion y el otro sale de el; sin ninguno, con las dos puntas
   redirigidas, es stdin/stdout. }
@@ -358,8 +387,14 @@ begin
   else
     FoutName := FiName + '.osr';
 
-  if (FiName <> '-') and (FoutName = FiName) then
-    Fail(ERROR_IO, 'Input and output files should have different names');
+  if (FiName <> '-') and (FoutName = FiName) then Fail(ERROR_IO, SAME_FILE);
+  { el mismo archivo con otro nombre. Solo donde hay una salida: -i y
+    --verify derivan una arriba pero nunca la abren. }
+  if (O.CmdMode in [cmCompress, cmDecompress]) and (FiName <> '-') and (FoutName <> '-') then
+    RefuseSameFile(FiName, FoutName);
+  { `osrep - x < x`: la salida es de donde viene stdin }
+  if (O.CmdMode in [cmCompress, cmDecompress]) and (FiName = '-') and (FoutName <> '-') then
+    RefuseStdFile(FoutName, InHandle);
 end;
 
 { -------------------------------------------------------- compression --- }
@@ -439,7 +474,13 @@ procedure EncodeOptionsOf(const O: TOptions; HasDeclared: Boolean; Declared: QWo
                           out E: TEncodeOptions);
 begin
   DefaultEncodeOptions(E);
-  E.BufSize := QWord(PtrUInt(O.BufSize));
+  { un -b que no entra en el espacio de direcciones se satura en vez de dar
+    la vuelta: en i386 -b4g (cualquier multiplo de 4 GiB) quedaba en 0 y
+    dividia por cero ("Division by zero"; el Rust i686 hacia panic), y -b4097m
+    quedaba en 1 MiB, otro archivo. Saturado, el anillo no entra y el encoder
+    dice OutOfMemory, como con -b5g (modes.rs, encode_options). }
+  if O.BufSize > QWord(High(PtrUInt)) then E.BufSize := QWord(High(PtrUInt))
+  else E.BufSize := O.BufSize;
   { srep.cpp:445: -m0 sin -d toma los 512 mb por defecto }
   if (O.Method = 0) and (O.DictSize = 0) then E.DictSize := 512 * MB else E.DictSize := O.DictSize;
   E.DictHashSize := O.DictHashSize;
@@ -457,21 +498,42 @@ begin
 end;
 
 { el spool de stdin, cuando el encoder necesita una entrada que se pueda
-  releer. Devuelve el camino a leer; Owned dice si hay que borrarlo. }
-function SpoolStdin(const O: TOptions; out Owned: Boolean): AnsiString;
+  releer. Devuelve el camino a leer; Owned dice si hay que borrarlo (el
+  temporal propio), y Named si es un -temp= que esta corrida abrio como
+  archivo regular, con su identidad en NamedId: ese se borra al final como en
+  el C++ (srep.cpp:1336), y al fallar como todo temporal, con RemoveIfStill. }
+function SpoolStdin(const O: TOptions; const FoutName: AnsiString; out Owned, Named: Boolean;
+                    out NamedId: TFileId): AnsiString;
+var junk: TFileId;
 begin
   Owned := False;
+  Named := False;
   if O.HasTempFile and (O.TempFile = '') then
     Fail(ERROR_IO, 'Reading data to compress from stdin without tempfile isn''t supported for this method');
   if O.HasTempFile then
   begin
-    CopyStdinTo(O.TempFile);
+    { no sobre un archivo que la corrida lee o escribe, antes de que el open
+      lo trunque: el de stdin (el spool releeria nada), aquel al que va
+      stdout cuando va ahi el comprimido, el comprimido o -index= si ya
+      existen (uno nuevo se ve despues del spool, en Compress) }
+    RefuseStdFile(O.TempFile, InHandle);
+    if FoutName = '-' then RefuseStdFile(O.TempFile, OutHandle)
+    else RefuseSameFile(O.TempFile, FoutName);
+    if O.IndexFile <> '' then RefuseSameFile(O.TempFile, O.IndexFile);
+    try
+      CopyStdinTo(O.TempFile, Named, NamedId);
+    except
+      if Named then RemoveIfStill(O.TempFile, NamedId);
+      Named := False;
+      raise;
+    end;
     Exit(O.TempFile);
   end;
   Result := NewTemp;
   Owned := True;
   try
-    CopyStdinTo(Result);
+    CopyStdinTo(Result, Named, junk);
+    Named := False;
   except
     DeleteFile(Result);
     raise;
@@ -562,7 +624,8 @@ var
   warnings: LongInt;
   window: QWord;
   inputPath: AnsiString;
-  spoolOwned, hasDeclared: Boolean;
+  spoolOwned, spoolNamed, hasDeclared: Boolean;
+  spoolId: TFileId;
   declared, read_, written: QWord;
   enc: TEncodeOptions;
   indexS, outS: TRawFileStream;
@@ -600,7 +663,9 @@ begin
   end;
 
   spoolOwned := False;
-  if FiName = '-' then inputPath := SpoolStdin(O, spoolOwned) else inputPath := FiName;
+  spoolNamed := False;
+  if FiName = '-' then inputPath := SpoolStdin(O, FoutName, spoolOwned, spoolNamed, spoolId)
+  else inputPath := FiName;
   try
     { con '-' el tamano no se puede medir al leer, asi que vale el declarado
       (o el default): la rama finame == "-" del C++ }
@@ -621,7 +686,8 @@ begin
     if O.Dup or not hasDeclared then read_ := FileSizeOf(inputPath) else read_ := declared;
 
     { srep.cpp:606: el indice se abre antes de la corrida, asi un camino malo
-      falla antes de hacer nada }
+      falla antes de hacer nada. No sobre la entrada (o el spool de -temp= al
+      que se leyo): truncaria lo que se esta por comprimir. }
     indexS := nil;
     inS := nil;
     outS := nil;
@@ -629,10 +695,26 @@ begin
     try
       if O.IndexFile <> '' then
       begin
+        RefuseSameFile(O.IndexFile, inputPath);
+        { ni sobre un comprimido que ya existe (uno que no, se ve abajo, ya
+          con el indice creado), el archivo de stdin, o aquel al que va stdout
+          con el comprimido: rechazados despues del open, ya estaban
+          truncados }
+        if FoutName <> '-' then RefuseSameFile(O.IndexFile, FoutName)
+        else RefuseStdFile(O.IndexFile, OutHandle);
+        if FiName = '-' then RefuseStdFile(O.IndexFile, InHandle);
         indexS := CreateWriteRaw(O.IndexFile);
         if indexS = nil then
           Fail(ERROR_IO, 'Can''t open index file ' + O.IndexFile + ' for write');
+        ClaimOutput(O.IndexFile, indexS.Handle);
         enc.Index := indexS;
+      end;
+      { el archivo sobre la entrada (tambien el spool de -temp=, que las
+        reglas de nombres no vieron) o sobre el indice que va al lado }
+      if FoutName <> '-' then
+      begin
+        RefuseSameFile(inputPath, FoutName);
+        if O.IndexFile <> '' then RefuseSameFile(O.IndexFile, FoutName);
       end;
 
       if O.Dup then
@@ -682,6 +764,7 @@ begin
             bloqueaba sobre un FIFO }
           outS := CreateWriteRaw(FoutName);
           if outS = nil then Fail(ERROR_IO, 'Can''t open ' + FoutName + ' for write');
+          ClaimOutput(FoutName, outS.Handle);
           try
             Encode(inS, outS, enc, KindOf(O), ContainerOf(O), @OnProgress);
           except
@@ -704,9 +787,12 @@ begin
 
     StatsFinish(GStats, read_, written);
   finally
-    if spoolOwned then DeleteFile(inputPath);
+    if spoolOwned then DeleteFile(inputPath)
+    else if spoolNamed then RemoveIfStill(inputPath, spoolId);
   end;
-  if (warnings = 0) and O.DeleteInput then DeleteFile(FiName);
+  { '-' es stdin, no un archivo que se llama "-" (la descompresion ya lo
+    cuidaba) }
+  if (warnings = 0) and O.DeleteInput and (FiName <> '-') then DeleteFile(FiName);
   if warnings > 0 then Result := WARNINGS else Result := NO_ERRORS;
 end;
 
@@ -740,8 +826,27 @@ var
   ok: Boolean;
   buf: array of Byte;
   n, off, w: LongInt;
+  named: Boolean;
+  junk: TFileId;
 begin
   DecodeOptionsOf(O, opts);
+
+  { Nada de lo que lee el decoder puede ser lo que escribe: un -index= con el
+    nombre de la salida se truncaria antes de leer sus listas, y un -vmfile=
+    que es el archivo, el indice o la salida se truncaria en el primer
+    derrame y se borraria al final (modes.rs, decompress). }
+  if (O.IndexFile <> '') and (FoutName <> '-') then RefuseSameFile(O.IndexFile, FoutName);
+  if O.HasVmFile then
+  begin
+    if (FoutName <> '-') and (O.VmFile = FoutName) then Fail(ERROR_IO, SAME_FILE);
+    if FiName <> '-' then RefuseSameFile(O.VmFile, FiName);
+    if O.IndexFile <> '' then RefuseSameFile(O.VmFile, O.IndexFile);
+    if FoutName <> '-' then RefuseSameFile(O.VmFile, FoutName);
+    { los que abrio el shell: el comprimido que llega por stdin, y el archivo
+      al que va stdout }
+    if FiName = '-' then RefuseStdFile(O.VmFile, InHandle);
+    if FoutName = '-' then RefuseStdFile(O.VmFile, OutHandle);
+  end;
 
   { -dup primero: el C++ lo detecta en cada descompresion, con o sin la
     opcion. Reescribe la cola del archivo, asi que necesita dos archivos de
@@ -774,7 +879,7 @@ begin
     if FiName = '-' then
     begin
       stdinSpool := NewTemp;
-      CopyStdinTo(stdinSpool);
+      CopyStdinTo(stdinSpool, named, junk);
       inputPath := stdinSpool;
     end
     else inputPath := FiName;
@@ -802,6 +907,17 @@ begin
     else sinkPath := FoutName;
     sink := CreateRaw(sinkPath);
     if sink = nil then Fail(ERROR_IO, 'Can''t open ' + FoutName + ' for write');
+    { el spool de stdout es un temporal, que se borra igual }
+    if stdoutSpool = '' then
+    begin
+      ClaimOutput(sinkPath, sink.Handle);
+      { -vmfile= contra la salida otra vez, ahora que existe: con otra
+        escritura de una salida que todavia no existia (./o.out) el chequeo
+        de arriba no vio nada, y el primer derrame truncaba la salida y el
+        final del decode la borraba. Rechazada aca, la salida nueva se borra
+        como cualquier otra (modes.rs, decompress). }
+      if O.HasVmFile then RefuseSameFile(O.VmFile, FoutName);
+    end;
 
     { -index= de vuelta: las listas salen del archivo nombrado }
     { un directorio: el File::open del Rust lo abre y falla al leerlo (un
@@ -999,11 +1115,23 @@ begin
     Fail(ERROR_CMDLINE, '-dup is incompatible with -m0; use -m3/-m4/-m5');
 
   ResolveNames(O, fi, fo);
-  case O.CmdMode of
-    cmInfo: Result := Info(O, fi);
-    cmVerify: Result := Verify(fi);
-    cmCompress: Result := Compress(O, fi, fo);
-  else Result := Decompress(O, fi, fo);
+  try
+    case O.CmdMode of
+      cmInfo: Result := Info(O, fi);
+      cmVerify: Result := Verify(fi);
+      cmCompress: Result := Compress(O, fi, fo);
+    else Result := Decompress(O, fi, fo);
+    end;
+  except
+    { una corrida que falla se lleva lo que creo o trunco (el archivo, la
+      salida de -d, -index=): no queda una salida a medias. Los handles ya
+      estan cerrados: los liberaron los finally de Compress y Decompress. }
+    { lo que la corrida lee no se borra nunca, con el nombre que sea: la
+      entrada, y -index= al descomprimir }
+    if fi = '-' then fi := '';
+    if O.CmdMode = cmDecompress then RemoveClaimedOutputs([fi, O.IndexFile])
+    else RemoveClaimedOutputs([fi]);
+    raise;
   end;
 end;
 

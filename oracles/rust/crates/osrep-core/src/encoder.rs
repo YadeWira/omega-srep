@@ -350,6 +350,12 @@ pub fn encode<R: Read + Seek, W: Write>(
     };
     let base_len = min_match.min(dict_min_match);
     let bufsize = opts.bufsize;
+    // `-b0`: a block that holds nothing. The C++ fails to allocate it ("Can't
+    // allocate memory: 0 mb required"); the ports divided by zero (a panic
+    // here, "Division by zero" in the Pascal).
+    if bufsize == 0 {
+        return Err(EncodeError::OutOfMemory);
+    }
 
     // `srep.cpp:631-634`: `accel` defaults to `L / 32`, at least 1 and at
     // most DEFAULT_ACCEL (4); it sizes `bitarr` (`accel * 8` bits per chunk).
@@ -545,8 +551,16 @@ pub fn encode<R: Read + Seek, W: Write>(
     // even with `-d0` (then it is just the two headroom blocks); `MAX_DIST`
     // stays the *unrounded* `-d` value, and the in-memory pass runs only when
     // it is non-zero.
-    let ring_size = round_up(opts.dictsize, bufsize as u64)
-        .checked_add((BUFFERS as u64) * bufsize as u64)
+    // Checked all the way: `-b9223372036854775808b` (2^63) made the headroom
+    // `2 * bufsize` wrap to 0, the ring came out as one block, and the
+    // read-ahead slot panicked out of range (exit 101, with the archive's
+    // first bytes left on disk); and `-d18446744073709551615b -b3m` rounded
+    // up past `u64::MAX` to a small ring, so the in-memory dictionary's
+    // allocation aborted next (exit 134). Both are `OutOfMemory` here, as in
+    // the Pascal (`CheckedRingSize`).
+    let ring_size = (BUFFERS as u64)
+        .checked_mul(bufsize as u64)
+        .and_then(|h| checked_round_up(opts.dictsize, bufsize as u64)?.checked_add(h))
         .and_then(|n| usize::try_from(n).ok())
         .ok_or(EncodeError::OutOfMemory)?;
     let use_dict = opts.dictsize != 0;
@@ -810,12 +824,13 @@ fn write_literals<W: Write>(
     Ok((filled - in_pos) as u64)
 }
 
-/// `roundUp` (`Common.h:692`) for the base the ring uses.
-fn round_up(a: u64, b: u64) -> u64 {
+/// `roundUp` (`Common.h:692`) for the base the ring uses; `None` past
+/// `u64::MAX` (a `-d` within a block of it).
+fn checked_round_up(a: u64, b: u64) -> Option<u64> {
     if a != 0 && b > 1 {
-        ((a - 1) / b) * b + b
+        ((a - 1) / b * b).checked_add(b)
     } else {
-        a
+        Some(a)
     }
 }
 

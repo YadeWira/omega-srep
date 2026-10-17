@@ -278,6 +278,44 @@ diferencias.
   acarreos como 9,995) en Linux y bajo wine x64/x86: cero diferencias.
   `pascal_cli_conformance.sh` tiene la red rápida, con tamaños de `text.bin`
   barridos para caer en empates.
+* **Toda salida con nombre que se abre para escribir se anota con
+  `ClaimOutput`** (`claim_output` en el Rust), justo después del open que
+  funcionó: es lo que `Run` (`run` en `modes.rs`) borra si la corrida falla.
+  Un open nuevo sin la anotación vuelve a dejar un archivo a medias, y nada
+  falla salvo la sección «una corrida que falla se lleva su salida» de
+  `pascal_cli_conformance.sh` si el caso está ahí. La anotación guarda la
+  identidad del archivo (dispositivo e inodo; volumen e índice en Windows) y
+  solo si es un archivo regular, así que stdout, un FIFO, `/dev/null` o `NUL`
+  nunca se borran; antes de borrar se vuelve a mirar el nombre sin seguir
+  symlinks (`RemoveIfStill`) y se saltan los archivos que la corrida lee (la
+  entrada, y `-index=` al descomprimir: `RemoveClaimedOutputs([...])`). Hay
+  que borrar con los handles ya cerrados (los `finally` de
+  `Compress`/`Decompress` lo hacen antes de que la excepción llegue a `Run`).
+  Los temporales no van ahí: se borran solos. Los que nombra el usuario
+  (`-temp=`, `-vmfile=`) siguen la misma regla de identidad: se borran solo
+  si se abrieron, son regulares y el nombre sigue siendo ese archivo (con
+  `-vmfile=/dev/null` como root, un `DeleteFile` a secas borraba el
+  dispositivo).
+* **Dos nombres para un mismo archivo se rechazan por identidad, no por
+  texto.** El C++ compara `finame` con `foutname` como cadenas, así que
+  `osrep x.bin ./x.bin` truncaba la entrada al abrir la salida y salía con 0.
+  `RefuseSameFile` (`refuse_same_file` en el Rust) compara dispositivo e
+  inodo (volumen e índice en Windows) de cada par que la corrida lee y
+  escribe, siempre ANTES del open que truncaría a uno con el otro: entrada y
+  salida (`ResolveNames`), `-index=` contra la entrada y la salida, el spool
+  de `-temp=` contra la salida y `-index=` (antes de crearlo si ya existen, y
+  otra vez después de llenarlo: es la entrada real) y `-vmfile=` contra todo
+  lo que lee o escribe el decoder (y otra vez contra la salida apenas se la
+  crea: `-vmfile=./o.out` con `o.out` que no existía no se veía antes). Los
+  archivos que abrió el shell para stdin y stdout no tienen nombre en la
+  línea de comandos: `RefuseStdFile` (`refuse_std_file`) compara un nombre
+  con el handle (`InHandle`/`OutHandle`; `fstat` del fd 0/1, o
+  `GetFileType`+`GetFileInformationByHandle` en Windows). Un open nuevo de
+  algo con nombre del usuario necesita su chequeo en el mismo lugar en los
+  dos ports, o el orden de los errores deja de coincidir. Bajo wine un
+  symlink de Unix nombrado como salida se sigue (se borra el destino y queda
+  el symlink colgando); un symlink de NTFS es un reparse point y el código
+  hace lo correcto, así que el caso del symlink va solo en el gate nativo.
 * **`{$IFDEF}` con un símbolo mal escrito evalúa falso en silencio.** FPC no
   avisa. A ytool le costó **toda la vida de su port**: un `CPU64BITS` (que no
   existe; el correcto es `CPU64`) hizo que *toda* build de 64 bits tomara la

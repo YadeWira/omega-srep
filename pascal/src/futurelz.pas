@@ -428,6 +428,10 @@ type
     SpillOpen: Boolean;
     Spill: THandleStream;          { con -vmfile= o el temporal, dueno de su handle }
     SpillPath: AnsiString;
+    { -vmfile=: la identidad de lo que se abrio, si es un archivo regular
+      (util.rs, NamedScratch); sin ella no se borra }
+    SpillNamed: Boolean;
+    SpillNamedId: TFileId;
     TotalRead, TotalWrite: QWord;
   end;
 
@@ -446,6 +450,7 @@ begin
   VM.SpillOpen := False;
   VM.Spill := nil;
   VM.SpillPath := '';
+  VM.SpillNamed := False;
   VM.TotalRead := 0;
   VM.TotalWrite := 0;
 end;
@@ -453,18 +458,20 @@ end;
 procedure VmDone(var VM: TVirtualMemory);
 begin
   { Se cierra y DESPUES se borra; solo si llego a abrirse. Un -vmfile= que
-    nunca se uso no se toca. }
+    nunca se uso no se toca, y uno que no es un archivo regular
+    (-vmfile=/dev/null, NUL) tampoco: como root, borrar /dev/null funcionaba. }
   if VM.SpillOpen then
   begin
     VM.Spill.Free;
     VM.Spill := nil;
-    DeleteFile(VM.SpillPath);
+    if not VM.HasVmFile then DeleteFile(VM.SpillPath)
+    else if VM.SpillNamed then RemoveIfStill(VM.SpillPath, VM.SpillNamedId);
     VM.SpillOpen := False;
   end;
 end;
 
 function VmSpillFile(var VM: TVirtualMemory): THandleStream;
-var h: THandle; fault: TDecodeFault;
+var h: THandle;
 begin
   if VM.SpillOpen then Exit(VM.Spill);
   if VM.HasVmFile then
@@ -475,12 +482,10 @@ begin
       imprime (un Io(Os ..)), que la excepcion de TFileStream no conserva }
     ClearOsError;
     h := FileCreate(VM.SpillPath);
-    if h = THandle(-1) then
-    begin
-      fault := LastOsFault;
-      DeleteFile(VM.SpillPath);   { el Rust suelta el VmPath, que borra }
-      Fail(deIo, fault);
-    end;
+    { si el open fallo, el nombre no es de esta corrida y no se borra (hasta
+      la 2.3.0 se borraba: un -vmfile= de solo lectura desaparecia) }
+    if h = THandle(-1) then Fail(deIo, LastOsFault);
+    VM.SpillNamed := RegularFileId(h, VM.SpillNamedId);
     VM.Spill := TOwnedHandleStream.Create(h);
   end
   else

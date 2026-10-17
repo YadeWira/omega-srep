@@ -173,9 +173,27 @@ end;
 
 { ------------------------------------------------------------ helpers --- }
 
-function RoundUp(A, B: QWord): QWord;
+{ el anillo, roundUp(Dict, Buf) (Common.h:692) + BUFFERS * Buf, sin dar la
+  vuelta en QWord: False si no entra en 64 bits (encoder.rs, la misma cuenta
+  con checked_*). Con -d18446744073709551615b -b3m el roundUp daba la vuelta
+  a un anillo chico y fallaba despues el diccionario en memoria ("Out of
+  memory"; el Rust abortaba ahi, exit 134); ahora es OutOfMemory en el
+  anillo, en los dos. }
+function CheckedRingSize(Dict, Buf: QWord; out Size: QWord): Boolean;
+var r: QWord;
 begin
-  if (A <> 0) and (B > 1) then Result := ((A - 1) div B) * B + B else Result := A;
+  Size := 0;
+  if Buf > High(QWord) div BUFFERS then Exit(False);
+  if (Dict <> 0) and (Buf > 1) then
+  begin
+    r := ((Dict - 1) div Buf) * Buf;
+    if r > High(QWord) - Buf then Exit(False);
+    r := r + Buf;
+  end
+  else r := Dict;
+  if r > High(QWord) - BUFFERS * Buf then Exit(False);
+  Size := r + BUFFERS * Buf;
+  Result := True;
 end;
 
 { seek(..)? del encoder: falla solo si falla la llamada al sistema (una
@@ -262,6 +280,7 @@ var
   hasher: TBlockHasher;
   seed, dict, header, digest: TBytes;
   minMatch, l, dictMinMatch, baseLen, bufsize, fileSize, ringSize: QWord;
+  ringOk: Boolean;
   roundMatches, cdc: Boolean;
   ah: TArchiveHeader;
   bh: TBlockHeader;
@@ -309,6 +328,10 @@ begin
   baseLen := minMatch;
   if dictMinMatch < baseLen then baseLen := dictMinMatch;
   bufsize := Opts.BufSize;
+  { -b0: un bloque donde no entra nada. El C++ no lo puede reservar ("Can't
+    allocate memory: 0 mb required"); los ports dividian por cero ("Division
+    by zero" aca, panic en el Rust). encoder.rs, la misma regla. }
+  if bufsize = 0 then raise EEncode.Create('OutOfMemory');
 
   { srep.cpp:631-634: accel sale de L / 32, entre 1 y DEFAULT_ACCEL (4), y
     dimensiona bitarr (accel * 8 bits por chunk, en 32 bits como el unsigned
@@ -442,6 +465,15 @@ begin
     except
       on EHtBitArrMemory do raise EEncode.Create('OutOfMemory');
     end;
+  { EncodeError::OutOfMemory: el anillo no entra en el espacio de direcciones
+    (-b2g en i386). Antes salia "Range check error" del SetLength y el Rust
+    i686 hacia panic; los dos dicen lo mismo ahora. Antes del diccionario en
+    memoria, en el orden del Rust (ring_size antes que
+    DictionaryCompressor::new): con un -d que no entra, el que fallaba era
+    DcInit, con otro mensaje. }
+  ringOk := CheckedRingSize(Opts.DictSize, bufsize, ringSize);
+  if not ringOk or (ringSize + RING_TAIL > QWord(High(SizeInt))) then
+    raise EEncode.Create('OutOfMemory');
   DcInit(inmem, Opts.DictSize, Opts.DictHashSize, dictMinMatch, dictChunk, baseLen);
   CdcHasherInit(chunkKey);
 
@@ -451,7 +483,6 @@ begin
     entrada fuera de 5 bytes. Como el anillo se llena bloque a bloque y nunca
     se lee una zona sin escribir, crece a medida -- con ceros, que es lo que
     el Rust ve donde todavia no escribio. }
-  ringSize := RoundUp(Opts.DictSize, bufsize) + BUFFERS * bufsize;
   SetLength(dict, 0);
   { Mejor todavia: el anillo entero en paginas en cero que el sistema no
     entrega hasta que se escriben, que es exactamente el vec! del Rust. Crecer
@@ -460,12 +491,16 @@ begin
     RingEnsure no hace nada sobre un anillo que ya mide ringSize + RING_TAIL.
     Esos RING_TAIL bytes de mas van en cero y nunca se escriben: ver
     hashtable.pas. }
-  { EncodeError::OutOfMemory: el anillo no entra en el espacio de direcciones
-    (-b2g en i386). Antes salia "Range check error" del SetLength y el Rust
-    i686 hacia panic; los dos dicen lo mismo ahora. }
-  if (ringSize < bufsize) or (ringSize + RING_TAIL > QWord(High(SizeInt))) then
+  { El Rust pide el anillo entero de una vez (zeroed_vec) y, si no se lo dan,
+    es OutOfMemory. Aca un mapeo que el sistema niega tambien lo es: crecer a
+    medida con SetLength despues pedia y llenaba de ceros el primer bloque
+    entero, y en Linux con overcommit -b100000g (un anillo de 195 TiB, que no
+    entra en las direcciones, y un bloque de 97 TiB, que si) crecia hasta que
+    lo mataban, donde el Rust dice OutOfMemory. Debajo de ZNEW_MIN_BYTES no se
+    mapea nada y se crece como antes. }
+  if not ZTryNew(Pointer(dict), ringSize + RING_TAIL, 1) and
+     (ringSize + RING_TAIL >= ZNEW_MIN_BYTES) then
     raise EEncode.Create('OutOfMemory');
-  ZTryNew(Pointer(dict), ringSize + RING_TAIL, 1);
   try
     RingEnsure(dict, bufsize + RING_TAIL, ringSize + RING_TAIL);
   except
