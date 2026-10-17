@@ -863,12 +863,50 @@ begin
 end;
 
 function Info(const O: TOptions; const FiName: AnsiString): LongInt;
-var opts: TFutureLzOptions; b: TBytes; ai: TArchiveInfo; head: AnsiString; pct: Double;
+var
+  opts: TFutureLzOptions; b, buf: TBytes; ai: TArchiveInfo; head: AnsiString; pct: Double;
+  indexS: TRawFileStream; want, got: QWord; n: LongInt;
 begin
   DecodeOptionsOf(O, opts);
   b := ReadArchive(FiName);
-  if not Inspect(b, ai) then
-    Fail(ERROR_COMPRESSION, 'Not an Omega SREP compressed file (.osr): ' + FiName);
+  { -index=: el C++ lo abre antes de leer un byte del archivo (srep.cpp:623)
+    y -d rechaza un nombre que no puede abrir; -i tambien, con el mensaje de
+    -d y no el "for write" del C++ }
+  indexS := nil;
+  if O.IndexFile <> '' then
+  begin
+    indexS := OpenReadRaw(O.IndexFile);
+    if indexS = nil then
+      Fail(ERROR_IO, 'Can''t open index file ' + O.IndexFile + ' for read');
+  end;
+  try
+    if not InspectWith(b, indexS <> nil, ai) then
+      Fail(ERROR_COMPRESSION, 'Not an Omega SREP compressed file (.osr): ' + FiName);
+
+    { v1-v3 con -index=: las listas que anuncian los bloques tienen que estar
+      en el indice, como chequea el C++ bloque a bloque (srep.cpp:1208-1209).
+      Index-LZ y v5 guardan las suyas en el archivo y no leen el indice. Se
+      lee a lo sumo lo anunciado, asi un indice sin fin termina aca. Un error
+      de lectura cuenta como fin, como el io::copy(..).unwrap_or(0) del Rust. }
+    if (indexS <> nil) and (ai.Mode <> 'Index-LZ') and (ai.Mode <> 'v5') then
+    begin
+      SetLength(buf, 1 shl 16);
+      got := 0;
+      while got < ai.StatSize do
+      begin
+        want := ai.StatSize - got;
+        if want > QWord(Length(buf)) then want := Length(buf);
+        n := OsRead(indexS.Handle, buf[0], LongInt(want));
+        if n <= 0 then Break;
+        got := got + QWord(n);
+      end;
+      if got <> ai.StatSize then
+        Fail(ERROR_COMPRESSION, 'Decompression problem: unexpected end of file ' + O.IndexFile +
+             ' or I/O error');
+    end;
+  finally
+    indexS.Free;
+  end;
 
   head := ai.Mode + ':';
   if ai.BaseLen <> 0 then head := head + ' -l' + IntToStr(ai.BaseLen);
@@ -877,17 +915,22 @@ begin
     cierran aca (srep.cpp:1074-1075) }
   if ai.Mode = 'Index-LZ' then WriteErr(head) else WriteErr(head + #10);
 
-  { el C++ llega a la linea del tamano solo con Index-LZ; v5 trae la misma
-    respuesta en su header, asi que lleva la misma linea }
-  if (ai.Mode = 'Index-LZ') or (ai.Mode = 'v5') then
-  begin
-    pct := PercentOf(ai.CompSize, ai.OrigSize);
-    WriteErr('.  ' + Show3(ai.OrigSize) + ' -> ' + Show3(ai.CompSize) + ': ' + Fixed(pct, 2) + '%' + #10);
-    { el C++ reporta el pico de RAM que necesitaria su derrame; el port no
-      mide un pico, asi que ese campo es un marcador. El resto es real. }
-    PrintInfo('', 0, opts.MaximumSave <> High(DWord), opts.MaximumSave, ai.StatSize, False, ai.CompSize);
-    WriteErr(#10);
-  end;
+  { la linea del tamano. El C++ la imprime asi para Index-LZ; para Future-LZ
+    e I/O LZ corre la linea de progreso de su decoder (tiempos incluidos, con
+    los dos tamanos al reves), y v5 no lo lee. Todos los contenedores llevan
+    aca la de Index-LZ: la misma pregunta, una respuesta. }
+  pct := PercentOf(ai.CompSize, ai.OrigSize);
+  WriteErr('.  ' + Show3(ai.OrigSize) + ' -> ' + Show3(ai.CompSize) + ': ' + Fixed(pct, 2) + '%' + #10);
+  { -dup: el tamano de arriba es lo que restaura la meta; los bloques traen
+    el cuerpo del paso de dedup, que es lo que vio la busqueda de matches }
+  if ai.HasDup then
+    WriteErr('-dup: ' + Show3(ai.DupChunks) + ' chunks, ' + Show3(ai.DupUnique) + ' unique: ' +
+             Show3(ai.OrigSize) + ' -> ' + Show3(ai.DupBodySize) + ' bytes' + #10);
+  { el C++ reporta el pico de RAM que necesitaria su derrame; el port no
+    mide un pico, asi que ese campo es un marcador. El resto es real. }
+  PrintInfo('', 0, opts.MaximumSave <> High(DWord), opts.MaximumSave, ai.StatSize, ai.RoundMatches,
+            ai.CompSize);
+  WriteErr(#10);
   Result := NO_ERRORS;
 end;
 

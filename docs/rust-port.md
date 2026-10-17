@@ -507,7 +507,12 @@ with the binary in phase 5.
   per-block `origsize` out of the framing, which is the same number and does not
   have to reconstruct anything. The one field that is *not* real is the
   "Decompression memory" figure, which the C++ computes as the peak RAM its
-  spill would need and the port has no equivalent measurement for.
+  spill would need and the port has no equivalent measurement for. After
+  2.3.0 every container gets the size line (the C++ prints it for Index-LZ
+  only, and runs its decoder's timed progress line for Future-LZ and I/O LZ),
+  `-index=` is honoured for v1-v3, and a `-dup` archive -- v5, or v4 with the
+  ODUP trailer, which the C++'s own `-i` cannot read -- reports the size the
+  meta restores plus a `-dup:` line with the chunk counts and the body size.
 * **`--help` and `--version` are reproduced from `dup_wrapper.cpp`, not from
   `srep.cpp`.** The wrapper answers both flags before `srep_main` runs, so its
   text is the one users see -- and a drop-in that prints a different synopsis is

@@ -548,6 +548,15 @@ impl Archive {
 
     /// Walk the container without decoding any LZ payload.
     pub fn parse(bytes: &[u8]) -> Result<Archive, ContainerError> {
+        Self::parse_with(bytes, false)
+    }
+
+    /// `parse`, for an archive written with `-index=` when `stats_out_of_line`
+    /// is set: a v1-v3 block header still records its match-list size, but
+    /// the list itself went to the index file (`srep.cpp:623`), so the block
+    /// is only its header and its literals. v4 keeps its list at the tail
+    /// either way, and the flag does not change how it is read.
+    pub fn parse_with(bytes: &[u8], stats_out_of_line: bool) -> Result<Archive, ContainerError> {
         let header = ArchiveHeader::decode(bytes)?;
         let block_header_size = BLOCK_HEADER_SIZE + header.hash_size as usize;
         let mut pos = ARCHIVE_HEADER_SIZE + header.hash_seed_size as usize;
@@ -624,7 +633,7 @@ impl Archive {
             };
             // v4 keeps the match list out of line, so it is not part of the
             // per-block region here.
-            let inline_stat = if footer.is_some() { 0 } else { stat_size };
+            let inline_stat = if footer.is_some() || stats_out_of_line { 0 } else { stat_size };
             let need = block_header_size + inline_stat + bh.literal_bytes as usize;
             if match_list_start - pos < need {
                 return Err(ContainerError::BlockTiling {

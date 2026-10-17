@@ -528,6 +528,50 @@ fn parse_meta(meta: &[u8]) -> Result<(Vec<Rec>, u64), i32> {
     Ok((records, unique_count))
 }
 
+/// What a `.dupref` meta says about the file it restores, for `-i`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MetaSummary {
+    /// Chunk records in the table.
+    pub chunks: u64,
+    /// Of those, the unique ones: the chunks the body carries.
+    pub unique: u64,
+    /// Bytes the body must hold: the unique chunks' lengths.
+    pub body_size: u64,
+    /// Bytes `decode_streaming` writes: every chunk, a reference counting
+    /// the length of the unique chunk it repeats.
+    pub output_size: u64,
+}
+
+/// Size up a meta without the body it describes. The table is checked by
+/// the same rules `decode_streaming` applies -- `parse_meta`'s, plus a
+/// reference only to a unique chunk already seen -- so a meta it accepts
+/// here is one the decoder would replay.
+pub fn summarize_meta(meta: &[u8]) -> Result<MetaSummary, i32> {
+    let (records, _unique_count) = parse_meta(meta)?;
+    let mut unique_len: Vec<u32> = Vec::new();
+    let mut s = MetaSummary {
+        chunks: records.len() as u64,
+        unique: 0,
+        body_size: 0,
+        output_size: 0,
+    };
+    for r in &records {
+        let len = if r.tag == TAG_UNIQUE {
+            unique_len.push(r.payload as u32);
+            s.body_size += r.payload;
+            r.payload
+        } else {
+            match unique_len.get(r.payload as usize) {
+                Some(&l) => u64::from(l),
+                None => return Err(DEDUP_ERR_BAD_REF),
+            }
+        };
+        s.output_size += len;
+    }
+    s.unique = unique_len.len() as u64;
+    Ok(s)
+}
+
 // ----------------------------------------------------------- in-memory --
 
 /// Encode `data` into a freshly built `.dupref` blob (header + table +

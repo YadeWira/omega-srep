@@ -21,7 +21,7 @@ unit V5Verify;
 {$OVERFLOWCHECKS OFF}
 interface
 
-uses SysUtils, Widths, Hashes, Container;
+uses SysUtils, Widths, Hashes, Container, Dedup;
 
 type
   EV5 = class(Exception);
@@ -34,13 +34,18 @@ type
     HasBlockDigests: Boolean;
   end;
 
-  { archive::Info: lo que muestra -i }
+  { archive::Info: lo que muestra -i. En un -dup, OrigSize es lo que
+    restaura la meta y DupBodySize lo que decodifican los bloques; CompSize
+    es el archivo entero, trailer y meta incluidos. }
   TArchiveInfo = record
     Mode: AnsiString;          { 'v5', 'Index-LZ', 'Future-LZ', 'I/O LZ' }
     HashName: AnsiString;
     BaseLen: DWord;
+    RoundMatches: Boolean;     { v1: tres STAT por match }
     Blocks: QWord;
     OrigSize, CompSize, StatSize: QWord;
+    HasDup: Boolean;
+    DupChunks, DupUnique, DupBodySize: QWord;
   end;
 
 { v5::verify. Lanza EV5 con el Debug del V5Error. }
@@ -52,6 +57,10 @@ function InspectV14(const B: TBytes): Boolean;
 
 { archive::inspect completo (v5 por v5::parse, sin las reglas de verify). }
 function Inspect(const B: TBytes; out Info: TArchiveInfo): Boolean;
+
+{ archive::inspect_with: con StatsOutOfLine, las listas de un v1-v3 estan en
+  el archivo de -index= y no adentro de los bloques. }
+function InspectWith(const B: TBytes; StatsOutOfLine: Boolean; out Info: TArchiveInfo): Boolean;
 
 implementation
 
@@ -261,18 +270,73 @@ begin
   VerifyCore(B, False, R, st);
 end;
 
-function InspectCore(const B: TBytes; out Info: TArchiveInfo): Boolean; forward;
+function InspectCore(const B: TBytes; Avail: QWord; StatsOutOfLine: Boolean;
+                     out Info: TArchiveInfo): Boolean; forward;
 
+{ el InspectV14 de --verify es el inspect entero: un v4 -dup tambien es "un
+  v1-v4, que no se puede verificar" }
 function InspectV14(const B: TBytes): Boolean;
 var info: TArchiveInfo;
 begin
-  Result := InspectCore(B, info);
+  Result := InspectWith(B, False, info);
 end;
 
 function Inspect(const B: TBytes; out Info: TArchiveInfo): Boolean;
-var r: TVerifyReport; st: QWord; hi: THashInfo;
 begin
-  if (Length(B) >= HEADER_SIZE) and (L32(B, 0) = MAGIC) then
+  Result := InspectWith(B, False, Info);
+end;
+
+{ dup::split_odup: el largo del archivo que tapa el trailer ODUP y la meta,
+  con los chequeos de OdupMeta (dupwrap.pas), asi lo que -i describe como un
+  -dup es lo que -d desharia como uno. False sin trailer; lanza EV5 si el
+  trailer esta pero no sirve. }
+function SplitOdup(const B: TBytes; out BodyLen, MetaAt, MetaLen: QWord): Boolean;
+var n, metaSize: QWord;
+begin
+  Result := False;
+  n := QWord(Length(B));
+  if n < 12 then Exit;
+  if not ((B[n - 4] = Ord('O')) and (B[n - 3] = Ord('D')) and (B[n - 2] = Ord('U')) and
+          (B[n - 1] = Ord('P'))) then Exit;
+  metaSize := L64(B, n - 12);
+  if (metaSize > n - 12) or (metaSize < 4) then Fail('BadDup');
+  BodyLen := n - 12 - metaSize;
+  if not ((B[BodyLen] = Ord('D')) and (B[BodyLen + 1] = Ord('U')) and (B[BodyLen + 2] = Ord('P')) and
+          (B[BodyLen + 3] = Ord('R'))) then Fail('BadDup');
+  MetaAt := BodyLen;
+  MetaLen := metaSize;
+  Result := True;
+end;
+
+{ archive::with_dup: el tamano original pasa a ser el que restaura la meta.
+  Una meta que pide mas cuerpo que el que decodifican los bloques es una que
+  -d rechazaria (DEDUP_ERR_TRUNCATED). }
+function WithDup(const B: TBytes; MetaAt, MetaLen: QWord; var Info: TArchiveInfo): Boolean;
+var s: TMetaSummary;
+begin
+  try
+    SummarizeMeta(Copy(B, MetaAt, MetaLen), s);
+  except
+    on EDedup do Exit(False);
+  end;
+  if s.BodySize > Info.OrigSize then Exit(False);
+  Info.HasDup := True;
+  Info.DupChunks := s.Chunks;
+  Info.DupUnique := s.Unique;
+  Info.DupBodySize := Info.OrigSize;
+  Info.OrigSize := s.OutputSize;
+  Result := True;
+end;
+
+function InspectWith(const B: TBytes; StatsOutOfLine: Boolean; out Info: TArchiveInfo): Boolean;
+var r: TVerifyReport; st, n, bodyLen, metaAt, metaLen: QWord; hi: THashInfo; isDup: Boolean;
+begin
+  n := QWord(Length(B));
+  Info.HasDup := False;
+  Info.DupChunks := 0;
+  Info.DupUnique := 0;
+  Info.DupBodySize := 0;
+  if (n >= HEADER_SIZE) and (L32(B, 0) = MAGIC) then
   begin
     try
       VerifyCore(B, True, r, st);
@@ -283,16 +347,36 @@ begin
     Info.Mode := 'v5';
     Info.HashName := hi.Name;
     Info.BaseLen := 0;
+    Info.RoundMatches := False;
     Info.Blocks := r.Blocks;
     Info.OrigSize := r.OriginalSize;
-    Info.CompSize := QWord(Length(B));
+    Info.CompSize := n;
     Info.StatSize := st;
+    { v5::dup_meta: el payload es el blob sin su CRC (VerifyCore ya lo
+      valido) }
+    if (B[5] and FLAG_HAS_DUP) <> 0 then
+      Exit(WithDup(B, L64(B, n - FOOTER_SIZE + 16), QWord(L32(B, n - FOOTER_SIZE + 24)) - 4, Info));
     Exit(True);
   end;
-  Result := InspectCore(B, Info);
+
+  { el v4 -dup tapa su archivo con la meta y el trailer ODUP
+    (dup_wrapper.cpp:254-262); el -i del C++ lee el trailer como footer y
+    se rinde }
+  try
+    isDup := SplitOdup(B, bodyLen, metaAt, metaLen);
+  except
+    on EV5 do Exit(False);
+  end;
+  if not isDup then bodyLen := n;
+  Result := InspectCore(B, bodyLen, StatsOutOfLine, Info);
+  if not Result then Exit;
+  Info.CompSize := n;
+  if isDup then Result := WithDup(B, metaAt, metaLen, Info);
 end;
 
-function InspectCore(const B: TBytes; out Info: TArchiveInfo): Boolean;
+{ Archive::parse_with sobre los primeros Avail bytes de B }
+function InspectCore(const B: TBytes; Avail: QWord; StatsOutOfLine: Boolean;
+                     out Info: TArchiveInfo): Boolean;
 var
   h: TArchiveHeader;
   hinfo: THashInfo;
@@ -306,7 +390,7 @@ begin
   Result := False;
   origSum := 0;
   statSum := 0;
-  n := QWord(Length(B));
+  n := Avail;
   if DecodeArchiveHeader(B, h) <> ceOK then Exit;
   bhs := BLOCK_HEADER_SIZE + QWord(h.HashSize);
   pos := ARCHIVE_HEADER_SIZE + QWord(h.HashSeedSize);
@@ -356,6 +440,8 @@ begin
       if st <> 0 then Exit;
       inlineStat := 0;
     end
+    else if StatsOutOfLine then
+      inlineStat := 0       { -index=: la lista quedo en el otro archivo }
     else
       inlineStat := st;
     need := bhs + inlineStat + QWord(lit);
@@ -382,6 +468,7 @@ begin
   else Info.Mode := 'I/O LZ';
   Info.HashName := hinfo.Name;
   Info.BaseLen := h.BaseLen;
+  Info.RoundMatches := h.Version = 1;
   Info.Blocks := nb;
   Info.OrigSize := origSum;
   Info.CompSize := n;

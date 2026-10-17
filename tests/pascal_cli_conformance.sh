@@ -306,6 +306,18 @@ dmk v3 --format=v4 -m3f
 dmk v3ix --format=v4 -m3f -index=v3ix.ix
 dmk v2ix --format=v4 -m5o -index=v2ix.ix
 dmk v1 --format=v4 -m3o
+# -dup con el trailer ODUP detras de un Future-LZ o un I/O LZ: el Rust solo lo
+# escribe sobre Index-LZ, el C++ sobre cualquiera (y con -index=). -i los
+# describe despues de 2.3.0; antes decia "Not an Omega SREP".
+DUPX=""
+if [ -x "$CXX_BIN/osrep" ]; then
+    for spec in "v3dup -m3f" "v2dup -m3o" "v3dupix -m3f -index=v3dupix.ix"; do
+        set -- $spec; name="$1"; shift
+        (cd "$D" && "$ROOT/$CXX_BIN/osrep" --seed=7 -b64k -dup --chunk-hash=gear "$@" in.bin "$name.osr" >/dev/null 2>&1) \
+            || fail "no se pudo armar $name.osr con el C++"
+        DUPX="$DUPX $name"
+    done
+fi
 (cd "$D" && "$RSX" -v0 --seed=7 -m5 -b64k far.bin far.osr >/dev/null 2>&1) || fail "no se pudo armar far.osr"
 : > "$D/empty.osr"
 printf 'this is not an archive\n%.0s' 1 2 3 4 5 6 > "$D/text.osr"
@@ -334,13 +346,13 @@ check3() { # $1=archivo, el resto opciones de -d
     local f="$1"; shift
     same -v0 -d "$@" "$f" o.out
     same -v0 --verify "$f"
-    same -v0 -i "$f"
+    same -v0 -i "$@" "$f"
 }
 # --verify y -i no decodifican: sobre un v1-v4 solo parsean el contenedor, y
 # eso lo cubren de sobra los truncados. Un byte cambiado se mira con -d.
 checkd() { # $1=archivo, el resto opciones de -d
     local f="$1"; shift
-    case "$name" in v5*) check3 "$f" "$@" ;; *) same -v0 -d "$@" "$f" o.out ;; esac
+    case "$name" in v5*|*dup*) check3 "$f" "$@" ;; *) same -v0 -d "$@" "$f" o.out ;; esac
 }
 # $1=origen $2=posicion $3=destino: el byte en $2 pasa a 0 (o a 0xFF si ya era 0)
 zap() {
@@ -350,9 +362,13 @@ zap() {
     if [ "${b:-0}" -eq 0 ]; then v=255; else v=0; fi
     printf "$(printf '\\%03o' "$v")" | dd of="$3" bs=1 seek="$2" conv=notrunc 2>/dev/null
 }
-for name in v5 v5dup v4 v4dup v3 v3ix v2ix v1; do
+for name in v5 v5dup v4 v4dup v3 v3ix v2ix v1 $DUPX; do
     a="$D/$name.osr"; n=$(stat -c%s "$a")
     ix=""; [ -e "$D/$name.ix" ] && ix="-index=$name.ix"
+    # sano: -i tiene que describirlo, y los dos igual
+    same -v0 -i $ix "$name.osr"
+    grep -q 'ERROR' r.e && fail "-i $ix $name.osr: $(cat r.e)"
+    case "$name" in *dup*) grep -q '^-dup: ' r.e || fail "-i $name.osr sin la linea -dup: $(cat r.e)" ;; esac
     for c in 0 3 16 27 28 60 $((n / 2)) $((n - 32)) $((n - 24)) $((n - 1)); do
         [ "$c" -ge 0 ] && [ "$c" -lt "$n" ] || continue
         head -c "$c" "$a" > "$D/m.osr"
@@ -369,10 +385,13 @@ for name in v5 v5dup v4 v4dup v3 v3ix v2ix v1; do
         m=$(stat -c%s "$D/$name.ix")
         for c in 0 4 $((m - 1)); do
             head -c "$c" "$D/$name.ix" > "$D/m.ix"; same -v0 -d -index=m.ix "$name.osr" o.out
+            same -v0 -i -index=m.ix "$name.osr"
         done
         for p in 0 3 8 12 $((m / 2)); do
             zap "$D/$name.ix" "$p" "$D/m.ix"; same -v0 -d -index=m.ix "$name.osr" o.out
         done
+        same -v0 -i "$name.osr"
+        same -v0 -i -index=nonexistent.ix "$name.osr"
     fi
 done
 # el largo del footer de un v4 una unidad menos: la tabla de tamanos deja de

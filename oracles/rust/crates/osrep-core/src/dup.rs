@@ -9,8 +9,9 @@
 //!
 //! Where the meta lives is the one thing v4 and v5 disagree on. v4 appends it
 //! as an ODUP trailer and finds it by sniffing the last four bytes -- which
-//! mis-handles `osrep -d archive.osr` and `-i`; v5 embeds it between the blocks
-//! and the footer, which points at it.
+//! mis-handles `osrep -d archive.osr` (stdin), and which the C++'s own `-i`
+//! reads as a broken footer (`archive::inspect` looks behind it after 2.3.0);
+//! v5 embeds it between the blocks and the footer, which points at it.
 //!
 //! The C++ writes the body to a tempfile and runs `srep_main` over it with the
 //! input filename substituted. This does the same, minus the subprocess: the
@@ -267,6 +268,28 @@ fn odup_meta(archive: &mut File, len: u64) -> Result<Option<Vec<u8>>, DupError> 
     Ok(Some(meta))
 }
 
+/// `odup_meta` over an archive already in memory, for `-i` and `--verify`:
+/// the length of the archive the trailer hides, and the meta, or `None` when
+/// the last four bytes are not `ODUP`. The checks are `odup_meta`'s, so what
+/// `-i` describes as a `-dup` archive is what `-d` would undo as one.
+pub fn split_odup(bytes: &[u8]) -> Result<Option<(usize, &[u8])>, DupError> {
+    let len = bytes.len() as u64;
+    if len < ODUP_TRAILER_SIZE || bytes[bytes.len() - 4..] != ODUP_MAGIC {
+        return Ok(None);
+    }
+    let at = bytes.len() - ODUP_TRAILER_SIZE as usize;
+    let meta_size = u64::from_le_bytes(bytes[at..at + 8].try_into().unwrap());
+    if meta_size > len - ODUP_TRAILER_SIZE || meta_size < 4 {
+        return Err(DupError::BadDup);
+    }
+    let body_len = at - meta_size as usize;
+    let meta = &bytes[body_len..at];
+    if meta[..4] != *b"DUPR" {
+        return Err(DupError::BadDup);
+    }
+    Ok(Some((body_len, meta)))
+}
+
 /// A decoder sink: created like `File::create`, but readable too.
 fn create_rw(path: &Path) -> std::io::Result<File> {
     std::fs::OpenOptions::new()
@@ -408,6 +431,42 @@ mod tests {
 
         assert!(decode(archive.path(), restored.path(), &FutureLzOptions::default()).unwrap());
         assert_eq!(std::fs::read(restored.path()).unwrap(), original);
+    }
+
+    #[test]
+    fn inspect_reads_through_the_odup_trailer() {
+        let original = dup_friendly();
+        let input = scratch(Some(&original));
+        let archive = scratch(None);
+        // Gear, so that the pass really drops chunks (the default FNV chunker
+        // finds no repeat in `dup_friendly`).
+        let params = DupParams {
+            chunking: crate::dedup::Params {
+                hash_algo: crate::dedup::CDC_HASH_GEAR,
+                ..crate::dedup::Params::default()
+            },
+            paranoid: false,
+        };
+        let mode = Mode {
+            kind: Kind::Digest,
+            container: Container::IndexLz,
+        };
+        encode_dup(input.path(), archive.path(), &options(), mode, params, DupMode::V4).unwrap();
+        let bytes = std::fs::read(archive.path()).unwrap();
+        let n = bytes.len();
+
+        // The size `-d` restores, the archive behind the trailer, and a meta
+        // that dropped chunks.
+        let info = archive::inspect(&bytes).unwrap();
+        assert_eq!(info.mode, "Index-LZ");
+        assert_eq!(info.origsize, original.len() as u64);
+        assert_eq!(info.compsize, n as u64);
+        let d = info.dup.unwrap();
+        assert!(d.unique < d.chunks && d.body_size < original.len() as u64);
+        // A meta_size past the file is refused, as `odup_meta` refuses it.
+        let mut bad = bytes.clone();
+        bad[n - 12..n - 4].copy_from_slice(&(n as u64).to_le_bytes());
+        assert!(archive::inspect(&bad).is_err());
     }
 
     #[test]

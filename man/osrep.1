@@ -256,7 +256,17 @@ Decompression. With
 needs only ~24 MB beyond OS I/O buffers.
 .TP
 .B -i
-Print archive metadata; do not decompress.
+Print archive metadata; do not decompress: the container, the hash, the
+original and archive sizes and the match count. For a
+.B -dup
+archive the original size is the one
+.B -d
+restores, and a
+.B -dup:
+line gives the chunk counts and the size the match search saw. An archive
+written with
+.BI -index= FILE
+needs the same option here.
 
 .SS Omega-only additions (F5 / F6)
 

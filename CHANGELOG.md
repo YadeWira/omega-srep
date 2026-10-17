@@ -9,6 +9,40 @@ Versions follow `<major>.<minor>.<patch>` for stable releases and
 written by the new default cannot be read by the previous release, which is
 what happened in 2.0.0.
 
+## [Unreleased]
+
+### Fixed
+
+- **`osrep -i` on a v4 `-dup` archive said "Not an Omega SREP compressed
+  file"**, exit 4, for the archives `--format=v4 -dup` writes and for every
+  `-dup` archive of the C++ 1.0.7 (`-m3`, `-m3f`, `-m3o`...). The `.dupref`
+  meta and the ODUP trailer follow the archive, where Index-LZ looks for its
+  footer and Future-LZ/I/O LZ for more blocks. 1.0.7's own `-i` fails on them
+  too, after its header line ("Not found Omega SREP compressed file footer",
+  or a bogus block size), so there is no output to match; `-i` now describes
+  the archive behind the trailer, and refuses a trailer `-d` would refuse.
+  `--verify` on such an archive now gives the "v1-v4 archive, cannot be
+  verified" answer instead of "Not an Omega SREP".
+- **`-i` on a `-dup` archive reports the size `-d` restores.** v5 `-dup` gave
+  the size of the dedup pass's body (`399,410 -> 265,699: 66.52%` for an
+  input of 3,146,128 bytes), which is not what decompression writes nor what
+  compression reported. The size line now uses the meta's total, and a new
+  line follows it: `-dup: 757 chunks, 97 unique: 3,146,128 -> 399,410 bytes`
+  (chunks in the meta, the unique ones, the restored size and the body the
+  match search saw). Same in v4 and v5.
+- **`-i` on Future-LZ (`-mNf`) and I/O LZ (`-mNo`) archives printed the
+  header line alone.** It now prints the size line and the `Decompression
+  memory ... matches = ... % of file` summary, as for Index-LZ and v5. 1.0.7
+  prints that summary too, after its decoder's progress line (timings and
+  all), which `osrep` does not reproduce.
+- **`-i -index=FILE` ignored the index**, so an archive written with
+  `-index=` (Future-LZ or I/O LZ) was "Not an Omega SREP compressed file".
+  The match lists are now taken from the index, as in 1.0.7: an index that
+  cannot be opened is "Can't open index file FILE for read" (exit 3, as with
+  `-d`; 1.0.7 says "for write"), and one shorter than the lists the blocks
+  announce is 1.0.7's "Decompression problem: unexpected end of file FILE or
+  I/O error" (exit 4). Index-LZ and v5 never read it.
+
 ## [2.3.0] — 2026-10-15
 
 **Byte-exact with the C++ 1.0.7 again, also with the default options.** Behaviours of

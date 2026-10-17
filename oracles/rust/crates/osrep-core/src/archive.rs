@@ -64,25 +64,49 @@ pub fn decode<R: Read + Seek, S: Read + Write + Seek>(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Info {
     /// The C++'s mode word: `"I/O LZ"`, `"Future-LZ"`, `"Index-LZ"`, or `"v5"`
-    /// (which the C++ has no name for, since it cannot write one).
+    /// (which the C++ has no name for, since it cannot write one). For a v4
+    /// `-dup` archive it is the mode of the archive behind the ODUP trailer.
     pub mode: &'static str,
     pub hash_name: &'static str,
     /// `header[3]`: nonzero only for v1/v2.
     pub base_len: u32,
+    /// v1: three `STAT`s per match record instead of four.
+    pub round_matches: bool,
     pub blocks: usize,
-    /// The uncompressed size. Both parsers derive it from the framing alone:
-    /// for v1-v4 that is the sum of the block headers, which is the number the
-    /// C++ arrives at through the footer arithmetic plus a walk of the match
-    /// lists.
+    /// The uncompressed size: what `-d` writes. Both parsers derive it from
+    /// the framing alone: for v1-v4 that is the sum of the block headers,
+    /// which is the number the C++ arrives at through the footer arithmetic
+    /// plus a walk of the match lists. For a `-dup` archive it is the size
+    /// the meta restores, not the size of the body the blocks hold.
     pub origsize: u64,
-    /// The archive's size on disk.
+    /// The archive's size on disk, trailer and meta included.
     pub compsize: u64,
     /// Match-list bytes: what the `-i` summary counts matches out of.
     pub stat_size: u64,
+    /// The `-dup` pass, when the archive carries its meta (embedded in v5,
+    /// as the ODUP trailer in v4).
+    pub dup: Option<DupInfo>,
+}
+
+/// The `-dup` side of [`Info`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DupInfo {
+    pub chunks: u64,
+    pub unique: u64,
+    /// What the dedup pass handed the match search: the size the blocks
+    /// decode to.
+    pub body_size: u64,
 }
 
 /// Take an archive apart far enough to describe it.
 pub fn inspect(bytes: &[u8]) -> Result<Info, DecodeError> {
+    inspect_with(bytes, false)
+}
+
+/// `inspect`, for an archive whose v1-v3 match lists were written to an
+/// `-index=` file when `stats_out_of_line` is set
+/// (`container::Archive::parse_with`).
+pub fn inspect_with(bytes: &[u8], stats_out_of_line: bool) -> Result<Info, DecodeError> {
     if bytes.len() >= v5::HEADER_SIZE
         && u32::from_le_bytes(bytes[..4].try_into().unwrap()) == v5::MAGIC
     {
@@ -91,23 +115,37 @@ pub fn inspect(bytes: &[u8]) -> Result<Info, DecodeError> {
             .header
             .hash()
             .map_err(|_| DecodeError::BadData("v5 hash descriptor"))?;
-        return Ok(Info {
+        let meta = v5::dup_meta(bytes, &parsed.footer, &parsed.header)
+            .map_err(|_| DecodeError::BadData("v5 -dup meta"))?;
+        let info = Info {
             mode: "v5",
             hash_name: hash.name,
             base_len: 0,
+            round_matches: false,
             blocks: parsed.blocks.len(),
             origsize: parsed.header.original_size,
             compsize: bytes.len() as u64,
             stat_size: parsed.footer.stat_size,
-        });
+            dup: None,
+        };
+        return with_dup(info, meta);
     }
 
-    let parsed = container::Archive::parse(bytes)?;
+    // v4 `-dup` hides its archive behind the meta and the ODUP trailer
+    // (`dup_wrapper.cpp:254-262`); the C++'s own `-i` reads the trailer as
+    // a footer and gives up. The checks are the ones `-d` applies.
+    let (body, meta) = match crate::dup::split_odup(bytes)
+        .map_err(|_| DecodeError::BadData("ODUP trailer"))?
+    {
+        Some((n, meta)) => (&bytes[..n], Some(meta)),
+        None => (bytes, None),
+    };
+    let parsed = container::Archive::parse_with(body, stats_out_of_line)?;
     let hash = parsed
         .header
         .hash()
         .ok_or(DecodeError::BadData("unknown hash descriptor"))?;
-    Ok(Info {
+    let info = Info {
         mode: if parsed.header.version.index_lz() {
             "Index-LZ"
         } else if parsed.header.version.future_lz() {
@@ -117,6 +155,7 @@ pub fn inspect(bytes: &[u8]) -> Result<Info, DecodeError> {
         },
         hash_name: hash.name,
         base_len: parsed.header.base_len,
+        round_matches: parsed.header.version.round_matches(),
         blocks: parsed.blocks.len(),
         origsize: parsed.origsize(),
         compsize: bytes.len() as u64,
@@ -127,5 +166,27 @@ pub fn inspect(bytes: &[u8]) -> Result<Info, DecodeError> {
         } else {
             parsed.blocks.iter().map(|b| b.header.statsize as u64).sum()
         },
-    })
+        dup: None,
+    };
+    with_dup(info, meta)
+}
+
+/// Fold a `-dup` meta into what the blocks say: the original size becomes
+/// the one the meta restores. A meta that needs more body than the blocks
+/// decode to is one `-d` would fail on (`DEDUP_ERR_TRUNCATED`).
+fn with_dup(mut info: Info, meta: Option<&[u8]>) -> Result<Info, DecodeError> {
+    if let Some(meta) = meta {
+        let s = crate::dedup::summarize_meta(meta)
+            .map_err(|_| DecodeError::BadData("-dup meta"))?;
+        if s.body_size > info.origsize {
+            return Err(DecodeError::BadData("-dup meta"));
+        }
+        info.dup = Some(DupInfo {
+            chunks: s.chunks,
+            unique: s.unique,
+            body_size: info.origsize,
+        });
+        info.origsize = s.output_size;
+    }
+    Ok(info)
 }
