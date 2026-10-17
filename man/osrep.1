@@ -128,6 +128,15 @@ behaviour for (a \fIY\fR that is not 1, 2, 4, 8, 16, 32 or 64, or is larger
 than the chunk, and \fB-a0/\fIY\fR), where it crashes, writes a block
 that does not decode, or (a \fIY\fR larger than the chunk) reads before its
 block buffer. A very large \fIX\fR can run out of memory (exit 4).
+Both numbers are read as C's \fBstrtol\fR reads them, as in 1.0.7: a leading
+.B 0
+is octal and
+.B 0x
+hex, so
+.B -a010
+is
+.BR -a8 ,
+and an empty \fIY\fR is 0.
 .TP
 .BR -ia- ", " -ia+
 .B -ia-
@@ -312,9 +321,11 @@ bytes. Default 8 MB. Required for cross-block dedup of large identical
 regions.
 .TP
 \fB--seed=\fIN\fR
-Deterministic hash seed (uint64; decimal or
+Deterministic hash seed (uint64; decimal,
 .B 0x
-hex). Same seed + same input produces a byte-identical archive across
+hex, or octal with a leading
+.BR 0 ,
+as C's \fBstrtoull\fR reads it: \fB--seed=010\fR is 8). Same seed + same input produces a byte-identical archive across
 runs. Default behavior is random per-run (matches upstream SREP
 exactly). Useful for content-addressed storage and reproducible builds.
 .TP

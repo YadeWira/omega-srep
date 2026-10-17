@@ -268,12 +268,90 @@ fn length_option(a: &str, n: u64, what: &str) -> Result<usize, CmdLineError> {
     Ok(n as usize)
 }
 
-fn parse_int(s: &str) -> Option<i64> {
+/// `parseInt` (`Common.cpp:234-242`), the parser of `-v`, `-t` and `-da`: an
+/// optional leading `=`, then one or more decimal digits and nothing else. No
+/// sign, no `0x`, no suffix: the C++ refuses `-t+4`, `-v-1` and `-t0x10`,
+/// which the port accepted until 2.3.0. A leading zero is just a zero
+/// (`-t010` is 10). The C++ wraps a value past 2^64; that stays an invalid
+/// option here, as does anything past `i64::MAX`.
+fn parse_dec_int(s: &str) -> Option<i64> {
     let s = s.strip_prefix('=').unwrap_or(s);
-    if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
-        i64::from_str_radix(hex, 16).ok()
+    if s.is_empty() || !s.bytes().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    s.parse::<i64>().ok()
+}
+
+/// What C's `strtol(s, &end, 0)` / `strtoull(s, &end, 0)` read: leading
+/// white space (`isspace` in the "C" locale), an optional sign, then a base
+/// picked by the prefix -- `0x`/`0X` followed by a hex digit is hex, any
+/// other leading `0` is octal, the rest decimal -- and the longest run of
+/// digits of that base. `end` is the byte index `end` would point at; with
+/// no digits at all nothing is converted and `end` is 0, as `strtol` sets it
+/// back to the start of the string. `magnitude` is `None` past `u64::MAX`.
+///
+/// glibc 2.38 also reads a `0b` binary prefix (C23) in a C++ build; MinGW's
+/// runtime does not, so 1.0.7 itself disagrees between Linux and Windows
+/// there, and this reads `0b101` as `0` followed by junk, like Windows.
+struct CNumber {
+    negative: bool,
+    magnitude: Option<u64>,
+    end: usize,
+}
+
+fn c_strto_base0(s: &[u8]) -> CNumber {
+    let mut i = 0usize;
+    while matches!(s.get(i), Some(b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r')) {
+        i += 1;
+    }
+    let mut negative = false;
+    if let Some(&c @ (b'+' | b'-')) = s.get(i) {
+        negative = c == b'-';
+        i += 1;
+    }
+    let hex = s.get(i) == Some(&b'0')
+        && matches!(s.get(i + 1), Some(b'x' | b'X'))
+        && s.get(i + 2).is_some_and(|c| c.is_ascii_hexdigit());
+    let (radix, start) = if hex {
+        (16u32, i + 2)
+    } else if s.get(i) == Some(&b'0') {
+        (8, i)
     } else {
-        s.parse::<i64>().ok()
+        (10, i)
+    };
+    let mut j = start;
+    let mut magnitude = Some(0u64);
+    while let Some(d) = s.get(j).and_then(|&c| char::from(c).to_digit(radix)) {
+        magnitude = magnitude
+            .and_then(|m| m.checked_mul(u64::from(radix)))
+            .and_then(|m| m.checked_add(u64::from(d)));
+        j += 1;
+    }
+    if j == start {
+        return CNumber {
+            negative: false,
+            magnitude: Some(0),
+            end: 0,
+        };
+    }
+    CNumber {
+        negative,
+        magnitude,
+        end: j,
+    }
+}
+
+/// `strtol` of `-aX[/Y]` (`srep.cpp:343-348`). The C++ stores it in a `long`,
+/// which is 64 bits on Linux and 32 on Windows, and saturates past it; the
+/// port reads the Linux width and refuses what does not fit in an `i64`
+/// instead of saturating, which is what it did before.
+fn c_long(n: &CNumber) -> Option<i64> {
+    let m = n.magnitude?;
+    if n.negative {
+        // -(2^63) is i64::MIN; wrapping_neg gives it back unchanged.
+        (m <= 1u64 << 63).then(|| (m as i64).wrapping_neg())
+    } else {
+        i64::try_from(m).ok()
     }
 }
 
@@ -367,17 +445,24 @@ pub fn parse(args: &[String]) -> Result<Options, CmdLineError> {
             o.accel = 0;
         } else if a.starts_with("-a") && a.as_bytes().get(2).is_some_and(|c| c.is_ascii_digit()) {
             // `-aN` or `-aN/M` (`srep.cpp:343-348`): the `bitarr` size and the
-            // scan variant. Not output-neutral (see compress.rs).
-            let body = &a[2..];
-            let (accel, rest) = match body.split_once('/') {
-                Some((l, r)) => (l, Some(r)),
-                None => (body, None),
-            };
-            o.accel = parse_int(accel).ok_or_else(|| bad(format!("Invalid option: {a}")))? as u32;
+            // scan variant. Not output-neutral (see compress.rs). Both numbers
+            // are `strtol(.., 0)`, as in the C++: `-a010` is 8 and `-a0x10` 16,
+            // `-a08` is invalid, and after the `/` white space and a sign are
+            // read and an empty value is 0 (`-a4/` is `-a4/0`). Stored like
+            // the C++'s `unsigned`, so `-a4/-1` wraps.
+            let invalid = || bad(format!("Invalid option: {a}"));
+            let body = &a.as_bytes()[2..];
+            let first = c_strto_base0(body);
+            o.accel = c_long(&first).ok_or_else(invalid)? as u32;
             o.accelerator = 9000;
-            if let Some(r) = rest {
-                o.accelerator =
-                    parse_int(r).ok_or_else(|| bad(format!("Invalid option: {a}")))? as u32;
+            let mut rest = &body[first.end..];
+            if let Some(after) = rest.strip_prefix(b"/") {
+                let second = c_strto_base0(after);
+                o.accelerator = c_long(&second).ok_or_else(invalid)? as u32;
+                rest = &after[second.end..];
+            }
+            if !rest.is_empty() {
+                return Err(invalid());
             }
         } else if a == "-ia-" {
             o.io_accelerator = -1;
@@ -401,7 +486,8 @@ pub fn parse(args: &[String]) -> Result<Options, CmdLineError> {
         } else if a == "-v" {
             o.verbosity = 1;
         } else if let Some(v) = a.strip_prefix("-v") {
-            o.verbosity = parse_int(v).ok_or_else(|| bad(format!("Invalid option: {a}")))? as i32;
+            o.verbosity =
+                parse_dec_int(v).ok_or_else(|| bad(format!("Invalid option: {a}")))? as i32;
         } else if a.starts_with("-pc") {
             // Progress counters, a diagnostic: parsed, not reported.
             let body = &a[3..];
@@ -452,7 +538,7 @@ pub fn parse(args: &[String]) -> Result<Options, CmdLineError> {
                 let first = part.char_indices().nth(1).map_or(part.len(), |(i, _)| i);
                 let (head, tail) = part.split_at(first);
                 let parsed = match head {
-                    "a" => parse_int(tail).map(|_| ()),
+                    "a" => parse_dec_int(tail).map(|_| ()),
                     "c" => match parse_mem(tail, Unit::B) {
                         Some(n) => {
                             o.dict_chunk =
@@ -485,7 +571,7 @@ pub fn parse(args: &[String]) -> Result<Options, CmdLineError> {
             // Accepted and ignored: the port is single-threaded per block and
             // the thread count was shown to be output-neutral in 4c-0.
             o.num_threads =
-                parse_int(v).ok_or_else(|| bad(format!("Invalid option: {a}")))? as u64;
+                parse_dec_int(v).ok_or_else(|| bad(format!("Invalid option: {a}")))? as u64;
         } else if a.starts_with("-rem") {
             // Command-line remark.
         } else if a.starts_with('-') && a != "-" {
@@ -499,10 +585,136 @@ pub fn parse(args: &[String]) -> Result<Options, CmdLineError> {
     Ok(o)
 }
 
-/// `--seed=N` accepts decimal or `0x`-prefixed hex (`dup_wrapper.cpp:117-132`).
+/// `--seed=N` (`dup_wrapper.cpp:117-132`) is `strtoull(.., 0)` with the
+/// whole value required to be the number: decimal, `0x` hex or, with a
+/// leading `0`, octal (`--seed=010` is 8, `--seed=08` is invalid), after
+/// optional white space and a sign. The whole `u64` range is a seed, and a
+/// minus wraps (`--seed=-1` is 2^64-1), as `strtoull` does. Until 2.3.0 the
+/// port read `010` as 10, refused seeds above `i64::MAX`, white space and a
+/// minus, and took a leading `=` (`--seed==8`) that the C++ refuses.
 fn parse_seed(v: &str) -> Option<u64> {
-    if v.is_empty() {
+    let n = c_strto_base0(v.as_bytes());
+    if v.is_empty() || n.end == 0 || n.end != v.len() {
         return None;
     }
-    parse_int(v).and_then(|n| u64::try_from(n).ok())
+    let m = n.magnitude?; // ERANGE
+    Some(if n.negative { m.wrapping_neg() } else { m })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn opts(args: &[&str]) -> Result<Options, CmdLineError> {
+        parse(&args.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+    }
+
+    /// `-aX[/Y]` reads both numbers with `strtol(.., 0)`, as 1.0.7 does;
+    /// every expectation here is what the C++ 1.0.7 Linux build did.
+    #[test]
+    fn accel_is_strtol_base_0() {
+        let ok = |a: &str, accel: u32, accelerator: u32| {
+            let o = opts(&[a]).unwrap_or_else(|e| panic!("{a}: {}", e.0));
+            assert_eq!((o.accel, o.accelerator), (accel, accelerator), "{a}");
+        };
+        ok("-a8", 8, 9000);
+        ok("-a010", 8, 9000);
+        ok("-a0010", 8, 9000);
+        ok("-a0x10", 16, 9000);
+        ok("-a0X10/0x2", 16, 2);
+        ok("-a1/010", 1, 8);
+        ok("-a4/", 4, 0);
+        ok("-a4/ 8", 4, 8);
+        ok("-a4/\t+8", 4, 8);
+        ok("-a4/-1", 4, u32::MAX);
+        ok("-a4/-0", 4, 0);
+        ok("-a4294967298", 2, 9000);
+        for bad in [
+            "-a08",
+            "-a09/2",
+            "-a1/08",
+            "-a1/=8",
+            "-a0x",
+            "-a0x/2",
+            "-a4/0x",
+            "-a4/ ",
+            "-a4/-",
+            "-a4/+",
+            "-a8 ",
+            "-a8x",
+            "-a1/2/3",
+            "-a0b101",
+            "-a4/0b1",
+            "-a9223372036854775808",
+            "-a4/-9223372036854775809",
+        ] {
+            assert!(opts(&[bad]).is_err(), "{bad} was accepted");
+        }
+        ok("-a9223372036854775807", u32::MAX, 9000);
+        ok("-a4/-9223372036854775808", 4, 0);
+    }
+
+    /// `-v`, `-t` and `-da` are `parseInt`: `=`, then decimal digits only.
+    #[test]
+    fn parse_int_is_decimal_digits() {
+        assert_eq!(opts(&["-v010"]).unwrap().verbosity, 10);
+        assert_eq!(opts(&["-v=0"]).unwrap().verbosity, 0);
+        assert_eq!(opts(&["-t=08"]).unwrap().num_threads, 8);
+        assert!(opts(&["-da7"]).is_ok());
+        for o in ["-v", "-t", "-da"] {
+            for v in [
+                "",
+                "=",
+                "==1",
+                "+1",
+                "-1",
+                "-0",
+                "0x10",
+                "1 ",
+                " 1",
+                "1k",
+                "9223372036854775808",
+            ] {
+                let a = format!("{o}{v}");
+                if a == "-v" {
+                    continue; // -v alone is verbosity 1
+                }
+                assert!(opts(&[&a]).is_err(), "{a} was accepted");
+            }
+        }
+    }
+
+    /// `--seed=` is `strtoull(.., 0)` with nothing left over.
+    #[test]
+    fn seed_is_strtoull_base_0() {
+        let seed = |v: &str| parse_seed(v);
+        assert_eq!(seed("8"), Some(8));
+        assert_eq!(seed("010"), Some(8));
+        assert_eq!(seed("0x10"), Some(16));
+        assert_eq!(seed("0XfF"), Some(255));
+        assert_eq!(seed(" 8"), Some(8));
+        assert_eq!(seed("+8"), Some(8));
+        assert_eq!(seed("-1"), Some(u64::MAX));
+        assert_eq!(seed("-0x1"), Some(u64::MAX));
+        assert_eq!(seed("18446744073709551615"), Some(u64::MAX));
+        assert_eq!(seed("0xFFFFFFFFFFFFFFFF"), Some(u64::MAX));
+        assert_eq!(seed("0"), Some(0));
+        for bad in [
+            "",
+            "=8",
+            "08",
+            "09",
+            "0x",
+            "0xg",
+            "8 ",
+            "8x",
+            "-",
+            " ",
+            "0b101",
+            "18446744073709551616",
+            "-18446744073709551616",
+        ] {
+            assert_eq!(seed(bad), None, "{bad:?}");
+        }
+    }
 }

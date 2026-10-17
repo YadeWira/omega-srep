@@ -204,68 +204,111 @@ begin
   Result := True;
 end;
 
-{ `str::parse::<i64>`: un signo opcional y digitos, sin desbordar }
-function ParseI64Dec(const S: AnsiString; out N: Int64): Boolean;
-var i, start: LongInt; neg: Boolean; v, d, lim: QWord;
+{ parseInt (Common.cpp:234-242), el de -v, -t y -da: un '=' opcional y uno o
+  mas digitos decimales, nada mas. Sin signo, sin 0x, sin sufijo: el C++
+  rechaza -t+4, -v-1 y -t0x10, que el port aceptaba hasta la 2.3.0. Un cero
+  adelante es solo un cero (-t010 es 10). Pasado High(Int64) es una opcion
+  invalida (el C++ da la vuelta en 2^64). args.rs, parse_dec_int. }
+function ParseDecInt(const S0: AnsiString; out N: Int64): Boolean;
+var s: AnsiString; i: LongInt; v, d: QWord;
 begin
   Result := False; N := 0;
-  start := 1; neg := False;
-  if (Length(S) >= 1) and (S[1] in ['+', '-']) then
-  begin
-    neg := S[1] = '-';
-    start := 2;
-  end;
-  if start > Length(S) then Exit;
-  if neg then lim := QWord(High(Int64)) + 1 else lim := QWord(High(Int64));
-  v := 0;
-  for i := start to Length(S) do
-  begin
-    if not IsDigit(S[i]) then Exit;
-    d := QWord(Ord(S[i]) - Ord('0'));
-    if v > (lim - d) div 10 then Exit;
-    v := v * 10 + d;
-  end;
-  if neg then N := -Int64(v - 1) - 1 else N := Int64(v);
-  Result := True;
-end;
-
-{ `i64::from_str_radix(s, 16)` }
-function ParseI64Hex(const S: AnsiString; out N: Int64): Boolean;
-var i, start: LongInt; neg: Boolean; v, d, lim: QWord; c: AnsiChar;
-begin
-  Result := False; N := 0;
-  start := 1; neg := False;
-  if (Length(S) >= 1) and (S[1] in ['+', '-']) then
-  begin
-    neg := S[1] = '-';
-    start := 2;
-  end;
-  if start > Length(S) then Exit;
-  if neg then lim := QWord(High(Int64)) + 1 else lim := QWord(High(Int64));
-  v := 0;
-  for i := start to Length(S) do
-  begin
-    c := S[i];
-    if IsDigit(c) then d := QWord(Ord(c) - Ord('0'))
-    else if c in ['a'..'f'] then d := QWord(Ord(c) - Ord('a') + 10)
-    else if c in ['A'..'F'] then d := QWord(Ord(c) - Ord('A') + 10)
-    else Exit;
-    if v > (lim - d) div 16 then Exit;
-    v := v * 16 + d;
-  end;
-  if neg then N := -Int64(v - 1) - 1 else N := Int64(v);
-  Result := True;
-end;
-
-function ParseInt(const S0: AnsiString; out N: Int64): Boolean;
-var s: AnsiString;
-begin
   s := S0;
   if StartsWith(s, '=') then s := After(s, '=');
-  if StartsWith(s, '0x') or StartsWith(s, '0X') then
-    Result := ParseI64Hex(After(s, '0x'), N)
+  if s = '' then Exit;
+  v := 0;
+  for i := 1 to Length(s) do
+  begin
+    if not IsDigit(s[i]) then Exit;
+    d := QWord(Ord(s[i]) - Ord('0'));
+    if v > (QWord(High(Int64)) - d) div 10 then Exit;
+    v := v * 10 + d;
+  end;
+  N := Int64(v);
+  Result := True;
+end;
+
+{ Lo que leen strtol(s, &end, 0) / strtoull(s, &end, 0) de C: espacios al
+  principio (isspace del locale "C"), un signo opcional, y la base que dice
+  el prefijo -- 0x/0X seguido de un digito hex es hex, cualquier otro 0
+  adelante es octal, el resto decimal -- con la tira mas larga de digitos de
+  esa base. EndPos es el indice (desde 0) al que apuntaria end; sin ningun
+  digito no se convierte nada y es 0, como strtol lo devuelve al principio.
+  Overflow: la magnitud pasa de High(QWord). El 0b binario de C23 que lee la
+  glibc 2.38 no se lee (MinGW tampoco: 1.0.7 ya difiere entre Linux y
+  Windows ahi). args.rs, c_strto_base0. }
+type
+  TCNumber = record
+    Negative: Boolean;
+    Overflow: Boolean;
+    Magnitude: QWord;
+    EndPos: LongInt;
+  end;
+
+function CDigit(C: AnsiChar; Radix: LongInt; out D: QWord): Boolean;
+begin
+  if IsDigit(C) then D := QWord(Ord(C) - Ord('0'))
+  else if C in ['a'..'z'] then D := QWord(Ord(C) - Ord('a') + 10)
+  else if C in ['A'..'Z'] then D := QWord(Ord(C) - Ord('A') + 10)
+  else Exit(False);
+  Result := D < QWord(Radix);
+end;
+
+function CStrToBase0(const S: AnsiString): TCNumber;
+var i, j, start, radix: LongInt; d: QWord;
+begin
+  Result.Negative := False; Result.Overflow := False; Result.Magnitude := 0; Result.EndPos := 0;
+  i := 1;
+  while (i <= Length(S)) and (S[i] in [' ', #9, #10, #11, #12, #13]) do Inc(i);
+  if (i <= Length(S)) and (S[i] in ['+', '-']) then
+  begin
+    Result.Negative := S[i] = '-';
+    Inc(i);
+  end;
+  if (i + 2 <= Length(S)) and (S[i] = '0') and (S[i + 1] in ['x', 'X'])
+     and (S[i + 2] in ['0'..'9', 'a'..'f', 'A'..'F']) then
+  begin radix := 16; start := i + 2; end
+  else if (i <= Length(S)) and (S[i] = '0') then
+  begin radix := 8; start := i; end
   else
-    Result := ParseI64Dec(s, N);
+  begin radix := 10; start := i; end;
+  j := start;
+  while (j <= Length(S)) and CDigit(S[j], radix, d) do
+  begin
+    if not Result.Overflow then
+    begin
+      if Result.Magnitude > (High(QWord) - d) div QWord(radix) then Result.Overflow := True
+      else Result.Magnitude := Result.Magnitude * QWord(radix) + d;
+    end;
+    Inc(j);
+  end;
+  if j = start then
+  begin
+    { nada convertido: end vuelve al principio }
+    Result.Negative := False; Result.Overflow := False; Result.Magnitude := 0; Result.EndPos := 0;
+    Exit;
+  end;
+  Result.EndPos := j - 1;
+end;
+
+{ strtol de -aX[/Y]: el long del C++ mide 64 bits en Linux y 32 en Windows,
+  y satura; el port lee el de Linux y rechaza lo que no entra en un Int64 en
+  vez de saturar. args.rs, c_long. }
+function CLong(const N: TCNumber; out V: Int64): Boolean;
+begin
+  Result := False; V := 0;
+  if N.Overflow then Exit;
+  if N.Negative then
+  begin
+    if N.Magnitude > QWord(1) shl 63 then Exit;
+    V := Int64(QWord(0) - N.Magnitude);   { -(2^63) es Low(Int64) }
+  end
+  else
+  begin
+    if N.Magnitude > QWord(High(Int64)) then Exit;
+    V := Int64(N.Magnitude);
+  end;
+  Result := True;
 end;
 
 { `str::parse::<usize>`: '+' opcional y digitos; en 32 bits el tope es 4 GiB }
@@ -291,15 +334,20 @@ begin
   Result := QWord(PtrUInt(N));
 end;
 
-{ --seed=N: decimal o hex con 0x (dup_wrapper.cpp:117-132) }
+{ --seed=N (dup_wrapper.cpp:117-132) es strtoull(.., 0) y el valor entero
+  tiene que ser el numero: decimal, hex con 0x u, con un 0 adelante, octal
+  (--seed=010 es 8, --seed=08 es invalido), despues de espacios y un signo
+  opcionales. Todo el rango de QWord es una semilla, y un menos da la vuelta
+  (--seed=-1 es 2^64-1), como strtoull. Hasta la 2.3.0 el port leia 010 como
+  10, rechazaba semillas pasado High(Int64), espacios y el menos, y aceptaba
+  un '=' adelante (--seed==8) que el C++ rechaza. args.rs, parse_seed. }
 function ParseSeed(const V: AnsiString; out N: QWord): Boolean;
-var x: Int64;
+var c: TCNumber;
 begin
-  Result := False;
-  if V = '' then Exit;
-  if not ParseInt(V, x) then Exit;
-  if x < 0 then Exit;
-  N := QWord(x);
+  Result := False; N := 0;
+  c := CStrToBase0(V);
+  if (V = '') or (c.EndPos = 0) or (c.EndPos <> Length(V)) or c.Overflow then Exit;
+  if c.Negative then N := QWord(0) - c.Magnitude else N := c.Magnitude;
   Result := True;
 end;
 
@@ -371,7 +419,7 @@ var head, tail: AnsiString; n: QWord; x: Int64; ok: Boolean;
 begin
   head := Copy(Part, 1, 1);
   tail := Copy(Part, 2, Length(Part));
-  if head = 'a' then ok := ParseInt(tail, x)
+  if head = 'a' then ok := ParseDecInt(tail, x)
   else if head = 'c' then
   begin
     ok := ParseMem(tail, uB, n);
@@ -405,8 +453,9 @@ end;
 
 procedure ParseArgs(const Args: array of AnsiString; out O: TOptions);
 var
-  i, j, slash, method: LongInt;
-  a, v, body, accelS: AnsiString;
+  i, j, method: LongInt;
+  a, v, body: AnsiString;
+  cn: TCNumber;
   n: QWord;
   x: Int64;
   ok: Boolean;
@@ -493,20 +542,27 @@ begin
     else if StartsWith(a, '-a') and (Length(a) >= 3) and IsDigit(a[3]) then
     begin
       { -aN o -aN/M (srep.cpp:343-348): el tamano de bitarr y la variante del
-        escaneo. NO son neutros a la salida (fixedcompress.pas). Como el C++
-        (strtol a un unsigned) y el Rust (as u32), se truncan a 32 bits; -aN
-        sin /M vuelve la variante a "no se dio" (9000), y -a- no la toca. }
+        escaneo. NO son neutros a la salida (fixedcompress.pas). Los dos
+        numeros son strtol(.., 0), como en el C++: -a010 es 8 y -a0x10 16,
+        -a08 es invalido, y despues de la '/' se leen espacios y un signo y
+        un valor vacio es 0 (-a4/ es -a4/0). Como el C++ (strtol a un
+        unsigned) y el Rust (as u32), se truncan a 32 bits; -aN sin /M vuelve
+        la variante a "no se dio" (9000), y -a- no la toca. }
       body := Copy(a, 3, Length(a));
-      slash := Pos('/', body);
-      if slash > 0 then accelS := Copy(body, 1, slash - 1) else accelS := body;
-      if not ParseInt(accelS, x) then Bad(a);
+      cn := CStrToBase0(body);
+      if not CLong(cn, x) then Bad(a);
       O.Accel := DWord(QWord(x) and $FFFFFFFF);
       O.Accelerator := 9000;
-      if slash > 0 then
+      body := Copy(body, cn.EndPos + 1, Length(body));
+      if StartsWith(body, '/') then
       begin
-        if not ParseInt(Copy(body, slash + 1, Length(body)), x) then Bad(a);
+        body := After(body, '/');
+        cn := CStrToBase0(body);
+        if not CLong(cn, x) then Bad(a);
         O.Accelerator := DWord(QWord(x) and $FFFFFFFF);
+        body := Copy(body, cn.EndPos + 1, Length(body));
       end;
+      if body <> '' then Bad(a);
     end
     else if a = '-ia-' then O.IoAccelerator := -1
     else if a = '-ia+' then O.IoAccelerator := 1
@@ -538,7 +594,7 @@ begin
     else if a = '-v' then O.Verbosity := 1
     else if StartsWith(a, '-v') then
     begin
-      if not ParseInt(After(a, '-v'), x) then Bad(a);
+      if not ParseDecInt(After(a, '-v'), x) then Bad(a);
       O.Verbosity := LongInt(x);   { `as i32` }
     end
     else if StartsWith(a, '-pc') then
@@ -590,7 +646,7 @@ begin
     else if StartsWith(a, '-t') then
     begin
       { aceptado e ignorado: la cantidad de hilos no cambia la salida }
-      if not ParseInt(After(a, '-t'), x) then Bad(a);
+      if not ParseDecInt(After(a, '-t'), x) then Bad(a);
       O.NumThreads := QWord(x);
     end
     else if StartsWith(a, '-rem') then
