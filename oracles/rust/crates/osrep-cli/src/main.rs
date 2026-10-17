@@ -5,6 +5,8 @@
 //! two C++ parsers, `modes.rs` the front end that drives them, and `report.rs`
 //! everything written to stderr.
 
+#[macro_use]
+mod stdio;
 mod args;
 mod help;
 mod modes;
@@ -25,11 +27,11 @@ fn main() -> ExitCode {
     for a in &argv {
         match a.as_str() {
             "--version" | "-V" => {
-                println!("{}", help::version());
+                stdio::out_text(&format!("{}\n", help::version()));
                 return ExitCode::SUCCESS;
             }
             "--help" | "-h" | "-?" => {
-                print!("{}", help::help());
+                stdio::out_text(&help::help());
                 return ExitCode::SUCCESS;
             }
             _ => {}
@@ -42,7 +44,7 @@ fn main() -> ExitCode {
     };
 
     if modes::wants_help(&opts) {
-        print!("{}", help::help());
+        stdio::out_text(&help::help());
         return ExitCode::from(modes::NO_ERRORS as u8);
     }
 
@@ -54,6 +56,6 @@ fn main() -> ExitCode {
 
 /// `error()` (`io.cpp:9-19`).
 fn fail(code: i32, msg: &str) -> ExitCode {
-    eprintln!("\n  ERROR! {msg}");
+    ewriteln!("\n  ERROR! {msg}");
     ExitCode::from(code as u8)
 }

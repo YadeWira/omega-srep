@@ -900,6 +900,215 @@ if [ "$WINE" = 0 ]; then
     pass=$((pass + 1))
 fi
 
+say "fd 0, 1 y 2 cerrados o llenos: lo mismo que el Rust, y ningun texto adentro de un archivo"
+# Con un fd 0-2 cerrado, el primer open del programa toma ese numero. Hasta la
+# 2.3.0, `osrep x x.osr <&- 2>&-` dejaba el archivo de salida en el fd 2 y el
+# progreso y el resumen se escribian ADENTRO del archivo (exit 0; con -delete
+# se perdia la entrada), y `-d` los metia en los datos. src/stdfds.pas reserva
+# los tres al arrancar, como el runtime del Rust, salvo que el fd 1 queda
+# solo lectura: los datos mandados a un stdout cerrado son un error, no un
+# descarte (con /dev/null, el Rust de la 2.3.0 hacia `-delete x - >&-` con
+# exit 0 y borraba x). Y un stderr o stdout que falla (/dev/full) no cambia
+# nada: el Rust hacia panic (exit 101) con el archivo a medias.
+# Bajo wine, de los fds de unix solo 1 y 2: un fd 0 cerrado es un handle que
+# falla al leer (ERROR_INVALID_FUNCTION, "Can't read"), donde Linux y un
+# Windows sin handle leen vacio, y con los tres cerrados se rompe el propio
+# wine. Lo que en Windows es un handle que falta (nulo, como un proceso sin
+# consola, o INVALID_HANDLE_VALUE) se prueba con tests/win_null_std_handles.c,
+# si hay mingw: el .exe con handles nulos o invalidos tiene que dar lo mismo
+# que el Rust de Linux con esos fds cerrados ("L:nkn" contra "02", "L:kik"
+# contra "1").
+FD="$TMP/fd"
+mkdir -p "$FD/fix"
+{ head -c 150000 tests/corpus/text.bin; head -c 50000 tests/corpus/random.bin; head -c 90000 tests/corpus/text.bin; } > "$FD/fix/in.txt"
+fdsize=$(stat -c%s "$FD/fix/in.txt")
+"$RS" --seed=7 -b64kb "$FD/fix/in.txt" "$FD/fix/a.osr" >/dev/null 2>&1 || fail "fd: el Rust no comprime"
+head -c 2000 "$FD/fix/a.osr" > "$FD/fix/bad.osr"
+# El borde del primer write del LineWriter del Rust: con un archivo de 1024
+# bytes justos y sin '\n' todavia no escribio nada (exit 3, "Can't write to
+# stdout"); con 1025, ya dentro del encode ("Io", exit 4). El Pascal usaba
+# >= 1024. Entradas sin '\n' cuyo archivo mide 1024 y 1025, en v5 y v4, con
+# la primera semilla que no mete un '\n' en ninguno de los dos.
+tr -d '\n' < tests/corpus/random.bin | head -c 1000 > "$FD/nonl.bin"
+fdedge() {   # $1=largo de la entrada para 1024 $2=flags; deja la semilla en FDSEED
+    local n=$1 f=$2 s k ok
+    head -c "$n" "$FD/nonl.bin" > "$FD/fix/e$n.bin"; head -c $((n + 1)) "$FD/nonl.bin" > "$FD/fix/e$((n + 1)).bin"
+    FDSEED=
+    for s in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16; do
+        ok=1
+        for k in 0 1; do
+            # shellcheck disable=SC2086
+            "$RS" --seed=$s $f "$FD/fix/e$((n + k)).bin" "$FD/e.osr" >/dev/null 2>&1 || fail "fd: el Rust no comprime e$((n + k)).bin"
+            [ "$(stat -c%s "$FD/e.osr")" -eq $((1024 + k)) ] || fail "fd: e$((n + k)).bin no da un archivo de $((1024 + k)) bytes [$f]"
+            [ "$(tr -cd '\n' < "$FD/e.osr" | wc -c)" -eq 0 ] || ok=0
+        done
+        [ "$ok" = 1 ] && { FDSEED=$s; return; }
+    done
+    fail "fd: ninguna semilla da archivos sin '\n' [$f]"
+}
+fdedge 904 ""; FDS5=$FDSEED
+fdedge 920 --format=v4; FDS4=$FDSEED
+rm -f "$FD/e.osr"
+# Solo en Linux: la salida o la entrada nombrada /dev/stdin o
+# /proc/self/fd/0 (bajo wine no abren, y el Rust de Linux si)
+FDLINUX=
+if [ "$WINE" = 0 ]; then
+    FDCOMBOS="n 0 1 2 01 02 12 012 f1 f2 w0"
+    FDLINUX="/dev/null|--seed=7 in.txt /dev/stdin
+/dev/null|-d a.osr /proc/self/fd/0
+/dev/null|--seed=7 /dev/stdin o.osr
+/dev/null|-d /dev/stdin o.dec"
+else
+    FDCOMBOS="n 1 2 12 f1 f2"
+    FDEXE=$(grep -o '[^ "]*\.exe' "$PA" | head -1)
+    if command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1 && [ -f "$FDEXE" ] \
+       && x86_64-w64-mingw32-gcc -municode -O1 -o "$TMP/nullstd.exe" tests/win_null_std_handles.c 2>/dev/null; then
+        FDEXE=$(WINEDEBUG=-all winepath -w "$FDEXE" 2>/dev/null)
+        FDCOMBOS="$FDCOMBOS L:nkk L:knk L:kkn L:nnk L:nkn L:knn L:nnn L:ikk L:kik L:kki"
+    else
+        say "sin mingw o sin el .exe del wrapper: los handles nulos no se prueban"
+    fi
+fi
+# $1=binario $2=directorio $3=combinacion $4=stdin, el resto los argumentos.
+# Deja <dir>/rc, <dir>/out y <dir>/err (los que siguen abiertos) y los
+# archivos de salida en <dir>/w.
+fdrun() {
+    local bin=$1 dir=$2 cl=$3 src=$4; shift 4
+    mkdir -p "$dir/w"; cp "$FD/fix/"* "$dir/w/"
+    local r0="<$src" r1='>"$dir/out"' r2='2>"$dir/err"'
+    case $cl in *0*) r0='<&-';; esac
+    case $cl in *1*) r1='>&-';; esac
+    case $cl in *2*) r2='2>&-';; esac
+    case $cl in f1) r1='>/dev/full';; f2) r2='2>/dev/full';; w0) r0='0>"$dir/w0"';; esac
+    local rc=0
+    (cd "$dir/w" && eval "timeout 60 \"\$bin\" \"\$@\" $r0 $r1 $r2") || rc=$?
+    echo "$rc" > "$dir/rc"
+    rm -f "$dir/w/in.txt" "$dir/w/a.osr" "$dir/w/bad.osr"
+}
+# lo mismo, por el lanzador: $1=directorio $2=mascara $3=stdin, el resto
+# los argumentos
+fdlaunch() {
+    local dir=$1 mask=$2 src=$3; shift 3
+    mkdir -p "$dir/w"; cp "$FD/fix/"* "$dir/w/"
+    local rc=0
+    (cd "$dir/w" && WINEDEBUG=-all timeout 60 wine "$TMP/nullstd.exe" "$mask" "$FDEXE" "$@" \
+        <"$src" >"$dir/out" 2>"$dir/err") || rc=$?
+    echo "$rc" > "$dir/rc"
+    rm -f "$dir/w/in.txt" "$dir/w/a.osr" "$dir/w/bad.osr"
+}
+# la mascara del lanzador como los fds cerrados equivalentes: un handle
+# nulo (n) o INVALID_HANDLE_VALUE (i) es un fd cerrado
+fdmask() {
+    local m=$1 c=""
+    [ "${m:0:1}" != k ] && c="${c}0"; [ "${m:1:1}" != k ] && c="${c}1"; [ "${m:2:1}" != k ] && c="${c}2"
+    echo "$c"
+}
+fdnorm() { [ -e "$1" ] && sed -E 's/[0-9]+(\.[0-9]+)? sec/T sec/g; s/[0-9]+ mb\/s/M mb\/s/g' "$1"; }
+fdn=0
+while IFS='|' read -r src args; do
+    [ -n "$args" ] || continue
+    for cl in $FDCOMBOS; do
+        rm -rf "$FD/r" "$FD/p"
+        case $cl in
+        L:*)
+            rcl=$(fdmask "${cl#L:}")
+            # shellcheck disable=SC2086
+            fdrun "$RSX" "$FD/r" "$rcl" "$src" $args
+            # shellcheck disable=SC2086
+            fdlaunch "$FD/p" "${cl#L:}" "$src" $args
+            ;;
+        *)
+            rcl=$cl
+            # shellcheck disable=SC2086
+            fdrun "$RSX" "$FD/r" "$cl" "$src" $args
+            # shellcheck disable=SC2086
+            fdrun "$PAX" "$FD/p" "$cl" "$src" $args
+            ;;
+        esac
+        what="[$args] ($cl)"
+        [ "$(cat "$FD/r/rc")" = "$(cat "$FD/p/rc")" ] \
+            || fail "fd $what: exit $(cat "$FD/p/rc") en Pascal, $(cat "$FD/r/rc") en Rust"
+        cmp -s <(fdnorm "$FD/r/out") <(fdnorm "$FD/p/out") || fail "fd $what: stdout difiere"
+        cmp -s <(fdnorm "$FD/r/err") <(fdnorm "$FD/p/err") \
+            || fail "fd $what: stderr difiere: '$(cat "$FD/p/err")' vs '$(cat "$FD/r/err")'"
+        ( cd "$FD/r/w" && ls -A ) > "$FD/r.ls"; ( cd "$FD/p/w" && ls -A ) > "$FD/p.ls"
+        cmp -s "$FD/r.ls" "$FD/p.ls" || fail "fd $what: otros archivos: $(tr '\n' ' ' <"$FD/p.ls") vs $(tr '\n' ' ' <"$FD/r.ls")"
+        while IFS= read -r f; do
+            cmp -s "$FD/r/w/$f" "$FD/p/w/$f" || fail "fd $what: '$f' difiere"
+        done < "$FD/p.ls"
+        # sin comparar con nadie: lo que se escribio a un archivo es lo mismo
+        # que sin cerrar nada, salvo cuando la entrada era el stdin cerrado
+        if [ "$cl" = n ]; then
+            rm -rf "$FD/n"; cp -r "$FD/p/w" "$FD/n"
+        elif ! { [ "$src" != /dev/null ] && case $rcl in *0*) true;; *) false;; esac; }; then
+            while IFS= read -r f; do
+                [ "$f" = w0 ] && continue
+                cmp -s "$FD/n/$f" "$FD/p/w/$f" || fail "fd $what: '$f' no es el de la corrida sin fds cerrados"
+            done < "$FD/p.ls"
+        fi
+        fdn=$((fdn + 1))
+    done
+done <<ARGS
+/dev/null|--version
+/dev/null|--help
+$FD/fix/in.txt|--seed=7 -s$fdsize
+$FD/fix/a.osr|-d
+/dev/null|--seed=7 -b64kb in.txt o.osr
+/dev/null|--seed=7 -bar in.txt o.osr
+/dev/null|--seed=7 -dup in.txt o.osr
+/dev/null|--seed=7 --format=v4 -m3f in.txt o.osr
+$FD/fix/in.txt|--seed=7 -s$fdsize - o.osr
+/dev/null|--seed=7 in.txt -
+/dev/null|--seed=7 -m0 in.txt -
+/dev/null|--seed=7 --format=v4 in.txt -
+/dev/null|--seed=7 -bar --format=v4 in.txt -
+/dev/null|--seed=$FDS5 e904.bin -
+/dev/null|--seed=$FDS5 e905.bin -
+/dev/null|--seed=$FDS4 --format=v4 e920.bin -
+/dev/null|--seed=$FDS4 --format=v4 -bar e921.bin -
+$FDLINUX
+/dev/null|-d a.osr o.dec
+$FD/fix/a.osr|-d - o.dec
+/dev/null|-d a.osr -
+/dev/null|-i a.osr
+$FD/fix/a.osr|-i -
+/dev/null|--verify a.osr
+$FD/fix/a.osr|--verify -
+/dev/null|nonexistent o.osr
+/dev/null|-d bad.osr o.dec
+/dev/null|-bogus
+ARGS
+say "$fdn corridas con fds cerrados, las mismas que el Rust"
+pass=$((pass + 1))
+# -delete con stdout cerrado o lleno: la salida falla y la entrada se queda.
+# En Linux tambien con la salida /dev/stdout o /proc/self/fd/1, que reabren
+# lo que hay detras del fd 1: reservado sobre un directorio, el open falla.
+# Y lo mismo con el fd 0 cerrado y la salida /dev/stdin, /proc/self/fd/0 o
+# /dev/fd/0: sobre /dev/null, `-delete x /dev/stdin <&-` borraba x.
+if [ "$WINE" = 0 ]; then
+    FDOUTS="- /dev/stdout /proc/self/fd/1 /dev/stdin /proc/self/fd/0 /dev/fd/0"
+else
+    FDOUTS="-"
+fi
+for spec in "in.txt|--seed=7 -delete in.txt" "a.osr|-delete -d a.osr"; do
+    keep=${spec%%|*}; args=${spec#*|}
+    for o in $FDOUTS; do
+        case $o in
+        */0|/dev/stdin) FDRS="'<&- 2>/dev/null' '<&- >/dev/null 2>&-' '<&- >&- 2>&-'";;
+        *) FDRS="'>&- 2>/dev/null' '>&- 2>&-' '<&- >&- 2>&-' '>/dev/full 2>/dev/null'";;
+        esac
+        eval "set -- $FDRS"
+        for r; do
+            [ "$WINE" = 1 ] && [ "$r" = '<&- >&- 2>&-' ] && continue
+            rm -rf "$FD/q"; mkdir -p "$FD/q"; cp "$FD/fix/"* "$FD/q/"
+            rc=0; (cd "$FD/q" && eval "\"\$PAX\" $args $o $r") || rc=$?
+            [ "$rc" != 0 ] || fail "fd [$args $o $r]: exit 0 sin poder escribir"
+            [ -e "$FD/q/$keep" ] || fail "fd [$args $o $r]: -delete borro $keep sin haber escrito nada"
+        done
+    done
+done
+pass=$((pass + 1))
+
 if [ "${OSREP_PASCAL_FULL:-0}" = "1" ]; then
     say "la puerta completa: rust_cli_conformance.sh sobre el Pascal"
     OSREP_PORT_BIN="$PA" bash tests/rust_cli_conformance.sh || fail "rust_cli_conformance.sh sobre el Pascal"

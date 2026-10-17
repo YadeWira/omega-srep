@@ -1517,6 +1517,103 @@ else
 fi
 pass=$((pass + 1))
 
+say "closed or full stdin/stdout/stderr: no text inside an output, no data thrown away"
+# Not against the C++: 1.0.7 opens its output on the first free fd, so with
+# `<&- 2>&-` the archive lands on fd 2 and the progress and summary lines are
+# written into it (exit 0), and `-d` writes them into the decompressed data
+# the same way; the Pascal did both until 2.3.0. The
+# rules both ports now follow (oracles/rust/crates/osrep-cli/src/stdio.rs,
+# pascal/src/stdfds.pas): a closed fd 0-2 is reserved before anything is
+# opened; a closed stdin reads as empty; data for a closed or failing stdout
+# is an error, so -delete keeps its input; messages to a closed or failing
+# stderr/stdout are dropped without changing the exit code (2.3.0's Rust
+# panicked, exit 101, with the archive half written).
+head -c 300000 tests/corpus/text.bin > "$TMP/fdin.bin"
+head -c 50000 tests/corpus/random.bin >> "$TMP/fdin.bin"
+"$RS" --seed=7 -b64kb "$TMP/fdin.bin" "$TMP/fdref.osr" >/dev/null 2>&1 || fail "fd: reference compress"
+for r in '<&- 2>&-' '>&- 2>&-' '<&- >&- 2>&-' '2>/dev/full' '<&- >/dev/full 2>/dev/full'; do
+    rm -f "$TMP/fd.osr" "$TMP/fd.out"
+    rc=0; eval '"$RS" --seed=7 -b64kb "$TMP/fdin.bin" "$TMP/fd.osr"' "$r" || rc=$?
+    [ "$rc" -eq 0 ] || fail "fd [$r]: compress exit $rc"
+    cmp -s "$TMP/fd.osr" "$TMP/fdref.osr" || fail "fd [$r]: the archive differs from the one written with every fd open"
+    rc=0; eval '"$RS" -d "$TMP/fdref.osr" "$TMP/fd.out"' "$r" || rc=$?
+    [ "$rc" -eq 0 ] || fail "fd [$r]: decompress exit $rc"
+    cmp -s "$TMP/fd.out" "$TMP/fdin.bin" || fail "fd [$r]: the decompressed data differs from the input"
+done
+# Also with the output named /dev/stdout or /proc/self/fd/1, which opens the
+# file behind fd 1 again: a closed fd 1 is reserved on a directory, so that
+# open fails (EISDIR) instead of landing on /dev/null. The same for fd 0 and
+# /dev/stdin, /proc/self/fd/0, /dev/fd/0: fd 0 is reserved on `/` with
+# O_PATH (on /dev/null, `-delete x /dev/stdin <&-` deleted x).
+for spec in "fdin.bin|--seed=7 -delete fdin.bin" "fdref.osr|-delete -d fdref.osr"; do
+    keep=${spec%%|*}; args=${spec#*|}
+    for o in - /dev/stdout /proc/self/fd/1 /dev/stdin /proc/self/fd/0 /dev/fd/0; do
+        case $o in
+        */0|/dev/stdin) rs="'<&- 2>/dev/null' '<&- >/dev/null 2>&-' '<&- >&- 2>&-'";;
+        *) rs="'>&- 2>/dev/null' '>/dev/full 2>/dev/null' '<&- >&- 2>&-'";;
+        esac
+        eval "set -- $rs"
+        for r; do
+            rm -rf "$TMP/fdq"; mkdir "$TMP/fdq"; cp "$TMP/fdin.bin" "$TMP/fdref.osr" "$TMP/fdq/"
+            rc=0; (cd "$TMP/fdq" && eval '"$RS"' "$args" "$o" "$r") || rc=$?
+            [ "$rc" -ne 0 ] || fail "fd [$args $o $r]: exit 0 with nowhere to write"
+            [ -e "$TMP/fdq/$keep" ] || fail "fd [$args $o $r]: -delete removed $keep"
+        done
+    done
+done
+for o in /dev/stdout /proc/self/fd/1 /dev/stdin /proc/self/fd/0; do
+    rc=0; "$RS" --seed=7 "$TMP/fdin.bin" "$o" <&- >&- 2>"$TMP/fd.err" || rc=$?
+    [ "$rc" -eq 3 ] && grep -q "Can't open $o for write" "$TMP/fd.err" \
+        || fail "fd [$o <&- >&-]: exit $rc, '$(cat "$TMP/fd.err")', not \"Can't open $o for write\" (exit 3)"
+done
+# When an archive sent to a closed or full stdout fails: Rust's LineWriter
+# of 1024 bytes writes at the first newline byte or once MORE than 1024
+# bytes are buffered, inside the encode ("Io", exit 4); an archive of 1024
+# bytes or less with no newline byte waits for the final flush ("Can't write
+# to stdout", exit 3). Exactly 1024 is the edge (the Pascal said "Io"): an
+# input with no newline byte whose archive is 1024 bytes, and one byte more.
+tr -d '\n' < tests/corpus/random.bin | head -c 1000 > "$TMP/fdnonl.bin"
+for spec in "904|" "920|--format=v4"; do
+    n=${spec%%|*}; f=${spec#*|}
+    head -c "$n" "$TMP/fdnonl.bin" > "$TMP/fde0.bin"; head -c $((n + 1)) "$TMP/fdnonl.bin" > "$TMP/fde1.bin"
+    seed=
+    for s in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16; do
+        ok=1
+        for k in 0 1; do
+            # shellcheck disable=SC2086
+            "$RS" --seed=$s $f "$TMP/fde$k.bin" "$TMP/fde.osr" 2>/dev/null || fail "fd edge: compress"
+            [ "$(stat -c%s "$TMP/fde.osr")" -eq $((1024 + k)) ] || fail "fd edge [$f $n+$k]: the archive is not $((1024 + k)) bytes"
+            [ "$(tr -cd '\n' < "$TMP/fde.osr" | wc -c)" -eq 0 ] || ok=0
+        done
+        [ "$ok" = 1 ] && { seed=$s; break; }
+    done
+    [ -n "$seed" ] || fail "fd edge [$f]: no seed gives archives without a newline byte"
+    for r in '>&-' '>/dev/full'; do
+        for k in 0 1; do
+            rc=0; eval '"$RS" --seed=$seed $f "$TMP/fde$k.bin" - 2>"$TMP/fd.err"' "$r" || rc=$?
+            if [ "$k" = 0 ]; then want="3 Can't write to stdout"; else want="4 Io"; fi
+            [ "$rc" -eq "${want%% *}" ] && grep -q "ERROR! ${want#* }\$" "$TMP/fd.err" \
+                || fail "fd edge [$f $((1024 + k))-byte archive $r]: exit $rc, '$(tail -c 60 "$TMP/fd.err")', not '${want#* }' (exit ${want%% *})"
+        done
+    done
+done
+for r in '>&-' '>/dev/full' '<&- >&- 2>&-'; do
+    for a in --version --help; do
+        rc=0; eval '"$RS" $a' "$r" || rc=$?
+        [ "$rc" -eq 0 ] || fail "fd [$a $r]: exit $rc"
+    done
+done
+for r in '2>&-' '2>/dev/full'; do
+    rc=0; eval '"$RS" -bogus' "$r" || rc=$?
+    [ "$rc" -eq 2 ] || fail "fd [-bogus $r]: exit $rc"
+done
+rm -f "$TMP/fd.osr" "$TMP/fd.out"
+rc=0; "$RS" --seed=7 -s10 - "$TMP/fd.osr" <&- 2>/dev/null || rc=$?
+[ "$rc" -eq 0 ] || fail "fd [- <&-]: exit $rc"
+"$RS" -d "$TMP/fd.osr" "$TMP/fd.out" 2>/dev/null || fail "fd [- <&-]: the archive does not decode"
+[ -e "$TMP/fd.out" ] && [ ! -s "$TMP/fd.out" ] || fail "fd [- <&-]: a closed stdin is not an empty input"
+pass=$((pass + 1))
+
 say "what each binary reports on stderr"
 # Its own script because it compares the two binaries' *text*, which nothing
 # else here does -- the rest diff archives and exit codes. That gap is how a
