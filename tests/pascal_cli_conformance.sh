@@ -320,8 +320,9 @@ if [ -x "$CXX_BIN/osrep" ]; then
 fi
 # Un archivo que termina en "ODUP" (aca, el v4 -dup de arriba): un Future-LZ
 # o un I/O LZ termina en sus ultimos literales, asi que el suyo termina en ese
-# trailer, meta y todo. 2.3.0 y el C++ 1.0.7 lo tomaban por un -dup y no lo
-# podian restaurar; -d ahora lo decodifica como uno comun cuando el archivo
+# trailer, meta y todo. 2.3.0 y el C++ 1.0.7 lo tomaban por un -dup y
+# -d archivo salida fallaba (por stdin lo restauraban, ver abajo); -d ahora
+# lo decodifica como uno comun cuando el archivo
 # de atras del trailer no se sostiene y el entero si. Las mutaciones de abajo
 # le pegan al trailer de mentira; nestdup es el -dup del -dup (el trailer de
 # afuera es de verdad).
@@ -485,6 +486,43 @@ cp v5.osr m.osr
 v5odup m.osr || fail "no se pudo armar un v5 terminado en ODUP"
 same -v0 -d m.osr o.out
 cmp -s o.out in.bin || fail "un v5 terminado en ODUP no se restauro: $(cat r.e)"
+# 2.3.0 y el C++ 1.0.7 fallaban en -d archivo salida con odpf.osr, pero por
+# stdin lo restauraban (el trailer se olfatea solo entre dos archivos con
+# nombre): es el atajo que da el CHANGELOG, y los dos lo siguen haciendo
+rrc=0; "$RSX" -v0 -d - r.out <odpf.osr >/dev/null 2>r.e || rrc=$?
+prc=0; "$PAX" -v0 -d - p.out <odpf.osr >/dev/null 2>p.e || prc=$?
+[ "$rrc" -eq 0 ] && [ "$prc" -eq 0 ] && cmp -s r.out v4dup.osr && cmp -s p.out v4dup.osr \
+    || fail "-d - salida < odpf.osr: Rust $rrc '$(cat r.e)', Pascal $prc '$(cat p.e)'"
+rm -f r.out p.out
+dpass=$((dpass + 1))
+# Los 8 bytes delante de un "ODUP" olfateado no son un tamano para reservar:
+# en un comun son bytes de la entrada, hasta el largo del archivo, y -d leia
+# esa "meta" antes de recorrer nada (en win32, con mas de 2^31 salia Io; con
+# mas de 2^32 SetLength cortaba el largo y ReadUpTo desbordaba el heap). Un
+# archivo ralo de 1 TiB, con y sin "DUPR" donde empezaria la meta: ninguno es
+# un archivo osrep y ninguno lee la meta. Nativo, con el espacio de
+# direcciones limitado, volver a leerla es un fallo y no un OOM.
+PWINE=0
+if [ "$(head -c 2 "$PA")" = '#!' ] && grep -q wine "$PA"; then PWINE=1; fi
+FL=$((1 << 40))
+for spec in "4096 0" "64 1"; do
+    read -r back tag <<<"$spec"
+    rm -f sp.osr
+    truncate -s $((FL - 12)) sp.osr
+    python3 -c 'import struct, sys; sys.stdout.buffer.write(struct.pack("<Q", int(sys.argv[1])) + b"ODUP")' \
+        $((FL - 12 - back)) >>sp.osr
+    [ "$tag" = 1 ] && printf DUPR | dd of=sp.osr bs=1 seek="$back" conv=notrunc status=none
+    rrc=0; (ulimit -v 4194304; "$RSX" -v0 -d sp.osr o.out) </dev/null >/dev/null 2>r.e || rrc=$?
+    prc=0; ([ "$PWINE" = 1 ] || ulimit -v 4194304; "$PAX" -v0 -d sp.osr o.out) </dev/null >/dev/null 2>p.e || prc=$?
+    [ "$rrc" -eq "$prc" ] && cmp -s r.e p.e \
+        || fail "-d de un trailer ralo ($back, DUPR $tag): Pascal $prc '$(cat p.e)', Rust $rrc '$(cat r.e)'"
+    case "$tag" in
+        0) [ "$rrc" -eq 4 ] && grep -qxF "  ERROR! the -dup meta is missing or corrupt" r.e ;;
+        1) [ "$rrc" -eq 3 ] && grep -qxF "  ERROR! Decode(Container(NotAnOsrepFile))" r.e ;;
+    esac || fail "-d de un trailer ralo ($back, DUPR $tag): $rrc '$(cat r.e)'"
+    rm -f sp.osr o.out
+    dpass=$((dpass + 1))
+done
 # el largo del footer de un v4 una unidad menos: la tabla de tamanos deja de
 # ser multiplo de 4, que es otro sitio de TableMismatch que el de arriba
 n=$(stat -c%s v4.osr)

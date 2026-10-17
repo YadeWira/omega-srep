@@ -287,7 +287,7 @@ begin
 end;
 
 { dup::split_odup: el largo del archivo que tapa el trailer ODUP y la meta,
-  con los chequeos de OdupMeta (dupwrap.pas), asi lo que -i describe como un
+  con los chequeos de OdupTrailer (dupwrap.pas), asi lo que -i describe como un
   -dup es lo que -d desharia como uno. False sin trailer; lanza EV5 si el
   trailer esta pero no sirve. }
 function SplitOdup(const B: TBytes; out BodyLen, MetaAt, MetaLen: QWord): Boolean;

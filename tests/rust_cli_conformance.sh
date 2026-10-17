@@ -673,8 +673,9 @@ say "a file that ends in \"ODUP\": its Future-LZ/I/O LZ archive is a plain one"
 # in its last literals -- so one of a v4 -dup archive ends in that archive's
 # own trailer, meta and all. 2.3.0 and the C++ 1.0.7 took it for a -dup
 # archive, cut it there and failed on what was left ("unexpected end of file"
-# in the C++, Decode(Container(Truncated)) in the ports): the archive could not
-# be restored. -d now takes the trailer only when the archive behind it holds
+# in the C++, Decode(Container(Truncated)) in the ports): `-d archive out`
+# failed. (`-d - out < archive` restored it: the trailer is only sniffed when
+# input and output are both named files.) -d now takes the trailer only when the archive behind it holds
 # up, and decodes the file as a plain archive when the whole of it does. The
 # writer is untouched: the archives are the C++'s, byte for byte. Index-LZ
 # ends in its footer, which no trailer can match, and always decoded.
@@ -694,10 +695,19 @@ for m in m0 m0f m0o m1 m1f m1o m2 m2f m2o m3 m3f m3o m4 m4f m4o m5 m5f m5o; do
         cmp -s "$TMP/od.out" "$TMP/in4.osr" || fail "ODUP input -$m $h: -d wrote something else"
         case "$m" in *f|*o)
             # the case the fix is about: the file ends in the inner trailer,
-            # and the C++ 1.0.7 cannot restore it (its tempfile goes in $TMP)
+            # and the C++ 1.0.7's `-d archive out` fails on it (its tempfile
+            # goes in $TMP) -- while through stdin, where it does not sniff,
+            # it restores it, which is the workaround the CHANGELOG gives
             [ "$(tail -c 4 "$TMP/od.osr")" = ODUP ] || fail "ODUP input -$m $h: the archive does not end in ODUP"
             rc=0; TMPDIR="$TMP" "$CXX_BIN/osrep" -d "$TMP/odc.osr" "$TMP/od.out" >/dev/null 2>&1 || rc=$?
-            [ "$rc" -ne 0 ] || fail "ODUP input -$m $h: the C++ restored it; the CHANGELOG says it cannot"
+            [ "$rc" -ne 0 ] || fail "ODUP input -$m $h: the C++ restored it; the CHANGELOG says -d archive out fails"
+            rm -f "$TMP/od.out"
+            TMPDIR="$TMP" "$CXX_BIN/osrep" -d - "$TMP/od.out" <"$TMP/odc.osr" >/dev/null 2>&1 \
+                && cmp -s "$TMP/od.out" "$TMP/in4.osr" \
+                || fail "ODUP input -$m $h: the C++'s -d - out < archive did not restore it; the CHANGELOG says it does"
+            rm -f "$TMP/od.out"
+            "$RS" -d - "$TMP/od.out" <"$TMP/od.osr" >/dev/null 2>&1 && cmp -s "$TMP/od.out" "$TMP/in4.osr" \
+                || fail "ODUP input -$m $h: -d - out < archive did not restore it"
             ;;
         esac
         pass=$((pass + 1))
@@ -786,6 +796,67 @@ for spec in "od Future-LZ" "nest Index-LZ"; do
     rc=0; "$RS" --verify "$TMP/$1.osr" >/dev/null 2>"$TMP/od.err" || rc=$?
     [ "$rc" -eq 2 ] && grep -qF "is a v1-v4 archive" "$TMP/od.err" \
         || fail "--verify on $1.osr: exit $rc, '$(cat "$TMP/od.err")'"
+    pass=$((pass + 1))
+done
+
+say "the 8 bytes before a sniffed \"ODUP\" are not a size to allocate"
+# In a plain Future-LZ/I/O LZ archive of a file that ends in "ODUP", the
+# trailer's meta_size is the input's own bytes, anything up to the file's
+# length, and -d read that much "meta" before it walked anything: a 400 MB
+# archive took 360 MB more to decode, and the win32 Pascal build failed (Io)
+# or overran its heap buffer once the number passed 2^31 or 2^32. Now only the
+# 4 bytes where the meta would start are read, for "DUPR"; the meta itself
+# only once the archive in front of it walks, or once a -dup body has decoded.
+# The address space is capped well under the fake meta_size (-d needs ~20 MB):
+# reading it first is an allocation failure here, not an OOM.
+for spec in "plain -m3f" "tagged -m3o"; do
+    set -- $spec
+    rm -f "$TMP/fm.bin" "$TMP/fm.osr" "$TMP/fm.out"
+    python3 - "$RS" "$TMP/fm.bin" "$TMP/fm.osr" "$1" "$2" <<'PY2' || fail "fake meta_size $spec: could not make one"
+import random, struct, subprocess, sys
+rs, inp, osr, kind, mode = sys.argv[1:]
+n, ms = 64_000_000, 56_000_000
+d = bytearray(random.Random(11).randbytes(n))
+d[n - 12:n - 4] = struct.pack("<Q", ms); d[n - 4:] = b"ODUP"
+def pack():
+    open(inp, "wb").write(d)
+    subprocess.run([rs, "--format=v4", "--seed=7", mode, inp, osr], check=True,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return open(osr, "rb").read()
+a = pack()
+assert a[-12:] == d[-12:]
+if kind == "tagged":
+    # "DUPR" where the archive (blocks of literals: the data is random) puts
+    # the start of that meta: find which input bytes land there
+    at = len(a) - 12 - ms
+    i = d.find(a[at:at + 32])
+    assert i >= 0
+    d[i:i + 4] = b"DUPR"
+    a = pack()
+    assert a[at:at + 4] == b"DUPR" and a[-12:] == d[-12:]
+PY2
+    rc=0; (ulimit -v 40960; "$RS" -d "$TMP/fm.osr" "$TMP/fm.out") >/dev/null 2>"$TMP/fm.err" || rc=$?
+    [ "$rc" -eq 0 ] && cmp -s "$TMP/fm.out" "$TMP/fm.bin" \
+        || fail "fake meta_size $spec: -d in 40 MB: exit $rc, '$(cat "$TMP/fm.err")'"
+    rm -f "$TMP/fm.bin" "$TMP/fm.osr" "$TMP/fm.out"
+    pass=$((pass + 1))
+done
+# A sparse 1 TiB file: a meta_size near the file's length, with and without
+# "DUPR" where it would start. Neither is an archive, and neither meta is
+# read: no DUPR is the trailer's error, a DUPR in front of a body that does
+# not decode is the body's. Both read the meta (1 TiB) before this.
+FL=$((1 << 40))
+for spec in "4096 0 4 the -dup meta is missing or corrupt" "64 1 3 Decode(Container(NotAnOsrepFile))"; do
+    read -r back tag want msg <<<"$spec"
+    rm -f "$TMP/sp.osr" "$TMP/sp.out"
+    truncate -s $((FL - 12)) "$TMP/sp.osr"
+    python3 -c 'import struct, sys; sys.stdout.buffer.write(struct.pack("<Q", int(sys.argv[1])) + b"ODUP")' \
+        $((FL - 12 - back)) >>"$TMP/sp.osr"
+    [ "$tag" = 1 ] && printf DUPR | dd of="$TMP/sp.osr" bs=1 seek="$back" conv=notrunc status=none
+    rc=0; (ulimit -v 4194304; "$RS" -d "$TMP/sp.osr" "$TMP/sp.out") >/dev/null 2>"$TMP/sp.err" || rc=$?
+    [ "$rc" -eq "$want" ] && grep -qxF "  ERROR! $msg" "$TMP/sp.err" \
+        || fail "sparse fake trailer ($back, DUPR $tag): exit $rc, '$(cat "$TMP/sp.err")'"
+    rm -f "$TMP/sp.osr" "$TMP/sp.out"
     pass=$((pass + 1))
 done
 

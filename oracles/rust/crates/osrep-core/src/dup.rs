@@ -209,17 +209,24 @@ pub fn decode_with(
 /// The trailer is sniffed, and a plain Future-LZ or I/O LZ archive ends in
 /// its last literals, so one of a file that itself ends in "ODUP" -- any v4
 /// `-dup` archive -- ends in what looks like a trailer, meta and all. 2.3.0
-/// and the C++ 1.0.7 cut it off and failed on what was left, and the archive
-/// could not be restored. So the trailer is taken only when the archive
-/// behind it holds up (it walks as a whole archive, and the meta fits what
-/// its blocks decode to); when it does not, and the whole file walks as a
-/// plain archive, the file is decoded as one -- whose blocks then pass their
-/// own checks, digests included. When neither holds, it is the `-dup` path
-/// that runs and fails, with the same error as before: a damaged `-dup`
-/// archive is not decoded to its body. Neither walk accepts the zero-length
-/// terminator block no encoder writes, or a v1-v3 `-dup` archive (the C++
-/// writes those) whose meta had its first bytes zeroed would read as its
-/// own body.
+/// and the C++ 1.0.7 cut it off and failed on what was left, so `-d archive
+/// out` failed on it (`-d - out < archive` restored it: the trailer is only
+/// sniffed when input and output are both named files). So the trailer is
+/// taken only when the archive behind it holds up (it walks as a whole
+/// archive, and the meta fits what its blocks decode to); when it does not,
+/// and the whole file walks as a plain archive, the file is decoded as one --
+/// whose blocks then pass their own checks, digests included. When neither
+/// holds, it is the `-dup` path that runs and fails, with the same error as
+/// before: a damaged `-dup` archive is not decoded to its body. Neither walk
+/// accepts the zero-length terminator block no encoder writes, or a v1-v3
+/// `-dup` archive (the C++ writes those) whose meta had its first bytes
+/// zeroed would read as its own body.
+///
+/// The meta itself is read only once the archive in front of it has walked,
+/// or, on the failing `-dup` path, once the body has decoded. In a plain
+/// archive the trailer's `meta_size` is the input's own bytes, anything up to
+/// the file's length: reading the meta first cost that much memory, and in
+/// the win32 Pascal build overran the buffer allocated for it.
 fn decode_odup(
     archive: &mut File,
     len: u64,
@@ -227,27 +234,35 @@ fn decode_odup(
     opts: &FutureLzOptions,
     stats_out_of_line: bool,
 ) -> Result<bool, DupError> {
-    let sniffed = odup_meta(archive, len);
+    let sniffed = odup_trailer(archive, len);
     if let Ok(None) = sniffed {
         return Ok(false);
     }
-    let holds = match &sniffed {
-        Ok(Some(meta)) => dup_holds(archive, len, meta, stats_out_of_line),
-        _ => false,
-    };
+    // The `-dup` reading: the archive in front of the meta walks as a whole
+    // one, and the meta asks for no more body than its blocks decode to
+    // (`archive::with_dup`'s rule, which `-i` applies too).
+    let mut meta = None;
+    let mut holds = false;
+    if let Ok(Some(meta_size)) = sniffed {
+        let body_len = len - ODUP_TRAILER_SIZE - meta_size;
+        if let Some(origsize) = reads_as_plain(archive, body_len, stats_out_of_line) {
+            let m = read_meta(archive, len, meta_size)?;
+            holds = matches!(dedup::summarize_meta(&m), Ok(s) if s.body_size <= origsize);
+            meta = Some(m);
+        }
+    }
     if !holds && reads_as_plain(archive, len, stats_out_of_line).is_some() {
         return Ok(false);
     }
-    let meta = match sniffed? {
-        Some(meta) => meta,
-        None => return Ok(false),
+    let Some(meta_size) = sniffed? else {
+        return Ok(false);
     };
 
     // v4 keeps the body in the archive but hidden behind the trailer; the
     // C++ carves it out to a tempfile before handing it to srep_main, and
     // so does this.
     let body = TempFile::new("osrep-dup-body-osr")?;
-    let body_len = len - ODUP_TRAILER_SIZE - meta.len() as u64;
+    let body_len = len - ODUP_TRAILER_SIZE - meta_size;
     {
         let mut trimmed = File::create(body.path())?;
         archive.seek(SeekFrom::Start(0))?;
@@ -262,20 +277,14 @@ fn decode_odup(
     archive::decode(&mut body_file, &mut sink, opts, None, None).map_err(DupError::Decode)?;
     sink.flush()?;
     drop(sink);
+    // On the failing path the meta is read last: a body that does not decode
+    // fails as it always did, without a `meta_size` worth of memory first.
+    let meta = match meta {
+        Some(meta) => meta,
+        None => read_meta(archive, len, meta_size)?,
+    };
     dedup::decode_streaming(&meta, decoded.path(), output).map_err(DupError::Dedup)?;
     Ok(true)
-}
-
-/// The `-dup` reading of a file whose trailer passed `odup_meta`: the archive
-/// in front of the meta walks as a whole one, and the meta asks for no more
-/// body than its blocks decode to (`archive::with_dup`'s rule, which `-i`
-/// applies too).
-fn dup_holds(archive: &mut File, len: u64, meta: &[u8], stats_out_of_line: bool) -> bool {
-    let body_len = len - ODUP_TRAILER_SIZE - meta.len() as u64;
-    let Some(origsize) = reads_as_plain(archive, body_len, stats_out_of_line) else {
-        return false;
-    };
-    matches!(dedup::summarize_meta(meta), Ok(s) if s.body_size <= origsize)
 }
 
 /// The first `len` bytes walk as a v1-v4 archive that ends where its blocks
@@ -323,7 +332,8 @@ fn v5_meta(archive: &mut File, len: u64) -> Result<V5Meta, DupError> {
 
     let blob_len = u64::from(footer.meta_size);
     let end = footer.meta_offset.checked_add(blob_len).ok_or(DupError::BadDup)?;
-    if blob_len == 0 || end > len {
+    // Past `isize::MAX` (a 32-bit build) no buffer here can hold it.
+    if blob_len == 0 || end > len || blob_len > isize::MAX as u64 {
         return Err(DupError::BadDup);
     }
     let mut blob = vec![0u8; blob_len as usize];
@@ -332,9 +342,10 @@ fn v5_meta(archive: &mut File, len: u64) -> Result<V5Meta, DupError> {
     Ok(V5Meta::Dup(payload.to_vec()))
 }
 
-/// The `-dup` payload of a v4 archive: the ODUP trailer's meta, or `None` when
-/// the last four bytes are not `ODUP`.
-fn odup_meta(archive: &mut File, len: u64) -> Result<Option<Vec<u8>>, DupError> {
+/// The ODUP trailer of a v4 archive, checked without reading the meta: its
+/// `meta_size`, or `None` when the last four bytes are not `ODUP`. Of the
+/// meta only the first four bytes are read, for the `DUPR` tag.
+fn odup_trailer(archive: &mut File, len: u64) -> Result<Option<u64>, DupError> {
     if len < ODUP_TRAILER_SIZE {
         return Ok(None);
     }
@@ -349,21 +360,32 @@ fn odup_meta(archive: &mut File, len: u64) -> Result<Option<Vec<u8>>, DupError> 
     if meta_size > len - ODUP_TRAILER_SIZE || meta_size < 4 {
         return Err(DupError::BadDup);
     }
-    let at = len - ODUP_TRAILER_SIZE - meta_size;
-    let mut meta = vec![0u8; meta_size as usize];
-    read_exact_at(archive, at, &mut meta)?;
     // `dup_wrapper.cpp:330-338`: an ODUP trailer whose meta is not a `.dupref`
     // blob is refused (unless the whole file reads as a plain archive, which
     // `decode_odup` decides).
-    if meta[..4] != *b"DUPR" {
+    let mut tag = [0u8; 4];
+    read_exact_at(archive, len - ODUP_TRAILER_SIZE - meta_size, &mut tag)?;
+    if tag != *b"DUPR" {
         return Err(DupError::BadDup);
     }
-    Ok(Some(meta))
+    Ok(Some(meta_size))
 }
 
-/// `odup_meta` over an archive already in memory, for `-i` and `--verify`:
+/// The meta of a trailer [`odup_trailer`] passed.
+fn read_meta(archive: &mut File, len: u64, meta_size: u64) -> Result<Vec<u8>, DupError> {
+    // Past `isize::MAX` (a 32-bit build) is a meta no buffer here can hold,
+    // and `as usize` would cut its length.
+    if meta_size > isize::MAX as u64 {
+        return Err(DupError::BadDup);
+    }
+    let mut meta = vec![0u8; meta_size as usize];
+    read_exact_at(archive, len - ODUP_TRAILER_SIZE - meta_size, &mut meta)?;
+    Ok(meta)
+}
+
+/// `odup_trailer` over an archive already in memory, for `-i` and `--verify`:
 /// the length of the archive the trailer hides, and the meta, or `None` when
-/// the last four bytes are not `ODUP`. The checks are `odup_meta`'s, so what
+/// the last four bytes are not `ODUP`. The checks are `odup_trailer`'s, so what
 /// `-i` describes as a `-dup` archive is what `-d` would undo as one.
 pub fn split_odup(bytes: &[u8]) -> Result<Option<(usize, &[u8])>, DupError> {
     let len = bytes.len() as u64;
@@ -556,7 +578,7 @@ mod tests {
         assert_eq!(info.compsize, n as u64);
         let d = info.dup.unwrap();
         assert!(d.unique < d.chunks && d.body_size < original.len() as u64);
-        // A meta_size past the file is refused, as `odup_meta` refuses it.
+        // A meta_size past the file is refused, as `odup_trailer` refuses it.
         let mut bad = bytes.clone();
         bad[n - 12..n - 4].copy_from_slice(&(n as u64).to_le_bytes());
         assert!(archive::inspect(&bad).is_err());
@@ -825,5 +847,100 @@ mod tests {
         assert_eq!(&bytes[n - 4..], b"ODUP");
         v5::Footer::decode(&bytes[f..]).unwrap();
         assert_eq!(restore(&bytes).unwrap(), original);
+    }
+
+    /// The largest single allocation this thread has asked for, so a test can
+    /// say what `-d` did *not* allocate.
+    mod alloc_probe {
+        use std::alloc::{GlobalAlloc, Layout, System};
+        use std::cell::Cell;
+
+        thread_local! {
+            static LARGEST: Cell<usize> = const { Cell::new(0) };
+        }
+
+        fn note(size: usize) {
+            let _ = LARGEST.try_with(|c| c.set(c.get().max(size)));
+        }
+
+        pub struct Probe;
+
+        unsafe impl GlobalAlloc for Probe {
+            unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+                note(layout.size());
+                System.alloc(layout)
+            }
+            unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+                note(layout.size());
+                System.alloc_zeroed(layout)
+            }
+            unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+                System.dealloc(ptr, layout)
+            }
+            unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+                note(new_size);
+                System.realloc(ptr, layout, new_size)
+            }
+        }
+
+        #[global_allocator]
+        static PROBE: Probe = Probe;
+
+        pub fn reset() {
+            LARGEST.with(|c| c.set(0));
+        }
+
+        pub fn largest() -> usize {
+            LARGEST.with(|c| c.get())
+        }
+    }
+
+    #[test]
+    fn a_fake_meta_size_is_not_allocated() {
+        // The 8 bytes in front of "ODUP" at the end of a plain Future-LZ or
+        // I/O LZ archive are the input's: here a `meta_size` of 3 MB, which
+        // `-d` read (and allocated) before it walked anything. Once with
+        // "DUPR" where that meta would start, once without.
+        const META_SIZE: usize = 3_000_000;
+        let mut data = vec![0u8; 4_000_000];
+        let mut s = 0x9E37_79B9_7F4A_7C15u64;
+        for b in data.iter_mut() {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            *b = (s & 0xFF) as u8;
+        }
+        let n = data.len();
+        data[n - 12..n - 4].copy_from_slice(&(META_SIZE as u64).to_le_bytes());
+        data[n - 4..].copy_from_slice(b"ODUP");
+        for tagged in [false, true] {
+            if tagged {
+                data[n - 12 - META_SIZE..n - 8 - META_SIZE].copy_from_slice(b"DUPR");
+            }
+            for container in [Container::FutureLz, Container::IoLz] {
+                // One block, all literals: the archive ends in the input.
+                let mut bytes = Vec::new();
+                let opts = EncodeOptions {
+                    bufsize: 8 << 20,
+                    ..options()
+                };
+                let mode = Mode {
+                    kind: Kind::Digest,
+                    container,
+                };
+                encoder::encode(&mut std::io::Cursor::new(&data), &mut bytes, &opts, mode, None, None)
+                    .unwrap();
+                let len = bytes.len();
+                assert_eq!(bytes[len - 12 - META_SIZE..], data[n - 12 - META_SIZE..]);
+                let archive = scratch(Some(&bytes));
+                let restored = scratch(None);
+                alloc_probe::reset();
+                let undone = decode(archive.path(), restored.path(), &FutureLzOptions::default());
+                let largest = alloc_probe::largest();
+                assert!(matches!(undone, Ok(false)), "{container:?} {tagged}");
+                assert!(largest < META_SIZE / 2, "{container:?} {tagged}: {largest}");
+                assert_eq!(restore(&bytes).unwrap(), data, "{container:?} {tagged}");
+            }
+        }
     }
 }

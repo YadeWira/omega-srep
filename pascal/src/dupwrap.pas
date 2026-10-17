@@ -131,6 +131,10 @@ end;
   por un error del sistema (EISDIR), es Truncated }
 function ReadAt(S: TStream; Off, N: QWord): TBytes;
 begin
+  { mas de lo que entra en un buffer (win32: 2 GB) es una meta que esta build
+    no puede deshacer, y SetLength cortaria el largo en silencio (un -m3f de
+    un archivo con 2^32+4096 en esos bytes desbordaba el heap) }
+  if N > QWord(High(SizeInt)) then raise EDup.Create('BadDup');
   SetLength(Result, N);
   if Off > QWord(High(Int64)) then raise EDup.Create('Io');
   SeekOrIo(S, Int64(Off), soBeginning);
@@ -175,11 +179,13 @@ begin
   Result := Copy(blob, 0, blobLen - 4);
 end;
 
-{ la meta del trailer ODUP de un v4, o nil si los ultimos cuatro bytes no son ODUP }
-function OdupMeta(S: TStream; Len: QWord; out IsDup: Boolean): TBytes;
-var magic, sz: TBytes; metaSize: QWord; i: LongInt;
+{ el trailer ODUP de un v4, chequeado sin leer la meta (odup_trailer): su
+  meta_size, o IsDup False si los ultimos cuatro bytes no son ODUP. De la meta
+  se leen solo los cuatro primeros bytes, la marca DUPR. }
+function OdupTrailer(S: TStream; Len: QWord; out IsDup: Boolean): QWord;
+var magic, sz, tag: TBytes; metaSize: QWord; i: LongInt;
 begin
-  Result := nil;
+  Result := 0;
   IsDup := False;
   if Len < ODUP_TRAILER_SIZE then Exit;
   magic := ReadAt(S, Len - 4, 4);
@@ -189,12 +195,20 @@ begin
   metaSize := 0;
   for i := 7 downto 0 do metaSize := (metaSize shl 8) or QWord(sz[i]);
   if (metaSize > Len - ODUP_TRAILER_SIZE) or (metaSize < 4) then raise EDup.Create('BadDup');
-  Result := ReadAt(S, Len - ODUP_TRAILER_SIZE - metaSize, metaSize);
   { un trailer ODUP cuya meta no es .dupref se rechaza (salvo que el archivo
     entero se lea como uno comun, que lo decide DupDecode) }
-  if not ((Result[0] = Ord('D')) and (Result[1] = Ord('U')) and (Result[2] = Ord('P')) and
-          (Result[3] = Ord('R'))) then raise EDup.Create('BadDup');
+  tag := ReadAt(S, Len - ODUP_TRAILER_SIZE - metaSize, 4);
+  if not ((tag[0] = Ord('D')) and (tag[1] = Ord('U')) and (tag[2] = Ord('P')) and
+          (tag[3] = Ord('R'))) then raise EDup.Create('BadDup');
   IsDup := True;
+  Result := metaSize;
+end;
+
+{ la meta de un trailer que paso OdupTrailer (read_meta); pasado
+  High(SizeInt) (win32), BadDup, por el chequeo de ReadAt }
+function ReadOdupMeta(S: TStream; Len, MetaSize: QWord): TBytes;
+begin
+  Result := ReadAt(S, Len - ODUP_TRAILER_SIZE - MetaSize, MetaSize);
 end;
 
 { seek + read sin excepciones: False si no se pudo leer todo }
@@ -298,23 +312,6 @@ begin
   Result := True;
 end;
 
-{ dup_holds: el archivo delante de la meta se recorre entero, y la meta no
-  pide mas cuerpo que el que decodifican sus bloques (la regla de with_dup,
-  que aplica -i tambien) }
-function DupHolds(S: TStream; Len: QWord; const Meta: TBytes; StatsOutOfLine: Boolean): Boolean;
-var orig: QWord; sm: TMetaSummary;
-begin
-  Result := False;
-  if not WalksAsPlain(S, Len - ODUP_TRAILER_SIZE - QWord(Length(Meta)), StatsOutOfLine, orig) then
-    Exit;
-  try
-    SummarizeMeta(Meta, sm);
-  except
-    on EDedup do Exit;
-  end;
-  Result := sm.BodySize <= orig;
-end;
-
 { El cuerpo de un -dup, decodificado como lo hace dup.rs: un v5 directo por
   decode_v5, el cuerpo de un ODUP por archive::decode. Un rechazo sale como
   DupError::Decode, con el Debug del DecodeError adentro. La salida se abre en
@@ -369,9 +366,10 @@ function DupDecode(const InPath, OutPath: AnsiString; const Opts: TFutureLzOptio
 var
   s: TRawFileStream;
   bodyIn: TFileStream;
-  len, bodyLen, orig: QWord;
+  len, bodyLen, orig, metaSize: QWord;
   meta: TBytes;
-  isOdup, isV5Plain, holds: Boolean;
+  isOdup, isV5Plain, holds, haveMeta: Boolean;
+  sm: TMetaSummary;
   sniffErr: AnsiString;
   body, decoded: AnsiString;
 begin
@@ -384,6 +382,8 @@ begin
     len := SeekOrIo(s, 0, soEnd);
     meta := V5Meta(s, len, isV5Plain);
     isOdup := False;
+    haveMeta := False;
+    metaSize := 0;
     { un v5 que termina en su propio footer no lleva trailer ODUP: sus
       ultimos cuatro bytes son el CRC del footer, que es "ODUP" en uno de cada
       2^32 archivos, y 2.3.0 entonces rechazaba un archivo sano }
@@ -394,19 +394,41 @@ begin
         termina en sus ultimos literales, asi que el de un archivo que termina
         en "ODUP" (cualquier v4 -dup) termina en algo con forma de trailer,
         meta y todo. 2.3.0 y el C++ 1.0.7 lo cortaban y fallaban con lo que
-        quedaba. El trailer se toma solo si el archivo de atras se sostiene;
-        si no, y el archivo entero se recorre como uno comun, se decodifica
-        como uno comun (y sus bloques pasan sus chequeos, digests incluidos).
-        Si ninguno se sostiene, corre el camino -dup y falla con el error de
-        siempre: un -dup danado no se decodifica a su cuerpo. }
+        quedaba en -d archivo salida (-d - salida < archivo lo restauraba: el
+        trailer se olfatea solo entre dos archivos con nombre). El trailer se
+        toma solo si el archivo de atras se sostiene; si no, y el archivo
+        entero se recorre como uno comun, se decodifica como uno comun (y sus
+        bloques pasan sus chequeos, digests incluidos). Si ninguno se
+        sostiene, corre el camino -dup y falla con el error de siempre: un
+        -dup danado no se decodifica a su cuerpo.
+        La meta se lee recien cuando el archivo de adelante se recorrio, o,
+        en el camino -dup que falla, cuando el cuerpo ya se decodifico: en un
+        archivo comun meta_size son bytes de la entrada, hasta el largo del
+        archivo, y leerla primero costaba esa memoria (y en win32 desbordaba
+        el buffer). }
       sniffErr := '';
       try
-        meta := OdupMeta(s, len, isOdup);
+        metaSize := OdupTrailer(s, len, isOdup);
       except
         on X: EDup do sniffErr := X.Message;
       end;
       if (sniffErr = '') and not isOdup then Exit(False);
-      holds := (sniffErr = '') and DupHolds(s, len, meta, StatsOutOfLine);
+      { el -dup: el archivo delante de la meta se recorre entero, y la meta no
+        pide mas cuerpo que el que decodifican sus bloques (la regla de
+        with_dup, que aplica -i tambien) }
+      holds := False;
+      if (sniffErr = '') and WalksAsPlain(s, len - ODUP_TRAILER_SIZE - metaSize,
+                                          StatsOutOfLine, orig) then
+      begin
+        meta := ReadOdupMeta(s, len, metaSize);
+        haveMeta := True;
+        try
+          SummarizeMeta(meta, sm);
+          holds := sm.BodySize <= orig;
+        except
+          on EDedup do holds := False;
+        end;
+      end;
       if (not holds) and WalksAsPlain(s, len, StatsOutOfLine, orig) then Exit(False);
       if sniffErr <> '' then raise EDup.Create(sniffErr);
     end;
@@ -432,7 +454,7 @@ begin
 
     { v4: el cuerpo esta en el archivo, tapado por el trailer; se recorta a un
       temporal antes de decodificarlo, como hace el C++ }
-    bodyLen := len - ODUP_TRAILER_SIZE - QWord(Length(meta));
+    bodyLen := len - ODUP_TRAILER_SIZE - metaSize;
     body := NewTempPath('osrep-dup-body-osr');
     decoded := '';
     try
@@ -448,6 +470,9 @@ begin
       finally
         bodyIn.Free;
       end;
+      { en el camino que falla la meta se lee al final: un cuerpo que no
+        decodifica falla como siempre, sin reservar meta_size antes }
+      if not haveMeta then meta := ReadOdupMeta(s, len, metaSize);
       try
         DecodeStreaming(meta, decoded, OutPath);
       except
