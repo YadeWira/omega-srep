@@ -629,6 +629,26 @@ diferencias.
 * **Bajo wine, lo que va a un stdout apuntado a `/dev/null` sale por
   stderr.** Un harness que descarta stdout y lee stderr ve la línea `ok ...`
   mezclada con los errores; filtrar por el prefijo (`ERROR!`).
+* **Un `wineserver -k` ajeno mata los `.exe` con exit 0.** Todo lo que corre
+  con el mismo `WINEPREFIX` (por defecto `~/.wine`, el de todas las sesiones)
+  comparte un wineserver; si alguien lo mata, cada proceso wine en curso
+  pierde la conexión y wine lo termina con código **0**, sin escribir nada
+  más. El único FAIL de `pascal_v5_conformance` bajo wine32 que no se repitió
+  (fase 8, `[k.1519.osr] el Rust fallo (...) y el Pascal salio 0`) fue eso: el
+  log quedó escrito 8 ms después de que otro script de la misma revisión
+  terminara su barrido wine32 y corriera `wineserver -k`. Reproducido
+  (2026-10-16) con un prefix propio: `decodetool32` sobre ese archivo, con un
+  `wineserver -k` cada 1,3 s, sale 0 sin stdout ni stderr. Sin el kill, ni
+  rastro: rc 4 y el error del Rust en 4.500 de 4.500 corridas (el binario de
+  la 2.3.0 y el exacto del FAIL), 4.920 de 4.920 con ese binario sobre todos
+  los archivos dañados de su época, y 24 corridas enteras de la suite bajo
+  wine32, seis a la vez y con la de wine64 al lado, sin un FAIL. Para pruebas
+  largas bajo wine, un
+  `WINEPREFIX` propio (`wineboot -i` una vez) y nunca `wineserver -k` sobre
+  uno compartido. `pascal_v5_conformance.sh` guarda ahora, al fallar, el
+  archivo, su md5, el código y las dos salidas de cada lado y una segunda
+  corrida del Pascal, y avisa cuando el Pascal salió 0 sin escribir nada
+  (decodetool siempre escribe `ok ...` antes de salir con 0).
 * **El `.exe` de 32 bits tiene que ser *large address aware*.** El i686 del
   Rust lo es (lo pone el linker de mingw); FPC no, y sin el flag Windows le da
   2 GB de direcciones. Comprimir desde stdin sin `-s` dimensiona el match
