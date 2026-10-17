@@ -162,10 +162,46 @@ fn check_files(o: &Options, finame: &str, foutname: &str) -> Result<(), RunError
             outputs.push(Path::new(v));
         }
     }
-    if (foutname == "-" && !util::note_stdout()) || !util::check_names(&outputs) {
+    if (writes_stderr(o) && !util::note_stderr())
+        || (foutname == "-" && !util::note_stdout())
+        || !util::check_names(&outputs)
+    {
         return Err(err(ERROR_IO, SAME_FILE));
     }
     Ok(())
+}
+
+/// Whether a run that succeeds writes to stderr: the progress and summary
+/// lines (`-v`, the default), `-bar`, and the two warnings of `compress`.
+/// Then stderr's file (`2> x`, `2>&1`, `nohup`'s `nohup.out`) is one the run
+/// writes, under the rule like stdout's (`util::note_stderr`): `osrep -delete
+/// x - > x.osr 2>&1` put the summary inside the archive, `2>o` over its first
+/// bytes, `2>>x` at the end of the input, all with exit 0. With `-v0` and none
+/// of those, nothing goes there unless the run fails, and `-v0 x - > o 2>&1`
+/// keeps working.
+fn writes_stderr(o: &Options) -> bool {
+    o.verbosity > 0
+        || o.bar
+        || (o.cmdmode == CmdMode::Compress
+            && ((o.dup && (o.method == 1 || o.method == 2)) || window_warning(o)))
+}
+
+/// `srep.cpp:459-462`: the match window has to be a power of two or the
+/// archive may be corrupt, which the C++ turns into the exit code rather than
+/// a printed line alone. The window is `-c` when it is given and `-l`
+/// otherwise. CDC never fails the test (`!CONTENT_DEFINED_CHUNKING`), and
+/// neither does `-m5` without `-c`, whose window is `-l + 1` rounded down to a
+/// power of two and halved (`srep.cpp:466-470`) -- but `-m5 -c17` tests 17
+/// like any other method, and 1.0.7 warns and exits 1 there.
+fn window_warning(o: &Options) -> bool {
+    let window = match o.method {
+        1 | 2 => None,
+        5 if o.l == 0 => None,
+        _ if o.l != 0 => Some(o.l),
+        _ if o.min_match != 0 => Some(o.min_match),
+        _ => None,
+    };
+    window.is_some_and(|l| !l.is_power_of_two())
 }
 
 /// The filename rules (`srep.cpp:569-583`).
@@ -333,6 +369,11 @@ fn spool_stdin(o: &Options) -> Result<(String, Option<Spool>), RunError> {
         Some(p) => {
             let (file, named) = NamedScratch::create(Path::new(p), false)
                 .map_err(|_| err(ERROR_IO, "Can't open tempfile"))?;
+            // A spool that cannot be read back (`/dev/null`, a FIFO) would
+            // compress nothing and exit 0; Windows already fails on `NUL`.
+            if !named.is_regular() {
+                return Err(err(ERROR_IO, "Can't open tempfile"));
+            }
             {
                 let mut f = file;
                 copy_stdin(&mut f)?;
@@ -480,28 +521,12 @@ fn compress(o: &Options, finame: &str, foutname: &str) -> Result<i32, RunError> 
         return Err(err(ERROR_CMDLINE, msg));
     }
 
-    // `srep.cpp:459-462`: the match window has to be a power of two or the
-    // archive may be corrupt, which the C++ turns into the exit code rather
-    // than a printed line alone. The window is `-c` when it is given and `-l`
-    // otherwise. CDC never fails the test (`!CONTENT_DEFINED_CHUNKING`), and
-    // neither does `-m5` without `-c`, whose window is `-l + 1` rounded down
-    // to a power of two and halved (`srep.cpp:466-470`) -- but `-m5 -c17`
-    // tests 17 like any other method, and 1.0.7 warns and exits 1 there.
     let mut warnings = 0;
-    let window = match o.method {
-        1 | 2 => None,
-        5 if o.l == 0 => None,
-        _ if o.l != 0 => Some(o.l),
-        _ if o.min_match != 0 => Some(o.min_match),
-        _ => None,
-    };
-    if let Some(l) = window {
-        if !l.is_power_of_two() {
-            ewriteln!(
-                "Warning: -l parameter should be power of 2, otherwise compressed file may be corrupt"
-            );
-            warnings += 1;
-        }
+    if window_warning(o) {
+        ewriteln!(
+            "Warning: -l parameter should be power of 2, otherwise compressed file may be corrupt"
+        );
+        warnings += 1;
     }
 
     let mode = mode_of(o);

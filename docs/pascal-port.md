@@ -547,9 +547,14 @@ diferencias.
 * **`TFileStream.Create(fmCreate)` abre el archivo ANTES con `O_RDONLY`** (para
   revisar el lock del `ShareMode`), y sobre un FIFO ese open se bloquea hasta
   que aparezca un escritor: `osrep -d x.osr fifo` o `osrep x fifo`, con un
-  lector del otro lado, colgaban en el open. Las salidas se crean con
-  `CreateRaw` (lectura-escritura, el `OpenOptions` del sink del Rust) o
-  `CreateWriteRaw` (`File::create`, solo escritura), y las entradas de `-d`,
+  lector del otro lado, colgaban en el open. Los archivos que nombra el
+  usuario (el archivo, la salida de `-d`, `-index=`, `-temp=`, `-vmfile=`) se
+  abren con `CreateOutput` / `CreateScratch`: el `open(2)` pelado (o
+  `RustOpen`) **sin** `O_TRUNC`, comparados con lo que la corrida lee y
+  escribe, y truncados recién después ("los archivos de una corrida",
+  `streamio.pas`). `CreateRaw` (lectura-escritura, trunca) queda solo para los
+  temporales propios de la corrida; no abrir con él un nombre del usuario.
+  Las entradas de `-d`,
   `-i` y `--verify` se abren con `OpenReadRaw`, el `open(2)` pelado
   (`streamio.pas`): como el `File::open` del Rust, abre un directorio y falla
   después con el errno que toque, así que el caso especial de directorios que

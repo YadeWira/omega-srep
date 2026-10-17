@@ -271,14 +271,16 @@ fn decode_odup(
         std::io::copy(&mut (&mut *archive).take(body_len), &mut trimmed)?;
     }
     let decoded = TempFile::new("osrep-dup-body-dec")?;
-    let mut body_file = File::open(body.path())?;
-    let mut sink = create_rw(decoded.path())?;
-    // The wrapper decodes the body it just carved out; `-index=` on the
-    // decompress side is handled by the CLI, which opens the index and
-    // hands it to `archive::decode` directly.
-    archive::decode(&mut body_file, &mut sink, opts, None, None).map_err(DupError::Decode)?;
-    sink.flush()?;
-    drop(sink);
+    {
+        // closed before the post-pass, as in the Pascal: the fds after it match
+        let mut body_file = File::open(body.path())?;
+        let mut sink = create_rw(decoded.path())?;
+        // The wrapper decodes the body it just carved out; `-index=` on the
+        // decompress side is handled by the CLI, which opens the index and
+        // hands it to `archive::decode` directly.
+        archive::decode(&mut body_file, &mut sink, opts, None, None).map_err(DupError::Decode)?;
+        sink.flush()?;
+    }
     // On the failing path the meta is read last: a body that does not decode
     // fails as it always did, without a `meta_size` worth of memory first.
     let meta = match meta {

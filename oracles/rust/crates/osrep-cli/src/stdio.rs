@@ -38,7 +38,9 @@
 //!   again first thing in `main`. Left open it shifted every later fd by
 //!   one from the Pascal's, and was a `/dev/null` a name could reach:
 //!   `osrep -d -delete y.osr /proc/self/fd/3 <&-` decoded into it, exited 0
-//!   and deleted `y.osr`.
+//!   and deleted `y.osr`. The same goes for an O_PATH fd 0, 1 or 2 the
+//!   parent passed down: the runtime opens a `/dev/null` for each, and those
+//!   are closed too.
 //!
 //! On Windows nothing is reopened: handles are not numbered like fds, and a
 //! missing std handle is null. [`data_stdout`] fails on a null handle with
@@ -111,39 +113,51 @@ pub mod reserve {
                     if r == -1 {
                         abort();
                     }
-                    if fd == 0 {
-                        // The runtime will see POLLNVAL on this O_PATH fd and
-                        // open /dev/null read-write on the lowest free fd:
-                        // remembered, for `drop_runtime_null`.
-                        let mut n = 3;
-                        while fcntl(n, F_GETFD) != -1 {
-                            n += 1;
-                        }
-                        RUNTIME_NULL.store(n, Ordering::Relaxed);
-                    }
                 }
             }
         }
+        // The runtime opens /dev/null on the lowest free fd for every fd 0-2
+        // it sees POLLNVAL on: the O_PATH fd 0 above, and any O_PATH fd 0, 1
+        // or 2 the parent passed (a program can hand one down). So up to
+        // three, on the three lowest fds free now: remembered, for
+        // `drop_runtime_null`. Through r231-files only the one for a closed
+        // fd 0 was, and an inherited O_PATH fd left a /dev/null on fd 3 that
+        // `/proc/self/fd/3` reached: `osrep -delete t /proc/self/fd/3` wrote
+        // the archive there and deleted `t` (the Pascal refuses).
+        let mut n: c_int = 3;
+        for slot in &RUNTIME_NULL {
+            // SAFETY: as above
+            while unsafe { fcntl(n, F_GETFD) } != -1 {
+                n += 1;
+            }
+            slot.store(n, Ordering::Relaxed);
+            n += 1;
+        }
     }
 
-    pub static RUNTIME_NULL: AtomicI32 = AtomicI32::new(-1);
+    pub static RUNTIME_NULL: [AtomicI32; 3] = [AtomicI32::new(-1), AtomicI32::new(-1), AtomicI32::new(-1)];
 
-    /// Closes the `/dev/null` the runtime opened for the O_PATH fd 0, so the
-    /// fds after 2 are numbered as in the Pascal (the input on fd 3), and no
-    /// `/proc/self/fd/N` leads to a `/dev/null` the Pascal does not have.
-    /// Only that fd, and only if it is `/dev/null` (character device 1:3).
+    /// Closes the `/dev/null`s the runtime opened for an O_PATH fd 0, 1 or 2
+    /// (`reserve_std_fds`), so the fds after 2 are numbered as in the Pascal
+    /// (the input on fd 3), and no `/proc/self/fd/N` leads to a `/dev/null`
+    /// the Pascal does not have. Only the fds that were free before the
+    /// runtime ran, and only those that are `/dev/null` now (character device
+    /// 1:3); first thing in `main`, before the program opens anything.
     pub fn drop_runtime_null() {
         use std::os::fd::FromRawFd;
         use std::os::unix::fs::{FileTypeExt, MetadataExt};
-        let n = RUNTIME_NULL.swap(-1, Ordering::Relaxed);
-        if n < 3 {
-            return;
-        }
-        // SAFETY: n was free before the runtime ran; only its /dev/null is closed
-        let f = unsafe { std::fs::File::from_raw_fd(n) };
-        match f.metadata() {
-            Ok(m) if m.file_type().is_char_device() && m.rdev() == 0x103 => drop(f),
-            _ => std::mem::forget(f),
+        for slot in &RUNTIME_NULL {
+            let n = slot.swap(-1, Ordering::Relaxed);
+            if n < 3 {
+                continue;
+            }
+            // SAFETY: n was free before the runtime ran; only a /dev/null it
+            // opened there is closed, anything else (or nothing) is left alone
+            let f = unsafe { std::fs::File::from_raw_fd(n) };
+            match f.metadata() {
+                Ok(m) if m.file_type().is_char_device() && m.rdev() == 0x103 => drop(f),
+                _ => std::mem::forget(f),
+            }
         }
     }
 

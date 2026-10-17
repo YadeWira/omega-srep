@@ -184,17 +184,20 @@ what happened in 2.0.0.
   stdout now fails as any stdout write failure does, and `-delete` keeps its
   input: "Can't write to stdout", exit 3, when decompressing; when
   compressing, "Io", exit 4, once the archive has passed 1024 bytes or
-  contains a newline byte during the encode, and "Can't write to stdout",
-  exit 3, for an archive of at most 1024 bytes with no newline byte, which
-  is written only at the end. Naming the output `/dev/stdin`, `/dev/stdout`,
+  contains a newline byte during the encode, and "Can't write to stdout", exit
+  3, for an archive of at most 1024 bytes with no newline byte, which is
+  written only at the end. Naming the output `/dev/stdin`, `/dev/stdout`,
   `/dev/stderr` or `/proc/self/fd/N` for a closed fd fails too ("Can't open
   /dev/stdout for write", exit 3): a closed fd 0, 1 or 2 is reserved on the
   directory `/` (fd 0 with `O_PATH`, so it still reads as empty), so opening
-  it again for writing cannot land on `/dev/null`; `osrep -delete x
-  /dev/stdin <&-` deleted `x` in both builds. The released Pascal binary
-  already failed with `-` on Linux (exit 4, `x` kept). The C++ 1.0.7 opens
-  its input on fd 1 and its writes to stdout fail silently: with a small `x`
-  it exits 0 and deletes it; a larger one can hang or fail.
+  it again for writing cannot land on `/dev/null`; `osrep -delete x /dev/stdin
+  <&-` deleted `x` in both builds. The `/dev/null` the Rust runtime opens for
+  such an fd (and for an `O_PATH` fd 0, 1 or 2 a parent passes down) is closed
+  again before anything else, so `/proc/self/fd/3` is the input in both builds
+  and is refused as such. The released Pascal binary already failed with `-`
+  on Linux (exit 4, `x` kept). The C++ 1.0.7 opens its input on fd 1 and its
+  writes to stdout fail silently: with a small `x` it exits 0 and deletes it;
+  a larger one can hang or fail.
 - **A closed or missing stdin reads as empty in both builds.** On Windows
   with no stdin handle, and on Linux with fd 0 opened write-only, the Pascal
   said "Can't read from stdin" or "Can't read from input file" (exit 3)
@@ -243,31 +246,42 @@ what happened in 2.0.0.
   not a pipe or a FIFO (the decoder seeks its output: "Illegal seek");
   Windows has no `/dev/stdout`.
 - **A file could be written under one name while it was read, or written,
-  under another.** The C++ refuses an output named like the input ("Input
-  and output files should have different names", exit 3) by comparing the
-  two strings, and the ports did the same. Any other name for the file got
+  under another.** The C++ refuses an output named like the input ("Input and
+  output files should have different names", exit 3) by comparing the two
+  strings, and the ports did the same. Any other name for the file got
   through, and opening the output truncated the input before it was read:
   `osrep x.bin ./x.bin` and `osrep x - >> x` exited 0 with an archive of
-  nothing, and with `-delete` deleted `x`; `-index=`, `-temp=` and
-  `-vmfile=` could land on the input, the output or each other the same way.
-  The ports now follow one rule: no file a run writes is a file it reads or
-  another file it writes. Every file a run writes -- the archive or the
-  decoded file, `-index=` when compressing, the `-temp=` spool, the
-  `-vmfile=` spill, its scratch files, and stdout's file when the output is
-  `-` -- is opened without truncation and compared by identity (device and
-  inode; volume serial number and file index on Windows) with the files it
-  reads (the input or stdin's file, and `-index=` when decompressing) and
-  the ones it already writes. A match is refused with the C++'s message and
-  exit 3; otherwise the file is truncated then, and not before. Comparing
-  files rather than names covers every spelling, link, redirection and
-  `/dev` or `/proc` path at once. The names that already exist are compared
-  before anything is opened, so a refused run leaves every file as it was,
-  with one exception: `-temp=` or `-index=` naming a symlink to an output
-  that does not exist yet creates that file before the output is refused,
-  and it is left. `-vmfile=` is compared when it is opened, at the decode's
-  first spill: a decode that never spills never opens it. Only regular files
-  count: `/dev/null` as input and output, a terminal, a pipe or a device
-  lose nothing and still run.
+  nothing, and with `-delete` deleted `x`; `-index=`, `-temp=` and `-vmfile=`
+  could land on the input, the output or each other the same way. The ports
+  now follow one rule: no file a run writes is a file it reads or another file
+  it writes. Every file a run writes -- the archive or the decoded file,
+  `-index=` when compressing, the `-temp=` spool, the `-vmfile=` spill, its
+  scratch files, stdout's file when the output is `-`, and stderr's file when
+  the run writes there on success (the progress and summary lines, `-bar`, the
+  warnings; `osrep -delete x - > x.osr 2>&1`, or `nohup` from a terminal, put
+  the summary inside the archive and deleted `x`, `2>o` wrote it over the
+  archive's first bytes; with `-v0` nothing goes there and `-v0 x - > o 2>&1`
+  still runs) -- is opened without truncation and compared by identity (device
+  and inode; volume serial number and file index on Windows) with the files it
+  reads (the input or stdin's file, and `-index=` when decompressing) and the
+  ones it already writes. A match is refused with the C++'s message and exit
+  3; otherwise the file is truncated then, and not before. Comparing files
+  rather than names covers every spelling, link, redirection and `/dev` or
+  `/proc` path at once. The names that already exist are compared before
+  anything is opened, so a refused run leaves every file as it was, with one
+  exception: `-temp=` or `-index=` naming a symlink to an output that does not
+  exist yet creates that file before the output is refused, and it is left.
+  `-vmfile=` is compared when it is opened, at the decode's first spill: a
+  decode that never spills never opens it. Only regular files count:
+  `/dev/null` as input and output, a terminal, a pipe or a device lose nothing
+  and still run. On Windows the file index decides and a volume serial number
+  of 0 matches any: under wine a file in the prefix's `drive_c` has the
+  drive's serial when opened by name and 0 through the standard handles or
+  `Z:`, so `>> x`, `< x` and a hard link outside `drive_c` got through. With
+  the input on stdin, `-temp=` must be a regular file: `-temp=/dev/null`
+  spooled stdin into nothing and wrote an archive of nothing with exit 0 (the
+  C++ writes the right archive; on Windows `NUL` already failed), and is now
+  "Can't open tempfile", exit 3.
 - **On a 32-bit build, `-b4g` (and any multiple of 4 GiB) wrapped around to
   0**: the Pascal `.exe` failed with "Division by zero" (exit 4) and the Rust
   i686 build panicked (exit 101); `-b4097m` became 1 MiB and wrote a

@@ -46,10 +46,6 @@ function OpenReadRaw(const Path: AnsiString): TRawFileStream;
   escritor: con un lector esperando del otro lado (`osrep -d x.osr fifo`)
   colgaba para siempre, donde el Rust abre, falla el seek (ESPIPE) y termina. }
 function CreateRaw(const Path: AnsiString): TRawFileStream;
-{ File::create: crea (o trunca) solo para escribir, o nil. Sin el open previo
-  de TFileStream (ver CreateRaw), y con O_WRONLY como el Rust: un archivo
-  con permiso de escritura y no de lectura tambien se puede crear. }
-function CreateWriteRaw(const Path: AnsiString): TRawFileStream;
 { metadata().len() sobre un handle abierto: lo que dice fstat (un directorio
   y un FIFO tambien contestan); 0 si no contesta }
 function HandleSize(H: THandle): QWord;
@@ -87,6 +83,9 @@ type
       NoteReadStdin);
     * el archivo de stdout, si la salida es '-', se compara como cualquier
       salida y se anota como escrito, pero nunca se trunca (NoteStdout);
+      igual el de stderr cuando la corrida escribe ahi al terminar bien (las
+      lineas de progreso y resumen, -bar, los avisos: NoteStderr), porque
+      esas lineas caen en ese archivo;
     * los nombres que la corrida va a escribir y ya existen se comparan antes
       del primer open (CheckNames): dos nombres de un archivo que existe se
       rechazan antes de truncar cualquiera de los dos;
@@ -118,6 +117,11 @@ procedure NoteReadStdin;
 { el archivo al que va stdout (`> x`, `>> x`, `1<> x`), si la salida es '-':
   se escribe, nunca se trunca. False si la corrida lo lee: rechazado. }
 function NoteStdout: Boolean;
+{ el archivo al que va stderr (`2> x`, `2>&1`), si la corrida escribe ahi
+  al terminar bien (WritesStderr en osrep.lpr): los mensajes van a parar
+  ahi, asi que se escribe, nunca se trunca. False si la corrida lo lee o ya
+  lo escribe: rechazado (y el mensaje del rechazo todavia cae ahi). }
+function NoteStderr: Boolean;
 { los nombres que la corrida va a escribir (la salida, -index= al comprimir,
   -temp=, -vmfile=), antes de abrir ninguno: los que existen no pueden ser un
   archivo que la corrida lee, el de stdout, ni uno el otro. False:
@@ -132,8 +136,8 @@ function SameFileRefused: Boolean;
 { Una salida de la corrida -- el archivo, la salida de -d, -index= al
   comprimir, la del post-paso de -dup -- abierta con la regla (ReadToo: para
   leer tambien) y borrada si la corrida falla (RemoveClaimedOutputs); nil si
-  no se pudo abrir o se rechazo. Mismo open que CreateRaw / CreateWriteRaw,
-  pero sin truncar hasta haber comparado. }
+  no se pudo abrir o se rechazo. Se abre con RustOpen / open(2) sin
+  O_TRUNC, y se trunca recien despues de comparar. }
 function CreateOutput(const Path: AnsiString; ReadToo: Boolean): TRawFileStream;
 
 type
@@ -231,20 +235,6 @@ begin
   until (h <> THandle(-1)) or (fpgeterrno <> ESysEINTR);
 {$ELSE}
   h := RustOpen(Path, GENERIC_READ, OPEN_EXISTING, False);
-{$ENDIF}
-  if h = THandle(-1) then Exit(nil);
-  Result := TRawFileStream.Create(h);
-end;
-
-function CreateWriteRaw(const Path: AnsiString): TRawFileStream;
-var h: THandle;
-begin
-{$IF DEFINED(UNIX)}
-  repeat
-    h := fpOpen(PChar(Path), O_WRONLY or O_CREAT or O_TRUNC, &666);
-  until (h <> THandle(-1)) or (fpgeterrno <> ESysEINTR);
-{$ELSE}
-  h := RustOpen(Path, GENERIC_WRITE, OPEN_ALWAYS, True);
 {$ENDIF}
   if h = THandle(-1) then Exit(nil);
   Result := TRawFileStream.Create(h);
@@ -491,7 +481,14 @@ end;
 
 function SameId(const A, B: TFileId): Boolean; inline;
 begin
+{$IF DEFINED(WINDOWS)}
+  { el indice decide; un numero de serie 0 es desconocido y vale por
+    cualquiera (wine da 0 en los handles estandar y en un archivo al que se
+    llega por Z:, y el serial del drive al mismo archivo por C:) }
+  Result := (A.B = B.B) and ((A.A = B.A) or (A.A = 0) or (B.A = 0));
+{$ELSE}
   Result := (A.A = B.A) and (A.B = B.B);
+{$ENDIF}
 end;
 
 function InIds(const L: TFileIdArray; const Id: TFileId): Boolean;
@@ -549,11 +546,11 @@ begin
   if Armed and IdOfHandle(InHandle, id) then AddId(Reads, id);
 end;
 
-function NoteStdout: Boolean;
+function NoteStdWritten(H: THandle): Boolean;
 var id: TFileId;
 begin
   Result := True;
-  if not (Armed and IdOfHandle(OutHandle, id)) then Exit;
+  if not (Armed and IdOfHandle(H, id)) then Exit;
   if Taken(id) then
   begin
     Refused := True;
@@ -588,6 +585,16 @@ begin
       Exit(False);
     end;
   end;
+end;
+
+function NoteStdout: Boolean;
+begin
+  Result := NoteStdWritten(OutHandle);
+end;
+
+function NoteStderr: Boolean;
+begin
+  Result := NoteStdWritten(ErrHandle);
 end;
 
 function SameFileRefused: Boolean;

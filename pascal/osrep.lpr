@@ -386,6 +386,34 @@ end;
   chequeo, por su mensaje), asi que `osrep x.bin ./x.bin`, un hard link,
   /dev/stdin, `< x` o `>> x` vaciaban la entrada y salian con 0 y un archivo
   de nada. }
+{ srep.cpp:459-462: la ventana tiene que ser potencia de dos. Es -c si se
+  dio, -l si no. CDC nunca falla la prueba, y -m5 sin -c tampoco: su ventana
+  es -l + 1 redondeado a potencia de dos y partido al medio. Pero -m5 -c17
+  prueba el 17 como cualquier metodo, y el 1.0.7 avisa y sale con 1 ahi. }
+function WindowWarning(const O: TOptions): Boolean;
+var window: QWord;
+begin
+  window := 0;
+  if not (O.Method in [1, 2]) then
+    if O.L <> 0 then window := O.L
+    else if (O.MinMatch <> 0) and (O.Method <> 5) then window := O.MinMatch;
+  Result := (window <> 0) and ((window and (window - 1)) <> 0);
+end;
+
+{ si una corrida que termina bien escribe en stderr: las lineas de progreso y
+  resumen (-v, el default), -bar, y los dos avisos de Compress. Entonces el
+  archivo de stderr (`2> x`, `2>&1`, el nohup.out de nohup) es uno que la
+  corrida escribe, con la regla como el de stdout (NoteStderr): `osrep -delete
+  x - > x.osr 2>&1` metia el resumen adentro del archivo, `2>o` sobre sus
+  primeros bytes, `2>>x` al final de la entrada, todos con exit 0. Con -v0 y
+  ninguno de esos no va nada ahi salvo que la corrida falle, y `-v0 x - > o
+  2>&1` sigue andando. }
+function WritesStderr(const O: TOptions): Boolean;
+begin
+  Result := (O.Verbosity > 0) or O.Bar or
+    ((O.CmdMode = cmCompress) and ((O.Dup and (O.Method in [1, 2])) or WindowWarning(O)));
+end;
+
 procedure CheckFiles(const O: TOptions; const FiName, FoutName: AnsiString);
 var outs: array of AnsiString;
 
@@ -411,7 +439,8 @@ begin
     if O.IndexFile <> '' then NoteRead(O.IndexFile);
     if O.HasVmFile then Add(O.VmFile);
   end;
-  if ((FoutName = '-') and not NoteStdout) or not CheckNames(outs) then Fail(ERROR_IO, SAME_FILE);
+  if (WritesStderr(O) and not NoteStderr) or ((FoutName = '-') and not NoteStdout)
+     or not CheckNames(outs) then Fail(ERROR_IO, SAME_FILE);
 end;
 
 { -------------------------------------------------------- compression --- }
@@ -531,6 +560,13 @@ begin
       stdin se rechaza: el spool releeria nada) }
     h := CreateScratch(O.TempFile, False, Scratch);
     if h = THandle(-1) then Fail(ERROR_IO, 'Can''t open tempfile');
+    { un spool que no se puede releer (/dev/null, un FIFO) comprimiria nada
+      y saldria con 0; en Windows NUL ya falla }
+    if not Scratch.Named then
+    begin
+      FileClose(h);
+      Fail(ERROR_IO, 'Can''t open tempfile');
+    end;
     try
       f := TRawFileStream.Create(h);
       try
@@ -636,7 +672,6 @@ end;
 function Compress(const O: TOptions; const FiName, FoutName: AnsiString): LongInt;
 var
   warnings: LongInt;
-  window: QWord;
   inputPath: AnsiString;
   spoolOwned, hasDeclared: Boolean;
   spool: TNamedScratch;
@@ -661,16 +696,9 @@ begin
   if SmallDictWindow(O) <> '' then Fail(ERROR_CMDLINE, SmallDictWindow(O));
   if BadChunkParams(O) <> '' then Fail(ERROR_CMDLINE, BadChunkParams(O));
 
-  { srep.cpp:459-462: la ventana tiene que ser potencia de dos. Es -c si se
-    dio, -l si no. CDC nunca falla la prueba, y -m5 sin -c tampoco: su ventana
-    es -l + 1 redondeado a potencia de dos y partido al medio. Pero -m5 -c17
-    prueba el 17 como cualquier metodo, y el 1.0.7 avisa y sale con 1 ahi. }
+  { srep.cpp:459-462 (WindowWarning) }
   warnings := 0;
-  window := 0;
-  if not (O.Method in [1, 2]) then
-    if O.L <> 0 then window := O.L
-    else if (O.MinMatch <> 0) and (O.Method <> 5) then window := O.MinMatch;
-  if (window <> 0) and ((window and (window - 1)) <> 0) then
+  if WindowWarning(O) then
   begin
     WriteErr('Warning: -l parameter should be power of 2, otherwise compressed file may be corrupt' + #10);
     Inc(warnings);

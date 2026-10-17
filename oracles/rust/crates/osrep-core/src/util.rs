@@ -64,8 +64,22 @@ impl Drop for TempFile {
 // ------------------------------------------------- the files of one run --
 
 /// Device and inode on Unix; volume serial number and file index on Windows.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy)]
 struct FileId(u64, u64);
+
+impl PartialEq for FileId {
+    #[cfg(unix)]
+    fn eq(&self, o: &FileId) -> bool {
+        self.0 == o.0 && self.1 == o.1
+    }
+    /// The file index decides; a volume serial of 0 is unknown and matches any
+    /// (wine reports 0 for the standard handles and for a file reached through
+    /// Z:, and the drive's serial for the same file reached through C:).
+    #[cfg(windows)]
+    fn eq(&self, o: &FileId) -> bool {
+        self.1 == o.1 && (self.0 == o.0 || self.0 == 0 || o.0 == 0)
+    }
+}
 
 /// The files one run of the CLI reads and writes, by identity, and the one
 /// rule they follow: **no file the run writes is a file it reads, or another
@@ -80,7 +94,9 @@ struct FileId(u64, u64);
 /// * what the run reads is noted before anything is opened: the named input
 ///   or stdin's file, and `-index=` when decompressing (`note_read`);
 /// * stdout's file, when the output is `-`, is compared like any output and
-///   noted as written, but never truncated (`note_stdout`);
+///   noted as written, but never truncated (`note_stdout`); so is stderr's
+///   file when the run writes there on success (the progress and summary
+///   lines, `-bar`, the warnings: `note_stderr`), since those lines land in it;
 /// * the names the run will write that already exist are compared before the
 ///   first open (`check_names`), so two names of one existing file are
 ///   refused before either has been truncated;
@@ -209,10 +225,22 @@ pub fn note_read_stdin() {
     files().note_read(id);
 }
 
+/// The file stderr goes to (`2> x`, `2>&1`), when the run writes there on
+/// success (`writes_stderr` in the CLI): the run's messages land in it, so it
+/// is written, never truncated, like stdout's. `false` if the run reads it or
+/// already writes it: refused (and the refusal's message still lands there).
+pub fn note_stderr() -> bool {
+    note_std_written(Std::Err)
+}
+
 /// The file stdout goes to (`> x`, `>> x`, `1<> x`), when the output is `-`:
 /// written, never truncated. `false` if the run reads it: refused.
 pub fn note_stdout() -> bool {
-    let id = file_id::of_std(Std::Out);
+    note_std_written(Std::Out)
+}
+
+fn note_std_written(which: Std) -> bool {
+    let id = file_id::of_std(which);
     let mut f = files();
     match id.filter(|_| f.armed) {
         Some(id) if f.taken(id) => {
@@ -305,6 +333,13 @@ impl NamedScratch {
     }
 }
 
+impl NamedScratch {
+    /// Whether what was opened is a regular file (one this run can read back).
+    pub fn is_regular(&self) -> bool {
+        self.0.is_some()
+    }
+}
+
 impl Drop for NamedScratch {
     fn drop(&mut self) {
         if let Some(n) = &self.0 {
@@ -319,6 +354,7 @@ impl Drop for NamedScratch {
 enum Std {
     In,
     Out,
+    Err,
 }
 
 // ------------------------------------------------- outputs of a failed run --
@@ -383,6 +419,7 @@ mod file_id {
         let fd = match which {
             super::Std::In => std::io::stdin().as_fd().try_clone_to_owned(),
             super::Std::Out => std::io::stdout().as_fd().try_clone_to_owned(),
+            super::Std::Err => std::io::stderr().as_fd().try_clone_to_owned(),
         }
         .ok()?;
         of_handle(&File::from(fd))
@@ -532,6 +569,7 @@ mod file_id {
         let h = match which {
             super::Std::In => std::io::stdin().as_raw_handle(),
             super::Std::Out => std::io::stdout().as_raw_handle(),
+            super::Std::Err => std::io::stderr().as_raw_handle(),
         };
         if h.is_null() {
             return None;

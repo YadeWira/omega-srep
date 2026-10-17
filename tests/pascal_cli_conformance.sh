@@ -980,6 +980,30 @@ scase 3 'cp "$I/ok.ix" ok.ix; "$B" -v0 -d -index=ok.ix "$I/okf.osr" - >> ok.ix' 
 scase 3 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 - - < in.bin >> in.bin' in.bin
 scase 3 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 - - < in.bin 1<> in.bin' in.bin
 scase 3 'cp "$I/ok.osr" ok.osr; "$B" -v0 -d - - < ok.osr 1<> ok.osr' ok.osr
+# el archivo de stderr tambien, cuando la corrida escribe ahi al terminar
+# bien (las lineas de progreso y resumen, -bar, los avisos): `2>&1` con la
+# salida a stdout metia el resumen adentro del archivo (y nohup hace lo mismo
+# desde una terminal), `2>o` lo escribia sobre los primeros bytes de la
+# salida, `2>>x` al final de la entrada. Todos con exit 0, y con -delete sin
+# la entrada. Con -v0 no va nada ahi, y `-v0 x - > o 2>&1` sigue andando
+scase 3 'cp "$I/in.bin" in.bin; "$B" --seed=7 -delete in.bin - > o.osr 2>&1' in.bin
+grep -qF 'Input and output files should have different names' "$F/p/o.osr" || fail "2>&1: el mensaje no esta en o.osr"
+scase 3 'cp "$I/in.bin" in.bin; "$B" --seed=7 -delete in.bin o.osr 2>o.osr' in.bin
+scase 3 'cp "$I/in.bin" in.bin; "$B" --seed=7 -delete in.bin o.osr 2>>o.osr' in.bin
+scase 3 'cp "$I/ok.osr" ok.osr; "$B" -d -delete ok.osr - > o.out 2>&1' ok.osr
+scase 3 'cp "$I/ok.osr" ok.osr; "$B" -d -delete ok.osr o.out 2>>o.out' ok.osr
+scase 3 'cp "$I/in.bin" in.bin; "$B" -v0 -bar --seed=7 -delete in.bin - > o.osr 2>&1' in.bin
+scase 3 'cp "$I/in.bin" in.bin; "$B" -v0 -l100 --seed=7 in.bin - > o.osr 2>&1' in.bin
+scase 3 'cp "$I/in.bin" in.bin; "$B" -v0 -dup -m1 --seed=7 -delete in.bin o.osr 2>o.osr' in.bin
+scase 3 'cp "$I/in.bin" in.bin; "$B" --seed=7 - o.osr < in.bin 2>>in.bin'
+# stderr sobre la entrada: el mensaje del rechazo todavia cae ahi, pero la
+# entrada no se lee mientras crece ni se borra
+scase 3 'cp "$I/in.bin" in.bin; "$B" --seed=7 -delete in.bin o.osr 2>>in.bin'
+cmp -s -n "$(stat -c%s "$F/in/in.bin")" "$F/p/in.bin" "$F/in/in.bin" || fail "2>>in.bin: cambio in.bin"
+scase 0 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 -delete in.bin - > o.osr 2>&1'
+"$PAX" -v0 -d "$F/p/o.osr" "$F/p/o.out" </dev/null >/dev/null 2>&1 && cmp -s "$F/p/o.out" "$F/in/in.bin" \
+    || fail "-v0 ... - > o.osr 2>&1: la vuelta difiere"
+scase 0 'cp "$I/in.bin" in.bin; "$B" --seed=7 in.bin o.osr > log 2>&1; rm log' in.bin
 # un rechazo deja todo como estaba: un nombre que ya existe se compara antes
 # del primer open, no despues del que lo truncaria
 scase 3 'echo old > o.osr; "$B" -v0 --seed=7 --format=v4 -m3f -index=./o.osr "$I/in.bin" o.osr'
@@ -1054,6 +1078,24 @@ if [ "$FWINE" = 0 ]; then
     # stdin, con 1 GiB de direcciones: el Rust abortaba (exit 134, con la
     # cabecera en disco) y el Pascal decia "Out of memory"
     scase 4 '(ulimit -v 1048576; exec "$B" -v0 --seed=7 -b3g - x.osr < "$I/in.bin")'
+    # -temp= un dispositivo o un FIFO: el spool no se puede releer, y con
+    # /dev/null salia un archivo de nada con exit 0 (el C++ escribe el bueno;
+    # en Windows NUL ya fallaba)
+    scase 3 '"$B" -v0 --seed=7 -temp=/dev/null - o.osr < "$I/in.bin"'
+    grep -qF "Can't open tempfile" "$F/p.e" || fail "-temp=/dev/null: $(cat "$F/p.e")"
+    # un fd 0, 1 o 2 O_PATH heredado: el runtime del Rust abre un /dev/null
+    # por cada uno, y solo se cerraba el del fd 0 cerrado. Quedaba en el fd 3,
+    # la entrada iba al 4, y `-delete t /proc/self/fd/3` escribia el archivo
+    # en /dev/null y borraba t (exit 0); el Pascal lo rechaza
+    for n in 0 1 2 012; do
+        scase 3 'cp "$I/in.bin" in.bin; python3 -c "import os, sys
+fd = os.open(\"/\", os.O_PATH)
+for k in sys.argv[1]: os.dup2(fd, int(k))
+os.close(fd); os.execv(sys.argv[2], sys.argv[2:])" '"$n"' "$B" -v0 --seed=7 -delete in.bin /proc/self/fd/3' in.bin
+    done
+    # el -d de un -dup v4: el Rust tenia abierto el cuerpo (en el fd 4) durante
+    # el post-paso, y los fds siguientes no eran los del Pascal
+    scase 4 'cp "$I/dup.osr" dup.osr; "$B" -v0 -d dup.osr /proc/self/fd/5' dup.osr
 else
     # bajo wine el error del open es el de Windows: el codigo y que quede
     rm -rf "${F:?}/p"; mkdir "$F/p"; echo x > "$F/p/ro"; chmod 444 "$F/p/ro"
@@ -1078,6 +1120,30 @@ else
         done
         pass=$((pass + 1))
     done
+    # En el drive_c del prefijo, wine da el numero de serie del drive (C:) a
+    # un handle abierto por un nombre, y 0 a los handles estandar y a lo que
+    # se abre por Z:: un archivo, dos identidades. Comparando las dos,
+    # `>> x`, `1<> x`, `< x` y un hard link fuera de drive_c pasaban, con exit
+    # 0 y la entrada borrada o pisada. Ahora en Windows decide el indice, y un
+    # serial 0 vale por cualquiera.
+    WP=$(grep -o 'WINEPREFIX=[^ ]*' "$PA" | head -1 | cut -d= -f2)
+    if [ -n "$WP" ] && [ -d "$WP/drive_c" ]; then
+        WD="$WP/drive_c/osrep_cli_$$"; WN="osrep_cli_$$"
+        for line in 'cp "$I/in.bin" x; "$PAX" -v0 --seed=7 -delete x - >> x' \
+                    'cp "$I/ok.osr" x; "$PAX" -v0 -d -delete x - 1<> x' \
+                    'cp "$I/in.bin" x; "$PAX" -v0 --seed=7 - x < x' \
+                    'cp "$I/in.bin" x; "$PAX" --seed=7 -delete x - > o 2>&1' \
+                    'cp "$I/in.bin" x; ln x "$H/hl" && cd "$H" && "$PAX" -v0 --seed=7 -delete "C:\\$WN\\x" hl'; do
+            rm -rf "${WD:?}" "${F:?}/p"; mkdir "$WD" "$F/p"
+            rc=0; (cd "$WD" && PAX="$PAX" I="$F/in" H="$F/p" WN="$WN" bash -c "$line") </dev/null >/dev/null 2>"$F/p.e" || rc=$?
+            [ "$rc" = 3 ] && [ -e "$WD/x" ] || fail "[$line] en drive_c: exit $rc, '$(cat "$F/p.e")', $(ls "$WD")"
+            for f in in.bin ok.osr; do
+                case "$line" in *'"$I/'$f'" x'*) cmp -s "$WD/x" "$F/in/$f" || fail "[$line] en drive_c: cambio x";; esac
+            done
+            pass=$((pass + 1))
+        done
+        rm -rf "${WD:?}"
+    fi
     # El .exe de 32 bits: un -b que no entra en 4 GiB se satura en vez de dar
     # la vuelta. -b4g y sus multiplos quedaban en 0 ("Division by zero"; el
     # Rust i686, panic) y -b4097m en 1 MiB, otro archivo. Ahora OutOfMemory,

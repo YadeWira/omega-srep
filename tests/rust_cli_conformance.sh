@@ -54,6 +54,8 @@ RS=$RUST_TARGET/release/osrep
 if [ -n "${OSREP_PORT_BIN:-}" ]; then
     RS="$OSREP_PORT_BIN"
 fi
+# absolute: some cases run it from a directory of their own (`fails`)
+case "$RS" in /*) ;; *) RS="$PWD/$RS" ;; esac
 warn_shared_wine "$RS"
 [[ -x "$RS" ]] || fail "missing $RS"
 OSREP_BIN="$RS"
@@ -1618,6 +1620,58 @@ cmp -s "$F/w/in.bin" "$F/in.bin" || fail "-delete in.bin /proc/self/fd/4 <&-: in
 fails 3 "Can't open index file /proc/self/fd/3 for write" \
     'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 --format=v4 -m3f -index=/proc/self/fd/3 -delete in.bin o.osr <&- 3>&-'
 cmp -s "$F/w/in.bin" "$F/in.bin" || fail "-index=/proc/self/fd/3 <&-: in.bin changed"
+# An O_PATH fd 0, 1 or 2 passed down by the parent: the Rust runtime opens a
+# /dev/null for each, and only the one for a closed fd 0 was closed again. It
+# stayed on fd 3, the input went to fd 4, and `-delete t /proc/self/fd/3`
+# wrote the archive into /dev/null and deleted t (exit 0); the Pascal refuses
+for n in 0 1 2 012; do
+    fails 3 '' 'cp "$I/in.bin" in.bin; python3 -c "import os, sys
+fd = os.open(\"/\", os.O_PATH)
+for k in sys.argv[1]: os.dup2(fd, int(k))
+os.close(fd); os.execv(sys.argv[2], sys.argv[2:])" '"$n"' "$B" -v0 --seed=7 -delete in.bin /proc/self/fd/3'
+    cmp -s "$F/w/in.bin" "$F/in.bin" || fail "O_PATH fd $n: in.bin changed"
+done
+# The file stderr goes to, when the run writes there on success (the
+# progress and summary lines, -bar, the warnings): `2>&1` with the output on
+# stdout put the summary inside the archive (nohup does the same from a
+# terminal), `2>o` wrote it over the archive's first bytes, `2>>x` at the end
+# of the input. All with exit 0, and with -delete the input gone. The refusal
+# lands in that file too. With -v0 nothing goes there, and `-v0 x - > o 2>&1`
+# keeps working.
+# $1 = a bash line that must be refused, its message in $2; $3.. = files
+# left as they were
+err_refused() {
+    local line="$1" file="$2" f; shift 2
+    fails 3 '' "$line"
+    grep -qF "$SAME" "$F/w/$file" || fail "[$line]: the refusal is not in $file: $(cat "$F/e")"
+    for f; do cmp -s "$F/w/$f" "$F/$f" || fail "[$line] changed $f"; done
+}
+err_refused 'cp "$I/in.bin" in.bin; "$B" --seed=7 -delete in.bin - > o.osr 2>&1' o.osr in.bin
+err_refused 'cp "$I/in.bin" in.bin; "$B" --seed=7 -delete in.bin o.osr 2>o.osr' o.osr in.bin
+err_refused 'cp "$I/in.bin" in.bin; "$B" --seed=7 -delete in.bin o.osr 2>>o.osr' o.osr in.bin
+err_refused 'cp "$I/ok.osr" ok.osr; "$B" -d -delete ok.osr - > o.out 2>&1' o.out ok.osr
+err_refused 'cp "$I/ok.osr" ok.osr; "$B" -d -delete ok.osr o.out 2>>o.out' o.out ok.osr
+err_refused 'cp "$I/in.bin" in.bin; "$B" -v0 -bar --seed=7 -delete in.bin - > o.osr 2>&1' o.osr in.bin
+err_refused 'cp "$I/in.bin" in.bin; "$B" -v0 -l100 --seed=7 in.bin - > o.osr 2>&1' o.osr in.bin
+err_refused 'cp "$I/in.bin" in.bin; "$B" -v0 -dup -m1 --seed=7 -delete in.bin o.osr 2>o.osr' o.osr in.bin
+err_refused 'cp "$I/in.bin" in.bin; "$B" --seed=7 - o.osr < in.bin 2>>in.bin' in.bin
+# on the input itself the refusal is appended, but the input is neither read
+# while it grows nor deleted
+err_refused 'cp "$I/in.bin" in.bin; "$B" --seed=7 -delete in.bin o.osr 2>>in.bin' in.bin
+cmp -s -n "$(stat -c%s "$F/in.bin")" "$F/w/in.bin" "$F/in.bin" || fail "2>>in.bin: in.bin changed"
+fails 0 '' 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 -delete in.bin - > o.osr 2>&1'
+"$RS" -v0 -d "$F/w/o.osr" "$F/w/o.out" </dev/null >/dev/null 2>&1 && cmp -s "$F/w/o.out" "$F/in.bin" \
+    || fail "-v0 ... - > o.osr 2>&1: the round trip differs"
+fails 0 '' 'cp "$I/in.bin" in.bin; "$B" --seed=7 in.bin o.osr > log 2>&1'
+grep -q '%' "$F/w/log" || fail "> log 2>&1: no summary in the log"
+# -temp= a device or a FIFO: the spool cannot be read back, and /dev/null
+# gave an archive of nothing with exit 0 (the C++ writes the right one; on
+# Windows NUL already failed)
+fails 3 "Can't open tempfile" '"$B" -v0 --seed=7 -temp=/dev/null - o.osr < "$I/in.bin"'; gone o.osr
+# -d of a v4 -dup archive: the Rust kept the body open (on fd 4) through the
+# post-pass, so the fds after it were not the Pascal's
+fails 4 'dedup failed, rc=8' 'cp "$I/dup.osr" t; "$B" -v0 -d t /proc/self/fd/5'
+cmp -s "$F/w/t" "$F/dup.osr" || fail "-d t /proc/self/fd/5: t changed"
 # A refusal leaves every file as it was: a name that already exists is
 # compared before the first open, not after the one that would truncate it
 old() { [ "$(cat "$F/w/$1")" = old ] || fail "a refused run changed $1"; }

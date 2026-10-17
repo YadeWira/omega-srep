@@ -229,7 +229,11 @@ on Windows. The file is removed when the run ends, successful or not, if it
 is a regular file this run opened and the name still refers to it; never
 through a symlink, so the file a symlinked
 .B -temp=
-points to is left behind, filled.
+points to is left behind, filled. When the input is stdin it is the spool
+the input is copied to and read back from, so it must be a regular file: a
+device or a FIFO
+.RB ( /dev/null )
+is refused ("Can't open tempfile", exit status 3).
 .TP
 \fB-vmfile=\fIPATH\fR
 Virtual-memory tempfile path. Removed when the decompression ends under the
@@ -511,9 +515,13 @@ when compressing, the
 .B -temp=
 and
 .B -vmfile=
-files, and the file stdout goes to when the output is
+files, the file stdout goes to when the output is
 .BR - ,
-against the input (or the file stdin is read from), the
+and the file stderr goes to when the run writes there on success (the
+progress and summary lines, as without
+.BR -v0 ,
+.BR -bar ,
+and the warnings), against the input (or the file stdin is read from), the
 .B -index=
 file when decompressing, and one another. Files are compared, not names, so
 another spelling, a link, a shell redirection
@@ -522,7 +530,13 @@ or a
 .B /dev
 or
 .B /proc
-path is the same file. Such a run is refused with exit status 3 ("Input and
+path is the same file; so is
+.B 2>&1
+with the output on stdout, which would put the summary inside the archive
+.RB ( -v0
+prints nothing there unless the run fails, so
+.B osrep -v0 x - > x.osr 2>&1
+still runs). Such a run is refused with exit status 3 ("Input and
 output files should have different names"), the message for an output named
 like the input, before the file is truncated; a file that already exists
 under two of the names is refused before anything is opened, so the refused
@@ -534,7 +548,8 @@ that is a symlink to an output that does not exist yet: the file it creates
 is left. The
 .B -vmfile=
 file is compared when the decompression first needs it. Only regular files are
-compared.
+compared. When stderr's file is one the run reads, the refusal's own message
+is still written to it.
 
 .SH ENVIRONMENT
 .TP
