@@ -9,7 +9,16 @@ Versions follow `<major>.<minor>.<patch>` for stable releases and
 written by the new default cannot be read by the previous release, which is
 what happened in 2.0.0.
 
-## [Unreleased]
+## [2.4.0] — 2026-10-20
+
+**No binary behavior change: the archives are byte-identical to 2.3.1's, and
+the only difference between the two sets of binaries is the version line.**
+This release records what the audits of the last two unexplained divergences
+found (both are defects in C++ 1.0.7 that the ports deliberately do not
+copy), closes the read-ahead and scan-mutation questions, and puts the test
+infrastructure in place for the day the two oracles leave the tree: the
+harness inputs are now deterministic, a recorded-case suite runs without
+them, and the accelerated scan has a real-data gate.
 
 ### Documentation
 
@@ -32,6 +41,15 @@ what happened in 2.0.0.
   Both are outside the byte-for-byte goal and pinned by md5 in
   `tests/rust_cli_conformance.sh` and `tests/pascal_encode_conformance.sh`;
   see `docs/pascal-port.md`, "Trampas conocidas".
+- **The digest slot no block writes, and `-a9`/`-a10`/`-a12`, are recorded**
+  in `docs/pascal-port.md`: the first has no observable effect (the value is
+  only compared, and an uninitialised digest fails like the port's zero; 20
+  runs per targeted case plus `MALLOC_PERTURB_` and a 1,322-size sweep), the
+  second crashes 1.0.7 with SIGBUS or abort while the ports round the bitarr
+  size and write a valid archive.
+- **The `std::sort` tie investigation** (2026-10-09, the cause of the
+  default-options divergence fixed in 2.3.0) is now in
+  `docs/investigations/rust-cxx-default-divergence.md`.
 
 ### Added
 
@@ -39,7 +57,22 @@ what happened in 2.0.0.
   round-trip) that `tests/golden/check.sh` replays with the Pascal alone.
   `tests/golden/make.sh` records them only when the C++ and the Rust agree
   with the port, so the suite is the first step towards running the gates
-  without the two oracles. 39 cases to start.
+  without the two oracles. 39 cases; they pass natively and under wine32 and
+  wine64.
+- **`tests/real_world_scan_regression.sh`**: 32 MiB of real data, `-m4 -l16`
+  and `-l32`, `-a8` against `-a16`. The repo's synthetic inputs do not tell
+  the two bitarr sizes apart, so a port that clamped the accelerator would
+  pass every other suite; this gate also fails when the sample stops
+  distinguishing them, instead of passing without testing anything. Skips
+  cleanly when no sample is available.
+
+### Changed
+
+- **The harness inputs are deterministic.** `tests/_paths.sh` gained
+  `ensure_corpus` (runs `tests/gen_corpus.sh` instead of substituting
+  `/dev/urandom` or `/dev/zero`) and `det_random` (fixed-seed bytes), used by
+  the decode, hash, container, format_v5 and stderr suites. The counts did
+  not move, and a failing case is now reproducible.
 
 ## [2.3.1] — 2026-10-17
 
