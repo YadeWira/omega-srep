@@ -1,12 +1,12 @@
 # Formato `.osr` v6 — borrador para la 3.0.0
 
-**Estado: borrador. No implementado.** La 3.0.0 es la release estable que
-congela el formato; todo lo marcado **[propuesta]** necesita confirmación antes
-de escribir código. La referencia del stream de matches sigue siendo
-`docs/format-spec-v5.md`: v6 **no rediseña los records**, los hereda probados y
-les agrega lo que falta.
+**Estado: dirección acordada el 2026-10-20 (formato a congelar en la 3.0.0);
+no implementado.** Las decisiones de §0 están aprobadas; lo que falta es
+toolchain, implementación y verificación. La referencia del stream de matches
+sigue siendo `docs/format-spec-v5.md`: v6 **no rediseña los records**, los
+hereda probados y les agrega lo que falta.
 
-## 0. Decisiones propuestas
+## 0. Decisiones acordadas
 
 | tema | propuesta |
 |---|---|
@@ -59,7 +59,7 @@ Igual al de v5 salvo `version = 6` y un bit de flags nuevo:
 ```
 magic          u32   "OSR6"
 version        u8    = 6
-flags          u8    bit0 = meta de -dup, bit1 = [propuesta] digest global presente
+flags          u8    bit0 = meta de -dup, bit1 = [acordado] digest global presente
 hash_id        u8
 hash_size      u8    (derivado de hash_id; 0 = sin digest)
 max_match      u32
@@ -76,7 +76,7 @@ El bloque de v5 más un CRC sobre su payload. El header del bloque queda:
 literal_bytes   u32
 origsize        u32
 statsize        u32
-block_crc       u32   [propuesta] CRC-32C de todo lo que sigue en el bloque:
+block_crc       u32   [acordado] CRC-32C de todo lo que sigue en el bloque:
                              digest (hash_size) || records (statsize) || literales
 ```
 
@@ -94,7 +94,7 @@ block_count    u32
 stat_size      u64
 meta_offset    u64
 meta_size      u32
-data_digest    hash_size bytes   [propuesta] digest de los datos originales
+data_digest    hash_size bytes   [acordado] digest de los datos originales
 footer_crc     u32   CRC-32C de todo lo anterior
 ```
 
@@ -127,7 +127,7 @@ Las de v5, más:
 ## 4. CLI: lo que la 3.0.0 puede limpiar
 
 Al congelar el formato, el objetivo deja de ser "byte-idéntico al C++" fuera
-del archivo. Todo esto queda a decisión, con propuesta:
+del archivo. Queda así:
 
 - Números: `-a`/`--seed=` dejan de leer octal y aceptan decimal/hex de forma
   consistente; se actualiza el texto de error de `--seed=`.
