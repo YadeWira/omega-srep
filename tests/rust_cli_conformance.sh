@@ -1415,7 +1415,7 @@ if [ -n "${OSREP_CDC_POLY:-}" ]; then
     say "  (the 18 pinned CDC archives are the SSE4.2 boundary hash; skipped because OSREP_CDC_POLY forces the polynomial one)"
 fi
 while read -r want input args; do
-    [ -n "${OSREP_CDC_POLY:-}" ] && continue
+    if [ -n "${OSREP_CDC_POLY:-}" ]; then continue; fi
     rc=0; "$RS" --seed=7 $args "$TMP/$input" "$TMP/cb.osr" >/dev/null 2>"$TMP/cb.err" || rc=$?
     [ "$rc" -eq 0 ] || fail "$args on $input exited $rc, expected 0: $(grep -a -m1 -E 'panicked|ERROR' "$TMP/cb.err")"
     rc=0; "$RS" -d "$TMP/cb.osr" "$TMP/cb.dec" >/dev/null 2>"$TMP/cb.err" || rc=$?
