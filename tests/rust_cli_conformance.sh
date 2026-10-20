@@ -927,6 +927,14 @@ say "the 8 bytes before a sniffed \"ODUP\" are not a size to allocate"
 # reading it first is an allocation failure here, not an OOM.
 for spec in "plain -m3f" "tagged -m3o"; do
     set -- $spec
+    # El tope de 40 MB es para el binario bajo prueba; qemu-aarch64 necesita
+    # 128 MB solo para su buffer JIT, asi que el limite lo mata a el antes de
+    # llegar al guest. OSREP_PORT_QEMU=1 saltea estos dos casos (el resto de
+    # los ulimit del suite son 1 GB o mas y entran).
+    if [ "${OSREP_PORT_QEMU:-0}" = 1 ]; then
+        say "  ($1: skipped under qemu, the 40 MB cap does not fit qemu's JIT buffer)"
+        continue
+    fi
     rm -f "$TMP/fm.bin" "$TMP/fm.osr" "$TMP/fm.out"
     python3 - "$RS" "$TMP/fm.bin" "$TMP/fm.osr" "$1" "$2" <<'PY2' || fail "fake meta_size $spec: could not make one"
 import random, struct, subprocess, sys
@@ -1403,7 +1411,11 @@ for unit, k in ((300, 4), (2000, 3), (20000, 3)):
 open(os.path.join(d, "cdc_t300k"), "wb").write(open("tests/corpus/text.bin", "rb").read()[:300000])
 open(os.path.join(d, "cdc_z1m"), "wb").write(bytes(1 << 20))
 PY
+if [ -n "${OSREP_CDC_POLY:-}" ]; then
+    say "  (the 18 pinned CDC archives are the SSE4.2 boundary hash; skipped because OSREP_CDC_POLY forces the polynomial one)"
+fi
 while read -r want input args; do
+    [ -n "${OSREP_CDC_POLY:-}" ] && continue
     rc=0; "$RS" --seed=7 $args "$TMP/$input" "$TMP/cb.osr" >/dev/null 2>"$TMP/cb.err" || rc=$?
     [ "$rc" -eq 0 ] || fail "$args on $input exited $rc, expected 0: $(grep -a -m1 -E 'panicked|ERROR' "$TMP/cb.err")"
     rc=0; "$RS" -d "$TMP/cb.osr" "$TMP/cb.dec" >/dev/null 2>"$TMP/cb.err" || rc=$?

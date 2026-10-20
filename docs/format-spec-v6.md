@@ -17,6 +17,7 @@ hereda probados y les agrega lo que falta.
 | Escritura | v6 por defecto; `--format=v4` se mantiene para interoperar con 1.0.x; los sufijos `o`/`f` (v1/v2/v3) pasan a **solo lectura** |
 | `-dup` | mismo diseño CDC y mismo meta, adentro y con CRC como en v5 |
 | Compatibilidad | v6 **no** lo lee ninguna 2.x ni 1.x: es el bump de major |
+| Determinismo de CPU | **el hash de frontera de CDC deja de depender de SSE4.2**: v6 fija una sola ruta (propuesta: la polinomial) y el mismo input da el mismo archivo en x86, x86-64, ARM64 y Windows |
 | Congelamiento | a partir de 3.0.0 el layout no cambia; la spec y el manifiesto dorado son la definición |
 
 ## 1. Plataformas soportadas
@@ -26,29 +27,20 @@ Esta es la matriz que la 3.0.0 tiene que construir, publicar y verificar:
 | sistema | arquitectura | estado hoy | cómo se verifica |
 |---|---|---|---|
 | Linux | x86_64 | se distribuye | nativo |
-| Linux | i386 | **falta** | nativo (binario estático) |
-| Linux | aarch64 | **falta** | `qemu-user` + VM ARM64 (`vm claim arm64`) |
+| Linux | i386 | construido y validado, se publica en 3.0.0 | nativo (binario estático) |
+| Linux | aarch64 | construido y validado (con la ruta polinomial de CDC) | `qemu-user` + VM ARM64 |
 | Windows | x86_64 (Win7 SP1 o superior) | se distribuye | Win7 real |
 | Windows | i386 (Win7 SP1 o superior) | se distribuye | Win7 real |
 
 Fuera de la matriz: macOS, BSD, Windows anteriores a 7 y cualquier target sin
 compilador de FPC 3.2.2. La 3.0.0 no promete nada que no esté en esta tabla.
 
-**Lo que falta para completarla:** el cross propio
-(`/mnt/IA_LAB/agentes/osrep/fpc-cross/`) hoy solo trae `ppcross386` (que ya
-sabe apuntar a linux-i386) y `ppcrossx64`, con las RTL de win32/win64. Hay que
-agregar:
-
-- **i386-linux**: compilar las RTL `i386-linux` con `ppcross386` desde
-  `/usr/share/fpcsrc/3.2.2` (`make rtl CPU_TARGET=i386 OS_TARGET=linux
-  CROSSCOMPILE=1`), y agregar el target a `pascal/build.sh`.
-- **aarch64-linux**: construir `ppcrossa64` con la fuente de FPC
-  (`make crossall CPU_TARGET=aarch64 OS_TARGET=linux`), con el binutils
-  `aarch64-linux-gnu-*` que ya está instalado, y agregar el target.
-
-Las dos cosas son trabajo de toolchain, no de código del proyecto, pero sin
-ellas la matriz no existe. Hasta que estén, README y assets siguen diciendo
-Linux x64 y Windows x86/x64.
+**Toolchain (hecho el 2026-10-20):** el cross propio
+(`/mnt/IA_LAB/agentes/osrep/fpc-cross/`) ahora tiene `ppcross386` con las RTL
+y paquetes de i386-linux y `ppcrossa64` con los de aarch64-linux, construidos
+desde la fuente oficial de FPC 3.2.2 (`PROCEDENCIA.md` tiene los comandos).
+`pascal/build.sh` construye los cinco targets. Lo que falta es publicar los
+assets en la 3.0.0; el código ya está.
 
 ## 2. Qué cambia en el archivo
 
@@ -105,7 +97,24 @@ da una verificación de punta a punta. `--verify` sin descomprimir valida
 header, footer, meta y **cada CRC de bloque**; no puede validar `data_digest`
 sin reconstruir, y lo dice.
 
-### 2.4. Lo que no cambia
+### 2.4. Determinismo entre CPUs (nuevo en v6)
+
+Hoy `-m1`/`-m2` eligen el hash de frontera del CDC según la CPU: con SSE4.2
+usan el CRC32C por hardware y sin SSE4.2 caen en un hash polinomial
+(`cdc.pas:68`, `is_x86_feature_detected!("sse4.2")` en el Rust, y lo mismo el
+C++). **Las dos rutas escriben archivos distintos para el mismo input y las
+mismas opciones.** En la práctica: un x86 sin SSE4.2 y un ARM64 dan otro
+archivo que un x86 con SSE4.2, con los mismos bytes de entrada.
+
+Eso es incompatible con "mismo input, mismo archivo" entre las plataformas de
+§1, y no se puede parchear sin cambiar el formato. v6 lo fija: **una sola
+ruta de frontera, sin detección de CPU** (propuesta: la polinomial, que ya está
+probada contra el Rust con `OSREP_CDC_POLY=1`). `OSREP_CDC_POLY` deja de ser
+una perilla de prueba y pasa a ser el comportamiento único; el CRC por
+hardware queda como una optimización interna **solo** si da exactamente los
+mismos bytes (no es el caso hoy, así que no se usa).
+
+### 2.5. Lo que no cambia
 
 - El stream de matches: triples varint `lit_len | match_len | distance`, sin
   `BASE_LEN`, sin `ROUND_MATCHES`, sin multiplicar por `L`.

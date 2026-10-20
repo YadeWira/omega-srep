@@ -78,9 +78,10 @@ the Pascal is diffed against. See `oracles/README.md`.
   because the toolchain is pinned to Rust 1.77.2. (The C++ build needs
   Windows 10/11, or the KB2999226 Universal C Runtime on an older target.)
   The historical big-endian, FreeBSD, and macOS branches are gone.
-  **Target for 3.0.0:** add Linux i386 and Linux ARM64 to the matrix (see
-  `docs/format-spec-v6.md`, §1). Those builds do not exist yet; nothing here
-  claims them today.
+  **For 3.0.0:** Linux i386 (`osrep-linux-x86`) and Linux ARM64
+  (`osrep-linux-aarch64`) are built from the same source and validated in the
+  tree; they ship with 3.0.0 (see `docs/format-spec-v6.md`, §1). No 2.4.0
+  asset exists for them.
 - **Binary name:** `osrep` (replaces `srep`).
 - **Version line:** Omega SREP starts a new lineage at `1.0a beta`.
   First stable release: `1.0.0`.

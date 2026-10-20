@@ -13,9 +13,15 @@ what happened in 2.0.0.
 
 ### Added
 
-- **Linux i386**: `osrep-linux-x86` is now built, tested against the Linux
-  x86-64 build (same archives, same CLI) and shipped. The cross toolchain gained
-  the `i386-linux` RTL and packages (`pascal/build.sh` builds four targets).
+- **Linux i386 and Linux ARM64**: `osrep-linux-x86` and
+  `osrep-linux-aarch64` are now built from the same source, tested against the
+  Linux x86-64 build (same archives, same CLI) and shipped; `pascal/build.sh`
+  builds five targets. The cross toolchain gained the `i386-linux` and
+  `aarch64-linux` units. On ARM64, `-m1`/`-m2` use the polynomial CDC boundary
+  hash because there is no SSE4.2, which is the same route an x86 without
+  SSE4.2 takes; v6 makes that choice CPU-independent (see
+  `docs/format-spec-v6.md`, §2.4), so the frozen format no longer depends on
+  the CPU.
 
 ### Fixed
 
