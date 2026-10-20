@@ -36,8 +36,11 @@ fi
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 pass=0
 
-head -c 300000 /dev/urandom > "$TMP/rnd.bin"
-cat tests/corpus/text.bin > "$TMP/txt.bin" 2>/dev/null || cp "$TMP/rnd.bin" "$TMP/txt.bin"
+# El incompresible sale de una semilla fija: con /dev/urandom el caso no era
+# reproducible. El corpus se regenera si falta, en vez de sustituirlo.
+ensure_corpus || fail "no hay tests/corpus y no se pudo generar con tests/gen_corpus.sh"
+det_random 300000 11 > "$TMP/rnd.bin"
+cat tests/corpus/text.bin > "$TMP/txt.bin"
 
 field() { "$CT" "$1" | grep "^$2 " | cut -d' ' -f2-; }
 

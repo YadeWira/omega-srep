@@ -55,9 +55,11 @@ trap 'rm -rf "$TMP"' EXIT
 pass=0
 
 # A compressible input with real matches, so the summary lines have something
-# to report; 12 MiB is enough for more than one progress tick.
-cat tests/corpus/text.bin tests/corpus/text.bin tests/corpus/text.bin > "$TMP/in.bin" 2>/dev/null \
-    || head -c 12582912 /dev/zero > "$TMP/in.bin"
+# to report; 12 MiB is enough for more than one progress tick. The corpus is
+# generated if missing: the old fallback to 12 MiB of zeros was silent, and
+# zeros exercise a different path (nothing but the degenerate run).
+ensure_corpus || fail "no tests/corpus and tests/gen_corpus.sh could not create it"
+cat tests/corpus/text.bin tests/corpus/text.bin tests/corpus/text.bin > "$TMP/in.bin"
 INSIZE=$(stat -c%s "$TMP/in.bin")
 
 # ---------------------------------------------------------------- 1. -bar --

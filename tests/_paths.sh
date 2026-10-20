@@ -20,6 +20,31 @@ make_cxx() { make -C "$CXX_DIR" "$@"; }
 # looked up from the current directory, not from --manifest-path.
 cargo_rs() { (cd "$RUST_DIR" && cargo "$@"); }
 
+# ensure_corpus: tests/corpus/ is in .gitignore, so a fresh worktree has none.
+# Harnesses that need it used to substitute another input on the quiet
+# (/dev/urandom, /dev/zero) or skip the cases: the run passed while testing
+# something else, and a failure was not reproducible. Generate the corpus from
+# its fixed seeds instead, and let the harness fail if that is impossible.
+ensure_corpus() {
+    local f
+    for f in text.bin zeros.bin random.bin mixed.bin tiny.bin; do
+        [ -f "tests/corpus/$f" ] && continue
+        printf 'ensure_corpus: falta tests/corpus/%s, lo genero con tests/gen_corpus.sh\n' "$f" >&2
+        bash tests/gen_corpus.sh >&2 || return 1
+        [ -f "tests/corpus/$f" ] || return 1
+    done
+}
+
+# det_random BYTES SEED: BYTES pseudo-random bytes on stdout, the same ones on
+# every run. For the inputs that have to be incompressible (the no-match path);
+# the fixed seed keeps any failure reproducible, which /dev/urandom did not.
+# It is the generator tests/gen_corpus.sh already uses for random.bin.
+det_random() {
+    python3 -c 'import random, sys
+r = random.Random(int(sys.argv[2]))
+sys.stdout.buffer.write(r.randbytes(int(sys.argv[1])))' "$1" "$2"
+}
+
 # warn_shared_wine TOOL...: avisa por stderr si alguno es un wrapper de wine
 # (un script que llama a `wine` o `wine64`) y ni el wrapper ni el entorno
 # nombran un WINEPREFIX. En el prefix compartido (~/.wine) un `wineserver -k`

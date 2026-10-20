@@ -35,14 +35,19 @@ fail() {
 say() { printf '  %s\n' "$*"; }
 
 # The CDC modes need a duplicate-heavy input; tests/corpus is blind to them.
+# A fixed seed, not os.urandom: os.urandom made every run a different case, so
+# a failure could not be reproduced from the log.
 python3 - "$TMP" <<'PY'
-import os, sys
+import random, sys
 tmp = sys.argv[1]
-block = os.urandom(1 << 19)
+r = random.Random(5)
+block = r.randbytes(1 << 19)
 # 5 MiB of a repeated 512 KiB chunk, plus something incompressible.
-open(f"{tmp}/dup5m.bin", "wb").write(block * 10 + os.urandom(64 * 1024))
+open(f"{tmp}/dup5m.bin", "wb").write(block * 10 + r.randbytes(64 * 1024))
 open(f"{tmp}/mixed.bin", "wb").write(block + b"hello world" * 40000)
 PY
+
+ensure_corpus || fail "no tests/corpus and tests/gen_corpus.sh could not create it"
 
 # A v5 case: the binary encodes, then verifies the stream itself.
 v5enc() {
@@ -57,7 +62,7 @@ v5enc() {
 
 say "v5 container, every method, checked against the Future-LZ stream"
 for input in "$TMP/mixed.bin" "$TMP/dup5m.bin" "$ROOT/tests/corpus/mixed.bin"; do
-    [ -f "$input" ] || continue
+    [ -f "$input" ] || fail "missing input $input (see ensure_corpus above)"
     for m in m0 m1 m2 m3 m4 m5; do
         v5enc "$input" "${m}v"
     done

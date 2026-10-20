@@ -42,8 +42,10 @@ pass=0
 # polinomico). Mas 16 y sus alrededores, que es el paso de nh_16, y algo
 # grande que cruza varios bloques de 4096.
 SIZES="0 1 2 3 15 16 17 31 32 33 55 56 57 63 64 65 111 112 113 119 120 127 128 129 255 256 1000 4095 4096 4097 4111 4112 8191 8192 8193 65536 100000"
+# Semilla fija por tamano: /dev/urandom daba una entrada distinta en cada
+# corrida, asi que un fallo no se podia reproducir.
 for n in $SIZES; do
-    head -c "$n" /dev/urandom > "$TMP/in-$n" 2>/dev/null || : > "$TMP/in-$n"
+    det_random "$n" $((1000 + n)) > "$TMP/in-$n"
 done
 
 # Semillas de prueba. No son arbitrarias: se prueban varias porque las claves
@@ -99,7 +101,7 @@ say "aes, contra el LibTomCrypt vendorizado y no solo contra FIPS-197"
 # hash_test expone el cifrado de bloque suelto, asi que la primitiva sobre la
 # que se apoya vmac se verifica por separado en vez de solo a traves de el.
 for n in 16 32 64 4096; do
-    head -c "$n" /dev/urandom > "$TMP/blk-$n"
+    det_random "$n" $((2000 + n)) > "$TMP/blk-$n"
     c=$("$HT" aes "$SEED32_A" "$TMP/blk-$n")
     p=$("$PA" aes "$SEED32_A" "$TMP/blk-$n") || fail "aes: el Pascal fallo con $n bytes"
     [ "$c" = "$p" ] || fail "aes con $n bytes: oraculo $c, Pascal $p"

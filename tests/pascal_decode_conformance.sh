@@ -35,10 +35,16 @@ TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 pass=0
 
 # Tres formas de entrada: con duplicados (matches largos), incompresible
-# (casi todo literales) y una mezcla.
-cat tests/corpus/text.bin tests/corpus/text.bin tests/corpus/text.bin > "$TMP/dup.bin" 2>/dev/null \
-    || head -c 3000000 /dev/urandom > "$TMP/dup.bin"
-head -c 2000000 /dev/urandom > "$TMP/rnd.bin"
+# (casi todo literales) y una mezcla. Las tres son deterministas: el corpus
+# sintetico de tests/gen_corpus.sh se regenera si falta, en vez de caer en
+# /dev/urandom, que hacia la corrida irreproducible sin avisar.
+ensure_corpus || fail "no hay tests/corpus y no se pudo generar con tests/gen_corpus.sh"
+cat tests/corpus/text.bin tests/corpus/text.bin tests/corpus/text.bin > "$TMP/dup.bin"
+# 2.000.000 y no los 2 MiB justos de random.bin: con -b512kb deja un ultimo
+# bloque parcial, que es la rama que importa.
+[ "$(stat -c%s tests/corpus/random.bin)" -ge 2000000 ] \
+    || fail "tests/corpus/random.bin tiene menos de 2.000.000 bytes"
+head -c 2000000 tests/corpus/random.bin > "$TMP/rnd.bin"
 cat "$TMP/rnd.bin" "$TMP/dup.bin" > "$TMP/mix.bin"
 
 say "I/O-LZ: round-trip byte a byte sobre archivos del binario Rust"
