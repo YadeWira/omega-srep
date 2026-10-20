@@ -9,6 +9,25 @@ Versions follow `<major>.<minor>.<patch>` for stable releases and
 written by the new default cannot be read by the previous release, which is
 what happened in 2.0.0.
 
+## [Unreleased]
+
+### Added
+
+- **Linux i386**: `osrep-linux-x86` is now built, tested against the Linux
+  x86-64 build (same archives, same CLI) and shipped. The cross toolchain gained
+  the `i386-linux` RTL and packages (`pascal/build.sh` builds four targets).
+
+### Fixed
+
+- **32 bits: `-m0 -dl8` corrupted the heap and crashed at exit.** With the
+  default `-d` (512 MiB) and `-dl8`, the in-memory compressor's `L` is 1 and it
+  asks for an 8 GiB hash table; on a 32-bit target the array length and its
+  byte size wrapped in `DynArraySetLength`, so the writes went past a much
+  smaller allocation (SIGSEGV during finalization, after the archive had been
+  written). It now exits 4 with `OutOfMemory`, which is what the C++ i386 and
+  the Rust i686 do when the allocation fails. Found while adding the Linux
+  i386 build; the Windows 32-bit build had the same latent corruption.
+
 ## [2.4.0] — 2026-10-20
 
 **No binary behavior change: the archives are byte-identical to 2.3.1's, and

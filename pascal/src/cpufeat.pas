@@ -15,9 +15,8 @@ function HasSse42: Boolean;
 
 implementation
 
-{$asmmode intel}
-
 {$IF DEFINED(CPUX86_64)}
+{$asmmode intel}
 function CpuidEcx1: DWord; assembler; nostackframe;
 asm
   push rbx
@@ -26,7 +25,13 @@ asm
   mov eax, ecx
   pop rbx
 end;
+
+function HasSse42: Boolean;
+begin
+  Result := (CpuidEcx1 and (DWord(1) shl 20)) <> 0;
+end;
 {$ELSEIF DEFINED(CPUI386)}
+{$asmmode intel}
 function CpuidEcx1: DWord; assembler; nostackframe;
 asm
   push ebx
@@ -35,13 +40,21 @@ asm
   mov eax, ecx
   pop ebx
 end;
-{$ELSE}
-  {$FATAL cpufeat.pas: no hay CPUID para esta arquitectura}
-{$ENDIF}
 
 function HasSse42: Boolean;
 begin
   Result := (CpuidEcx1 and (DWord(1) shl 20)) <> 0;
 end;
+{$ELSEIF DEFINED(CPUAARCH64)}
+{ ARM no tiene SSE4.2: el C++ y el Rust preguntan is_x86_feature_detected,
+  que en ARM da false, y CDC usa la ruta de software del CRC32C. Tiene que dar
+  lo mismo que ellos: las dos rutas escriben archivos distintos. }
+function HasSse42: Boolean;
+begin
+  Result := False;
+end;
+{$ELSE}
+  {$FATAL cpufeat.pas: no hay CPUID para esta arquitectura}
+{$ENDIF}
 
 end.

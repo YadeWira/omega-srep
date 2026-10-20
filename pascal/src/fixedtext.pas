@@ -36,7 +36,13 @@ unit FixedText;
   {$IFDEF CPUX86_64}
     {$IFNDEF FPUSSE64}{$FATAL fixedtext: x86-64 sin SSE64}{$ENDIF}
   {$ELSE}
-    {$FATAL fixedtext: CPU no prevista, revisar el calculo en Double}
+    {$IFDEF CPUAARCH64}
+      { ARM64 hace las operaciones con VFP/Neon en double IEEE, sin x87 ni
+        Extended: no hay nada que pedir. El texto no pasa por floats de
+        todos modos (se expande con enteros, ver arriba). }
+    {$ELSE}
+      {$FATAL fixedtext: CPU no prevista, revisar el calculo en Double}
+    {$ENDIF}
   {$ENDIF}
 {$ENDIF}
 

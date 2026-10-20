@@ -15,7 +15,7 @@ unit Inmem;
 {$OVERFLOWCHECKS OFF}
 interface
 
-uses Widths, Hashes, LzCodec;
+uses SysUtils, Widths, Hashes, LzCodec;
 
 const
   INMEM_PREFETCH = 100;   { su efecto visible: los ceros al final de hashptr }
@@ -85,6 +85,15 @@ begin
       -dh5b..-dh8b y el archivo de -dh8b; una entrada demasiado chica para
       llegar a un acceso ya escribia ese archivo (inmem.rs, new) }
     if hashsize < 8 then hashsize := 8;
+    { En i386 el arreglo puede no entrar: Count * 8 tiene que caber en un
+      SizeInt, o DynArraySetLength da la vuelta (1G entradas x 8 = 8 GiB en
+      32 bits) y el arreglo queda con un largo que no tiene memoria detras:
+      las escrituras corrompen el heap. Paso con -m0 -dl8, que con el -d por
+      defecto (512 MiB) y L = 8/8 = 1 pide 8 GiB de tabla. El Rust i686 no
+      puede asignarlos y sale OutOfMemory; esto lo empareja. En x86-64 entra
+      en el mapeo en cero y los dos targets siguen dando el mismo archivo. }
+    if (hashsize div 8) > QWord(High(SizeInt)) div SizeOf(QWord) then
+      raise EOutOfMemory.Create('OutOfMemory');
     { hashsize cuenta BYTES en el C++; la tabla son elementos de 8 }
     D.HashMask := hashsize div 8 - 1;
     { en paginas en cero sin tocar, como el Rust (zeropages.pas); DcFree }

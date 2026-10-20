@@ -1245,6 +1245,17 @@ done
 # -dl still works.
 for args in "-m0 -d1mb:c1:l4" "-m0 -dc8 -dl4" "-m4 -dl4" "-m0 -dl8"; do
     rc=0; "$RS" --seed=7 $args tests/corpus/text.bin "$TMP/dw.osr" >/dev/null 2>"$TMP/dw.err" || rc=$?
+    # En un build de 32 bits, -m0 -dl8 (L = 1) pide una tabla de 8 GiB con el
+    # -d por defecto, que no entra en el espacio de direcciones: OutOfMemory,
+    # exit 4, es la respuesta correcta (el C++ i386 y el Rust i686 tampoco la
+    # asignan). OSREP_PORT_32BIT=1 lo dice; sin la variable se exige el 0 del
+    # build de 64 bits.
+    if [ "${OSREP_PORT_32BIT:-0}" = 1 ] && [ "$args" = "-m0 -dl8" ]; then
+        [ "$rc" -eq 4 ] || fail "$args on a 32-bit build exited $rc, expected 4 (OutOfMemory)"
+        grep -q "OutOfMemory" "$TMP/dw.err" || fail "$args: stderr does not say OutOfMemory: $(cat "$TMP/dw.err")"
+        [ ! -e "$TMP/dw.osr" ] || fail "$args: left an output behind after OutOfMemory"
+        pass=$((pass + 1)); continue
+    fi
     [ "$rc" -eq 0 ] || fail "$args exited $rc, expected 0: $(tail -1 "$TMP/dw.err")"
     "$RS" -d "$TMP/dw.osr" "$TMP/dw.dec" >/dev/null 2>&1 || fail "$args: archive does not decode"
     cmp -s tests/corpus/text.bin "$TMP/dw.dec" || fail "$args: round trip differs"
