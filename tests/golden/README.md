@@ -47,7 +47,7 @@ y `tests/rust_cli_conformance.sh`.
 
 ## Estado
 
-Primera versión (2026-10-20): 35 casos, v4 y v5, modos m0..m5, los tres
+Primera versión (2026-10-20): 39 casos, v4 y v5, modos m0..m5, los tres
 contenedores viejos (`o`), Future-LZ (`f`), hashes, `-dup` y las opciones que
 cambian los bytes (`-a`, `-ia-`, `-l/-c`, `--chunk-*`). Es una semilla, no el
 reemplazo completo: las suites diferenciales siguen cubriendo mucho más.

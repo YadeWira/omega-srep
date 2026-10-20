@@ -363,9 +363,16 @@ if [ -x "$CPP" ] || make_cxx bin/osrep >/dev/null 2>&1; then
     # alguna build que lo de arriba dejaba pasar: zruns con LOOKAHEAD 128,
     # nearcopy con el fin de la ventana de candidatos incluido, y los -ia- de
     # -m4/-m5 con la 02d4823, que ignoraba -ia-.
+    # Los cuatro de 2026-10-20 cubren dos mutaciones que sobrevivian a las
+    # compuertas: -m5 con el filtro de slices encendido (-c256 -l1024 escribe
+    # otros bytes que -ia-, asi que mutar -m5 al escaneo plano se nota) y el
+    # tamano del bitarr (-a8 contra -a16; en zruns dan lo mismo, sobre real.tar
+    # no: ver PENDIENTES, A4).
     cp $C/text.bin "$TMP/text.bin"
     for case in "zruns.bin|m3|-l130" "zruns.bin|m3|-c130" \
                 "text.bin|m4|-c1100 -l1000 -ia-" "text.bin|m4|-c1024 -l1000" \
+                "text.bin|m5|-c256 -l1024" "text.bin|m5|-c256 -l1024 -ia-" \
+                "zruns.bin|m4|-l16 -a8" "zruns.bin|m4|-l16 -a16" \
                 "nearcopy.bin|m4|-l40 -d1mb" "nearcopy.bin|m4o|-l16 -d1mb" \
                 "smalll.bin|m4|-l16 -a1/2 -a1" "smalll.bin|m4|-l32 -a2/4 -a2" \
                 "text.bin|m5|-l1000 -ia-" "text.bin|m5o|-l1024 -c128 -ia-" \

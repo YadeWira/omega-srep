@@ -27,6 +27,10 @@ text.bin      -m5 --format=v4 -b1mb
 text.bin      -m3 --format=v4 -a0
 text.bin      -m3 --format=v4 -a8/4
 text.bin      -m5 --format=v4 -l1000 -ia-
+text.bin      -m5 --format=v4 -c256 -l1024
+text.bin      -m5 --format=v4 -c256 -l1024 -ia-
+zruns.bin     -m4 --format=v4 -l16 -a8
+zruns.bin     -m4 --format=v4 -l16 -a16
 text.bin      -m3 --format=v4 -b64k -l128
 zeros.bin     -m3 --format=v4 -hash=sha1
 tiny.bin      -m4 --format=v4 -hash=siphash

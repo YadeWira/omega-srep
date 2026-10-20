@@ -253,7 +253,10 @@ say "the scan's edges and -ia-, straight against the C++"
 # Each case failed on some build the gate above let through: zruns with
 # LOOKAHEAD 128, nearcopy with the store window's end included, the -a ones
 # with a Pascal CLI that kept the old /M, and the -m4/-m5 -ia- ones on 2.2.1
-# and 02d4823, whose ports ignored -ia-.
+# and 02d4823, whose ports ignored -ia-. The 2026-10-20 pair (text.bin with
+# -m5 -c256 -l1024, zruns with -m4 -l16 -a16) did not fail on any build: they
+# are the inputs that make two surviving scan mutations visible (the -m5 plain
+# scan and the bitarr size; see PENDIENTES, A4).
 diff_case_t1() {
     local input="$1" rc
     shift
@@ -276,6 +279,7 @@ diff_case_t1() {
 }
 cp tests/corpus/text.bin "$TMP/text.bin"
 for case in "zruns.bin|-m3 -l130" "zruns.bin|-m3 -c130" \
+            "text.bin|-m5 -c256 -l1024" "zruns.bin|-m4 -l16 -a16" \
             "nearcopy.bin|-m4 -l40 -d1mb" "nearcopy.bin|-m4o -l16 -d1mb" \
             "smalll.bin|-m4 -l16 -a1/2 -a1" "smalll.bin|-m4 -l32 -a2/4 -a2" \
             "text.bin|-m5 -l1000 -ia-" "text.bin|-m5o -l1024 -c128 -ia-" \

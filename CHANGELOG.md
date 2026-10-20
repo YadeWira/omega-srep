@@ -39,7 +39,7 @@ what happened in 2.0.0.
   round-trip) that `tests/golden/check.sh` replays with the Pascal alone.
   `tests/golden/make.sh` records them only when the C++ and the Rust agree
   with the port, so the suite is the first step towards running the gates
-  without the two oracles. 35 cases to start.
+  without the two oracles. 39 cases to start.
 
 ## [2.3.1] — 2026-10-17
 

@@ -995,3 +995,23 @@ diferencias.
   los 189 bytes. Queda fuera del objetivo byte a byte, como el resto de la
   aritmética sin signo del oráculo; fijado por md5 en
   `pascal_encode_conformance` y `rust_cli_conformance`.
+* **El slot de digest que ningún bloque escribe no cambia nada (A1).** Cuando
+  el último `add_hash` de un bloque lee el digest de un chunk que ningún
+  bloque prepara —bloques corridos, o el bloque siguiente más corto que `L`—
+  el C++ 1.0.7 lee memoria sin inicializar y el port el lugar extra en cero
+  (`HtInit` reserva `TotalChunks + 1`). El único uso de ese valor es el
+  `memcmp` de `add_hash`/`find_match`; un digest basura no coincide con uno
+  real, igual que el cero, así que el archivo es el mismo. Medido: `-m3 -l130`
+  con `-b13000` sobre 65.650 bytes (fin justo en la frontera), 65.519 (a un
+  byte) y 65.100 (último bloque de 100 bytes < `L`), y con `-b13001` sobre
+  65.134 (bloques corridos), 20 corridas del C++ por caso más
+  `MALLOC_PERTURB_=1/85/170/255`: siempre el mismo archivo que el port, y
+  descomprime. Un barrido de 1.322 tamaños con un `fprintf` en el C++ cuando
+  `curchunk >= total_chunks` no disparó nunca. Queda del lado del C++ el
+  acceso fuera de su `BigAlloc` (memoria, no formato) y la carrera del
+  read-ahead que ya está fijada por md5.
+* **`-a9`, `-a10`, `-a12`: el C++ se cae.** Con un `-aN` que no es potencia
+  de dos y sin `/M`, 1.0.7 termina en `SIGBUS` o abort y deja un archivo de
+  0 bytes (`-a8`, `-a16` y `-a17` andan). Los ports redondean el tamaño del
+  bitarr y escriben un archivo válido, como con el resto de las opciones que
+  la 2.2.1 aceptaba y el C++ no define. No se copia el crash.
