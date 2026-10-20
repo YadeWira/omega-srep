@@ -31,9 +31,9 @@ warn_shared_wine "$OSREP"
 # writes v4 and rejects `--format=` outright. Scripts that assert a *v4-specific*
 # layout -- the ODUP trailer, the header's seed offset -- use this so they keep
 # testing that layout against either build, instead of silently testing whatever
-# the default happens to be. Probed by behaviour, because `--format` is
-# the default happens to be. The probe has to be a real compression: `--version`
-# and `--help` are answered *before* the option parser runs, so
+# the default happens to be. Probed by behaviour, because `--format` is an
+# option the parser has to see. The probe has to be a real compression:
+# `--version` and `--help` are answered *before* the option parser runs, so
 # `--format=v4 --version` exits 0 on the C++ too and would report support that
 # is not there.
 OSREP_V4=""

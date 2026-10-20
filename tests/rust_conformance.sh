@@ -32,10 +32,13 @@ say "building the C++ oracle ($CXX_BIN/dedup_test)"
 make_cxx bin/dedup_test >/dev/null 2>&1
 
 say "building the Rust port (osrep-conformance)"
-if ! cargo_rs build --release -p osrep-conformance >/tmp/rust-conformance-build.log 2>&1; then
-    cat /tmp/rust-conformance-build.log >&2
+build_log=$(mktemp)
+if ! cargo_rs build --release -p osrep-conformance >"$build_log" 2>&1; then
+    cat "$build_log" >&2
+    rm -f "$build_log"
     fail "cargo build failed"
 fi
+rm -f "$build_log"
 RS_DIR=$RUST_TARGET/release
 RS=$RS_DIR/dedup_conformance
 [[ -x "$RS" ]] || fail "missing $RS"
