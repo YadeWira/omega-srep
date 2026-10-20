@@ -1,0 +1,35 @@
+30fc95dbdf606d8580d42d7945f5a104f4d19b272b92f7a9cc7a9beeaec0f8d0	0	tiny.bin	-m0 --format=v4
+59a09825f7f1e74a9a3b3aee51aae8cfab233585a03e881270556b98ac59d91c	0	text.bin	-m0 --format=v4 -d16mb
+19954e3d0008bc40795613631313dfce528ba91682a69fcc6849a429bbdfc83a	0	text.bin	-m1 --format=v4 -b1mb
+62ea07aa1e337e7928324da1bb4142eed3b533f29ffdb1dae39704b873051928	0	random.bin	-m1 --format=v4 -b1mb
+19954e3d0008bc40795613631313dfce528ba91682a69fcc6849a429bbdfc83a	0	text.bin	-m2 --format=v4 -b1mb
+284b480da9145ec77347569783364c7fda0117316deb53f2bd2e434cc7034ff2	0	mixed.bin	-m2 --format=v4 -b1mb
+1f0df10cb14e3db124bfcf7ab25e7091842b579bc122a2cef1477ea0e1273b3a	0	text.bin	-m3 --format=v4 -b1mb
+7e52c199c69c0bf3f8e0e42848e98e321762878ff754303d18bc415ba3682c04	0	zruns.bin	-m3 --format=v4 -b64k
+99e75b758121adcbc007ee4c457fe6ec4450c48ec569cc69132e2fe8848a94f2	0	random.bin	-m1o --format=v4 -b1mb
+04033f7f50fdeb980e40f39849c8da62797de573f89911400ab8af43affc6ed7	0	mixed.bin	-m3o --format=v4 -b1mb
+9e24bc42f32127cf87c44925850340a6f2b5f4c1626723690e2da17778efb4f6	0	text.bin	-m3f --format=v4 -b1mb
+95bc1d0f5ec7bbea4c9e77a69d1c8d0378af79434cec7f2adc97ef69528e5282	0	text.bin	-m4 --format=v4 -b1mb
+21795a2aea2658dfabc0fb365f892d8093ffa11cadbe046dfac47b278af24415	0	mixed.bin	-m4 --format=v4 -l256 -c128
+3a455fcee68231b9c216394e277f2e6baa01307a0f432556687a7561b23372e9	0	text.bin	-m5 --format=v4 -b1mb
+117dc00038c0e48c58708fb72ec59d2d90ecd20439c873da6f6649e012691681	0	text.bin	-m3 --format=v4 -a0
+117dc00038c0e48c58708fb72ec59d2d90ecd20439c873da6f6649e012691681	0	text.bin	-m3 --format=v4 -a8/4
+59a09825f7f1e74a9a3b3aee51aae8cfab233585a03e881270556b98ac59d91c	0	text.bin	-m5 --format=v4 -l1000 -ia-
+7d2696d20fc145a55fe747307dc6db083851b629fad702d3648cec9cf8c2c11a	0	text.bin	-m3 --format=v4 -b64k -l128
+86fa83184bb192e1e26fb9bb035693b03416255dd7fb5c426c297b172f41d90b	0	zeros.bin	-m3 --format=v4 -hash=sha1
+44f4fa0598a3ff16d6eb73d4cfc591ce4076eacc80f49a0c32b363a00252662f	0	tiny.bin	-m4 --format=v4 -hash=siphash
+fc0fdb9f72c817b1365243edfece27fc8ce65787146b9aceffef3b7101cf0deb	0	empty.bin	-m3 --format=v4
+b07c4d90f07ca9a3b8f4e58b519712757592053c981d932e9722c8ec2789bb01	0	text.bin	-dup -m3 --format=v4
+39d61ad3b4f42a16f90bfad12ed8dd69b39c3a2318b90a2a3847055d6f1fb7e4	0	zruns.bin	-dup -m5 --format=v4
+0f60a82e21937af737647dad7cb8dfbe908ec356b5ce9714e82426d2ebbbc311	0	mixed.bin	-dup -m3 --format=v4 --chunk-avg=2048 --chunk-min=512 --chunk-max=8192
+92de9928a943f5f9214bb16784666846e59e60fa718631f7a998d0cfec6984e5	0	zruns.bin	-dup -m3 --format=v4 --chunk-hash=gear
+a5390fd43c8bf2b93d5c3ddec0093a25d61feb52a2672b8e78907d814025c692	0	text.bin	-m3 --format=v5
+bc4c779491b0cba6652fb2db920c8ffc0262ef2dd3ebd722baf5ff683ba2edb3	0	mixed.bin	-m4 --format=v5 -b1mb
+ddc4cf42046640ca1a8d144587370b45453f984195e8f98746ca411ab9a7230d	0	text.bin	-m5 --format=v5 -l1000 -ia-
+ef7883a84afec392af9fa758a8d6b7409333660ed9877a6c384d14002b3ad9b8	0	empty.bin	-m3 --format=v5
+b626b9bbc0d4b7735b9658286041e629ef5ebc40a2f77d1442c7f3190fb8ffd6	0	tiny.bin	-m1 --format=v5
+4e78c91a588c67e3a5f36b746afb28dcb34ddaa3efb5eb56bec4d745329e778a	0	random.bin	-m1 --format=v5 -b64k
+8ac50d6978d2a14ede3d7140a95128c08f61be3b4297274582e8d865923c9523	0	zeros.bin	-m0 --format=v5 -d16mb
+e58095e0713a4e53de69b6f35680a758619ca8a2e74154c9ceddce255932d5e3	0	text.bin	-dup -m3 --format=v5
+f8a6041dd7b29fc997990b5807631f9bde770b43bd7ce576864e54ffba0ae422	0	mixed.bin	-dup -m5 --format=v5 --chunk-hash=gear
+bb9072a99647f80efecff2817566a7cfe31a3ef4de56f835713d1f30565d83c8	0	zruns.bin	-dup -m3 --format=v5 --chunk-avg=2048

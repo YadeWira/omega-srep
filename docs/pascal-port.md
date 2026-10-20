@@ -967,3 +967,31 @@ diferencias.
   `tests/rust_cli_conformance.sh` y `tests/pascal_encode_conformance.sh`), y
   un caso nuevo directo contra el C++ se corre cientos de veces, en fila y en
   paralelo, antes de confiar en que es estable.
+* **Un `-dup` cuyo srep interno sale 1 pierde el trailer, y con él los datos.**
+  `dup_wrapper.cpp` (`run_compress`, 1.0.7) deduplica, comprime el flujo con
+  `call_srep_main` y, si el código es distinto de 0, vuelve **antes** de pegar
+  `meta || u64(meta_size) || "ODUP"`. El aviso de `-l` que no es potencia de
+  dos (`srep.cpp:477`, `warnings++`) deja el archivo escrito pero sale 1, así
+  que el `.osr` queda sin trailer. `-d` entonces devuelve el flujo
+  deduplicado, no la entrada, y sale 0: `-dup -m3 --seed=7 -l130` sobre
+  `zruns.bin` da 97.781 bytes que descomprimen a 241.955 en vez de 242.980.
+  Los ports escriben el trailer siempre, y su cuerpo comprimido es **byte a
+  byte el del C++** (los primeros 97.781 bytes coinciden). Un 1.0.7 parcheado
+  solo para no salir antes en `srep_rc == 1` escribe exactamente el archivo de
+  los ports (`c7f02b34…`), que es el que fijan `tests/rust_cli_conformance.sh`
+  y `tests/pascal_encode_conformance.sh`. Copiar el bug sería copiar la
+  pérdida: desviación deliberada.
+* **El filtro de slices del C++ con `-l` por debajo de `-c`.** `SliceHash`
+  (`hash_table.cpp:34`) hace `check_slices = int((MIN_MATCH-L)/slice_size) - 1`
+  con `MIN_MATCH` sin signo y `L` en 64 bits: si `-l < -c`, la resta da la
+  vuelta y `int()` se queda con los 32 bits bajos. Cuando esos bits caen
+  positivos, el filtro queda "activo" con un `check_slices` enorme y rechaza
+  casi todos los matches: `-m4 -c1100 -l1000` sobre `text.bin` escribe
+  4.191.125 bytes de 4.194.304, donde el mismo comando con `-ia-` escribe 189.
+  La cuenta de los ports es con signo: `MIN_MATCH <= L` apaga el filtro. Por
+  eso coinciden con el C++ en `-c1024 -l1000` (el wrap cae en -2) y en
+  `-c512 -l1000` (filtro real, `check_slices` = 6), y no en `-c1100 -l1000`
+  (1.065.904.290). No es una regresión de la 2.2.1: el Rust 2.1.1 ya escribía
+  los 189 bytes. Queda fuera del objetivo byte a byte, como el resto de la
+  aritmética sin signo del oráculo; fijado por md5 en
+  `pascal_encode_conformance` y `rust_cli_conformance`.

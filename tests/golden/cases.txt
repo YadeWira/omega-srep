@@ -1,0 +1,49 @@
+# The golden suite's cases: one per line, `<input> <args...>`.
+# tests/golden/make.sh records them; tests/golden/check.sh replays them.
+#
+# A case belongs here only while the reference is trustworthy for it. For
+# --format=v4 the C++ 1.0.7 and the Rust must agree byte for byte; for
+# --format=v5 only the Rust exists (the C++ cannot write v5). The two places
+# where 1.0.7 does not round-trip are deliberately absent: `-dup` with a
+# non-power-of-two -l (it drops the ODUP trailer) and -m4/-m5 with -l < -c
+# (the slice filter's unsigned wrap). Both live, pinned, in
+# tests/rust_cli_conformance.sh and tests/pascal_encode_conformance.sh.
+
+# --- v4: the C++ and the Rust both write these, and must agree -------------
+tiny.bin      -m0 --format=v4
+text.bin      -m0 --format=v4 -d16mb
+text.bin      -m1 --format=v4 -b1mb
+random.bin    -m1 --format=v4 -b1mb
+text.bin      -m2 --format=v4 -b1mb
+mixed.bin     -m2 --format=v4 -b1mb
+text.bin      -m3 --format=v4 -b1mb
+zruns.bin     -m3 --format=v4 -b64k
+random.bin    -m1o --format=v4 -b1mb
+mixed.bin     -m3o --format=v4 -b1mb
+text.bin      -m3f --format=v4 -b1mb
+text.bin      -m4 --format=v4 -b1mb
+mixed.bin     -m4 --format=v4 -l256 -c128
+text.bin      -m5 --format=v4 -b1mb
+text.bin      -m3 --format=v4 -a0
+text.bin      -m3 --format=v4 -a8/4
+text.bin      -m5 --format=v4 -l1000 -ia-
+text.bin      -m3 --format=v4 -b64k -l128
+zeros.bin     -m3 --format=v4 -hash=sha1
+tiny.bin      -m4 --format=v4 -hash=siphash
+empty.bin     -m3 --format=v4
+text.bin      -dup -m3 --format=v4
+zruns.bin     -dup -m5 --format=v4
+mixed.bin     -dup -m3 --format=v4 --chunk-avg=2048 --chunk-min=512 --chunk-max=8192
+zruns.bin     -dup -m3 --format=v4 --chunk-hash=gear
+
+# --- v5: only the Rust oracle can write it --------------------------------
+text.bin      -m3 --format=v5
+mixed.bin     -m4 --format=v5 -b1mb
+text.bin      -m5 --format=v5 -l1000 -ia-
+empty.bin     -m3 --format=v5
+tiny.bin      -m1 --format=v5
+random.bin    -m1 --format=v5 -b64k
+zeros.bin     -m0 --format=v5 -d16mb
+text.bin      -dup -m3 --format=v5
+mixed.bin     -dup -m5 --format=v5 --chunk-hash=gear
+zruns.bin     -dup -m3 --format=v5 --chunk-avg=2048

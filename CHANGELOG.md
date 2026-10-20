@@ -9,6 +9,38 @@ Versions follow `<major>.<minor>.<patch>` for stable releases and
 written by the new default cannot be read by the previous release, which is
 what happened in 2.0.0.
 
+## [Unreleased]
+
+### Documentation
+
+- **Two option combinations where the ports deliberately do not copy C++
+  1.0.7**, the last two unexplained divergences:
+  - **`-dup` with an `-l` that is not a power of two.** 1.0.7's
+    `dup_wrapper` returns before appending the `ODUP` trailer when its inner
+    srep exits non-zero, and the `-l` warning exits 1 with the body already
+    written. Its archive then decompresses to the deduplicated stream, not
+    the input (`-dup -m3 -l130` on `zruns.bin`: 241,955 bytes instead of
+    242,980, exit 0). The ports write the trailer; their compressed body is
+    byte-identical to the C++'s.
+  - **`-m4`/`-m5` with `-l < -c`.** 1.0.7's slice filter subtracts
+    `MIN_MATCH - L` unsigned and keeps the low 32 bits, so with `-c1100
+    -l1000` the filter activates with a check count of a thousand million and
+    rejects almost every match: 4,191,125 bytes for a 4,194,304-byte input
+    where `-ia-` writes 189. The ports treat `min_match <= L` as no filter,
+    which is what 1.0.7 does whenever the wrap lands negative (`-c1024
+    -l1000`), so those variants stay byte-identical to the C++.
+  Both are outside the byte-for-byte goal and pinned by md5 in
+  `tests/rust_cli_conformance.sh` and `tests/pascal_encode_conformance.sh`;
+  see `docs/pascal-port.md`, "Trampas conocidas".
+
+### Added
+
+- **`tests/golden/`**: recorded cases (archive sha256, exit code and a
+  round-trip) that `tests/golden/check.sh` replays with the Pascal alone.
+  `tests/golden/make.sh` records them only when the C++ and the Rust agree
+  with the port, so the suite is the first step towards running the gates
+  without the two oracles. 35 cases to start.
+
 ## [2.3.1] — 2026-10-17
 
 **Fixes for the files around a run: several ways to lose data, all with

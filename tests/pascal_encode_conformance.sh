@@ -365,6 +365,7 @@ if [ -x "$CPP" ] || make_cxx bin/osrep >/dev/null 2>&1; then
     # -m4/-m5 con la 02d4823, que ignoraba -ia-.
     cp $C/text.bin "$TMP/text.bin"
     for case in "zruns.bin|m3|-l130" "zruns.bin|m3|-c130" \
+                "text.bin|m4|-c1100 -l1000 -ia-" "text.bin|m4|-c1024 -l1000" \
                 "nearcopy.bin|m4|-l40 -d1mb" "nearcopy.bin|m4o|-l16 -d1mb" \
                 "smalll.bin|m4|-l16 -a1/2 -a1" "smalll.bin|m4|-l32 -a2/4 -a2" \
                 "text.bin|m5|-l1000 -ia-" "text.bin|m5o|-l1024 -c128 -ia-" \
@@ -385,6 +386,25 @@ if [ -x "$CPP" ] || make_cxx bin/osrep >/dev/null 2>&1; then
         pass=$((pass + 1))
     done
 fi
+
+say "el filtro de slices del C++ con -l por debajo de -c: fijado por md5"
+# SliceHash::SliceHash resta (MIN_MATCH-L) sin signo y convierte a int
+# (hash_table.cpp:34). Con -l < -c el resultado es enorme; si los 32 bits
+# bajos caen positivos el filtro se "activa" con un check_slices de mil
+# millones y rechaza casi todos los matches: -m4 -c1100 -l1000 sobre text.bin
+# escribe 4.191.125 bytes de 4.194.304, donde el mismo comando con -ia- (o
+# con -c1024 -l1000, que cae negativo) escribe 189 y coincide byte a byte con
+# el C++ (las dos variantes se comparan arriba, directo). Los ports calculan
+# la cuenta con signo: MIN_MATCH <= L apaga el filtro. El archivo de los ports
+# se fija por md5; la ida y vuelta la prueba rust_cli_conformance.
+rc=0
+"$ET" m4 -c1100 -l1000 --seed=7 "$TMP/text.bin" "$TMP/pa.osr" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 0 ] || fail "-m4 -c1100 -l1000: exit $rc, esperado 0 (encodetool no aplica el aviso de la CLI)"
+got=$(md5sum < "$TMP/pa.osr" | cut -c1-32)
+[ "$got" = f63f222ebea96cabddd0d04d68827eb3 ] \
+    || fail "-m4 -c1100 -l1000: md5 $got, esperado f63f222ebea96cabddd0d04d68827eb3"
+rm -f "$TMP/pa.osr"
+pass=$((pass + 1))
 
 say "el digest de -m3 leido por adelantado: fijado, porque el C++ tiene una carrera ahi"
 # a33929.bin y a200k.bin (un solo byte repetido) con -b261b/-b392b dan bloques

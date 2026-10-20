@@ -330,6 +330,42 @@ done <<'EOF'
 5d0d1b127567b39e121e26b56f79dfcc a200k.bin -m3f -l130 -b392b
 EOF
 
+say "two options where the C++ 1.0.7 breaks: the port's archive is pinned"
+# 1) -dup with an -l that is not a power of two. dup_wrapper.cpp runs the
+#    inner srep and, on any non-zero code, returns before appending
+#    `meta || u64(meta_size) || "ODUP"`; the -l warning exits 1 after writing
+#    the whole body. 1.0.7's archive there decompresses to the deduplicated
+#    stream, not the input (241,955 bytes instead of 242,980): silent data
+#    loss, with exit 0 on -d. The ports append the trailer, and their
+#    compressed body is byte-identical to the C++'s -- the first 97,781 bytes
+#    of the two archives are the same. A 1.0.7 patched only to append the
+#    trailer on exit 1 writes exactly this pin (c7f02b34...).
+# 2) -m4 -c1100 -l1000: the C++'s slice filter with MIN_MATCH < L (see
+#    pascal_encode_conformance). It writes 4,191,125 bytes where the ports
+#    write 189. With -ia- or with -c1024 -l1000 the C++ is defined and both
+#    sides agree byte for byte; those two are compared directly there.
+# Both ports write the pinned archive and both decoders read it; a live C++
+# run for these two would differ, on purpose.
+while read -r want f o; do
+    rc=0
+    # shellcheck disable=SC2086
+    "$RS" $o --format=v4 --seed=7 "$TMP/$f" "$TMP/rs.osr" >/dev/null 2>"$TMP/rs.err" || rc=$?
+    [ "$rc" -le 1 ] || fail "port $o on $f exited $rc: $(tail -1 "$TMP/rs.err")"
+    got="$(md5sum < "$TMP/rs.osr" | cut -d' ' -f1)"
+    [ "$got" = "$want" ] || fail "$o on $f: md5 $got, pinned $want"
+    "$RS" -d "$TMP/rs.osr" "$TMP/rs.dec" >/dev/null 2>&1 \
+        || fail "$o on $f: the port could not decode its archive"
+    "$CXX_BIN/osrep" -d "$TMP/rs.osr" "$TMP/cpp.dec" >/dev/null 2>&1 \
+        || fail "$o on $f: the C++ could not decode the port's archive"
+    cmp -s "$TMP/$f" "$TMP/rs.dec" || fail "$o on $f: round trip differs"
+    cmp -s "$TMP/$f" "$TMP/cpp.dec" || fail "$o on $f: C++ decode differs"
+    rm -f "$TMP/rs.osr" "$TMP/rs.dec" "$TMP/cpp.dec"
+    pass=$((pass + 1))
+done <<'EOF'
+c7f02b34c07f2a6c8b6589e234248db8 zruns.bin -dup -m3 -l130
+f63f222ebea96cabddd0d04d68827eb3 text.bin -m4 -c1100 -l1000
+EOF
+
 say "the second pass orders matches with one shared source the way the C++ does"
 # srep.cpp:899 sorts the match list by `src` alone with libstdc++'s std::sort,
 # which is not stable; the order of the ties is in the archive. tie10k (the
