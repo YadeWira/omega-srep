@@ -40,6 +40,17 @@ const
   V5_FLAG_HAS_DUP       = Byte(1);
   V5_KNOWN_FLAGS        = V5_FLAG_HAS_DUP;
 
+  { v6: el layout de v5 con integridad en los bloques. La cabecera, el footer
+    y el header de bloque crecen para llevar CRC-32C; los records no cambian
+    (misma lista de varints, mismo decoder). }
+  V6_HEADER_SIZE        = 28;
+  V6_FOOTER_SIZE        = 36;
+  V6_BLOCK_HEADER_SIZE  = 16;
+  V6_MAGIC              = DWord($3652534F);   { "OSR6" little-endian }
+  V6_FOOTER_MAGIC       = V5_FOOTER_MAGIC;
+  V6_FLAG_HAS_DUP       = Byte(1);
+  V6_KNOWN_FLAGS        = V6_FLAG_HAS_DUP;
+
 type
   TContainerError = (ceOK, ceTruncated, ceNotAnOsrepFile, ceUnsupportedVersion,
                      ceNoFooter, ceUnsupportedFooterVersion, ceBadFlags,
@@ -91,6 +102,25 @@ type
     MetaSize: DWord;
   end;
 
+  { v6 }
+  TV6Header = record
+    Version: Byte;
+    Flags: Byte;
+    HashId: Byte;
+    HashSize: Byte;
+    MaxMatch: DWord;
+    BlockCount: DWord;
+    OriginalSize: QWord;
+  end;
+
+  TV6Footer = record
+    BlockCount: DWord;
+    StatSize: QWord;
+    MetaOffset: QWord;
+    MetaSize: DWord;
+    BlocksCrc: DWord;       { CRC-32C de los block_crc de todos los bloques, en orden }
+  end;
+
 function HashByNum(Num: Byte; out H: THashInfo): Boolean;
 function HashByName(const Name: AnsiString; out H: THashInfo): Boolean;
 
@@ -106,8 +136,24 @@ function EncodeV5Header(const H: TV5Header): TBytes;
 function DecodeV5Footer(const B: TBytes; At: QWord; out F: TV5Footer): TContainerError;
 function EncodeV5Footer(const F: TV5Footer): TBytes;
 
+function DecodeV6Header(const B: TBytes; out H: TV6Header): TContainerError;
+function EncodeV6Header(const H: TV6Header): TBytes;
+function DecodeV6Footer(const B: TBytes; At: QWord; out F: TV6Footer): TContainerError;
+function EncodeV6Footer(const F: TV6Footer): TBytes;
+{ header de bloque de v6: los tres del de v5 mas el CRC del payload
+  (digest || records || literales, tal como quedan en el archivo) }
+function DecodeV6BlockHeader(const B: TBytes; At: QWord; out BH: TBlockHeader;
+                             out Crc: DWord): TContainerError;
+function EncodeV6BlockHeader(const BH: TBlockHeader; Crc: DWord): TBytes;
+
 function Crc32c(const B: TBytes; At, Len: QWord): DWord;
+{ CRC-32C incremental: arranca en Crc (0 para un CRC nuevo) y sigue con
+  B[At..At+Len). Con esto v6 cubre digest || records || literales sin armar
+  una copia del bloque entero. }
+function Crc32cUpdate(Crc: DWord; const B: TBytes; At, Len: QWord): DWord;
+function Crc32cUpdateDWord(Crc: DWord; V: DWord): DWord;
 function IsV5(const B: TBytes): Boolean;
+function IsV6(const B: TBytes): Boolean;
 
 implementation
 
@@ -286,11 +332,11 @@ end;
   0xFFFFFFFF, xor final 0xFFFFFFFF-- compila, corre, y rechaza como corrupto
   todo archivo v5 sano: sobre el header de prueba da 2b5ff9a1 donde el archivo
   guarda afa4154f. }
-function Crc32c(const B: TBytes; At, Len: QWord): DWord;
+function Crc32cUpdate(Crc: DWord; const B: TBytes; At, Len: QWord): DWord;
 var i: QWord; c: DWord;
 begin
   BuildCrcTable;
-  c := 0;
+  c := Crc;
   i := 0;
   while i < Len do
   begin
@@ -298,6 +344,19 @@ begin
     Inc(i);
   end;
   Result := c;
+end;
+
+function Crc32cUpdateDWord(Crc: DWord; V: DWord): DWord;
+var b: TBytes;
+begin
+  SetLength(b, 4);
+  PutLE32(b, 0, V);
+  Result := Crc32cUpdate(Crc, b, 0, 4);
+end;
+
+function Crc32c(const B: TBytes; At, Len: QWord): DWord;
+begin
+  Result := Crc32cUpdate(0, B, At, Len);
 end;
 
 function DecodeV5Header(const B: TBytes; out H: TV5Header): TContainerError;
@@ -352,6 +411,88 @@ begin
   PutLE64(Result, 16, F.MetaOffset);
   PutLE32(Result, 24, F.MetaSize);
   PutLE32(Result, 28, Crc32c(Result, 0, 28));
+end;
+
+{ ------------------------------------------------------------------ v6 --- }
+
+function IsV6(const B: TBytes): Boolean;
+begin
+  Result := (QWord(Length(B)) >= 4) and (LE32(B, 0) = V6_MAGIC);
+end;
+
+function DecodeV6Header(const B: TBytes; out H: TV6Header): TContainerError;
+begin
+  if QWord(Length(B)) < V6_HEADER_SIZE then Exit(ceTruncated);
+  if LE32(B, 0) <> V6_MAGIC then Exit(ceNotAnOsrepFile);
+  H.Version := B[4];
+  if H.Version <> 6 then Exit(ceUnsupportedVersion);
+  H.Flags := B[5];
+  { Como en v5: un bit de flags desconocido se rechaza, no se ignora. }
+  if (H.Flags and (not V6_KNOWN_FLAGS)) <> 0 then Exit(ceBadFlags);
+  H.HashId       := B[6];
+  H.HashSize     := B[7];
+  H.MaxMatch     := LE32(B, 8);
+  H.BlockCount   := LE32(B, 12);
+  H.OriginalSize := LE64(B, 16);
+  if Crc32c(B, 0, 24) <> LE32(B, 24) then Exit(ceBadCrc);
+  Result := ceOK;
+end;
+
+function EncodeV6Header(const H: TV6Header): TBytes;
+begin
+  SetLength(Result, V6_HEADER_SIZE);
+  PutLE32(Result, 0, V6_MAGIC);
+  Result[4] := H.Version;  Result[5] := H.Flags;
+  Result[6] := H.HashId;   Result[7] := H.HashSize;
+  PutLE32(Result, 8, H.MaxMatch);
+  PutLE32(Result, 12, H.BlockCount);
+  PutLE64(Result, 16, H.OriginalSize);
+  PutLE32(Result, 24, Crc32c(Result, 0, 24));
+end;
+
+function DecodeV6Footer(const B: TBytes; At: QWord; out F: TV6Footer): TContainerError;
+begin
+  if QWord(Length(B)) < At + V6_FOOTER_SIZE then Exit(ceTruncated);
+  if LE32(B, At) <> V6_FOOTER_MAGIC then Exit(ceNoFooter);
+  F.BlockCount := LE32(B, At + 4);
+  F.StatSize   := LE64(B, At + 8);
+  F.MetaOffset := LE64(B, At + 16);
+  F.MetaSize   := LE32(B, At + 24);
+  F.BlocksCrc  := LE32(B, At + 28);
+  if Crc32c(B, At, 32) <> LE32(B, At + 32) then Exit(ceBadCrc);
+  Result := ceOK;
+end;
+
+function EncodeV6Footer(const F: TV6Footer): TBytes;
+begin
+  SetLength(Result, V6_FOOTER_SIZE);
+  PutLE32(Result, 0, V6_FOOTER_MAGIC);
+  PutLE32(Result, 4, F.BlockCount);
+  PutLE64(Result, 8, F.StatSize);
+  PutLE64(Result, 16, F.MetaOffset);
+  PutLE32(Result, 24, F.MetaSize);
+  PutLE32(Result, 28, F.BlocksCrc);
+  PutLE32(Result, 32, Crc32c(Result, 0, 32));
+end;
+
+function DecodeV6BlockHeader(const B: TBytes; At: QWord; out BH: TBlockHeader;
+                             out Crc: DWord): TContainerError;
+begin
+  if QWord(Length(B)) < At + V6_BLOCK_HEADER_SIZE then Exit(ceTruncated);
+  BH.LiteralBytes := LE32(B, At);
+  BH.OrigSize     := LE32(B, At + 4);
+  BH.StatSize     := LE32(B, At + 8);
+  Crc             := LE32(B, At + 12);
+  Result := ceOK;
+end;
+
+function EncodeV6BlockHeader(const BH: TBlockHeader; Crc: DWord): TBytes;
+begin
+  SetLength(Result, V6_BLOCK_HEADER_SIZE);
+  PutLE32(Result, 0, BH.LiteralBytes);
+  PutLE32(Result, 4, BH.OrigSize);
+  PutLE32(Result, 8, BH.StatSize);
+  PutLE32(Result, 12, Crc);
 end;
 
 end.

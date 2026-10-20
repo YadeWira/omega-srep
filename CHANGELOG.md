@@ -13,6 +13,15 @@ what happened in 2.0.0.
 
 ### Added
 
+- **The v6 frame layer** (`pascal/src/container.pas`): header ("OSR6"),
+  16-byte block header with a CRC-32C over the block payload as stored, and a
+  36-byte footer with `blocks_crc`, the CRC of every block's CRC in order.
+  `tests/v6_frame_selftest.sh` checks the round-trips and that every flipped
+  byte is rejected (78 checks). The encoder, decoder and `--verify` are not
+  wired to it yet; `docs/format-spec-v6.md` is the layout. The footer does not
+  carry a digest of the whole original data: the project's hashes are
+  one-shot, and the per-block digests plus `blocks_crc` already cover the
+  reconstruction.
 - **Linux i386 and Linux ARM64**: `osrep-linux-x86` and
   `osrep-linux-aarch64` are now built from the same source, tested against the
   Linux x86-64 build (same archives, same CLI) and shipped; `pascal/build.sh`

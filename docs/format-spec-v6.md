@@ -11,7 +11,7 @@ hereda probados y les agrega lo que falta.
 | tema | propuesta |
 |---|---|
 | Base del payload | el de v5 (header, bloques autocontenidos, records varint, meta `DUPR`, footer) |
-| Integridad nueva | **CRC-32C por bloque** sobre los bytes tal como quedan en disco + **digest de los datos originales** en el footer |
+| Integridad nueva | **CRC-32C por bloque** sobre los bytes tal como quedan en disco + **`blocks_crc`** en el footer (CRC de los CRC de bloque, en orden) |
 | `--verify` | pasa a ser completo: con el CRC por bloque no hace falta descomprimir para detectar daño en un bloque guardado |
 | Lectura | v1–v5 **para siempre** |
 | Escritura | v6 por defecto; `--format=v4` se mantiene para interoperar con 1.0.x; los sufijos `o`/`f` (v1/v2/v3) pasan a **solo lectura** |
@@ -51,7 +51,7 @@ Igual al de v5 salvo `version = 6` y un bit de flags nuevo:
 ```
 magic          u32   "OSR6"
 version        u8    = 6
-flags          u8    bit0 = meta de -dup, bit1 = [acordado] digest global presente
+flags          u8    bit0 = meta de -dup; el resto, rechazado
 hash_id        u8
 hash_size      u8    (derivado de hash_id; 0 = sin digest)
 max_match      u32
@@ -68,7 +68,7 @@ El bloque de v5 más un CRC sobre su payload. El header del bloque queda:
 literal_bytes   u32
 origsize        u32
 statsize        u32
-block_crc       u32   [acordado] CRC-32C de todo lo que sigue en el bloque:
+block_crc       u32   CRC-32C de todo lo que sigue en el bloque:
                              digest (hash_size) || records (statsize) || literales
 ```
 
@@ -86,16 +86,21 @@ block_count    u32
 stat_size      u64
 meta_offset    u64
 meta_size      u32
-data_digest    hash_size bytes   [acordado] digest de los datos originales
-footer_crc     u32   CRC-32C de todo lo anterior
+blocks_crc     u32   CRC-32C de la concatenación de los block_crc, en orden
+footer_crc     u32   CRC-32C de los 32 bytes anteriores
 ```
 
-`data_digest` es el mismo `-hash=` que ya elige el usuario y que hoy solo
-existe por bloque para verificar matches. Con él, `-d` puede negarse a salir 0
-si la reconstrucción no coincide, y `--verify --decompress` (o el `-d` normal)
-da una verificación de punta a punta. `--verify` sin descomprimir valida
-header, footer, meta y **cada CRC de bloque**; no puede validar `data_digest`
-sin reconstruir, y lo dice.
+**El digest del archivo entero no va.** Los hashes del proyecto son
+*one-shot* (`MD5(Data)`, `VmacCompute(V, M)`, etc.): no hay forma de calcular
+el digest de los datos originales mientras se leen de un stream sin escribir
+un hash incremental nuevo. Y no hace falta para la integridad: el digest por
+bloque ya cubre la reconstrucción de ese bloque (el decoder lo verifica), y
+`blocks_crc` ata la secuencia al footer. Un digest global solo agregaría un
+número para comparar contra `sha256sum`, no detección. Si en el futuro se
+quiere ese número, se agrega en un v7 con su hash incremental.
+
+`--verify` sin descomprimir valida header, footer, meta y **cada CRC de
+bloque**, incluidos los bloques guardados sin comprimir (el agujero de A6).
 
 ### 2.4. Determinismo entre CPUs (nuevo en v6)
 
