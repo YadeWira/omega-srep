@@ -34,7 +34,7 @@ const
 
 type
   TEncKind = (ekInmem, ekCdc, ekCdcZpaq, ekDigest, ekFixed, ekFixedExhaustive);
-  TEncContainer = (ecIoLz, ecIndexLz, ecFutureLz, ecV5);
+  TEncContainer = (ecIoLz, ecIndexLz, ecFutureLz, ecV5, ecV6);
 
   TEncodeOptions = record
     BufSize: QWord;          { -b }
@@ -293,9 +293,11 @@ var
   inmem: TDictCompressor;
   hashptr: TQList;
   chunkKey: TVmac;
-  ioLz, indexLz, futureLz, v5: Boolean;
+  ioLz, indexLz, futureLz, v5, v6: Boolean;
   storedHashSize, futurelzBaseLen: QWord;
   v5h: TV5Header;
+  v6h: TV6Header;
+  bhsize: QWord;
   blocks: TCompressedBlocks;
   nblocks, actual, headerLen: QWord;
   inputLen: QWord;
@@ -316,6 +318,7 @@ begin
   indexLz := Cont = ecIndexLz;
   futureLz := Cont = ecFutureLz;
   v5 := Cont = ecV5;
+  v6 := Cont = ecV6;
 
   { los defaults de las opciones (srep.cpp:448-457), en el orden del C++ }
   minMatch := Opts.MinMatch;
@@ -404,7 +407,7 @@ begin
   { v5 no guarda digest con -hash- (hash_size = 0); v1-v4 siempre reservan
     los 16 bytes del descriptor. Dimensionar la cabecera de bloque por el
     descriptor en los dos casos desincroniza todos los bloques de v5. }
-  if v5 and (info.Name = '') then storedHashSize := 0 else storedHashSize := info.HashSize;
+  if (v5 or v6) and (info.Name = '') then storedHashSize := 0 else storedHashSize := info.HashSize;
   { header[3] = FUTURELZ_BASE_LEN = IO_LZ ? BASE_LEN : 0 (srep.cpp:458): el
     decoder v3/v4 lee de aca la base del largo, y 0 da largos crudos }
   if ioLz then futurelzBaseLen := baseLen else futurelzBaseLen := 0;
@@ -440,7 +443,20 @@ begin
     fileSize := Opts.DeclaredSize;
   end;
 
-  if v5 then
+  if v6 then
+  begin
+    { format-spec-v6: el de v5 mas integridad por bloque }
+    v6h.Version := 6;
+    if Length(Opts.DupMeta) > 0 then v6h.Flags := V6_FLAG_HAS_DUP else v6h.Flags := 0;
+    v6h.HashId := info.Num;
+    if info.Name = '' then v6h.HashSize := 0 else v6h.HashSize := info.HashSize;
+    v6h.MaxMatch := DWord(8 * 1024 * 1024 - 24);
+    actual := inputLen;
+    v6h.BlockCount := DWord((actual + bufsize - 1) div bufsize);
+    v6h.OriginalSize := actual;
+    hb := EncodeV6Header(v6h);
+  end
+  else if v5 then
   begin
     { format-spec-v5 seccion 2: una magia, el par de hash sin sesgo, y la
       cantidad de bloques y el tamano escritos en vez de inferidos }
@@ -556,10 +572,13 @@ begin
     end;
     nextFilled := ReadBlockAt(Input, nextPos, dict, nextOffset, Span(nextPos));
 
-    SetLength(header, BLOCK_HEADER_SIZE + storedHashSize);
+    if v6 then bhsize := V6_BLOCK_HEADER_SIZE
+    else if v5 then bhsize := V5_BLOCK_HEADER_SIZE
+    else bhsize := BLOCK_HEADER_SIZE;
+    SetLength(header, bhsize + storedHashSize);
     FillChar(header[0], Length(header), 0);
     if HasherCompute(hasher, dict, bufOffset, filled, digest) then
-      Move(digest[0], header[BLOCK_HEADER_SIZE], Length(digest));
+      Move(digest[0], header[bhsize], Length(digest));
 
     if Kind <> ekInmem then
     begin
@@ -608,10 +627,11 @@ begin
     bh.OrigSize := DWord(filled);
     { header[2] = (INDEX_LZ ? 0 : stat_size) (srep.cpp:747) }
     if indexLz then bh.StatSize := 0 else bh.StatSize := DWord(stat.N * 4);
-    hb := EncodeBlockHeader(bh);
-    Move(hb[0], header[0], BLOCK_HEADER_SIZE);
+    if v6 then hb := EncodeV6BlockHeader(bh, 0)
+    else hb := EncodeBlockHeader(bh);
+    Move(hb[0], header[0], bhsize);
 
-    if not (futureLz or v5) then
+    if not (futureLz or v5 or v6) then
     begin
       { save_data: la cabecera, la lista (vacia en Index-LZ), los literales }
       Output.WriteBuffer(header[0], Length(header));
@@ -654,7 +674,7 @@ begin
   { Future-LZ, Index-LZ y v5 re-emiten la lista de cada bloque (srep.cpp:820) }
   if not ioLz then
     RunSecondPass(blocks, nblocks, Input, Output, roundMatches, DWord(baseLen),
-                  DWord(futurelzBaseLen), futureLz, indexLz, v5, Opts.DupMeta, Opts.Index,
+                  DWord(futurelzBaseLen), futureLz, indexLz, v5, v6, Opts.DupMeta, Opts.Index,
                   headerLen);
   finally
     ZFree(Pointer(dict));

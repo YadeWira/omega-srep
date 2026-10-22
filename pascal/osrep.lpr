@@ -282,7 +282,7 @@ begin
     SetLength(B, used);
     Exit(True);
   end;
-  if not ((Word32(0) = V5_MAGIC) or
+  if not ((Word32(0) = V5_MAGIC) or (Word32(0) = V6_MAGIC) or
           ((Word32(0) = BULAT_SIGNATURE) and (Word32(4) = SREP_SIGNATURE))) then
     Exit(True);
   SetLength(B, 1 shl 16);
@@ -458,6 +458,7 @@ end;
 function ContainerOf(const O: TOptions): TEncContainer;
 begin
   if O.Format = fmtV5 then Exit(ecV5);
+  if O.Format = fmtV6 then Exit(ecV6);
   case O.Lz of
     lzIndex: Result := ecIndexLz;
     lzFuture: Result := ecFutureLz;
@@ -751,9 +752,11 @@ begin
         enc.Index := indexS;
       end;
 
+      if O.Dup and (O.Format = fmtV6) then
+        Fail(ERROR_CMDLINE, '-dup with --format=v6 is not implemented yet; use --format=v5');
       if O.Dup then
       begin
-        if O.Format = fmtV5 then dm := dmV5 else dm := dmV4;
+        if (O.Format = fmtV5) or (O.Format = fmtV6) then dm := dmV5 else dm := dmV4;
         dp := O.Chunk;
         try
           written := DupEncode(inputPath, FoutName, enc, KindOf(O), ContainerOf(O), dp,
@@ -1009,10 +1012,11 @@ end;
   contestarlo: v4 no lleva checksum en ningun lado. La salida dice que NO se
   reviso, a proposito: nada en v5 cubre los bytes guardados de los bloques. }
 function Verify(const FiName: AnsiString): LongInt;
-var b: TBytes; r: TVerifyReport; dup, digests: AnsiString;
+var b: TBytes; r: TVerifyReport; dup, digests: AnsiString; v6: Boolean;
 begin
   b := ReadArchive(FiName);
-  if not ((Length(b) >= 4) and IsV5(b)) then
+  v6 := (Length(b) >= 4) and IsV6(b);
+  if not ((Length(b) >= 4) and (IsV5(b) or IsV6(b))) then
   begin
     { "un contenedor que no se puede verificar" contra "no es un archivo":
       el consejo es distinto }
@@ -1024,18 +1028,30 @@ begin
       Fail(ERROR_COMPRESSION, 'Not an Omega SREP compressed file (.osr): ' + FiName);
   end;
   try
-    VerifyV5(b, r);
+    if v6 then VerifyV6(b, r) else VerifyV5(b, r);
   except
     on X: EV5 do Fail(ERROR_COMPRESSION, FiName + ' is damaged: ' + X.Message);
   end;
   if r.HasDupMeta then dup := ', -dup meta checksummed' else dup := '';
   if r.HasBlockDigests then digests := ' (where the per-block digests catch it)' else digests := '';
-  WriteErr(FiName + ': v5 archive intact. ' + IntToStr(r.Blocks) + ' blocks, ' + IntToStr(r.Records) +
-           ' records, ' + IntToStr(r.OriginalSize) + ' bytes of original data' + dup + '.' + #10);
-  WriteErr('  Checked without decompressing: header, footer and meta CRC-32C, framing, ' +
-           'block count, every record, and that the file ends where the footer says.' + #10);
-  WriteErr('  Not checked: the stored block bytes carry no checksum, so damage inside a ' +
-           'literal run needs a decompress' + digests + '.' + #10);
+  if v6 then
+  begin
+    WriteErr(FiName + ': v6 archive intact. ' + IntToStr(r.Blocks) + ' blocks, ' + IntToStr(r.Records) +
+             ' records, ' + IntToStr(r.OriginalSize) + ' bytes of original data' + dup + '.' + #10);
+    WriteErr('  Checked without decompressing: header, footer and meta CRC-32C, every block CRC-32C ' +
+             'over the bytes as stored (uncompressed blocks included), blocks_crc, framing, block ' +
+             'count, every record, and that the file ends where the footer says.' + #10);
+    WriteErr('  Not checked without decompressing: the per-block digest of the original data.' + #10);
+  end
+  else
+  begin
+    WriteErr(FiName + ': v5 archive intact. ' + IntToStr(r.Blocks) + ' blocks, ' + IntToStr(r.Records) +
+             ' records, ' + IntToStr(r.OriginalSize) + ' bytes of original data' + dup + '.' + #10);
+    WriteErr('  Checked without decompressing: header, footer and meta CRC-32C, framing, ' +
+             'block count, every record, and that the file ends where the footer says.' + #10);
+    WriteErr('  Not checked: the stored block bytes carry no checksum, so damage inside a ' +
+             'literal run needs a decompress' + digests + '.' + #10);
+  end;
   Result := NO_ERRORS;
 end;
 
@@ -1122,7 +1138,7 @@ begin
     perdida silenciosa, asi que se rechaza la combinacion. }
   if (O.IndexFile <> '') and (O.CmdMode = cmCompress) then
   begin
-    if O.Format = fmtV5 then
+    if (O.Format = fmtV5) or (O.Format = fmtV6) then
       Fail(ERROR_CMDLINE, '-index= is a v4 feature: the v5 footer locates everything by ' +
            'offset, so the lists cannot move out. Use --format=v4');
     if O.Lz = lzIndex then

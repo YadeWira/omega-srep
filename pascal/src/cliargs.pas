@@ -34,7 +34,7 @@ const
 
 type
   TCmdMode = (cmCompress, cmDecompress, cmInfo, cmVerify);
-  TFormat = (fmtV4, fmtV5);
+  TFormat = (fmtV4, fmtV5, fmtV6);
   TLz = (lzIndex, lzFuture, lzIo);
   TUnit = (uB, uK, uM, uG, uPow);
   { Seed del encoder: Random (la CLI sortea), Value (--seed=N) }
@@ -505,6 +505,7 @@ begin
       v := After(a, '--format=');
       if v = 'v4' then O.Format := fmtV4
       else if v = 'v5' then O.Format := fmtV5
+      else if v = 'v6' then O.Format := fmtV6
       else Bad(a);
     end
     else if a = '-d' then O.CmdMode := cmDecompress

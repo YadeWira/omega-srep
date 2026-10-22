@@ -13,15 +13,18 @@ what happened in 2.0.0.
 
 ### Added
 
-- **The v6 frame layer** (`pascal/src/container.pas`): header ("OSR6"),
-  16-byte block header with a CRC-32C over the block payload as stored, and a
-  36-byte footer with `blocks_crc`, the CRC of every block's CRC in order.
-  `tests/v6_frame_selftest.sh` checks the round-trips and that every flipped
-  byte is rejected (78 checks). The encoder, decoder and `--verify` are not
-  wired to it yet; `docs/format-spec-v6.md` is the layout. The footer does not
-  carry a digest of the whole original data: the project's hashes are
-  one-shot, and the per-block digests plus `blocks_crc` already cover the
-  reconstruction.
+- **v6, opt-in with `--format=v6`**: the v5 container plus integrity — a
+  16-byte block header with a CRC-32C over the block payload as stored
+  (uncompressed blocks included), and a 36-byte footer with `blocks_crc`, the
+  CRC of every block's CRC in order. `--verify` walks a v6 without
+  decompressing and now covers what v5 could not: a byte flipped inside a
+  stored block is "block N: bad CRC". v5 keeps reading v1-v5 and writing v5 by
+  default; `--help` still lists `v4|v5` (the Rust oracle has no v6), and
+  `-dup` with v6 is refused until the meta path is wired. The footer has no
+  digest of the whole original data: the project's hashes are one-shot, and
+  the per-block digests plus `blocks_crc` already cover the reconstruction.
+  `tests/v6_conformance.sh` (35 checks) and `tests/v6_frame_selftest.sh` (78)
+  hold it; `docs/format-spec-v6.md` is the layout.
 - **Linux i386 and Linux ARM64**: `osrep-linux-x86` and
   `osrep-linux-aarch64` are now built from the same source, tested against the
   Linux x86-64 build (same archives, same CLI) and shipped; `pascal/build.sh`

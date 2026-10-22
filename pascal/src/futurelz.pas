@@ -80,7 +80,7 @@ function DecodeFutureLz(Input, Sink: TStream; const Opts: TFutureLzOptions;
   bloques. Mismas opciones y estadisticas que v3/v4. }
 function DecodeV5(Input, Sink: TStream; const Opts: TFutureLzOptions;
                   out St: TFutureLzStats; out Err: TDecodeFault;
-                  Progress: TFlzProgress = nil): TDecodeError;
+                  Progress: TFlzProgress = nil; V6: Boolean = False): TDecodeError;
 
 { archive::decode (archive.rs): el decoder que corresponde a la magia. Un v5
   empieza con la suya; lo demas con el header de 16 bytes, cuya palabra de
@@ -97,7 +97,7 @@ function DecodeArchive(Input, Sink: TStream; const Opts: TFutureLzOptions; Index
   la borraba como salida parcial (el C++ la deja vacia). Los errores son los
   de DecodeArchive, que la vuelve a correr. }
 type
-  TArchiveKind = (akV5, akIoLz, akFutureLz);
+  TArchiveKind = (akV5, akV6, akIoLz, akFutureLz);
 
 function ProbeArchive(Input: TStream; out Kind: TArchiveKind; out Err: TDecodeFault): Boolean;
 
@@ -1178,12 +1178,17 @@ end;
 
 function DecodeV5(Input, Sink: TStream; const Opts: TFutureLzOptions;
                   out St: TFutureLzStats; out Err: TDecodeFault;
-                  Progress: TFlzProgress = nil): TDecodeError;
+                  Progress: TFlzProgress = nil; V6: Boolean = False): TDecodeError;
 var
   fb, hb, seed, bhb, stored, statBytes, literals, outbuf, want: TBytes;
   h: TV5Header;
+  h6: TV6Header;
   f: TV5Footer;
+  f6: TV6Footer;
   bh: TBlockHeader;
+  tag: AnsiString;
+  fsz, bhsz: QWord;
+  bhcrc, blocksCrc, blockCrc: DWord;
   info: THashInfo;
   dig: TDigestSel;
   words: TDWordArray;
@@ -1197,6 +1202,10 @@ var
 begin
   St.Blocks := 0; St.OrigSize := 0; St.Verified := False;
   St.VmBytesWritten := 0; St.VmBytesRead := 0;
+  tag := 'v5'; if V6 then tag := 'v6';
+  fsz := V5_FOOTER_SIZE; if V6 then fsz := V6_FOOTER_SIZE;
+  bhsz := V5_BLOCK_HEADER_SIZE; if V6 then bhsz := V6_BLOCK_HEADER_SIZE;
+  blocksCrc := 0;
   Err := NoFault;
   Result := deOK;
   mmReady := False; vmReady := False; heapReady := False;
@@ -1207,22 +1216,35 @@ begin
       { El footer es lo ultimo del archivo, y con meta de -dup es lo unico que
         dice donde terminan los bloques: se lee primero. }
       fileLen := SeekEnd(Input);
-      if fileLen < QWord(V5_HEADER_SIZE + V5_FOOTER_SIZE) then
+      if fileLen < QWord(V5_HEADER_SIZE + fsz) then
         Fail(deContainer, FaultContainer(ckTruncated));
-      SeekExact(Input, fileLen - QWord(V5_FOOTER_SIZE));
-      ReadOrTruncated(Input, fb, V5_FOOTER_SIZE);
-      if DecodeV5Footer(fb, 0, f) <> ceOK then Fail(deBadData, FaultBadData('v5 footer'));
+      SeekExact(Input, fileLen - fsz);
+      ReadOrTruncated(Input, fb, fsz);
+      if V6 then
+      begin
+        if DecodeV6Footer(fb, 0, f6) <> ceOK then Fail(deBadData, FaultBadData(tag + ' footer'));
+        f.BlockCount := f6.BlockCount; f.StatSize := f6.StatSize;
+        f.MetaOffset := f6.MetaOffset; f.MetaSize := f6.MetaSize;
+      end
+      else if DecodeV5Footer(fb, 0, f) <> ceOK then Fail(deBadData, FaultBadData(tag + ' footer'));
       SeekExact(Input, 0);
 
       ReadOrTruncated(Input, hb, V5_HEADER_SIZE);
-      if DecodeV5Header(hb, h) <> ceOK then Fail(deBadData, FaultBadData('v5 header'));
+      if V6 then
+      begin
+        if DecodeV6Header(hb, h6) <> ceOK then Fail(deBadData, FaultBadData(tag + ' header'));
+        h.Version := h6.Version; h.Flags := h6.Flags; h.HashId := h6.HashId;
+        h.HashSize := h6.HashSize; h.MaxMatch := h6.MaxMatch;
+        h.BlockCount := h6.BlockCount; h.OriginalSize := h6.OriginalSize;
+      end
+      else if DecodeV5Header(hb, h) <> ceOK then Fail(deBadData, FaultBadData(tag + ' header'));
       if f.BlockCount <> h.BlockCount then
-        Fail(deBadData, FaultBadData('v5 footer disagrees with the blocks'));
+        Fail(deBadData, FaultBadData(tag + ' footer disagrees with the blocks'));
       { flags.bit0 y un meta_size distinto de cero dicen lo mismo dos veces }
       if ((h.Flags and V5_FLAG_HAS_DUP) <> 0) <> (f.MetaSize <> 0) then
-        Fail(deBadData, FaultBadData('v5 -dup meta disagrees with the flags'));
+        Fail(deBadData, FaultBadData(tag + ' -dup meta disagrees with the flags'));
       if not V5HashInfo(h.HashId, h.HashSize, info) then
-        Fail(deBadData, FaultBadData('v5 hash descriptor'));
+        Fail(deBadData, FaultBadData(tag + ' hash descriptor'));
 
       ReadOrTruncated(Input, seed, QWord(info.SeedSize));
       DigestForHash(info, seed, dig);
@@ -1246,12 +1268,22 @@ begin
       blocks := 0;
       while blocks < QWord(h.BlockCount) do
       begin
-        ReadOrTruncated(Input, bhb, V5_BLOCK_HEADER_SIZE);
-        DecodeBlockHeader(bhb, 0, bh);
+        ReadOrTruncated(Input, bhb, bhsz);
+        if V6 then DecodeV6BlockHeader(bhb, 0, bh, bhcrc)
+        else DecodeBlockHeader(bhb, 0, bh);
         ReadOrTruncated(Input, stored, QWord(h.HashSize));
         ReadOrTruncated(Input, statBytes, QWord(bh.StatSize));
         V5Words(statBytes, words);
         ReadOrTruncated(Input, literals, QWord(bh.LiteralBytes));
+        if V6 then
+        begin
+          blockCrc := Crc32cUpdate(0, stored, 0, QWord(Length(stored)));
+          blockCrc := Crc32cUpdate(blockCrc, statBytes, 0, QWord(Length(statBytes)));
+          blockCrc := Crc32cUpdate(blockCrc, literals, 0, QWord(Length(literals)));
+          if blockCrc <> bhcrc then
+            Fail(deBadData, FaultBadData(tag + ' block crc'));
+          blocksCrc := Crc32cUpdateDWord(blocksCrc, blockCrc);
+        end;
 
         if QWord(Length(outbuf)) > QWord(bh.OrigSize) then SetLength(outbuf, bh.OrigSize);
         DecompressBlockFlz(0, Sink, blockStart, words, literals,
@@ -1273,7 +1305,7 @@ begin
 
         blockStart := blockStart + QWord(bh.OrigSize);
         totalStat := totalStat + QWord(bh.StatSize);
-        consumed := consumed + QWord(V5_BLOCK_HEADER_SIZE) + QWord(h.HashSize) +
+        consumed := consumed + bhsz + QWord(h.HashSize) +
                     QWord(bh.StatSize) + QWord(bh.LiteralBytes);
         if Assigned(Progress) then Progress(consumed, fileLen);
         Inc(blocks);
@@ -1282,11 +1314,13 @@ begin
 
       { Los bloques terminan justo donde empieza la meta, o el footer si no
         hay: nada puede haber en el medio. }
-      if QWord(f.MetaSize) > fileLen - QWord(V5_FOOTER_SIZE) then
-        Fail(deBadData, FaultBadData('v5 -dup meta runs past the file'));
-      metaAt := fileLen - QWord(V5_FOOTER_SIZE) - QWord(f.MetaSize);
-      if consumed <> metaAt then Fail(deBadData, FaultBadData('v5 blocks do not end at the footer'));
-      if f.StatSize <> totalStat then Fail(deBadData, FaultBadData('v5 footer disagrees with the blocks'));
+      if QWord(f.MetaSize) > fileLen - fsz then
+        Fail(deBadData, FaultBadData(tag + ' -dup meta runs past the file'));
+      metaAt := fileLen - fsz - QWord(f.MetaSize);
+      if consumed <> metaAt then Fail(deBadData, FaultBadData(tag + ' blocks do not end at the footer'));
+      if f.StatSize <> totalStat then Fail(deBadData, FaultBadData(tag + ' footer disagrees with the blocks'));
+      if V6 then
+        if blocksCrc <> f6.BlocksCrc then Fail(deBadData, FaultBadData(tag + ' blocks_crc'));
 
       St.Blocks := QWord(h.BlockCount);
       St.OrigSize := blockStart;
@@ -1341,6 +1375,11 @@ begin
       end;
       if got = 0 then FillChar(head[0], V5_HEADER_SIZE, 0);
       SeekOrFault(Input, 0, soBeginning);
+      if IsV6(head) then
+      begin
+        Kind := akV6;
+        Exit(True);
+      end;
       if IsV5(head) then
       begin
         Kind := akV5;
@@ -1380,7 +1419,8 @@ var
 begin
   if not ProbeArchive(Input, kind, Err) then Exit(False);
   case kind of
-    akV5: e := DecodeV5(Input, Sink, Opts, fst, Err, Progress);
+    akV5: e := DecodeV5(Input, Sink, Opts, fst, Err, Progress, False);
+    akV6: e := DecodeV5(Input, Sink, Opts, fst, Err, Progress, True);
     akIoLz: e := DecodeIoLz(Input, Sink, Index, dst, Err, Progress);
   else
     e := DecodeFutureLz(Input, Sink, Opts, fst, Err, Progress, Index);

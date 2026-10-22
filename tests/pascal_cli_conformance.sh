@@ -191,7 +191,8 @@ done <<'ARGS'
 -t
 -l
 -hash=
---format=v6
+# --format=v6: valido desde el esqueleto de v6 del Pascal; el Rust no lo tiene,
+# asi que no se compara aca (el conformance de v6 cubre el formato).
 --chunk-hash=x
 --chunk-avg=x
 --chunk-avg=-1

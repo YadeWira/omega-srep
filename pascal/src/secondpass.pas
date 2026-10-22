@@ -37,7 +37,7 @@ type
   pipe no existe (daba -1 y el footer salia con un offset de 2^64-1). }
 procedure RunSecondPass(const Blocks: TCompressedBlocks; NBlocks: QWord; Input, Output: TStream;
                         RoundMatches: Boolean; BaseLen, FuturelzBaseLen: DWord;
-                        FutureLz, IndexLz, V5: Boolean; const DupMeta: TBytes;
+                        FutureLz, IndexLz, V5, V6: Boolean; const DupMeta: TBytes;
                         Index: TStream; BaseOffset: QWord);
 
 type
@@ -276,7 +276,7 @@ end;
 
 procedure RunSecondPass(const Blocks: TCompressedBlocks; NBlocks: QWord; Input, Output: TStream;
                         RoundMatches: Boolean; BaseLen, FuturelzBaseLen: DWord;
-                        FutureLz, IndexLz, V5: Boolean; const DupMeta: TBytes;
+                        FutureLz, IndexLz, V5, V6: Boolean; const DupMeta: TBytes;
                         Index: TStream; BaseOffset: QWord);
 var
   matches: TMatches;
@@ -287,6 +287,8 @@ var
   header, listBytes, blockBuf, outb, v5bytes, foot: TBytes;
   outN: QWord;
   f: TV5Footer;
+  f6: TV6Footer;
+  blocksCrc, crc: DWord;
   emitted: QWord;   { lo escrito en Output por esta pasada: el compsize del Rust }
 
   procedure Emit(const B: TBytes; N: QWord);
@@ -297,6 +299,7 @@ var
 
 begin
   emitted := 0;
+  blocksCrc := 0;
   { 1. juntar los matches de todos los bloques (srep.cpp:863-878) }
   matches.N := 0;
   bi := 0;
@@ -356,7 +359,7 @@ begin
     { v5: la lista se rearma en LEB128 desde las palabras recien emitidas,
       anclada en el ORIGEN (decode con future_lz) }
     vn := 0;
-    if V5 then
+    if V5 or V6 then
     begin
       at := 0;
       blockPos := Blocks[bi].Start;
@@ -375,36 +378,11 @@ begin
     else
       statSize := stat.N * 4;
 
-    if FutureLz or V5 then
+    { los literales que los records (de la primera pasada) del bloque dejan
+      sin cubrir (srep.cpp:945-961). Se arman ANTES de escribir la cabecera
+      porque el CRC de v6 los cubre. }
+    if FutureLz or V5 or V6 then
     begin
-      { block->header[2] = stat_size: la primera pasada lo dejo en cero }
-      header := Copy(Blocks[bi].Header);
-      PutLE32(header, 8, DWord(statSize));
-      Emit(header, Length(header));
-    end;
-
-    { la lista se arma una vez y va al sink que la tenga (el archivo, o el
-      -index=), asi los dos destinos no pueden separarse }
-    if V5 then
-    begin
-      if Index <> nil then WriteBytes(Index, v5bytes, vn) else Emit(v5bytes, vn);
-    end
-    else
-    begin
-      SetLength(listBytes, stat.N * 4);
-      at := 0;
-      while at < stat.N do begin PutLE32(listBytes, at * 4, stat.W[at]); Inc(at); end;
-      if Index <> nil then WriteBytes(Index, listBytes, stat.N * 4)
-      else Emit(listBytes, stat.N * 4);
-    end;
-
-    table[bi] := DWord(statSize);
-    totalStat := totalStat + statSize;
-
-    if FutureLz or V5 then
-    begin
-      { los literales que los records (de la primera pasada) del bloque
-        dejan sin cubrir (srep.cpp:945-961) }
       SetLength(blockBuf, Blocks[bi].Size);
       got := 0;
       while got < Blocks[bi].Size do
@@ -434,8 +412,46 @@ begin
         Move(blockBuf[inPos], outb[outN], Blocks[bi].Size - inPos);
         outN := outN + (Blocks[bi].Size - inPos);
       end;
-      Emit(outb, outN);
     end;
+
+    if FutureLz or V5 or V6 then
+    begin
+      { block->header[2] = stat_size: la primera pasada lo dejo en cero }
+      header := Copy(Blocks[bi].Header);
+      PutLE32(header, 8, DWord(statSize));
+      if V6 then
+      begin
+        { CRC-32C de digest || records || literales, tal como se escriben }
+        crc := Crc32cUpdate(0, header, V6_BLOCK_HEADER_SIZE,
+                            QWord(Length(header)) - V6_BLOCK_HEADER_SIZE);
+        crc := Crc32cUpdate(crc, v5bytes, 0, vn);
+        crc := Crc32cUpdate(crc, outb, 0, outN);
+        PutLE32(header, 12, crc);
+        blocksCrc := Crc32cUpdateDWord(blocksCrc, crc);
+      end;
+      Emit(header, Length(header));
+    end;
+
+    { la lista se arma una vez y va al sink que la tenga (el archivo, o el
+      -index=), asi los dos destinos no pueden separarse }
+    if V5 or V6 then
+    begin
+      if Index <> nil then WriteBytes(Index, v5bytes, vn) else Emit(v5bytes, vn);
+    end
+    else
+    begin
+      SetLength(listBytes, stat.N * 4);
+      at := 0;
+      while at < stat.N do begin PutLE32(listBytes, at * 4, stat.W[at]); Inc(at); end;
+      if Index <> nil then WriteBytes(Index, listBytes, stat.N * 4)
+      else Emit(listBytes, stat.N * 4);
+    end;
+
+    table[bi] := DWord(statSize);
+    totalStat := totalStat + statSize;
+
+    if FutureLz or V5 or V6 then
+      Emit(outb, outN);
     Inc(bi);
   end;
 
@@ -449,12 +465,17 @@ begin
     foot := EncodeFooterHead(totalStat, DWord(NBlocks));
     Emit(foot, Length(foot));
   end;
-  if V5 then
+  if V5 or V6 then
   begin
     f.BlockCount := DWord(NBlocks);
     f.StatSize := totalStat;
     f.MetaOffset := 0;
     f.MetaSize := 0;
+    f6.BlockCount := DWord(NBlocks);
+    f6.StatSize := totalStat;
+    f6.MetaOffset := 0;
+    f6.MetaSize := 0;
+    f6.BlocksCrc := blocksCrc;
     if Length(DupMeta) > 0 then
     begin
       { la meta de -dup va aca: despues de los bloques, antes del footer que
@@ -464,13 +485,15 @@ begin
          (DupMeta[2] <> Ord('P')) or (DupMeta[3] <> Ord('R')) or (DupMeta[4] <> 1) then
         raise EEncode.Create('BadDupMeta');
       f.MetaOffset := BaseOffset + emitted;
+      f6.MetaOffset := BaseOffset + emitted;
       SetLength(foot, Length(DupMeta) + 4);
       Move(DupMeta[0], foot[0], Length(DupMeta));
       PutLE32(foot, Length(DupMeta), Crc32c(DupMeta, 0, Length(DupMeta)));
       Emit(foot, Length(foot));
       f.MetaSize := DWord(Length(foot));
+      f6.MetaSize := DWord(Length(foot));
     end;
-    foot := EncodeV5Footer(f);
+    if V6 then foot := EncodeV6Footer(f6) else foot := EncodeV5Footer(f);
     Emit(foot, Length(foot));
   end;
 end;

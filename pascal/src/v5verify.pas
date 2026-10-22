@@ -51,6 +51,11 @@ type
 { v5::verify. Lanza EV5 con el Debug del V5Error. }
 procedure VerifyV5(const B: TBytes; out R: TVerifyReport);
 
+{ verify de v6: ademas de lo de v5 (con los tamanos nuevos), el CRC-32C de
+  cada bloque cubre los bytes guardados y blocks_crc ata la secuencia. Lanza
+  EV5 con un mensaje propio (v6 no tiene oraculo Rust del que copiar el Debug). }
+procedure VerifyV6(const B: TBytes; out R: TVerifyReport);
+
 { archive::inspect para v1-v4: el contenedor entero se parsea y el hash es
   conocido. }
 function InspectV14(const B: TBytes): Boolean;
@@ -330,12 +335,32 @@ end;
 
 function InspectWith(const B: TBytes; StatsOutOfLine: Boolean; out Info: TArchiveInfo): Boolean;
 var r: TVerifyReport; st, n, bodyLen, metaAt, metaLen: QWord; hi: THashInfo; isDup, sniffed: Boolean;
+    f6: TV6Footer;
 begin
   n := QWord(Length(B));
   Info.HasDup := False;
   Info.DupChunks := 0;
   Info.DupUnique := 0;
   Info.DupBodySize := 0;
+  if (n >= V6_HEADER_SIZE + V6_FOOTER_SIZE) and IsV6(B) then
+  begin
+    try
+      VerifyV6(B, r);
+    except
+      on EV5 do Exit(False);
+    end;
+    HashByNum(B[6], hi);
+    if DecodeV6Footer(B, n - V6_FOOTER_SIZE, f6) <> ceOK then Exit(False);
+    Info.Mode := 'v6';
+    Info.HashName := hi.Name;
+    Info.BaseLen := 0;
+    Info.RoundMatches := False;
+    Info.Blocks := r.Blocks;
+    Info.OrigSize := r.OriginalSize;
+    Info.CompSize := n;
+    Info.StatSize := f6.StatSize;
+    Exit(True);
+  end;
   if (n >= HEADER_SIZE) and (L32(B, 0) = MAGIC) then
   begin
     try
@@ -490,6 +515,99 @@ begin
   { v4 guarda la lista entera al final y anota su tamano en el footer; v1-v3
     llevan la lista de cada bloque adentro }
   if statSize > 0 then Info.StatSize := statSize else Info.StatSize := statSum;
+end;
+
+{ ------------------------------------------------------------------ v6 --- }
+
+function TakeVarint(const B: TBytes; var P, EndAt: QWord; out V: QWord): Boolean;
+var b0: Byte; shift: LongInt;
+begin
+  V := 0; shift := 0;
+  while P < EndAt do
+  begin
+    b0 := B[P]; Inc(P);
+    if shift >= 64 then Exit(False);
+    V := V or (QWord(b0 and $7F) shl shift);
+    if (b0 and $80) = 0 then Exit(True);
+    Inc(shift, 7);
+  end;
+  Result := False;
+end;
+
+procedure VerifyV6(const B: TBytes; out R: TVerifyReport);
+var
+  h: TV6Header;
+  f: TV6Footer;
+  info: THashInfo;
+  bh: TBlockHeader;
+  bhcrc, crcAcc, crc: DWord;
+  at, metaAt, payloadLen, payloadAt, recEnd, recPos, totalStat, totalOrig, blocks: QWord;
+  lit, mlen, dist: QWord;
+  recs: QWord;
+begin
+  FillChar(R, SizeOf(R), 0);
+  if DecodeV6Header(B, h) <> ceOK then raise EV5.Create('bad v6 header');
+  if not HashByNum(h.HashId, info) then raise EV5.Create('bad hash descriptor');
+  if (info.Name = '') <> (h.HashSize = 0) then raise EV5.Create('bad hash descriptor');
+  if (info.Name <> '') and (h.HashSize <> info.HashSize) then
+    raise EV5.Create('bad hash descriptor');
+  if QWord(Length(B)) < V6_HEADER_SIZE + V6_FOOTER_SIZE then
+    raise EV5.Create('truncated');
+  if DecodeV6Footer(B, QWord(Length(B)) - V6_FOOTER_SIZE, f) <> ceOK then
+    raise EV5.Create('bad v6 footer');
+  if f.BlockCount <> h.BlockCount then raise EV5.Create('footer disagrees with the header');
+  if ((h.Flags and V6_FLAG_HAS_DUP) <> 0) <> (f.MetaSize <> 0) then
+    raise EV5.Create('-dup meta disagrees with the flags');
+  if QWord(f.MetaSize) > QWord(Length(B)) - V6_FOOTER_SIZE then
+    raise EV5.Create('meta runs past the file');
+  metaAt := QWord(Length(B)) - V6_FOOTER_SIZE - QWord(f.MetaSize);
+  at := QWord(V6_HEADER_SIZE) + QWord(info.SeedSize);
+  if at > metaAt then raise EV5.Create('truncated');
+
+  crcAcc := 0; totalStat := 0; totalOrig := 0; recs := 0; blocks := 0;
+  while blocks < QWord(h.BlockCount) do
+  begin
+    if at + V6_BLOCK_HEADER_SIZE > metaAt then raise EV5.Create('truncated in a block header');
+    if DecodeV6BlockHeader(B, at, bh, bhcrc) <> ceOK then raise EV5.Create('bad block header');
+    Inc(at, V6_BLOCK_HEADER_SIZE);
+    payloadAt := at;
+    payloadLen := QWord(h.HashSize) + QWord(bh.StatSize) + QWord(bh.LiteralBytes);
+    if payloadAt + payloadLen > metaAt then raise EV5.Create('block runs past the footer');
+    crc := Crc32c(B, payloadAt, payloadLen);
+    if crc <> bhcrc then raise EV5.Create('block ' + IntToStr(blocks + 1) + ': bad CRC');
+    crcAcc := Crc32cUpdateDWord(crcAcc, crc);
+
+    { los records: triples varint que tienen que consumir statsize exacto }
+    recPos := at + QWord(h.HashSize);
+    recEnd := recPos + QWord(bh.StatSize);
+    while recPos < recEnd do
+    begin
+      if not (TakeVarint(B, recPos, recEnd, lit) and
+              TakeVarint(B, recPos, recEnd, mlen) and
+              TakeVarint(B, recPos, recEnd, dist)) then
+        raise EV5.Create('block ' + IntToStr(blocks + 1) + ': bad record');
+      if (lit > QWord(High(DWord))) or (mlen > QWord(High(DWord))) then
+        raise EV5.Create('block ' + IntToStr(blocks + 1) + ': record too large');
+      if lit + mlen > QWord(bh.OrigSize) then
+        raise EV5.Create('block ' + IntToStr(blocks + 1) + ': record past the block');
+      Inc(recs);
+    end;
+
+    Inc(totalStat, QWord(bh.StatSize));
+    Inc(totalOrig, QWord(bh.OrigSize));
+    Inc(at, payloadLen);
+    Inc(blocks);
+  end;
+
+  if at <> metaAt then raise EV5.Create('blocks do not end at the footer');
+  if totalStat <> f.StatSize then raise EV5.Create('footer disagrees with the blocks');
+  if totalOrig <> h.OriginalSize then raise EV5.Create('original size disagrees with the blocks');
+  if crcAcc <> f.BlocksCrc then raise EV5.Create('blocks_crc mismatch');
+  R.Blocks := h.BlockCount;
+  R.OriginalSize := h.OriginalSize;
+  R.Records := recs;
+  R.HasDupMeta := (h.Flags and V6_FLAG_HAS_DUP) <> 0;
+  R.HasBlockDigests := h.HashSize > 0;
 end;
 
 end.
