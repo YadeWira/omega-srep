@@ -1,3 +1,8 @@
+> **Legacy branch.** This is **Omega SREP 3.0.0**, the previous project. The
+> repository continues as **OSREP** in the [`osrep` branch](https://github.com/YadeWira/omega-srep/tree/osrep):
+> clean-room, MIT, v6 only. The code here is not covered by OSREP's MIT
+> license and is kept for history.
+
 # Omega SREP
 
 **Omega SREP** is a fork and continuation of [SREP (SuperREP)](https://web.archive.org/web/20161223135216/http://freearc.org/research/SREP.aspx),
