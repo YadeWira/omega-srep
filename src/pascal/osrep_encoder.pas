@@ -21,6 +21,7 @@ type
     ChainDepth: LongWord;
     Stride: LongWord;
     UseHash: Boolean;
+    Threads: LongInt;
     Seed: TBytes;
   end;
 
@@ -134,6 +135,7 @@ begin
   Result.ChainDepth := 16;
   Result.Stride := 1;
   Result.UseHash := True;
+  Result.Threads := 0; { auto: up to 8 }
   Result.Seed := SeedFromNumber(0);
 end;
 
@@ -251,6 +253,40 @@ begin
     Buf.AddBytes(Data[Pos], Length(Data) - Pos);
   Literals := Buf.Finish;
 end;
+
+function OsrepCpuCount: LongInt;
+{$ifdef linux}
+var
+  F: TextFile;
+  S: string;
+begin
+  Result := 0;
+  try
+    AssignFile(F, '/proc/cpuinfo');
+    Reset(F);
+    try
+      while not Eof(F) do
+      begin
+        ReadLn(F, S);
+        if Copy(S, 1, 9) = 'processor' then
+          Inc(Result);
+      end;
+    finally
+      CloseFile(F);
+    end;
+  except
+    Result := 0;
+  end;
+  if Result < 1 then
+    Result := 1;
+end;
+{$else}
+begin
+  Result := TThread.ProcessorCount;
+  if Result < 1 then
+    Result := 1;
+end;
+{$endif}
 
 function MatchLength(const Data: TBytes; A, B, MaxLen: SizeInt): SizeInt;
 var
@@ -387,19 +423,71 @@ begin
   end;
 end;
 
+type
+  TEncodeJob = class
+    Data: TBytes;
+    Opt: TEncoderOptions;
+    Payload: TBytes;
+    BlockCrc: LongWord;
+    OrigSize: LongWord;
+    RecordsSize: LongWord;
+    LiteralSize: LongWord;
+    ErrorMsg: string;
+    procedure EncodeOne;
+  end;
+
+  TEncodeThread = class(TThread)
+  public
+    Job: TEncodeJob;
+    procedure Execute; override;
+  end;
+
+procedure TEncodeJob.EncodeOne;
+var
+  Records, Literals, Digest: TBytes;
+begin
+  try
+    EncodeBlock(Data, Opt, Records, Literals, Digest);
+    SetLength(Payload, Length(Digest) + Length(Records) + Length(Literals));
+    if Length(Digest) > 0 then
+      Move(Digest[0], Payload[0], Length(Digest));
+    if Length(Records) > 0 then
+      Move(Records[0], Payload[Length(Digest)], Length(Records));
+    if Length(Literals) > 0 then
+      Move(Literals[0], Payload[Length(Digest) + Length(Records)],
+        Length(Literals));
+    BlockCrc := Crc32C(Payload);
+    OrigSize := LongWord(Length(Data));
+    RecordsSize := LongWord(Length(Records));
+    LiteralSize := LongWord(Length(Literals));
+  except
+    on E: Exception do
+      ErrorMsg := E.Message;
+  end;
+end;
+
+procedure TEncodeThread.Execute;
+begin
+  Job.EncodeOne;
+end;
+
 procedure EncodeToStream(InStream, OutStream: TStream;
   const Opt: TEncoderOptions);
 var
   InSize, BlockStartQ, BlockLenQ: QWord;
   BlockCountQ: QWord;
   Hdr, Ftr: TBytes;
-  BlocksCrc, BlockCrc: LongWord;
+  BlocksCrc: LongWord;
   CrcBytes: array[0..3] of Byte;
-  Data, Payload, Records, Literals, Digest: TBytes;
+  Data: TBytes;
   BlockHdr: TBytes;
   BlockIndex: QWord;
   HashId, HashSize: Byte;
   StatSize: QWord;
+  ThreadCount, BatchCount, J: SizeInt;
+  ErrMsg: string;
+  Jobs: array of TEncodeJob;
+  Workers: array of TEncodeThread;
 begin
   if Opt.BlockSize = 0 then
     raise EOsrepError.Create(2, 'block size must be positive');
@@ -446,41 +534,89 @@ begin
   StatSize := 0;
   BlockStartQ := 0;
   BlockIndex := 0;
+  ThreadCount := Opt.Threads;
+  if ThreadCount <= 0 then
+  begin
+    ThreadCount := OsrepCpuCount;
+    if ThreadCount > 8 then
+      ThreadCount := 8;
+  end;
+  if ThreadCount < 1 then
+    ThreadCount := 1;
+  if ThreadCount > 64 then
+    ThreadCount := 64;
+  { a single block has nothing to overlap, and tiny inputs are not worth a
+    thread creation }
+  if (BlockCountQ <= 1) or (InSize < Opt.BlockSize) then
+    ThreadCount := 1;
   while BlockIndex < BlockCountQ do
   begin
-    BlockLenQ := Opt.BlockSize;
-    if BlockStartQ + BlockLenQ > InSize then
-      BlockLenQ := InSize - BlockStartQ;
-    SetLength(Data, SizeInt(BlockLenQ));
-    if BlockLenQ > 0 then
-      InStream.ReadBuffer(Data[0], SizeInt(BlockLenQ));
+    BatchCount := ThreadCount;
+    if QWord(BatchCount) > BlockCountQ - BlockIndex then
+      BatchCount := SizeInt(BlockCountQ - BlockIndex);
+    SetLength(Jobs, BatchCount);
+    SetLength(Workers, BatchCount);
+    for J := 0 to BatchCount - 1 do
+    begin
+      BlockLenQ := Opt.BlockSize;
+      if BlockStartQ + BlockLenQ > InSize then
+        BlockLenQ := InSize - BlockStartQ;
+      SetLength(Data, SizeInt(BlockLenQ));
+      if BlockLenQ > 0 then
+        InStream.ReadBuffer(Data[0], SizeInt(BlockLenQ));
+      Jobs[J] := TEncodeJob.Create;
+      Jobs[J].Data := Data;
+      Data := nil;
+      Jobs[J].Opt := Opt;
+      Workers[J] := nil;
+      if ThreadCount > 1 then
+      begin
+        Workers[J] := TEncodeThread.Create(True);
+        Workers[J].Job := Jobs[J];
+        Workers[J].Start;
+      end
+      else
+        Jobs[J].EncodeOne;
+      Inc(BlockStartQ, BlockLenQ);
+      Inc(BlockIndex);
+    end;
 
-    EncodeBlock(Data, Opt, Records, Literals, Digest);
+    ErrMsg := '';
+    for J := 0 to BatchCount - 1 do
+    begin
+      if Workers[J] <> nil then
+      begin
+        Workers[J].WaitFor;
+        Workers[J].Free;
+      end;
+      if (ErrMsg = '') and (Jobs[J].ErrorMsg <> '') then
+        ErrMsg := Jobs[J].ErrorMsg;
+    end;
+    if ErrMsg <> '' then
+    begin
+      for J := 0 to BatchCount - 1 do
+        Jobs[J].Free;
+      raise EOsrepError.Create(2, ErrMsg);
+    end;
 
-    SetLength(Payload, Length(Digest) + Length(Records) + Length(Literals));
-    if Length(Digest) > 0 then
-      Move(Digest[0], Payload[0], Length(Digest));
-    if Length(Records) > 0 then
-      Move(Records[0], Payload[Length(Digest)], Length(Records));
-    if Length(Literals) > 0 then
-      Move(Literals[0], Payload[Length(Digest) + Length(Records)],
-        Length(Literals));
-    BlockCrc := Crc32C(Payload);
+    for J := 0 to BatchCount - 1 do
+    begin
+      SetLength(BlockHdr, OsrepBlockHeaderSize);
+      PutU32LE(BlockHdr, 0, Jobs[J].LiteralSize);
+      PutU32LE(BlockHdr, 4, Jobs[J].OrigSize);
+      PutU32LE(BlockHdr, 8, Jobs[J].RecordsSize);
+      PutU32LE(BlockHdr, 12, Jobs[J].BlockCrc);
+      OutStream.WriteBuffer(BlockHdr[0], Length(BlockHdr));
+      if Length(Jobs[J].Payload) > 0 then
+        OutStream.WriteBuffer(Jobs[J].Payload[0], Length(Jobs[J].Payload));
 
-    SetLength(BlockHdr, OsrepBlockHeaderSize);
-    PutU32LE(BlockHdr, 0, LongWord(Length(Literals)));
-    PutU32LE(BlockHdr, 4, LongWord(BlockLenQ));
-    PutU32LE(BlockHdr, 8, LongWord(Length(Records)));
-    PutU32LE(BlockHdr, 12, BlockCrc);
-    OutStream.WriteBuffer(BlockHdr[0], Length(BlockHdr));
-    if Length(Payload) > 0 then
-      OutStream.WriteBuffer(Payload[0], Length(Payload));
-
-    PutU32LE(CrcBytes, 0, BlockCrc);
-    BlocksCrc := Crc32CUpdate(BlocksCrc, CrcBytes[0], 4);
-    Inc(StatSize, QWord(Length(Records)));
-    Inc(BlockStartQ, BlockLenQ);
-    Inc(BlockIndex);
+      PutU32LE(CrcBytes, 0, Jobs[J].BlockCrc);
+      BlocksCrc := Crc32CUpdate(BlocksCrc, CrcBytes[0], 4);
+      Inc(StatSize, QWord(Jobs[J].RecordsSize));
+      Jobs[J].Free;
+    end;
+    SetLength(Jobs, 0);
+    SetLength(Workers, 0);
   end;
 
   SetLength(Ftr, OsrepFooterSize);

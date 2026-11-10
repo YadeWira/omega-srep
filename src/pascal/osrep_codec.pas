@@ -123,6 +123,8 @@ begin
     Result.ChainDepth := Opt.ChainDepth;
   if Opt.Stride <> 0 then
     Result.Stride := Opt.Stride;
+  if Opt.Threads > 0 then
+    Result.Threads := Opt.Threads;
   if Opt.Seed = 0 then
     Result.Seed := SeedFromNumber(0)
   else

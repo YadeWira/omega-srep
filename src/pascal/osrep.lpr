@@ -6,6 +6,7 @@ program osrep;
 {$mode objfpc}{$H+}
 
 uses
+  {$ifdef unix}cthreads,{$endif}
   SysUtils, Classes, osrep_format, osrep_decoder, osrep_encoder;
 
 const
@@ -39,6 +40,7 @@ begin
   WriteLn('  -lN      minimum match length (default 4)');
   WriteLn('  -cN      hash insertion stride (default 1)');
   WriteLn('  -aN[/M]  hash chain depth (default 16)');
+  WriteLn('  -tN      encoder threads (default auto, up to 8)');
   WriteLn('  --seed=N deterministic VHASH seed');
   WriteLn('  -hash-   no per-block digest');
 end;
@@ -282,6 +284,15 @@ begin
       else if (A = '-m0') or (A = '-m1') or (A = '-m2') or
               (A = '-m4') or (A = '-m5') then
         CmdError('method not implemented yet: ' + A)
+      else if Copy(A, 1, 2) = '-t' then
+      begin
+        if not ParseNumber(Copy(A, 3, MaxInt), N) then
+          CmdError('invalid -t thread count: ' + A);
+        if N > 64 then
+          N := 64;
+        EncOptions.Threads := LongInt(N);
+        EncOptionsUsed := True;
+      end
       else if Copy(A, 1, 2) = '-b' then
       begin
         if not ParseSize(Copy(A, 3, MaxInt), N) or (N = 0) then

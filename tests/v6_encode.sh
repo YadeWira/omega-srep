@@ -47,6 +47,16 @@ echo "== -b/-l/-c/-a options =="
 "$BIN" -d "$TMP/mixed-opts.osr" "$TMP/mixed-opts.out" || fail "decode mixed-opts"
 cmp "$TMP/mixed-opts.out" "$CORPUS/mixed.bin" || fail "round-trip mixed-opts"
 
+echo "== -t threads: same archive, round-trip =="
+"$BIN" -m3 -t1 "$CORPUS/mixed.bin" "$TMP/t1.osr" || fail "encode -t1"
+"$BIN" -m3 -t4 "$CORPUS/mixed.bin" "$TMP/t4.osr" || fail "encode -t4"
+cmp "$TMP/t1.osr" "$TMP/t4.osr" || fail "-t changes the archive"
+"$BIN" -d "$TMP/t4.osr" "$TMP/t4.out" || fail "decode -t4"
+cmp "$TMP/t4.out" "$CORPUS/mixed.bin" || fail "round-trip -t4"
+if "$BIN" -m3 -tx "$CORPUS/tiny.bin" "$TMP/tx.osr" >/dev/null 2>&1; then
+  fail "-tx was accepted"
+fi
+
 echo "== unimplemented methods are rejected =="
 for m in -m0 -m1 -m2 -m4 -m5; do
   if "$BIN" "$m" "$CORPUS/text.bin" "$TMP/unimplemented.osr" \
