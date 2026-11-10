@@ -31,7 +31,10 @@ echo "== version =="
 [ "$("$BIN" --version)" = "OSREP 0.0.2 (2026-11-10)" ] || fail "--version text"
 
 echo "== fixtures: -d round-trip =="
-bash "$ROOT/tests/golden/inputs.sh" "$IN" >/dev/null
+if ! bash "$ROOT/tests/golden/inputs.sh" "$IN" >"$TMP/inputs.log" 2>&1; then
+  cat "$TMP/inputs.log"
+  fail "tests/golden/inputs.sh"
+fi
 while read -r id input; do
   "$BIN" -d "$ROOT/tests/fixtures/v6/$id.osr" "$OUT/$id.out" || fail "-d $id"
   cmp "$OUT/$id.out" "$IN/$input" || fail "round-trip $id != $input"
