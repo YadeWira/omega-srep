@@ -1,6 +1,6 @@
 # C y asm embebido: plan
 
-**Estado: plan, sin código todavía (2026-11-10).** Decisión de Wira: lo que se
+**Estado: scaffolding y primer componente (CDC) hechos, 2026-11-10.** Decisión de Wira: lo que se
 distribuye pasa a ser **Free Pascal + C + asm embebido**, no solo Pascal. Este
 documento fija el contrato, el enlace y el orden; no cambia nada del formato.
 
@@ -125,15 +125,17 @@ Notas:
 ## 7. Fases y criterio de aceptación
 
 0. **Scaffolding (hecho el 2026-11-10):** POC de enlace en los cinco targets.
-   Siguiente: `native.pas`, compilación de C en `build.sh`, include por target,
-   y una función trivial con su test (sin cambiar bytes).
+   El primer componente real es el **CDC** (`src/c/osrep_cdc.c`), enlazado en
+   el CLI y la librería; `-dOSREP_NO_NATIVE` conserva la referencia Pascal y
+   `tests/native_cdc.sh` compara los dos builds byte a byte.
 1. **CRC-32C por hardware** (SSE4.2/ARMv8) + fallback + test + benchmark.
    Aceptación: mismos CRC en toda la matriz; `--verify` más rápido.
 2. **memcmp/CommonPrefix/memcpy SIMD.** Aceptación: los 220 archivos dan los
    mismos `.osr` con y sin la ruta nativa.
 3. **AES-NI para VMAC / SHA-NI para SHA1.** Aceptación: digests idénticos.
-4. **Lazo del escaneo en asm/C.** Aceptación: misma paridad + medición; si no
-   hay ganancia clara, se descarta.
+4. **Lazo del escaneo en asm/C.** El CDC ya está; sigue el match finder de
+   `-m3..-m5`. Aceptación: misma paridad + medición; si no hay ganancia clara,
+   se descarta.
 5. **macOS ARM64** (build nativo) y validación.
 
 ## 8. Decisiones abiertas

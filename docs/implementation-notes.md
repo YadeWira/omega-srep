@@ -317,6 +317,11 @@ La librería no reimplementa el formato: envuelve el mismo `EncodeToStream` y
   el footer) y llama a `osrep_compress`/`osrep_decompress`; zpaq-std no
   entra todavía.
 
+El chunk scan del CDC tiene una implementación C (`src/c/osrep_cdc.c`) con
+el mismo resultado que la de Pascal; `tests/native_cdc.sh` compila los dos
+builds y compara `-m1`, `-m2` y `-dup` byte a byte. En `twice64.bin` baja el
+scan de ~1,17 s a ~0,83 s (`-m1`) y de ~1,33 s a ~1,07 s (`-m2`).
+
 La codificación paralela reparte los bloques independientes entre hilos y
 los escribe en orden; el CRC, el digest y el archivo final son los mismos
 que con un hilo. `-t1` sirve para medir el costo real del encoder y `-t0`

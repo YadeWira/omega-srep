@@ -19,7 +19,8 @@ preprocessing, decompression, verification and inspection.
   single-thread one.
   The tests cover the ten compatibility fixtures in `tests/fixtures/v6/`, the
   encoder round-trip/determinism, `-hash-`, `-dup`, the new golden archives in
-  `tests/fixtures/v6-new/`, and the library (73 checks, 103 with the corpus).
+  `tests/fixtures/v6-new/`, the native CDC against the Pascal reference, and
+  the library (73 checks, 103 with the corpus).
   Every 0.0.x release is a pre-release; 1.0.0 is the first stable release.
   Implementation notes and the open limitations are in
   `docs/implementation-notes.md`; the 0.0.3 notes are in
@@ -30,8 +31,8 @@ preprocessing, decompression, verification and inspection.
 - **Platforms (planned):** Linux x86_64/i386/ARM64, Windows x86/x64 (7+),
   macOS 11+ ARM64.
 - **Languages:** Free Pascal for the format, container, CLI, library and
-  orchestration; C for the 7-Zip plugin now, and C/asm hot paths (CRC,
-  SIMD, hashes, prefetch/CPUID) in phase 2.
+  orchestration; C for the 7-Zip plugin and the CDC chunk scan; more C/asm
+  hot paths (CRC, SIMD, hashes, prefetch/CPUID) in phase 2.
 
 ## Priority
 

@@ -125,3 +125,17 @@ más lento. Contra zpaq `-m5` (36,02 MB), OSREP queda 14 % más grande, pero
 tarda ~50× menos. No es una comparación de compresores equivalentes: OSREP
 es el preprocesador; la comparación limpia con el deduplicador de zpaq
 requiere el mismo backend y el mismo nivel, que es el siguiente paso.
+
+## CDC nativo (C) vs referencia Pascal
+
+`twice64.bin` (128 MiB), mismo binario, `-dOSREP_NO_NATIVE` para forzar la
+referencia:
+
+| modo | Pascal | C |
+|---|---:|---:|
+| `-m1` | 1,17 s | 0,83 s |
+| `-m2` | 1,33 s | 1,07 s |
+| `-dup` (incluye LZ) | 2,42 s | 2,37 s |
+
+Los archivos son byte-idénticos; `tests/native_cdc.sh` es la compuerta. El
+`-dup` apenas cambia porque el LZ domina el tiempo.
