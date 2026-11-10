@@ -6,8 +6,11 @@ Upstream SREP froze at **3.93a beta (October 11, 2014)**; Omega SREP picks up
 the lineage with a clean break — new file format, new identity, modern target
 platforms.
 
-**Since 2.2.0 the released binaries are the Free Pascal implementation** in
-`pascal/`. Two earlier implementations stay in-tree, buildable, and are not
+**Since 2.2.0 the released binaries are built from the Free Pascal
+implementation** in `pascal/`. For 3.0.0 the implementation also uses **C and
+embedded assembly** for the parts where they pay off (the build compiles both
+and links them into the same binary). Two earlier implementations stay
+in-tree, buildable, and are not
 dead code: the **Rust** in `oracles/rust/` (the released binary from 2.0.0 to
 2.1.2) and the original **C++** in `oracles/cxx/` (1.0.x, frozen at **1.0.7**). They
 are the oracles: every Pascal module is diffed byte-for-byte against the Rust,
@@ -20,6 +23,20 @@ this project, and Rust upstream is leaving both — `i686-pc-windows-gnu` was
 demoted from Tier 1 in Rust 1.88, and 1.77.2, the last release that targets
 Windows 7, can never move. Free Pascal 3.2.2 targets both natively. See
 `docs/pascal-port.md` and, for the Rust port, `docs/rust-port.md`.
+
+## Status
+
+| Component | Status |
+|---|---|
+| Implementation | Free Pascal 3.2.2; C and embedded assembly are being added for 3.0.0 |
+| Container v6 | implemented, opt-in with `--format=v6`; default and frozen in 3.0.0 |
+| Linux x86_64 | release binary; the full local gate list |
+| Linux x86 (32-bit) | built and validated; ships with 3.0.0 |
+| Linux ARM64 | built and validated under `qemu-user`; ships with 3.0.0 |
+| Windows x86 / x86_64 (7 and later) | release binaries; verified on a real Windows 7 SP1 each release |
+| macOS ARM64 (11 and later) | planned for 3.0.0; native build (FPC 3.2.2 + Xcode CLT), no cross from Linux |
+| Test gates | local scripts in `tests/`; no hosted CI |
+| Latest release | [2.4.0](https://github.com/YadeWira/omega-srep/releases/tag/v2.4.0) (pre-release) |
 
 ## Repository layout
 
@@ -70,18 +87,15 @@ the Pascal is diffed against. See `oracles/README.md`.
   quietly: a 1.0.x binary handed a v5 archive exits 4 with *"Not an Omega SREP
   compressed file (.osr)"* and writes no output. It cannot mistake one for the
   other.
-- **Supported platforms:** Linux x64 and Windows x64/x86. The released
-  builds target **Windows 7 and later**, and both Windows binaries are
-  verified on a real Windows 7 SP1 machine each release, not only
-  cross-compiled. The 32-bit `.exe` is large address aware (up to 4 GiB of
-  address space on a 64-bit Windows). The Rust builds also run on Windows 7,
-  because the toolchain is pinned to Rust 1.77.2. (The C++ build needs
-  Windows 10/11, or the KB2999226 Universal C Runtime on an older target.)
-  The historical big-endian, FreeBSD, and macOS branches are gone.
-  **For 3.0.0:** Linux i386 (`osrep-linux-x86`) and Linux ARM64
-  (`osrep-linux-aarch64`) are built from the same source and validated in the
-  tree; they ship with 3.0.0 (see `docs/format-spec-v6.md`, §1). No 2.4.0
-  asset exists for them.
+- **Supported platforms:** Linux x86, x86_64 and ARM64; Windows x86 and
+  x86_64 (**Windows 7 and later**); macOS ARM64. See **Status** above for what
+  ships today and what ships with 3.0.0. Both Windows binaries are verified on
+  a real Windows 7 SP1 machine each release, not only cross-compiled; the
+  32-bit `.exe` is large address aware (up to 4 GiB of address space on a
+  64-bit Windows). The Rust builds also run on Windows 7, because the
+  toolchain is pinned to Rust 1.77.2. (The C++ build needs Windows 10/11, or
+  the KB2999226 Universal C Runtime on an older target.) The historical
+  big-endian and FreeBSD branches are gone.
 - **Binary name:** `osrep` (replaces `srep`).
 - **Version line:** Omega SREP starts a new lineage at `1.0a beta`.
   First stable release: `1.0.0`.
