@@ -26,6 +26,14 @@ verification and inspection.
 - **Languages:** Free Pascal for the format, container, CLI and orchestration;
   C with intrinsics for CRC/SIMD/hashes; FPC asm for prefetch/CPUID.
 
+## Library
+
+OSREP is being built **library-first**: the core will be `libosrep` with a
+stable C ABI (`osrep.h`), and the CLI will be a client of it. The API,
+packaging and integration plan for external projects — **PJA**, **packPNG**,
+**packJPG**, **packMP3**, **packPNM** and **zpaq-std** — are in
+`docs/osrep-library.md`.
+
 ## Where it comes from
 
 OSREP is new code, not a continuation of a codebase. The method and the format
