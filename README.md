@@ -30,8 +30,8 @@ verification and inspection.
 
 OSREP is being built **library-first**: the core will be `libosrep` with a
 stable C ABI (`osrep.h`), and the CLI will be a client of it. The API,
-packaging and integration plan for external projects — **PJA**, **packPNG**,
-**packJPG**, **packMP3**, **packPNM** and **zpaq-std** — are in
+packaging and integration plan for external projects — the **PJA** family
+(**PJA**, **PMPA**, **PRA**, **PPA**, **PAIA**) and **zpaq-std** — are in
 `docs/osrep-library.md`.
 
 ## Where it comes from

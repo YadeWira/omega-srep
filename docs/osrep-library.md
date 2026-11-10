@@ -3,26 +3,42 @@
 **Estado: diseño, 2026-11-10.** OSREP hoy es un CLI. La dirección que se
 quiere es **library-first**: el núcleo es una librería con ABI C, y el CLI es
 un cliente más. Este documento fija la API, el empaquetado y el orden de
-integración, usando **PJA** y la familia **pack** como primeros consumidores.
+integración, usando **PJA, PMPA, PRA, PPA y PAIA** como primeros
+consumidores. Los proyectos `pack*` **no son la familia**: son sus
+predecesores ("Successor of" en las tablas de la familia) y solo aparecen
+aquí como historia de la API.
 
 ## 0. Por qué
 
 OSREP es un preprocesador/dedup, no un compresor final. Los proyectos que
 pueden aprovecharlo ya existen y tienen interfaces parecidas:
 
-| proyecto | licencia | API/artefacto | cómo lo usa un tercero |
-|---|---|---|---|
-| **PJA** | MIT | `pja.so`/`pja.dll`/`pja.dylib`, `pja.h`, `test_lib.c` | `pja_compress`/`pja_decompress`, filtros con callbacks, plugin 7-Zip y codecs zpaq-std |
-| **packPNG** | MIT | `libpackpng`, `packpng.h` | `packpng_compress_mem`/`decompress_mem`, file, threads, `last_error` |
-| **packJPG** | LGPL-3.0 | `packJPG.so`/`.dll`/`.a`, `packjpglib.h` | 6 símbolos: `pjglib_init_streams`, `convert_*`, `version_info`, `short_name` |
-| **packMP3** | LGPL-3.0 | `libpackMP3.so`/`.dll`/`.a`, `packmp3dll.h` | 6 símbolos: `pmplib_*`, mismos tipos 0/1/2 (archivo/memoria/FILE*) |
-| **packPNM/packRAW** | LGPL-3.0 | librería/CLI | misma familia |
-| **zpaq-std** | MIT | CLI/archivador | dedup por fragmentos (ver `docs/zpaq-dedup-study.md`) |
+La familia actual, según la tabla "Sibling | Formats | Successor of" de
+PJA, PMPA, PRA, PPA y PAIA:
+
+| proyecto | formatos | Successor of | licencia | artefacto hoy |
+|---|---|---|---|---|
+| **PJA** | JPEG, JPEG-LS, JPEG 2000 | packJPG | MIT | `libpja`: `pja.so`/`.dll`/`.dylib`, `pja.h`, `test_lib.c`, plugin 7-Zip y codecs zpaq-std |
+| **PMPA** | MPEG audio (MP1, MP2, MP3) | packMP3, packMP2 | MIT | CLI; todavía sin librería propia; vendoriza PJA |
+| **PRA** | raster (PNM, BMP, TIFF, PSD, HDR, ...) | packPNM | MIT | CLI; todavía sin librería propia |
+| **PPA** | familia PNG (PNG, APNG, MNG, JNG) | packPNG | MIT | `libppa`: `ppa.so`/`.dll`/`.dylib`, `ppa.h`, plugin 7-Zip |
+| **PAIA** | imágenes animadas (GIF, WebP, FLI/FLC, ANI, IFF ANIM) | (nuevo) | MIT | plugin de zpaq-std (`paia.so`); sin librería C general todavía |
+
+Fuera de la familia, pero relevantes:
+
+| proyecto | papel | licencia |
+|---|---|---|
+| **zpaq-std** | archivador; dedup por fragmentos (ver `docs/zpaq-dedup-study.md`) | MIT |
+| **packJPG** | predecesor de PJA | LGPL-3.0 |
+| **packMP3**, **packMP2** | predecesores de PMPA | LGPL-3.0 |
+| **packPNG** | predecesor de PPA | MIT |
+| **packPNM** | predecesor de PRA | LGPL-3.0 |
 
 PJA es el mejor modelo para OSREP: mismo lenguaje (Free Pascal + C + asm),
-misma licencia, misma idea de una librería que también es un codec de
-archivador. packPNG muestra la API moderna; packJPG/packMP3 muestran la API
-de 6 símbolos que ya usan sus consumidores.
+misma licencia, y ya tiene `libpja` con `pja.h`, `test_lib.c`, filtro y
+plugin. PPA confirma que el patrón se repite (`libppa`, `ppa.h`). PMPA, PRA y
+PAIA son consumidores naturales, aunque sus librerías aún no existan. Los
+`pack*` no se integran: son los predecesores que la familia reemplaza.
 
 ## 1. Principios
 
@@ -39,13 +55,14 @@ de 6 símbolos que ya usan sus consumidores.
    error; el detalle queda en `osrep_last_error()` (thread-local).
 6. **El formato no cambia.** La librería escribe/lee el v6 de la spec; no
    introduce un contenedor nuevo.
-7. **MIT.** La librería es MIT; los hosts LGPL (packJPG/packMP3/packPNM)
-   pueden linkearla (dinámico es lo simple; estático tiene las obligaciones
-   de LGPL).
+7. **MIT.** La librería es MIT, igual que PJA, PMPA, PRA, PPA, PAIA y
+   zpaq-std, así que con la familia no hay fricción de licencia. Los
+   predecesores `pack*` son LGPL-3.0 (salvo packPNG, MIT); solo importan si
+   alguna vez se usan como host, y ahí el linkeo dinámico es lo simple.
 
 ## 2. API propuesta (`osrep.h`)
 
-Modelo PJA/packPNG: versión, memoria, archivo, callbacks y opciones.
+Modelo `libpja`/`libppa`: versión, memoria, archivo, callbacks y opciones.
 
 ```c
 #ifndef OSREP_H
@@ -132,7 +149,7 @@ void OSREP_CALL osrep_free(void *p);
 #endif
 ```
 
-### 2.1 Modo fragmentador/dedup (para zpaq-std y packs)
+### 2.1 Modo fragmentador/dedup (zpaq-std y hosts que lo quieran)
 
 Además del archivo v6, la librería puede exponer la etapa que zpaq-std
 necesita (ver `docs/zpaq-dedup-study.md`):
@@ -162,10 +179,11 @@ Esto es lo que se enchufa en zpaq-std (`fragment_buffer`/`add2` y el lazo de
 `add()`) y lo que puede usar cualquier host que quiera dedup por fragmentos
 sin adoptar el contenedor `.osr`.
 
-### 2.2 Compatibilidad con la API de pack (opcional)
+### 2.2 Compatibilidad con los predecesores pack (opcional)
 
-Para que packJPG/packMP3 no tengan que reescribir su capa de glue, se puede
-ofrecer un `osrep_compat.h` con la forma de 6 símbolos:
+Los `pack*` no son la familia ni el objetivo de la integración. Si alguna vez
+se usan como host (o se quiere comparar con su API), se puede ofrecer un
+`osrep_compat.h` con la forma de 6 símbolos:
 
 ```c
 void        osrep_init_streams(void *in_src, int in_type, int in_size,
@@ -177,8 +195,9 @@ const char *osrep_version_info(void);
 const char *osrep_short_name(void);
 ```
 
-Es una capa fina sobre la API de contexto; existe solo para los hosts que ya
-tienen esa forma. La API recomendada sigue siendo la de §2.
+Es una capa fina sobre la API de contexto; existe solo para esos hosts
+históricos. La API recomendada sigue siendo la de §2, y la familia
+(PJA/PMPA/PRA/PPA/PAIA) no la necesita.
 
 ## 3. Empaquetado y build
 
@@ -224,32 +243,43 @@ PJA es el primer consumidor natural:
 - No se toca el formato `.pja` en el primer paso: es un experimento de
   tamaño/velocidad; un backend nuevo sería una versión de stream nueva.
 
-### 4.2 packPNG (MIT)
+### 4.2 PPA (MIT)
 
-Es el más fácil de los packs: API moderna (`packpng_compress_mem`,
-`packpng_decompress_mem`, `packpng_free`, `packpng_last_error`) y licencia
-MIT. OSREP puede linkearse y usarse como segunda etapa del `.ppg` o de los
-payloads; un backend nuevo de `.ppg` sería una extensión de formato, no un
-cambio silencioso.
+PPA ya tiene `libppa` con `ppa.h`, `ppa.so`/`.dll`/`.dylib`, filtro y plugin
+de 7-Zip: es la prueba de que el patrón de `libpja` se repite en la familia.
+OSREP puede probarse como segunda etapa del `.ppa` o de sus streams (medir
+tamaño/tiempo y round-trip); un backend nuevo sería una versión de stream
+nueva, no un cambio silencioso del `.ppa` actual.
 
-### 4.3 packJPG / packMP3 / packPNM (LGPL-3.0)
+### 4.3 PAIA (MIT)
 
-- La API de 6 símbolos ya está pensada para consumidores externos; OSREP
-  puede ofrecer `osrep_compat.h` con la misma forma.
-- Linkeo **dinámico** con `libosrep.so`/`.dll` es lo simple; el linkeo
-  estático queda sujeto a las obligaciones de LGPL (poder re-linkear).
-- Los formatos `.pjg`, `.mp3`/`.mp2`, `.pnm` están congelados: OSREP entra
-  como una etapa opcional de una versión nueva o como preprocesador de los
-  datos embebidos (packMP3 ya usa packJPG/packPNG para las carátulas), no
-  cambiando el formato actual.
-- packMP3 ya tiene `INTEGRATION-PMPLIB.md`; es el modelo de cómo documentar
-  la integración de OSREP para los packs.
+PAIA ya es plugin de zpaq-std (`pas/plugin/paia_zpaqstd.pas`, `paia.so`) pero
+todavía no tiene una librería C general. Es el primer miembro de la familia
+que vive dentro de un archivador: el bloque que zpaq-std entrega al plugin se
+puede medir con OSREP como preprocesado/dedup, sin adoptar el contenedor
+`.osr`. Su stream cambia hasta 1.0.0; primero medir, después decidir.
 
-### 4.4 zpaq-std (MIT)
+### 4.4 PMPA y PRA (MIT)
+
+Hoy son CLI sin librería propia. Son consumidores de la familia, pero no del
+primer lote: cuando tengan `libpmpa`/`libpra` con el patrón de PJA/PPA, OSREP
+podrá ser segunda etapa de sus streams. Mientras tanto, el consumo es por
+CLI o por enlace Pascal interno, no por ABI C.
+
+### 4.5 zpaq-std (MIT)
 
 No usa el contenedor `.osr`: usa el modo fragmentador/dedup de §2.1. El
 estudio `docs/zpaq-dedup-study.md` fija el plan: primero el fragmentador
 exacto de zpaq (mismos fragmentos/SHA-1), después el CDC de OSREP como modo.
+
+### 4.6 Los predecesores pack (no son la familia)
+
+`packJPG`, `packMP3`/`packMP2`, `packPNG` y `packPNM` aparecen en la columna
+"Successor of" de la familia, no en la familia. Sus formatos están congelados
+y no se integran con OSREP en este plan: solo se conservan como referencia de
+API (la forma de 6 símbolos de §2.2) y como historia. `packPNG` es MIT, los
+demás LGPL-3.0; nada de esto afecta a `libosrep`, que es MIT y se linkea con
+miembros MIT de la familia.
 
 ## 5. Plan por fases
 
@@ -285,9 +315,9 @@ misma API (no hay dos caminos).
 ### L3 — Primeros consumidores (2–3 semanas)
 
 - PJA: demo de segunda etapa y, si funciona, filtro/codec.
-- packPNG: demo de segunda etapa; documentar.
-- packJPG/packMP3: `osrep_compat.h` y demo de linkeo dinámico; sin tocar
-  los formatos actuales.
+- PPA: demo de segunda etapa con `libppa`; documentar.
+- PAIA: medir el bloque del plugin de zpaq-std con OSREP.
+- PMPA/PRA: enlace Pascal o CLI hasta que tengan librería propia.
 - Ejemplos, docs, CI de la librería.
 
 ### L4 — ABI 1.0
@@ -303,7 +333,7 @@ misma API (no hay dos caminos).
 - ABI: `nm -D`/`dumpbin` de los símbolos; cargar con `dlopen`; versión.
 - Fuzz del decoder a través de la API; entradas dañadas; `max_output`.
 - Matriz de plataformas y CI (Linux, Windows/wine, macOS Actions).
-- Packs: demo de round-trip y medición, sin cambiar los formatos.
+- Familia: demo de round-trip y medición, sin cambiar los formatos.
 
 ## 7. Riesgos
 
@@ -313,8 +343,8 @@ misma API (no hay dos caminos).
 | Excepciones que cruzan la frontera | cada export atrapa y devuelve código; `last_error` |
 | Hilos | estado por llamada; thread-local; probar concurrencia |
 | Windows x86 / macOS | mismo build cruzado que PJA; CI macOS |
-| Formatos de los packs congelados | no cambiarlos; etapa opcional/versión nueva |
-| LGPL de packJPG/packMP3 | linkeo dinámico; documentar obligaciones |
+| Formatos de la familia congelados (PJA desde 0.9.0; PPA/PAIA antes de 1.0) | no cambiarlos; segunda etapa opcional o versión nueva de stream |
+| Licencias | toda la familia y zpaq-std son MIT; los `pack*` predecesores son LGPL y no se integran |
 | ABI inestable | `struct_size`, `reserved`, semver, ABI 1.0 al final |
 | Rendimiento | la librería no agrega copias; `compress_into`; medir |
 
@@ -323,10 +353,10 @@ misma API (no hay dos caminos).
 **Hacer `libosrep` ahora, antes de más funciones del CLI.** El CLI pasa a ser
 un cliente de la librería. Empezar por L0 (memoria + v6 + `test_lib.c`) y
 usar **PJA** como primer consumidor, porque comparte lenguaje, licencia y
-patrón de build. Después packPNG (MIT), luego packJPG/packMP3 con la capa de
-compatibilidad y linkeo dinámico, y zpaq-std con el modo fragmentador.
+patrón de build. Después **PPA**, que ya tiene `libppa`; luego **PAIA** y, en
+cuanto tengan librería, **PMPA** y **PRA**. zpaq-std entra por el modo
+fragmentador. Los `pack*` quedan fuera: son los predecesores, no la familia.
 
-La API de PJA (`pja.h`) es la plantilla; la de packPNG muestra el estilo
-moderno; la de packJPG/packMP3 muestra la compatibilidad que hay que ofrecer.
-No se toca ningún formato de los packs en esta etapa: primero se mide y se
-prueba el valor de OSREP como segunda etapa.
+La API de PJA (`pja.h`) es la plantilla y la de PPA (`ppa.h`) confirma el
+patrón. No se toca ningún formato de la familia en esta etapa: primero se
+mide y se prueba el valor de OSREP como segunda etapa.
