@@ -1,5 +1,10 @@
 # OSREP CLI contract (draft for phase 1)
 
+OSREP is a **preprocessor**: the `.osr` file holds an LZ77 match/literal
+stream, not an entropy-coded archive. The final compression is a separate
+stage (a backend such as zpaq-std). The CLI calls the operation "compress"
+because it writes the `.osr` stream, but it does not add an entropy coder.
+
 This is the behaviour the new implementation must provide. Exact texts and
 exit codes are pinned by the new golden transcripts; this file defines the
 surface, not the wording.
