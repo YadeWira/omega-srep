@@ -35,6 +35,10 @@ jobs:
           fpc -iTP -iTO
 
       - name: Build osrep
+        env:
+          # macOS 11 is the floor in the platform matrix; the runner's SDK is
+          # newer, so pin the deployment target the linker records.
+          MAC_OS_X_VERSION_MIN_REQUIRED: '11.0'
         run: |
           mkdir -p pascal/bin/units-macos
           fpc -Mobjfpc -O2 -Xs -Fupascal/src -FUpascal/bin/units-macos \
@@ -42,6 +46,7 @@ jobs:
           fpc -Mobjfpc -O2 -Xs -Fupascal/src -FUpascal/bin/units-macos \
               -opascal/bin/hashtool pascal/hashtool.lpr
           file pascal/bin/osrep-macos-aarch64
+          otool -l pascal/bin/osrep-macos-aarch64 | grep -A4 LC_BUILD_VERSION || true
           ./pascal/bin/osrep-macos-aarch64 --version
 
       - name: Core gates
