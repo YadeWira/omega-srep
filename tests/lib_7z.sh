@@ -13,12 +13,16 @@ TMP="$(mktemp -d "${TMPDIR:-/tmp}/osrep-7z.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
 
 SEVEN=${SEVEN:-/usr/lib/7zip}
-SEVEN_ZSTD=${SEVEN_ZSTD:-/mnt/IA_LAB/agentes/ZPAQ-STD/peazip/7zzs/lin}
+# 7-Zip-zstd is optional: point SEVEN_ZSTD at its directory (the one with
+# 7z and 7z.so) to test the -m1=zstd chain too.
+SEVEN_ZSTD=${SEVEN_ZSTD:-}
 
 fail() {
   echo "FAIL: $*" >&2
   exit 1
 }
+
+tested=0
 
 echo "== building libosrep and its 7-Zip plugin =="
 bash "$ROOT/src/lib/build.sh" "$TMP/lib" || fail "src/lib/build.sh"
@@ -41,11 +45,12 @@ test_one() {
   local dir=$1 label=$2 extra=$3
   local Z="$TMP/$label-7z"
   local SZ OUT OUTFILE CHAIN BASE
-  if [ ! -f "$dir/7z" ] || [ ! -f "$dir/7z.so" ]; then
-    echo "== $label: not found in $dir, skipped =="
+  if [ -z "$dir" ] || [ ! -f "$dir/7z" ] || [ ! -f "$dir/7z.so" ]; then
+    echo "== $label: not configured or not found, skipped =="
     return 0
   fi
   echo "== $label =="
+  tested=$((tested + 1))
   mkdir -p "$Z/Codecs"
   cp "$dir/7z" "$dir/7z.so" "$Z/"
   cp "$LIB" "$Z/Codecs/osrep.so"
@@ -121,5 +126,6 @@ PY
 
 test_one "$SEVEN" 7zip ""
 test_one "$SEVEN_ZSTD" 7zip-zstd zstd
+[ "$tested" -gt 0 ] || fail "no 7-Zip found (set SEVEN or SEVEN_ZSTD)"
 
 echo "libosrep + 7-Zip: all checks passed"

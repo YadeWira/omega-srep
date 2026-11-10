@@ -245,7 +245,8 @@ versión nueva `E_NOTIMPL` ("Unsupported Method"), memoria `E_OUTOFMEMORY`.
 
 `tests/lib_7z.sh` compila la librería, copia `7z`/`7z.so` a un directorio
 privado, pone `libosrep.so` en `Codecs/` y comprueba, en **7-Zip 25.01** y
-en **7-Zip-zstd 26.02** (este último también con `-m1=zstd`): `7z i` lista
+en **7-Zip-zstd 26.02** (este último con `SEVEN_ZSTD=<dir>` y también con
+`-m1=zstd`): `7z i` lista
 `37F03 OSREP`; `-m0=OSREP` solo; `-m0=OSREP -m1=LZMA2`; `7z t`; un archivo
 con bloques sólidos de 1 MiB (`-ms=1m`) para probar varias llamadas al
 plugin; todos los archivos vuelven byte a byte; un archivo dañado falla con
