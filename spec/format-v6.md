@@ -124,20 +124,125 @@ una perilla de prueba y pasa a ser el comportamiento único; el CRC por
 hardware queda como una optimización interna **solo** si da exactamente los
 mismos bytes (no es el caso hoy, así que no se usa).
 
-### 2.5. Lo que no cambia
+### 2.5. CRC-32C: parámetros
 
-- El stream de matches: triples varint `lit_len | match_len | distance`, sin
-  `BASE_LEN`, sin `ROUND_MATCHES`, sin multiplicar por `L`.
+Todos los CRC de v6 son **CRC-32C (Castagnoli)** con:
+
+- polinomio reflejado `0x82F63B78`,
+- valor inicial `0`,
+- sin XOR final,
+- bytes procesados del bit menos significativo al más significativo.
+
+`Crc32cUpdate(crc, buf, len)` encadena sin reiniciar. `header_crc` cubre los
+24 bytes anteriores del header; `block_crc` cubre `digest || records ||
+literales` tal como están en disco; `footer_crc` cubre los 32 bytes anteriores
+del footer; `blocks_crc` es la cadena de los `block_crc` en orden, empezando en
+0. No es el CRC-32C "de catálogo" (init/xorout `0xFFFFFFFF`): con esos
+parámetros ningún CRC de los archivos v6 coincide.
+
+### 2.6. Digest por bloque
+
+El payload de un bloque es `digest (hash_size) || records (statsize) ||
+literales`. El digest cubre los `origsize` bytes **reconstruidos** del bloque
+(para `-dup`, el cuerpo ya deduplicado; el post-paso de `-dup` restaura la
+entrada después). El decoder lo recalcula al reconstruir el bloque y rechaza
+la diferencia con exit 4. `--verify` no descomprime, así que **no** recalcula
+el digest: valida el `block_crc`, que cubre los bytes del digest tal como están
+en disco.
+
+| `hash_id` | algoritmo | digest | seed |
+|---:|---|---:|---:|
+| 0 | MD5 | 16 | 0 |
+| 1 | desactivado | 0 | 0 |
+| 2 | SHA-1 | 20 | 0 |
+| 3 | SHA-512 | 64 | 0 |
+| 4 | VMAC | 16 | 32 |
+| 5 | SipHash-2-4 | 8 | 16 |
+
+El seed va después del header del archivo, `seed_size` bytes (derivado de la
+tabla). Para VMAC la clave es el seed; para SipHash, los 16 bytes del seed.
+`hash_size = 0` significa "sin digest": no hay bytes de digest ni seed, y el
+`hash_id` se ignora. Cualquier otro `hash_size` tiene que coincidir con la
+tabla; si no, el archivo se rechaza.
+
+### 2.7. Semántica de los records: Future-LZ
+
+La lista de un bloque es una secuencia de triples LEB128 **sin signo**:
+
+```
+skip       varint   avance del puntero de source desde el record anterior
+length     varint   largo del match
+distance   varint   destination - source
+```
+
+Semántica (Future-LZ), con `block_start` la posición del bloque en la salida:
+
+```
+running_skip = 0
+para cada record, en el orden del archivo (ordenado por source):
+    source      = block_start + running_skip
+    destination = source + distance
+    running_skip = running_skip + skip
+```
+
+Los records están guardados en orden de `source`. El decoder los ordena por
+`destination` y recorre el bloque de 0 a `origsize`:
+
+1. entre el final del match anterior y el `destination` del siguiente, copia
+   bytes del stream de literales, en orden;
+2. copia `length` bytes desde `source` a `destination`, con solapamiento
+   permitido (`distance < length` es válido);
+3. después del último match, copia los literales restantes hasta `origsize`.
+
+`source` puede apuntar a un bloque anterior ya reconstruido. El stream de
+literales tiene `literal_bytes` bytes y se consume en orden de destino. Se
+cumple `sum(length) + literal_bytes = origsize`; `sum(skip)` **no** es la
+cuenta de literales y puede superar `literal_bytes`. `statsize` es el número de
+bytes de records; no hay centinela.
+
+La lectura "Index-LZ" histórica (`lit_len` = literales antes del match, `dest`
+avanza desde el match anterior) **no** es la de v6; ver la nota de
+`payload.md` §3.
+
+### 2.8. Meta `DUPR` de `-dup`
+
+Cuando `flags.bit0` está puesto, el meta está en `meta_offset`/`meta_size`
+(termina justo antes del footer) y tiene:
+
+```
+magic        u32   "DUPR"
+version      u32   1
+chunk_count  u64   chunks totales de la entrada
+unique_count u64   chunks únicos
+```
+
+Después, `chunk_count` registros en orden de entrada:
+
+- tag `0` (único): `u32` con el largo del chunk;
+- tag `1` (referencia): varint LEB128 con el índice al chunk único
+  (`< unique_count`).
+
+El cuerpo de los chunks únicos es el cuerpo ya decodificado del archivo
+(concatenación en orden de primera aparición). `meta_crc` cubre todo el meta
+menos sus últimos 4 bytes. El CRC del meta se valida en `--verify`; la tabla de
+chunks se usa para reconstruir la entrada original en `-d`.
+
+### 2.9. Lo que no cambia
+
+
+- El stream de matches: triples varint `skip | length | distance` en la
+  semántica Future-LZ de §2.7, sin `BASE_LEN`, sin `ROUND_MATCHES`, sin
+  multiplicar por `L`.
 - El meta `DUPR` de `-dup`, con su CRC.
-- El CRC-32C (mismo polinomio que el CDC).
-- El header y el footer de 32 bytes: v6 agrega campos, no reordena.
+- El CRC-32C con los parámetros de §2.5.
+- El header de 28 bytes y el footer de 36 bytes: v6 agrega campos, no reordena.
 
 ## 3. Reglas de rechazo
 
 Las de v5, más:
 
 - `block_crc` que no coincide → archivo corrupto, con el número de bloque.
-- `flags.bit1` puesto y `data_digest` ausente, o al revés → corrupto.
+- `flags` con bits distintos de bit0 → corrupto.
 - Un bloque que dice `literal_bytes == origsize` y `statsize != 0` → corrupto
   (no se adivina si es guardado o comprimido).
 - `block_crc` cubre el payload completo: un `statsize` o un `literal_bytes`

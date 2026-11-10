@@ -40,6 +40,22 @@ exit 2 with a clear "not implemented yet" message.
 The new implementation may reject an option it does not implement yet, but it
 must not silently ignore it.
 
+## `-i` output
+
+`-i <archive>` prints one `key=value` per line, no paths:
+
+```
+OSREP v6
+blocks=N
+original_size=N
+stat_size=N
+meta_size=N
+hash_id=N
+hash_size=N
+```
+
+This is the phase-1 contract; the new golden fixes it.
+
 ## Exit codes
 
 - `0`: success.

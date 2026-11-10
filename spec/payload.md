@@ -122,6 +122,15 @@ ahora tiene integridad.
 
 ## 3. El record de match en v5
 
+> **Corrección OSREP (2026-11-10).** Esta sección describe la lectura
+> **Index-LZ** (`lit_len` = literales antes del match, `dest` avanza desde el
+> final del match anterior). Los archivos v6 usan **Future-LZ**: los mismos
+> tres varints se leen como `(skip, length, distance)` con `source` acumulado
+> y `destination = source + distance`; ver `format-v6.md` §2.7. La
+> descripción de abajo queda como procedencia histórica, no como la semántica
+> de v6.
+
+
 La lista de un bloque es una secuencia de **triples varint** LEB128:
 
 ```
