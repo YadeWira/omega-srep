@@ -327,6 +327,11 @@ hash chain, lazy y profundidad; `tests/native_match.sh` compara los `.osr`
 contra `-dOSREP_NO_NATIVE`. En `real64.bin`: `-m3` 1,33→1,03 s, `-m4`
 1,43→1,13 s, `-m5` 1,53→1,14 s, con los mismos bytes.
 
+El CRC-32C nativo (`src/c/osrep_crc.c`) usa la instrucción `crc32` con
+SSE4.2 y un fallback bitwise; conserva init 0 y sin xorout. El build Pascal
+con tabla sigue siendo la referencia. `--verify` de `real64.osr` baja de
+0,116 s a 0,029 s.
+
 La codificación paralela reparte los bloques independientes entre hilos y
 los escribe en orden; el CRC, el digest y el archivo final son los mismos
 que con un hilo. `-t1` sirve para medir el costo real del encoder y `-t0`

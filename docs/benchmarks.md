@@ -153,3 +153,9 @@ Los archivos son byte-idénticos; `tests/native_cdc.sh` es la compuerta. El
 `tests/native_match.sh` es la compuerta (byte a byte, también con
 `-l64 -c64 -a32` y entrada vacía). El default `-m5` sigue ~1,8× más lento
 que Omega `-m4` (0,64 s), pero con 15 puntos menos de ratio.
+
+## CRC-32C nativo
+
+`real64.osr` (38 MB, `-m5`): `--verify` con la tabla Pascal 0,116 s; con
+SSE4.2 0,029 s (~4×). El encode `-m3` baja de ~1,43 s a ~1,04 s, aunque ahí
+también influye el match finder nativo. Los bytes son los mismos.

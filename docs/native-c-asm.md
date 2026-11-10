@@ -64,7 +64,7 @@ práctico desde Linux por el SDK).
 
 | # | Componente | Qué se acelera | Ganancia esperada | Riesgo | Fase |
 |---|---|---|---|---|---|
-| 1 | **CRC-32C** | CRC de header/footer/bloque y `--verify` (hoy tabla byte a byte) | alta en `--verify` y en encodes grandes; 10–20× el CRC | bajo: mismo valor, algoritmo fijo | 1 |
+| 1 | **CRC-32C** | CRC de header/footer/bloque y `--verify` | ~4× en `--verify`; el encode casi no cambia | bajo: mismo valor, algoritmo fijo | hecho |
 | 2 | **memcmp / CommonPrefix / memcpy** | extensión de matches, literales, copia de descompresión | media-alta en compresión y decode | bajo: comparación/copia puras | 2 |
 | 3 | **AES del VMAC / SHA1** | hashes por bloque (AES-NI en x86, crypto NEON en ARM) | media; el hash por defecto es VMAC | medio: el digest tiene que ser idéntico | 3 |
 | 4 | **Lazo del escaneo** (`FixedCompressAccel`, `Hash1Batch`/`CheckBatch`) | el corazón de `-m3..-m5` | la más alta | **alta**: es donde vive la paridad byte a byte | 4 |
@@ -128,8 +128,9 @@ Notas:
    El primer componente real es el **CDC** (`src/c/osrep_cdc.c`), enlazado en
    el CLI y la librería; `-dOSREP_NO_NATIVE` conserva la referencia Pascal y
    `tests/native_cdc.sh` compara los dos builds byte a byte.
-1. **CRC-32C por hardware** (SSE4.2/ARMv8) + fallback + test + benchmark.
-   Aceptación: mismos CRC en toda la matriz; `--verify` más rápido.
+1. **CRC-32C por hardware** (SSE4.2 en x86; fallback bitwise): hecho.
+   Aceptación: mismos CRC en toda la matriz; `--verify` de 0,116 s a 0,029 s
+   en `real64.osr`.
 2. **memcmp/CommonPrefix/memcpy SIMD.** Aceptación: los 220 archivos dan los
    mismos `.osr` con y sin la ruta nativa.
 3. **AES-NI para VMAC / SHA-NI para SHA1.** Aceptación: digests idénticos.

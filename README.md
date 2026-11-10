@@ -31,9 +31,9 @@ preprocessing, decompression, verification and inspection.
 - **Platforms (planned):** Linux x86_64/i386/ARM64, Windows x86/x64 (7+),
   macOS 11+ ARM64.
 - **Languages:** Free Pascal for the format, container, CLI, library and
-  orchestration; C for the 7-Zip plugin, the CDC chunk scan and the match
-  finder; more C/asm hot paths (CRC, SIMD, hashes, prefetch/CPUID) in
-  phase 2.
+  orchestration; C for the 7-Zip plugin, the CDC chunk scan, the match
+  finder and CRC-32C; more C/asm hot paths (SIMD, hashes, prefetch/CPUID)
+  in phase 2.
 
 ## Priority
 
