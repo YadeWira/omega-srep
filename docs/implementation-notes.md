@@ -166,8 +166,9 @@ válido que el lector reconstruye. Parámetros:
 - `--seed=N`: semilla determinista. El seed de 32 bytes sale de `SplitMix64`
   con `N xor 0xD1B54A32D192ED03`; no se usa aleatoriedad del sistema.
 - `-hash-` escribe `hash_id=1/hash_size=0`, sin seed ni digest.
-- `-m4`/`-m5` no están implementados: se rechazan con exit 2, igual que
-  `-m0..-m2` y `-dup` de escritura. No se presentan como alias de `-m3`.
+- `-m0`: stream stored (sin LZ ni dedup); `-m1`/`-m2`: dedup fijo/CDC con
+  cuerpo stored; `-m3..-m5`: LZ greedy/lazy/profundo. `-dup` es un pre-paso
+  que combina con cualquiera de los métodos.
 
 El parse es greedy de izquierda a derecha: en cada `destination` busca el
 match más largo en el hash chain, y si no llega a `-l` emite un literal. Los
@@ -279,12 +280,14 @@ La spec `14cfd76`/`931effa` cerró el digest VHASH-128, el orden de
 
 ## 8. Lo que no se hizo
 
-- `-dup` de escritura (solo lectura/restauración).
 - MD5/SHA-1/SHA-512/SipHash como digest (solo VHASH-128 y sin digest).
-- stdin como entrada (`-`); stdout como salida sí funciona.
-- `-m0..-m2` y el encoder `-dup`; se rechazan con exit 2.
 - v1–v5 y compatibilidad con SREP.
-- Código nativo (C/asm) y la matriz de plataformas.
+- AES/SIMD y la matriz de plataformas.
+- El ratio a igual `-l64 -c64` frente a Omega `-m4`.
+- La integración con zpaq-std (fragmentador), pendiente de coordinar.
+
+Ya están: `-m0..-m5`, `-dup` de escritura, stdin/stdout, CDC/match/CRC
+nativos y `-t`.
 
 ## 9. L0 de `libosrep` (2026-11-10)
 

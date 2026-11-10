@@ -12,9 +12,10 @@ preprocessing, decompression, verification and inspection.
 
 - **Status: 0.0.5 checkpoint (pre-release).** The v6 reader and writer are
   implemented in `src/pascal/`: container, CRC-32C, VHASH-128 block digest,
-  `-d`, `--verify`, `-i`, `-dup` write/read/restore, dedup-only `-m1`
-  (fixed-window CDC) and `-m2` (order-1 CDC), a hash-chain match finder with
-  `-m3`/`-m4`/`-m5` (greedy, lazy and deeper), and parallel block encoding
+  `-d`, `--verify`, `-i`, `-dup` write/read/restore, `-m0` stored, dedup-only
+  `-m1` (fixed-window CDC) and `-m2` (order-1 CDC), a hash-chain match finder
+  with `-m3`/`-m4`/`-m5` (greedy, lazy and deeper), stdin/stdout (`-`), and
+  parallel block encoding
   (`-tN`, automatic up to 8 threads) whose output is byte-identical to the
   single-thread one.
   The tests cover the ten compatibility fixtures in `tests/fixtures/v6/`, the

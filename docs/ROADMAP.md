@@ -24,10 +24,10 @@ reemplace) y se repiten en cada release.
 1. **Formato y lector v6**
    - Leer los v6 de Omega SREP 3.0.0, `--verify`, `-i`, `-dup` de lectura.
    - Fuzz, corrupción, CRC, digest y límites de memoria.
-2. **CLI completo**
-   - Todas las opciones del contrato que se conserven: `-m*`, `-b`, `-l`,
-     `-c`, `-a`, `-hash=`, `--seed`, `-dup`, stdin/stdout, `-i`.
-   - Nada de opciones que se aceptan y se ignoran en silencio.
+2. **CLI completo** (hecho en lo esencial)
+   - `-m0..-m5`, `-b`, `-l`, `-c`, `-a`, `-hash=`, `--seed`, `-dup`,
+     stdin/stdout (`-`), `-i`, `-t`.
+   - Queda revisar opciones históricas que se aceptan y se ignoran.
 3. **Encoder**
    - `-m3` actual y los métodos que hagan falta para igualar/superar a SREP:
      `-m4`, `-m5`, y una estrategia de bloques/diccionario propia.

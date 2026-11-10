@@ -89,14 +89,16 @@ if "$BIN" -m3 -tx "$CORPUS/tiny.bin" "$TMP/tx.osr" >/dev/null 2>&1; then
   fail "-tx was accepted"
 fi
 
-echo "== unimplemented methods are rejected =="
-for m in -m0; do
-  if "$BIN" "$m" "$CORPUS/text.bin" "$TMP/unimplemented.osr" \
-       >"$TMP/unimplemented.log" 2>&1; then
-    fail "$m was accepted"
-  fi
-  grep -q 'not implemented yet' "$TMP/unimplemented.log" || fail "$m message"
-done
+echo "== -m0: stored stream =="
+"$BIN" -m0 "$CORPUS/text.bin" "$TMP/m0.osr" || fail "-m0 encode"
+"$BIN" --verify "$TMP/m0.osr" || fail "--verify -m0"
+"$BIN" -d "$TMP/m0.osr" "$TMP/m0.out" || fail "-d -m0"
+cmp "$TMP/m0.out" "$CORPUS/text.bin" || fail "-m0 round-trip"
+M0INFO="$("$BIN" -i "$TMP/m0.osr")"
+printf '%s\n' "$M0INFO" | grep -qx 'stat_size=0' || fail "-m0 stat_size"
+"$BIN" -m0 -dup "$CORPUS/zeros.bin" "$TMP/m0-dup.osr" || fail "-m0 -dup"
+"$BIN" -d "$TMP/m0-dup.osr" "$TMP/m0-dup.out" || fail "-d -m0 -dup"
+cmp "$TMP/m0-dup.out" "$CORPUS/zeros.bin" || fail "-m0 -dup round-trip"
 
 echo "== determinism: --seed=7 twice =="
 "$BIN" -m3 --seed=7 "$CORPUS/text.bin" "$TMP/det-1.osr" || fail "encode det-1"
@@ -141,6 +143,26 @@ cmp "$TMP/dup-m5.out" "$CORPUS/mixed.bin" || fail "-dup -m5 round-trip"
 "$BIN" -dup -m3 "$TMP/dup-empty.bin" "$TMP/dup-empty.osr" || fail "-dup empty"
 "$BIN" -d "$TMP/dup-empty.osr" "$TMP/dup-empty.out" || fail "-d -dup empty"
 [ ! -s "$TMP/dup-empty.out" ] || fail "-dup empty content"
+
+echo "== stdin / stdout =="
+"$BIN" -m3 "$CORPUS/text.bin" "$TMP/file.osr" || fail "file encode"
+cat "$CORPUS/text.bin" | "$BIN" -m3 - - > "$TMP/pipe.osr" || fail "stdin encode"
+cmp "$TMP/file.osr" "$TMP/pipe.osr" || fail "stdin encode differs"
+cat "$TMP/pipe.osr" | "$BIN" -d - - > "$TMP/pipe.out" || fail "stdin decode"
+cmp "$TMP/pipe.out" "$CORPUS/text.bin" || fail "stdin decode differs"
+cat "$TMP/pipe.osr" | "$BIN" --verify - || fail "stdin verify"
+cat "$TMP/pipe.osr" | "$BIN" -i - | grep -qx 'original_size=4194304' || \
+  fail "stdin info"
+cat "$CORPUS/text.bin" | "$BIN" -m3 - > "$TMP/pipe-default.osr" || \
+  fail "stdin default stdout"
+cmp "$TMP/file.osr" "$TMP/pipe-default.osr" || fail "default stdout differs"
+cat "$CORPUS/zeros.bin" | "$BIN" -m1 - - > "$TMP/pipe-m1.osr" || fail "stdin -m1"
+"$BIN" -d "$TMP/pipe-m1.osr" "$TMP/pipe-m1.out" || fail "decode stdin -m1"
+cmp "$TMP/pipe-m1.out" "$CORPUS/zeros.bin" || fail "stdin -m1 content"
+cat "$CORPUS/zeros.bin" | "$BIN" -dup -m3 - - > "$TMP/pipe-dup.osr" || \
+  fail "stdin -dup"
+"$BIN" -d "$TMP/pipe-dup.osr" "$TMP/pipe-dup.out" || fail "decode stdin -dup"
+cmp "$TMP/pipe-dup.out" "$CORPUS/zeros.bin" || fail "stdin -dup content"
 
 echo "== pinned v6-new fixtures =="
 [ -f "$ROOT/tests/fixtures/v6-new/manifest.tsv" ] || fail "missing v6-new manifest"

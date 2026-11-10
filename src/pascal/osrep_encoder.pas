@@ -433,7 +433,7 @@ var
 begin
   N := Length(Data);
   Matches := nil;
-  if Opt.Method in [1, 2] then
+  if Opt.Method in [0, 1, 2] then
   begin
     { dedup-only modes: the body is stored, not LZ-parsed }
     Records := nil;

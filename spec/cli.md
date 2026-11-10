@@ -29,6 +29,8 @@ scripts, but the default and only writer is v6.
 
 ## Methods
 
+- `-m0`: a stored v6 stream (no LZ, no dedup); with `-dup` it becomes
+  dedup + store.
 - `-m1`: fixed-window content-defined deduplication (48-byte rolling hash,
   8 KiB average); the unique chunks are stored, not LZ-parsed.
 - `-m2`: order-1 content-defined deduplication (the zpaq CDC parameters:
@@ -45,9 +47,6 @@ the unique body; `-m3`..`-m5` write the LZ stream. `-dup` is a pre-pass that
 deduplicates before any `-m*`; with `-m3`..`-m5` it combines CDC and LZ. `-d`
 restores the original automatically, and `-i` prints `original_size` (the
 deduplicated body) and `restored_size` (the input).
-
-`-m0` (in-memory) is phase 2; until then it exits 2 with a clear "not
-implemented yet" message.
 
 ## Threads
 

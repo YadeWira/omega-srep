@@ -46,6 +46,7 @@ begin
   WriteLn('  --seed=N deterministic VHASH seed');
   WriteLn('  -hash-   no per-block digest');
   WriteLn('  -dup     deduplicate before encoding');
+  WriteLn('  input -  stdin, output -  stdout');
 end;
 
 function ParseNumber(const S: string; out V: QWord): Boolean;
@@ -120,30 +121,85 @@ begin
   Result := InputName + '.osr';
 end;
 
+procedure ReadStdinToStream(Stream: TStream);
+var
+  H: THandleStream;
+  Buf: array[0..65535] of Byte;
+  N: LongInt;
+begin
+  H := THandleStream.Create(0);
+  try
+    repeat
+      N := H.Read(Buf, SizeOf(Buf));
+      if N > 0 then
+        Stream.WriteBuffer(Buf, N);
+    until N <= 0;
+  finally
+    H.Free;
+  end;
+end;
+
+function NewStdinStream: TMemoryStream;
+begin
+  Result := TMemoryStream.Create;
+  try
+    ReadStdinToStream(Result);
+    Result.Position := 0;
+  except
+    Result.Free;
+    raise;
+  end;
+end;
+
+function OpenArchiveReader(const Name: string;
+  out StdinStream: TMemoryStream): TArchiveReader;
+begin
+  StdinStream := nil;
+  if Name = '-' then
+  begin
+    StdinStream := NewStdinStream;
+    try
+      Result := TArchiveReader.CreateFromStream(StdinStream, False);
+    except
+      StdinStream.Free;
+      StdinStream := nil;
+      raise;
+    end;
+  end
+  else
+    Result := TArchiveReader.Create(Name);
+end;
+
+function CreateOutputStream(const Name: string): TStream;
+begin
+  if Name = '-' then
+    Result := THandleStream.Create(1)
+  else
+    Result := TFileStream.Create(Name, fmCreate);
+end;
+
 procedure RunDecode;
 var
   Reader: TArchiveReader;
   OutStream: TStream;
   OutName: string;
+  StdinStream: TMemoryStream;
 begin
   if Length(PosArgs) < 1 then
     CmdError('-d needs an archive');
   if Length(PosArgs) > 2 then
     CmdError('-d accepts one archive and an optional output');
-  if PosArgs[0] = '-' then
-    CmdError('stdin input is not implemented yet');
 
   if Length(PosArgs) = 2 then
     OutName := PosArgs[1]
+  else if PosArgs[0] = '-' then
+    OutName := '-'
   else
     OutName := DefaultOutputName(PosArgs[0]);
 
-  Reader := TArchiveReader.Create(PosArgs[0]);
+  Reader := OpenArchiveReader(PosArgs[0], StdinStream);
   try
-    if OutName = '-' then
-      OutStream := THandleStream.Create(1)
-    else
-      OutStream := TFileStream.Create(OutName, fmCreate);
+    OutStream := CreateOutputStream(OutName);
     try
       Reader.DecodeToStream(OutStream);
     finally
@@ -151,22 +207,23 @@ begin
     end;
   finally
     Reader.Free;
+    StdinStream.Free;
   end;
 end;
 
 procedure RunVerify;
 var
   Reader: TArchiveReader;
+  StdinStream: TMemoryStream;
 begin
   if Length(PosArgs) <> 1 then
     CmdError('--verify needs exactly one archive');
-  if PosArgs[0] = '-' then
-    CmdError('stdin input is not implemented yet');
-  Reader := TArchiveReader.Create(PosArgs[0]);
+  Reader := OpenArchiveReader(PosArgs[0], StdinStream);
   try
     Reader.Verify;
   finally
     Reader.Free;
+    StdinStream.Free;
   end;
 end;
 
@@ -174,16 +231,16 @@ procedure RunInfo;
 var
   Reader: TArchiveReader;
   Info: TArchiveInfo;
+  StdinStream: TMemoryStream;
 begin
   if Length(PosArgs) <> 1 then
     CmdError('-i needs exactly one archive');
-  if PosArgs[0] = '-' then
-    CmdError('stdin input is not implemented yet');
-  Reader := TArchiveReader.Create(PosArgs[0]);
+  Reader := OpenArchiveReader(PosArgs[0], StdinStream);
   try
     Reader.ReadInfo(Info);
   finally
     Reader.Free;
+    StdinStream.Free;
   end;
   WriteLn('OSREP v6');
   WriteLn('blocks=', Info.BlockCount);
@@ -211,39 +268,46 @@ var
   OutName: string;
   Data: TBytes;
   Dedup: TDedupResult;
+
+  procedure ReadAllInput;
+  var
+    S: TStream;
+  begin
+    if PosArgs[0] = '-' then
+      S := NewStdinStream
+    else
+      S := TFileStream.Create(PosArgs[0], fmOpenRead or fmShareDenyWrite);
+    try
+      SetLength(Data, SizeInt(S.Size));
+      if Length(Data) > 0 then
+        S.ReadBuffer(Data[0], Length(Data));
+    finally
+      S.Free;
+    end;
+  end;
+
 begin
   if Length(PosArgs) < 1 then
     CmdError('missing input file');
   if Length(PosArgs) > 2 then
     CmdError('compress accepts one input and an optional output');
-  if PosArgs[0] = '-' then
-    CmdError('stdin input is not implemented yet');
-
   if Length(PosArgs) = 2 then
     OutName := PosArgs[1]
+  else if PosArgs[0] = '-' then
+    OutName := '-'
   else
     OutName := DefaultArchiveName(PosArgs[0]);
 
   if DupMode then
   begin
-    InStream := TFileStream.Create(PosArgs[0], fmOpenRead or fmShareDenyWrite);
-    try
-      SetLength(Data, SizeInt(InStream.Size));
-      if Length(Data) > 0 then
-        InStream.ReadBuffer(Data[0], Length(Data));
-    finally
-      InStream.Free;
-    end;
+    ReadAllInput;
     BuildDedup(Data, DedupChunkerFor(EncOptions.Method), Dedup);
     BodyStream := TMemoryStream.Create;
     try
       if Length(Dedup.Body) > 0 then
         BodyStream.WriteBuffer(Dedup.Body[0], Length(Dedup.Body));
       BodyStream.Position := 0;
-      if OutName = '-' then
-        OutStream := THandleStream.Create(1)
-      else
-        OutStream := TFileStream.Create(OutName, fmCreate);
+      OutStream := CreateOutputStream(OutName);
       try
         EncodeToStream(BodyStream, OutStream, EncOptions, Dedup.Meta);
       finally
@@ -255,12 +319,12 @@ begin
     Exit;
   end;
 
-  InStream := TFileStream.Create(PosArgs[0], fmOpenRead or fmShareDenyWrite);
+  if PosArgs[0] = '-' then
+    InStream := NewStdinStream
+  else
+    InStream := TFileStream.Create(PosArgs[0], fmOpenRead or fmShareDenyWrite);
   try
-    if OutName = '-' then
-      OutStream := THandleStream.Create(1)
-    else
-      OutStream := TFileStream.Create(OutName, fmCreate);
+    OutStream := CreateOutputStream(OutName);
     try
       EncodeToStream(InStream, OutStream, EncOptions);
     finally
@@ -319,7 +383,7 @@ begin
           CmdError('only one mode can be selected');
         Mode := 'info';
       end
-      else if (A = '-m1') or (A = '-m2') or (A = '-m3') or
+      else if (A = '-m0') or (A = '-m1') or (A = '-m2') or (A = '-m3') or
               (A = '-m4') or (A = '-m5') then
       begin
         if Mode <> '' then
@@ -330,8 +394,6 @@ begin
           DupMode := True;
         EncOptionsUsed := True;
       end
-      else if A = '-m0' then
-        CmdError('method not implemented yet: ' + A)
       else if Copy(A, 1, 2) = '-t' then
       begin
         if not ParseNumber(Copy(A, 3, MaxInt), N) then
