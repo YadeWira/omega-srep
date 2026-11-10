@@ -34,14 +34,14 @@ for m in tests/mutations/[0-9]*.py; do
         broken=$((broken + 1)); rm -rf "$T"; continue
     fi
     mkdir -p "$T/u" "$T/pascal/bin"
-    if ! fpc -Mobjfpc -O2 -Xs -vw -Fupascal/src -FU"$T/u" \
-             -o"$T/pascal/bin/osrep-linux-x86_64" "$T/pascal/osrep.lpr" \
+    if ! ( cd "$T" && fpc -Mobjfpc -O2 -Xs -vw -Fupascal/src -FU"$T/u" \
+             -opascal/bin/osrep-linux-x86_64 pascal/osrep.lpr ) \
              > "$LOGS/$name/build.log" 2>&1; then
         printf '   BROKEN: the mutated tree does not build\n'
         broken=$((broken + 1)); rm -rf "$T"; continue
     fi
-    if ! fpc -Mobjfpc -O2 -Xs -vw -Fupascal/src -FU"$T/u" \
-             -o"$T/pascal/bin/hashtool" "$T/pascal/hashtool.lpr" \
+    if ! ( cd "$T" && fpc -Mobjfpc -O2 -Xs -vw -Fupascal/src -FU"$T/u" \
+             -opascal/bin/hashtool pascal/hashtool.lpr ) \
              > "$LOGS/$name/build-hashtool.log" 2>&1; then
         printf '   BROKEN: hashtool does not build\n'
         broken=$((broken + 1)); rm -rf "$T"; continue
