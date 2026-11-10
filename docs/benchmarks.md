@@ -85,3 +85,20 @@ python3 scripts/bench_vs_srep.py \
    de tiempo.
 3. **`-dup` de escritura** y dedup por contenido (la otra mitad de la meta).
 4. Repetir esta tabla en cada release; los números viejos no se borran.
+
+## Dedup (`-dup`)
+
+Entrada sintética `twice64.bin`: `real64.bin` (64 MiB) concatenado consigo
+mismo, 128 MiB. El cuerpo deduplicado de OSREP es 67.145.683 bytes (casi una
+copia); el archivo final es el cuerpo comprimido con `-m3`.
+
+| herramienta | ajustes | archivo | tiempo |
+|---|---|---:|---:|
+| OSREP | `-dup -m3` (auto) | 39.558.390 | 2,46 s |
+| Omega 3.0.0 | `-dup -m3` | 58.397.529 | 1,03 s |
+| OSREP | `-dup -m3`, `zeros.bin` 256 KiB | 182 | 0,01 s |
+| Omega 3.0.0 | `-dup -m3`, `zeros.bin` 256 KiB | 1.449 | 0,01 s |
+
+OSREP gana tamaño en los dos casos y pierde tiempo en el grande; el CDC y la
+tabla de chunks son Pascal todavía. Falta el corpus multi-versión real para
+comparar con zpaq-std/zpaqfranz, que es el siguiente paso de dedup.

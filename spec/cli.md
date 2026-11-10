@@ -35,8 +35,15 @@ scripts, but the default and only writer is v6.
   256). The v6 match stream is free, so the three methods write the same
   format; only the parse changes.
 
-`-m0` (in-memory), `-m1`/`-m2` (CDC) and `-dup` are phase 2; until then they
-exit 2 with a clear "not implemented yet" message.
+`-dup` deduplicates the input before encoding: an order-1 content-defined
+chunker (the zpaq parameters: 4 KiB minimum, ~64 KiB average, 520 KiB
+maximum), exact duplicate chunks removed, and the `DUPR` meta records the
+chunk list. The body is compressed with the selected `-m*`; `-d` restores the
+original automatically. `-i` prints both `original_size` (the deduplicated
+body) and `restored_size` (the input).
+
+`-m0` (in-memory) and `-m1`/`-m2` (CDC) are phase 2; until then they exit 2
+with a clear "not implemented yet" message.
 
 ## Threads
 

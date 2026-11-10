@@ -63,7 +63,9 @@ reemplace) y se repiten en cada release.
    `docs/benchmarks.md`.
 2. **Cerrar el encoder**: métodos y opciones que falten, con la meta de
    igualar o superar el ratio de SREP sin perder más tiempo del aceptable.
-3. **`-dup` de escritura** y el motor de dedup por contenido.
+3. **Dedup por contenido**: comparar el CDC/meta de `-dup` con zpaq-std y
+   zpaqfranz en un corpus multi-versión, y decidir el fragmentador del
+   motor que usará zpaq.
 4. **Benchmarks de dedup** contra zpaq-std/zpaqfranz (mismo corpus
    multi-versión; tamaño y tiempos).
 5. **C/asm y memoria**.
@@ -74,7 +76,8 @@ reemplace) y se repiten en cada release.
 
 - Lector v6 y encoder `-m3`: funcionando; tests `v6_read` y `v6_encode`.
 - `libosrep` L0/L1 parcial y plugin de 7-Zip: congelados, no se amplían.
-- `-dup` de escritura: no implementado.
+- `-dup` de escritura: implementado (CDC orden-1, meta `DUPR`); el lector
+  ya lo restauraba.
 - `-m4`/`-m5`: implementados (lazy y cadena más profunda); el ratio y el
   tiempo están en `docs/benchmarks.md`.
 - Benchmarks contra SREP/Omega SREP: línea base hecha en `docs/benchmarks.md`.

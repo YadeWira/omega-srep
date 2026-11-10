@@ -86,7 +86,7 @@ typedef struct osrep_options {
     uint32_t struct_size;   /* sizeof(osrep_options), o 0 */
     int32_t  method;        /* 0 = default, 3/4/5 = -m3/-m4/-m5 */
     int32_t  format;        /* 0 = default, 6 = v6 */
-    int32_t  dedup;         /* 0; 1 aún no se escribe (E_UNSUPPORTED) */
+    int32_t  dedup;         /* 0 = off, 1 = -dup */
     int32_t  threads;       /* aceptado; el encoder MVP es de un hilo */
     uint64_t seed;          /* 0 = default determinista; si no, esa semilla */
     uint64_t block_size;    /* 0 = 8 MiB */
@@ -335,8 +335,8 @@ miembros MIT de la familia.
 
 **Aceptación (cumplida):** un programa C comprime y descomprime el corpus,
 byte a byte; el `.osr` es idéntico al del CLI con las mismas opciones
-(inclusive `--seed=7`); `test_lib.c` pasa 64 checks y `tests/lib.sh` pasa
-94 con el corpus; 4 hilos concurrentes pasan; los fixtures v6 y `-dup` se
+(inclusive `--seed=7`); `test_lib.c` pasa 70 checks y `tests/lib.sh` pasa
+100 con el corpus; 4 hilos concurrentes pasan; los fixtures v6 y `-dup` se
 leen desde la librería; `tests/lib_7z.sh` prueba `-m0=OSREP` y
 `-m0=OSREP -m1=LZMA2` en 7-Zip 25.01 y 7-Zip-zstd 26.02 (también
 `-m1=zstd`) con todos los archivos de vuelta. Compilar:

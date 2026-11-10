@@ -256,9 +256,11 @@ Resultado actual: `v6_read: PASS`.
 La spec `14cfd76`/`931effa` cerró el digest VHASH-128, el orden de
 `running_skip`, la identidad global y las obligaciones del encoder. Quedan:
 
-1. **`-dup` de escritura.** El lector ya restaura `-dup`; el encoder todavía
-   rechaza `-dup` con exit 2. La spec §2.10.8 describe el cuerpo deduplicado y
-   la meta, pero no hace falta para el MVP actual.
+1. **`-dup` de escritura.** Resuelto: `osrep_dedup.pas` hace CDC orden-1
+   (4 KiB mínimo, ~64 KiB promedio, 520 KiB máximo), deduplica chunks
+   exactos y escribe el meta `DUPR`; el encoder comprime el cuerpo con
+   `flags.bit0` y el lector lo restaura. Queda comparar el CDC con
+   zpaq-std/zpaqfranz.
 2. **Otros `hash_id`.** La tabla declara MD5 (0), SHA-1 (2), SHA-512 (3) y
    SipHash-2-4 (5), pero el lector solo verifica VHASH-128 (4) y el caso sin
    digest. Con esos ids `-d` da un error claro de “digest hash id N is not
@@ -302,7 +304,7 @@ La librería no reimplementa el formato: envuelve el mismo `EncodeToStream` y
 - `src/lib/osrep_lib.pas`: `library` FPC con `exports`, `IsMultiThread` y
   `threadvar` para el error; ninguna excepción cruza la ABI.
 - `src/lib/build.sh` y `src/lib/test_lib.c`; `tests/lib.sh` compila la
-  librería, corre 64 checks propios, el corpus, 4 hilos, y compara el `.osr`
+  librería, corre 70 checks propios, el corpus, 4 hilos, y compara el `.osr`
   con el del CLI (default y `--seed=7`), además de leer los fixtures v6 y
   `text-dup-m3.osr` desde la librería.
 - `src/lib/osrep7z.c`: el plugin de 7-Zip en el mismo `.so`, método `OSREP`
