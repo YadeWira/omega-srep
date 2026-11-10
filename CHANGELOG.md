@@ -107,6 +107,12 @@ them, and the accelerated scan has a real-data gate.
 
 ### Changed
 
+- **v6 does not depend on the CPU for the CDC boundary hash.** v4/v5 pick
+  between the hardware CRC-32C and a polynomial hash from `-ia`/SSE4.2, and the
+  two write different archives for the same input; that is fine for the old
+  formats but not for one that freezes. Writing v6 now always takes the
+  polynomial route (`CdcForcePoly`), so `-m1`/`-m2` give the same bytes on
+  x86, x86-64, ARM64 and Windows. v4/v5 keep the old behaviour byte for byte.
 - **The harness inputs are deterministic.** `tests/_paths.sh` gained
   `ensure_corpus` (runs `tests/gen_corpus.sh` instead of substituting
   `/dev/urandom` or `/dev/zero`) and `det_random` (fixed-seed bytes), used by

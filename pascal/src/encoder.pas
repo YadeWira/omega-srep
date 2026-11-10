@@ -319,6 +319,8 @@ begin
   futureLz := Cont = ecFutureLz;
   v5 := Cont = ecV5;
   v6 := Cont = ecV6;
+  { v6: una sola ruta de CDC en todas las CPUs (format-spec-v6 §2.4) }
+  if v6 then CdcForcePoly;
 
   { los defaults de las opciones (srep.cpp:448-457), en el orden del C++ }
   minMatch := Opts.MinMatch;

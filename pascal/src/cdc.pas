@@ -38,6 +38,11 @@ procedure CompressCdc(Zpaq: Boolean; L, MinMatchIn, BaseLen, BlockStart: QWord;
   entre corridas); el oraculo C++ ahora usa ceros, igual que el Rust y esto. }
 procedure CdcHasherInit(out K: TVmac);
 
+{ v6 fija una sola ruta de frontera en el formato (format-spec-v6 §2.4): el
+  encoder la llama antes de comprimir para que el archivo no dependa de si la
+  CPU tiene SSE4.2. En v4/v5 la eleccion sigue siendo la de siempre. }
+procedure CdcForcePoly;
+
 implementation
 
 uses Rolling, CpuFeat, FixedCompress, OsText;
@@ -69,6 +74,12 @@ begin
     CrcRouteKnown := True;
   end;
   Result := CrcRoute;
+end;
+
+procedure CdcForcePoly;
+begin
+  CrcRoute := False;
+  CrcRouteKnown := True;
 end;
 
 procedure MarkPush(var M: TMarks; V: QWord);

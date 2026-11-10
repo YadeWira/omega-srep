@@ -112,7 +112,10 @@ usan el CRC32C por hardware y sin SSE4.2 caen en un hash polinomial
 (`cdc.pas:68`, `is_x86_feature_detected!("sse4.2")` en el Rust, y lo mismo el
 C++). **Las dos rutas escriben archivos distintos para el mismo input y las
 mismas opciones.** En la práctica: un x86 sin SSE4.2 y un ARM64 dan otro
-archivo que un x86 con SSE4.2, con los mismos bytes de entrada.
+archivo que un x86 con SSE4.2, con los mismos bytes de entrada. **Implementado
+el 2026-11-10:** al escribir v6, el encoder llama a `CdcForcePoly` y toma
+siempre la polinomial; v4/v5 conservan la elección por CPU para no cambiar sus
+archivos.
 
 Eso es incompatible con "mismo input, mismo archivo" entre las plataformas de
 §1, y no se puede parchear sin cambiar el formato. v6 lo fija: **una sola
