@@ -106,6 +106,13 @@ anotado como hueco en §7.
   literales` tal como están en disco. `--verify` no descomprime.
 - `literal_bytes == origsize` y `statsize != 0` ⇒ corrupto.
 - `statsize == 0` ⇒ `literal_bytes == origsize` (bloque guardado).
+- Multi-bloque: `block_start` es la suma de los `origsize` anteriores. El
+  `running_skip` se reinicia en cada bloque, pero **el `skip` se suma antes de
+  calcular `source`** (`source = block_start + Σ skip`), que es lo que hacen
+  los fixtures. Los matches se juntan en una cola global, se ordenan por
+  `destination` y los literales de cada bloque llenan solo los huecos de su
+  rango. Un match puede empezar en un bloque y seguir en el siguiente; el
+  fixture `text-b1mb-m3.osr` (4 bloques) lo verifica.
 - Meta `DUPR` solo con `flags.bit0`: `meta_offset + meta_size` termina en el
   footer, magic `DUPR`, versión 1 y `meta_crc` sobre todo el meta menos sus
   últimos 4 bytes. El contenido de la tabla de chunks no se interpreta.
@@ -139,8 +146,9 @@ hash_size=16
 
 1. Compila con FPC 3.2.2.
 2. Genera las entradas con `tests/golden/inputs.sh`.
-3. Decodifica los 7 fixtures no-dup y compara byte a byte con la entrada.
-4. `--verify` sobre los 8 (incluye `text-dup-m3.osr` y su `meta_crc`).
+3. Decodifica los 8 fixtures no-dup (incluye `text-b1mb-m3`, 4 bloques) y
+   compara byte a byte con la entrada.
+4. `--verify` sobre los 9 (incluye `text-dup-m3.osr` y su `meta_crc`).
 5. Corrompe un byte de un bloque: `--verify` y `-d` deben dar exit 4.
 6. Corrompe un byte del meta: exit 4.
 7. Fija la salida de `-i` para `text-m3.osr`.
@@ -151,45 +159,61 @@ Resultado actual: `v6_read: PASS`.
 
 ## 7. Huecos de `spec/` (para el Equipo A)
 
-1. **Records Future-LZ vs LZ normal.** `spec/payload.md` §3 describe LZ
-   normal; los fixtures v6 de 3.0.0 son Future-LZ (source acumulado, records
-   ordenados por source, decoder ordena por destination y rellena huecos con
-   literales). Hay que corregir §3 o declarar explícitamente que v6 usa
-   Future-LZ. Sin esto, un lector escrito desde la spec no lee los fixtures.
-2. **Tabla de hashes.** No está documentado qué es `hash_id`, qué tamaños y
-   seeds corresponden, ni qué algoritmo es `hash_id=4` (16 bytes de digest,
-   32 de seed). Los fixtures solo permiten fijar ese caso. Tampoco está claro
-   si el digest cubre el bloque reconstruido (todo apunta a que sí: `text-m3`,
-   `text-m4` y `text-m5` tienen el mismo digest y reconstruyen el mismo
-   `text.bin`).
-3. **Digest no verificado.** El lector no puede verificar el digest de bloque
-   porque falta el algoritmo/derivación de clave. `--verify` sí valida todo lo
-   que pide la spec (header, footer, meta y `block_crc`). Falta que la spec
-   fije el hash para completar la verificación de reconstrucción.
-4. **Parámetros del CRC-32C.** La spec no dice init/xorout. Los fixtures usan
-   init 0 y xorout 0. Hay que escribirlo.
-5. **Tamaño del footer.** `spec/format-v6.md` §2.3 dice "footer (32 bytes)"
-   pero lista 7 campos que suman 36 y `footer_crc` cubre "los 32 bytes
-   anteriores". Los fixtures usan 36. Corregir el texto.
-6. **Layout del meta `DUPR`.** `spec/payload.md` remite a
-   `docs/format-spec.md` §3.1, que no está en esta rama. Solo se implementó
-   lo necesario para `--verify` (magic, versión y CRC); la tabla de chunks no
-   se valida ni se usa.
-7. **`-i`.** La spec no fija formato. Se eligió el key=value de §5 y el test
-   lo congela; si la golden nueva quiere otro, hay que cambiarlo en los dos
-   lados.
-8. **Bloques múltiples.** Los fixtures tienen un solo bloque. El lector
-   soporta `block_count > 1` con sources locales al bloque, pero no hay
-   fixture que lo pruebe. Falta un caso multi-bloque en `tests/fixtures/v6/`.
-9. **`hash_size = 0`.** Se acepta `hash_id=0/hash_size=0` como "sin digest"
+La spec del commit `6571fe5` cerró los huecos de CRC, footer, Future-LZ,
+tabla de hashes y meta `DUPR`. Quedan estos:
+
+1. **VMAC: falta el nonce/variante exacta.** `spec/format-v6.md` §2.6 fija
+   `hash_id=4` = VMAC, digest 16, seed 32 y "la clave es el seed", pero no
+   dice el nonce ni la variante. Con VMAC estándar (referencia pública
+   fastcrypto) y `key=seed`:
+   - VMAC-128, nonce cero, sobre `text.bin` → `ce6ea86669296bb64d7be2310d4c74cc`;
+   - VMAC-256, nonce cero → `b1f50fa50803f99d81047942226696ce`;
+   - el fixture espera `94303bebcecb2d284461e5972eebbaf0`.
+   Probé también key/nonce = mitades del seed (16+16, 8+16), todos los
+   offsets de 4 bytes, el índice/`block_start`/`origsize`/`literal_bytes`/
+   `statsize` del bloque como nonce, y variantes de `VMAC_NHBYTES`/endian.
+   Ninguna coincide. La implementación de VMAC está validada contra los
+   vectores del draft `draft-krovetz-vmac-01` (key `abcdefghijklmnop`, nonce
+   `bcdefghi`), así que el problema no es el algoritmo estándar: falta cómo
+   deriva SREP la clave/nonce (o si usa una variante propia). **Sin ese dato
+   no se puede verificar el digest sin rechazar los fixtures válidos.** Con
+   `hash_id=4` el lector hoy no verifica el digest; `--verify` sí valida el
+   `block_crc`, que cubre el digest tal como está en disco.
+
+2. **`running_skip`: el pseudocódigo de §2.7 está invertido respecto de los
+   fixtures.** La spec dice `source = block_start + running_skip` y después
+   `running_skip += skip`; los fixtures requieren **sumar el `skip` antes**:
+   `running_skip += skip; source = block_start + running_skip`. Con
+   `text-m3` el primer record `(512, 4193280, 69)` da source 512/dest 581 (no
+   0/69); con `text-b1mb` el primer bloque solo cuadra así. Corregir el
+   pseudocódigo.
+
+3. **`sum(length) + literal_bytes = origsize` no es por bloque.** En
+   `text-b1mb`, el bloque 0 tiene `origsize=1048576`, `literal_bytes=1024` y
+   `sum(length)=1083904`; la identidad vale para el archivo completo, porque
+   un match puede empezar en el borde y seguir en el bloque siguiente. La
+   spec lo dice como si fuera por bloque; aclarar que es global.
+
+4. **`-dup` no reconstruye la entrada original.** El lector verifica el CRC
+   del meta y decodifica el cuerpo deduplicado (que es lo que cubre el
+   digest), pero no aplica la tabla de chunks para restaurar la entrada. La
+   spec §2.8 ya describe la tabla; falta implementar el post-paso y su test.
+
+5. **`-i`.** La spec ya fija el key=value de §5, así que este punto está
+   cerrado; el test lo congela.
+
+6. **`hash_size = 0`.** Se acepta `hash_id=0/hash_size=0` como "sin digest"
    (seed vacía), pero no hay fixture ni texto normativo que lo confirme.
-10. **Multiplataforma.** El código es Pascal puro; no se probó i386, ARM64 ni
-    Windows en esta fase. No hay código nativo todavía.
+
+7. **Multiplataforma.** El código es Pascal puro; no se probó i386, ARM64 ni
+   Windows en esta fase. No hay código nativo todavía.
 
 ## 8. Lo que no se hizo
 
-- No hay verificación del digest por bloque (ver §7.3).
-- No se interpreta la tabla de chunks del meta `DUPR`.
+- No hay verificación del digest por bloque: falta el nonce/variante de VMAC
+  (ver §7.1). `--verify` valida el `block_crc` que cubre el digest en disco.
+- No se interpreta la tabla de chunks del meta `DUPR` ni se aplica el
+  post-paso de `-dup`; `-d` de un `-dup` entrega el cuerpo deduplicado.
 - No se soporta stdin (`-` como entrada); sí stdout como salida.
 - No se implementan opciones de encoder (`-m*`, `-l`, `-c`, `-b`, `-hash=`,
   etc.); se rechazan como opciones desconocidas con exit 2.
