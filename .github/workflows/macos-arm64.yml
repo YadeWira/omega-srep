@@ -12,10 +12,15 @@ name: macOS arm64
 #
 on:
   workflow_dispatch:
+    inputs:
+      runner:
+        description: macOS runner label (arm64: macos-14, macos-15, macos-latest)
+        default: macos-14
+        type: string
 
 jobs:
   build:
-    runs-on: macos-14
+    runs-on: ${{ inputs.runner }}
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
