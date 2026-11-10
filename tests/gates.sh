@@ -2,8 +2,9 @@
 # Gate runner.
 #
 #   tests/gates.sh core   the suite that must pass without the oracles: the
-#                         golden cases (archives, CLI, hashes), the v6 suite,
-#                         its frame self-test and the harness self-test.
+#                         golden cases (archives, CLI, hashes), the v6 suite
+#                         and its frame self-test. harness_selftest builds the
+#                         Rust harness, so it is differential.
 #   tests/gates.sh full   core plus the differential suites, which need the
 #                         C++ and the Rust oracles (builds them if missing).
 #
@@ -54,7 +55,6 @@ printf '== core (no oracles)\n'
 run golden       bash tests/golden/check.sh
 run v6           bash tests/v6_conformance.sh
 run v6-frame     bash tests/v6_frame_selftest.sh
-run selftest     bash tests/harness_selftest.sh
 
 if [ "$MODE" = full ]; then
     printf '== differential (needs C++ and Rust)\n'
@@ -70,6 +70,7 @@ if [ "$MODE" = full ]; then
     run duplen       bash tests/dup_length_regression.sh
     run tie          bash tests/cxx_sort_tie_divergence.sh
     run realworld    bash tests/real_world_scan_regression.sh
+    run selftest     bash tests/harness_selftest.sh
 fi
 
 if [ "$CLEAN_LOGS" = 1 ]; then
