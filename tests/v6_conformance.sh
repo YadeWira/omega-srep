@@ -16,6 +16,7 @@ fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 
 B="${OSREP_PORT_BIN:-pascal/bin/osrep-linux-x86_64}"
 [ -x "$B" ] || { say "sin $B -- salteando"; exit 0; }
+ensure_corpus || fail "no hay tests/corpus y no se pudo generar con tests/gen_corpus.sh"
 warn_shared_wine "$B"
 
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
