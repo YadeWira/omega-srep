@@ -99,7 +99,7 @@ typedef struct osrep_options {
 } osrep_options;
 
 void OSREP_CALL osrep_options_default(osrep_options *o);
-const char *OSREP_CALL osrep_version(void);       /* "OSREP 0.0.6" */
+const char *OSREP_CALL osrep_version(void);       /* "OSREP 0.0.7" */
 const char *OSREP_CALL osrep_last_error(void);    /* thread-local */
 
 int OSREP_CALL osrep_compress(const void *in, size_t in_size,
