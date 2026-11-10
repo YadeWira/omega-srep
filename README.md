@@ -10,7 +10,7 @@ it is licensed MIT, and its own format is **v6**: blocks with CRC-32C and a
 VHASH-128 digest, a footer that chains the block CRCs, and a CLI for
 preprocessing, decompression, verification and inspection.
 
-- **Status: phase 1b (0.0.2).** The v6 reader and the MVP `-m3` preprocessor are
+- **Status: 0.0.3 checkpoint (pre-release).** The v6 reader and writer are
   implemented in `src/pascal/`: container, CRC-32C, VHASH-128 block digest,
   `-d`, `--verify`, `-i`, `-dup` write/read/restore, dedup-only `-m1`
   (fixed-window CDC) and `-m2` (order-1 CDC), a hash-chain match finder with
@@ -18,10 +18,12 @@ preprocessing, decompression, verification and inspection.
   (`-tN`, automatic up to 8 threads) whose output is byte-identical to the
   single-thread one.
   The tests cover the ten compatibility fixtures in `tests/fixtures/v6/`, the
-  encoder round-trip/determinism, `-hash-`, and new golden archives in
-  `tests/fixtures/v6-new/`. Every 0.0.x release is a pre-release; 1.0.0 is
-  the first stable release. Implementation notes and the open limitations are
-  in `docs/implementation-notes.md`.
+  encoder round-trip/determinism, `-hash-`, `-dup`, the new golden archives in
+  `tests/fixtures/v6-new/`, and the library (73 checks, 103 with the corpus).
+  Every 0.0.x release is a pre-release; 1.0.0 is the first stable release.
+  Implementation notes and the open limitations are in
+  `docs/implementation-notes.md`; the 0.0.3 notes are in
+  `docs/release-0.0.3.md`.
 - **Format:** v6 only (`OSR6`). OSREP does **not** read or write the SREP
   v1-v5 formats, and there is no compatibility goal with upstream SREP.
 - **License:** MIT, from the first commit of this branch (`LICENSE`).

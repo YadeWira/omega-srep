@@ -93,5 +93,6 @@ output. This is the phase-1 contract; the new golden fixes it.
 ## Version
 
 `--version` prints `OSREP <version> (<date>)`. The OSREP line starts at
-`0.0.1`; phase 0 is `OSREP 0.0.1 (2026-11-10)`, phase 1 is `0.0.2` and the
-first stable release is `1.0.0`. Every 0.0.x release is a pre-release.
+`0.0.1`; phase 0 is `OSREP 0.0.1 (2026-11-10)`, the v6 MVP was `0.0.2`,
+`0.0.3` is the m1-m5/dup/threads checkpoint, and the first stable release is
+`1.0.0`. Every 0.0.x release is a pre-release.
