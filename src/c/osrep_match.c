@@ -33,6 +33,24 @@ static uint32_t hash4(const uint8_t *p) {
   return h;
 }
 
+static uint32_t hash8(const uint8_t *p) {
+  uint32_t h = hash4(p) ^ (hash4(p + 4) * UINT32_C(0x9E3779B1));
+  h ^= h >> 15;
+  return h;
+}
+
+static uint32_t hash16(const uint8_t *p) {
+  uint32_t h = hash8(p) ^ (hash8(p + 8) * UINT32_C(0x9E3779B1));
+  h ^= h >> 15;
+  return h;
+}
+
+static int hash_kind(const match_ctx *c) {
+  if (c->method >= 4 && c->min_match >= 16) return 16;
+  if (c->method >= 4 && c->min_match >= 8) return 8;
+  return 4;
+}
+
 static uint64_t load64(const void *p) {
   uint64_t v;
   __builtin_memcpy(&v, p, sizeof v);
@@ -51,9 +69,17 @@ static uint32_t match_len(const uint8_t *a, const uint8_t *b, size_t max) {
 
 static void insert_pos(match_ctx *c, size_t p) {
   uint32_t h;
-  if (p + 4 > c->n) return;
+  int kind = hash_kind(c);
+  if (kind == 16) {
+    if (p + 16 > c->n) return;
+  } else if (kind == 8) {
+    if (p + 8 > c->n) return;
+  } else if (p + 4 > c->n) {
+    return;
+  }
   if (c->stride > 1 && (p % c->stride) != 0) return;
-  h = hash4(c->data + p) & c->mask;
+  h = (kind == 16 ? hash16(c->data + p) :
+       kind == 8 ? hash8(c->data + p) : hash4(c->data + p)) & c->mask;
   c->prev[p] = c->head[h];
   c->head[h] = (int32_t)p;
 }
@@ -64,8 +90,9 @@ static void find_best(match_ctx *c, size_t p, uint32_t *blen, int32_t *bsrc) {
   int32_t cand;
   *blen = 0;
   *bsrc = -1;
-  if (max < 4) return;
-  h = hash4(c->data + p) & c->mask;
+  if (max < (size_t)hash_kind(c)) return;
+  h = (hash_kind(c) == 16 ? hash16(c->data + p) :
+       hash_kind(c) == 8 ? hash8(c->data + p) : hash4(c->data + p)) & c->mask;
   cand = c->head[h];
   d = c->depth;
   if (c->method >= 5) {

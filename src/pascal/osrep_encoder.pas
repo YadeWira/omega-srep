@@ -314,6 +314,24 @@ begin
   Result := I;
 end;
 
+function Hash8(const Data: TBytes; P: SizeInt): LongWord; inline;
+var
+  H: LongWord;
+begin
+  H := Hash4(Data, P) xor (Hash4(Data, P + 4) * LongWord($9E3779B1));
+  H := H xor (H shr 15);
+  Result := H;
+end;
+
+function Hash16(const Data: TBytes; P: SizeInt): LongWord; inline;
+var
+  H: LongWord;
+begin
+  H := Hash8(Data, P) xor (Hash8(Data, P + 8) * LongWord($9E3779B1));
+  H := H xor (H shr 15);
+  Result := H;
+end;
+
 procedure EncodeBlock(const Data: TBytes; const Opt: TEncoderOptions;
   out Records, Literals, Digest: TBytes);
 var
@@ -334,12 +352,30 @@ var
   procedure InsertPos(P: SizeInt); inline;
   var
     HH: LongWord;
+    UseHash16, UseHash8: Boolean;
   begin
-    if P + 4 > N then
+    UseHash16 := (Opt.Method >= 4) and (Opt.MinMatch >= 16);
+    UseHash8 := (Opt.Method >= 4) and (Opt.MinMatch >= 8) and not UseHash16;
+    if UseHash16 then
+    begin
+      if P + 16 > N then
+        Exit;
+    end
+    else if UseHash8 then
+    begin
+      if P + 8 > N then
+        Exit;
+    end
+    else if P + 4 > N then
       Exit;
     if (Opt.Stride > 1) and ((P mod SizeInt(Opt.Stride)) <> 0) then
       Exit;
-    HH := Hash4(Data, P) and HashMask;
+    if UseHash16 then
+      HH := Hash16(Data, P) and HashMask
+    else if UseHash8 then
+      HH := Hash8(Data, P) and HashMask
+    else
+      HH := Hash4(Data, P) and HashMask;
     Prev[P] := Head[HH];
     Head[HH] := P;
   end;
@@ -353,9 +389,24 @@ var
     BLen := 0;
     BSrc := -1;
     MaxLenC := N - P;
-    if MaxLenC < 4 then
-      Exit;
-    HH := Hash4(Data, P) and HashMask;
+    if (Opt.Method >= 4) and (Opt.MinMatch >= 16) then
+    begin
+      if MaxLenC < 16 then
+        Exit;
+      HH := Hash16(Data, P) and HashMask;
+    end
+    else if (Opt.Method >= 4) and (Opt.MinMatch >= 8) then
+    begin
+      if MaxLenC < 8 then
+        Exit;
+      HH := Hash8(Data, P) and HashMask;
+    end
+    else
+    begin
+      if MaxLenC < 4 then
+        Exit;
+      HH := Hash4(Data, P) and HashMask;
+    end;
     C := Head[HH];
     D := SizeInt(Opt.ChainDepth);
     if Opt.Method >= 5 then
