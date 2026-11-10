@@ -27,6 +27,14 @@ preprocessing, decompression, verification and inspection.
   orchestration; C for the 7-Zip plugin now, and C/asm hot paths (CRC,
   SIMD, hashes, prefetch/CPUID) in phase 2.
 
+## Priority
+
+The product comes first: finish the v6 preprocessor, the CLI, the encoder
+modes and the deduplication engine, and measure them against SREP 3.93a,
+Omega SREP 3.0.0 and the zpaq-std/zpaqfranz deduplicator. The library, the
+7-Zip plugin and the third-party integrations are frozen until that is done;
+see `docs/ROADMAP.md`.
+
 ## Library
 
 OSREP is **library-first**: the core is `libosrep`, a shared object with a C
