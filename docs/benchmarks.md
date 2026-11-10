@@ -187,3 +187,33 @@ tiempo; con `-c64` Omega gana ratio y tiempo. La diferencia no es solo el
 hash: `-c` controla cuántas posiciones entran a la cadena, y el `-c` de SREP
 no tiene exactamente la misma semántica. El default de OSREP (`-m5`, `-c1`)
 sigue siendo el mejor ratio de la tabla, a ~1,14 s.
+
+## Corpus real multi-versión vs zpaq
+
+Cuatro snapshots reales del árbol de `zpaq-std` (commits `9589ee8`,
+`7539f76`, `5548dea`, `3ca8cd6`), empaquetados en un `tar` de **125 MB**.
+El backend final es el mismo en todos los casos: `zpaq-std -m1` (sin contar
+el tiempo de `tar`).
+
+| flujo | archivo final | tiempo total |
+|---|---:|---:|
+| zpaq-std `-m1` sobre el tar | 15.293.540 | 0,74 s |
+| OSREP `-m1` (fixed-window) + zpaq `-m1` | **12.227.041** | 1,79 s |
+| OSREP `-m2` (order-1 CDC) + zpaq `-m1` | 15.300.762 | 2,06 s |
+| OSREP `-dup -m5` + zpaq `-m1` | 21.940.622 | 3,43 s |
+
+Lectura:
+
+- El **`-m1` fijo** de OSREP deja un cuerpo que zpaq comprime un **20 % más
+  chico** que su propio dedup+compresión, a ~2,4× el tiempo.
+- El **`-m2` orden-1** queda empatado con zpaq: no sorprende, es el mismo
+  tipo de CDC que usa zpaq.
+- Pasar `-dup -m5` antes de zpaq **empeora** el resultado: el LZ de OSREP
+  destruye la estructura que el dedup de zpaq aprovecha. Para un backend
+  zpaq conviene `-m1`, no `-dup -m5`.
+- Esto es una comparación con el **mismo backend**; no mezcla el compresor
+  de zpaq con el preprocesador de OSREP.
+
+`tests`/scripts de esta medición: snapshots con `git archive`, `tar`, y las
+dos pipelines; los números son reproducibles con los mismos commits y el
+mismo `zpaq-std v2.7.0`.
