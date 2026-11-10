@@ -234,9 +234,10 @@ va delante del coder real:
 7z x files.7z                                # necesita el plugin
 ```
 
-El plugin toma el bloque sólido como un stream, llama a `osrep_compress` y
-entrega el `.osr` al siguiente coder; al extraer, `osrep_decompress` hace el
-camino inverso. `GetMethodProperty` publica `OSREP` y `CreateEncoder`/
+El plugin toma el bloque sólido, llama a `osrep_compress` y entrega el
+`.osr` al siguiente coder; al extraer, `osrep_decompress` hace el camino
+inverso. L0 lee el bloque entero en memoria (el reader v6 necesita el
+footer); L1 lo hará por streaming, sin cambiar el método ni el formato. `GetMethodProperty` publica `OSREP` y `CreateEncoder`/
 `CreateDecoder` son el coder de un solo stream (`ICompressCoder`); acepta
 `-mmt` con `ICompressSetCoderMt` aunque el encoder MVP siga siendo de un
 hilo. Los errores se mapean a 7-Zip: datos dañados `S_FALSE` ("Data Error"),
@@ -245,14 +246,17 @@ versión nueva `E_NOTIMPL` ("Unsupported Method"), memoria `E_OUTOFMEMORY`.
 `tests/lib_7z.sh` compila la librería, copia `7z`/`7z.so` a un directorio
 privado, pone `libosrep.so` en `Codecs/` y comprueba, en **7-Zip 25.01** y
 en **7-Zip-zstd 26.02** (este último también con `-m1=zstd`): `7z i` lista
-`37F03 OSREP`; `-m0=OSREP` solo; `-m0=OSREP -m1=LZMA2`; todos los archivos
-vuelven byte a byte; un archivo dañado falla con "Data Error". También mide
-el tamaño contra LZMA2 solo: en el corpus de prueba, OSREP+LZMA2 quedó 830
-bytes más chico, y OSREP+zstd fue más grande que zstd solo (depende del
-corpus y del nivel; no es una promesa general). Es la primera prueba de la
-librería en un archivador real. zpaq-std queda para después, coordinado con
-su agente, porque ahí OSREP entra como fragmentador/dedup y no como filtro
-de bloque.
+`37F03 OSREP`; `-m0=OSREP` solo; `-m0=OSREP -m1=LZMA2`; `7z t`; un archivo
+con bloques sólidos de 1 MiB (`-ms=1m`) para probar varias llamadas al
+plugin; todos los archivos vuelven byte a byte; un archivo dañado falla con
+"Data Error". También mide el tamaño contra LZMA2 solo: en el corpus de
+prueba, OSREP+LZMA2 quedó 830 bytes más chico, y OSREP+zstd fue más grande
+que zstd solo (depende del corpus y del nivel; no es una promesa general).
+Con bloques de 1 MiB el archivo crece (cada bloque lleva su header/footer y
+su LZMA2), lo que confirma que el filtro se aplica por bloque. Es la primera
+prueba de la librería en un archivador real. zpaq-std queda para después,
+coordinado con su agente, porque ahí OSREP entra como fragmentador/dedup y
+no como filtro de bloque.
 
 ### 4.1 PJA (primero)
 

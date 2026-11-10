@@ -69,7 +69,17 @@ test_one() {
     fail "$label does not record the OSREP LZMA2 chain"
   "$SZ" x -bso0 -bsp0 -o"$OUT" "$TMP/$label-chain.7z" || fail "$label x chain"
   diff -r "$IN" "$OUT" || fail "$label OSREP+LZMA2 round-trip"
+  "$SZ" t -bso0 -bsp0 "$TMP/$label-chain.7z" || fail "$label t chain"
   echo "OSREP+LZMA2: $(wc -c < "$TMP/$label-chain.7z" | tr -d ' ') bytes, every file back"
+
+  OUT="$TMP/$label-out-blocks"
+  rm -rf "$OUT"; mkdir -p "$OUT"
+  (cd "$IN" && "$SZ" a -bso0 -bsp0 -ms=1m -m0=OSREP -m1=LZMA2 "$TMP/$label-blocks.7z" .) || \
+    fail "$label a -ms=1m -m0=OSREP -m1=LZMA2"
+  "$SZ" t -bso0 -bsp0 "$TMP/$label-blocks.7z" || fail "$label t blocks"
+  "$SZ" x -bso0 -bsp0 -o"$OUT" "$TMP/$label-blocks.7z" || fail "$label x blocks"
+  diff -r "$IN" "$OUT" || fail "$label OSREP+LZMA2 1 MiB blocks round-trip"
+  echo "OSREP+LZMA2, 1 MiB blocks: $(wc -c < "$TMP/$label-blocks.7z" | tr -d ' ') bytes, every file back"
 
   (cd "$IN" && "$SZ" a -bso0 -bsp0 -m0=LZMA2 "$TMP/$label-lzma2.7z" .) || \
     fail "$label a -m0=LZMA2"

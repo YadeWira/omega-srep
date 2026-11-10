@@ -305,11 +305,12 @@ La librería no reimplementa el formato: envuelve el mismo `EncodeToStream` y
 - `src/lib/osrep7z.c`: el plugin de 7-Zip en el mismo `.so`, método `OSREP`
   (ID experimental `03 7F 03`, un solo stream). `tests/lib_7z.sh` usa copias
   privadas de 7-Zip 25.01 y de 7-Zip-zstd 26.02, verifica que `7z i` liste
-  `37F03 OSREP`, y prueba `-m0=OSREP`, `-m0=OSREP -m1=LZMA2` y (en el fork)
-  `-m0=OSREP -m1=zstd` con todos los archivos de vuelta; un archivo dañado
-  falla con "Data Error". El plugin lee el bloque entero en memoria (el
-  reader v6 necesita el footer) y llama a
-  `osrep_compress`/`osrep_decompress`; zpaq-std no entra todavía.
+  `37F03 OSREP`, y prueba `-m0=OSREP`, `-m0=OSREP -m1=LZMA2`, `-ms=1m`
+  (varias llamadas al plugin), `7z t` y (en el fork) `-m0=OSREP -m1=zstd`
+  con todos los archivos de vuelta; un archivo dañado falla con "Data
+  Error". El plugin lee el bloque entero en memoria (el reader v6 necesita
+  el footer) y llama a `osrep_compress`/`osrep_decompress`; zpaq-std no
+  entra todavía.
 
 `seed = 0` en `osrep_options` significa el default determinista del CLI
 (`SeedFromNumber(0)`), no una semilla aleatoria. `max_output` se comprueba
