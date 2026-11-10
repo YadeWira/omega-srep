@@ -23,3 +23,10 @@ index-v5|-m3 --format=v5 -index=@W@/ix.ix @IN@ @OUT@
 index-v6|-m3 --format=v6 -index=@W@/ix.ix @IN@ @OUT@
 missing-input|-d @W@/no-such-file @OUT@
 output-dir|-d @A5@ @W@/no-such-dir/out
+decode-bad4|-d @BAD4@ @OUT@
+verify-bad5-hdr|--verify @BAD5H@
+verify-bad5-ftr|--verify @BAD5F@
+decode-trunc5|-d @TRUNC5@ @OUT@
+verify-trunc5|--verify @TRUNC5@
+decode-bad5-meta|-d @BAD5M@ @OUT@
+verify-bad5-meta|--verify @BAD5M@

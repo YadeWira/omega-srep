@@ -8,6 +8,7 @@ sin C++ ni Rust.
 bash tests/golden/make.sh      # graba manifest.tsv (necesita los oráculos)
 bash tests/golden/make-v6.sh   # graba manifest-v6.tsv (solo el port)
 bash tests/golden/make-cli.sh  # graba cli/ (stdout, stderr y exit)
+bash tests/golden/make-hash.sh # graba hash_manifest.tsv (C++ == Pascal)
 bash tests/golden/check.sh     # verifica todo (no necesita los oráculos)
 ```
 
@@ -52,9 +53,13 @@ y `tests/rust_cli_conformance.sh`.
 - **v4/v5** (`manifest.tsv`): 39 casos grabados contra los dos oráculos.
 - **v6** (`manifest-v6.tsv`): 24 casos grabados solo con el port, con
   `OSR6`, `--verify` y la ida y vuelta comprobadas antes de grabar.
-- **CLI** (`cli/`): 18 transcripciones (stdout, stderr y exit code) de
-  `--help`, `--version`, `-i`, `--verify` de archivos sanos y dañados, y los
-  errores de opciones y de entrada; las rutas se normalizan a `<W>`.
+- **CLI** (`cli/`): 25 transcripciones (stdout, stderr y exit code) de
+  `--help`, `--version`, `-i`, `--verify` y `-d` de archivos sanos y dañados
+  (cabecera, footer, bloque, meta y truncado), y los errores de opciones y de
+  entrada; las rutas se normalizan a `<W>`.
+- **Hashes** (`hash_manifest.tsv`): 38 vectores de md5, sha1, sha512, siphash,
+  vmac y AES, grabados con C++ y Pascal de acuerdo y replayed con el Pascal
+  solo.
 
 Es una semilla, no el reemplazo completo: las suites diferenciales siguen
 cubriendo mucho más, y la fase B de `docs/retire-oracles.md` amplía v1–v3 y

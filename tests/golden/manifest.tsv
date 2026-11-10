@@ -9,6 +9,8 @@
 99e75b758121adcbc007ee4c457fe6ec4450c48ec569cc69132e2fe8848a94f2	0	random.bin	-m1o --format=v4 -b1mb
 04033f7f50fdeb980e40f39849c8da62797de573f89911400ab8af43affc6ed7	0	mixed.bin	-m3o --format=v4 -b1mb
 9e24bc42f32127cf87c44925850340a6f2b5f4c1626723690e2da17778efb4f6	0	text.bin	-m3f --format=v4 -b1mb
+e4d6dc5365fa9a72db361c92ea541a1353fd9d85345769e79a298bb092c351c3	0	text.bin	-m0o --format=v4 -d16mb
+0086a7b73d5bb867298a839b91cdf170393d62d794e6bcb1d4634671d5e5dfde	0	text.bin	-m4o --format=v4 -b1mb
 95bc1d0f5ec7bbea4c9e77a69d1c8d0378af79434cec7f2adc97ef69528e5282	0	text.bin	-m4 --format=v4 -b1mb
 21795a2aea2658dfabc0fb365f892d8093ffa11cadbe046dfac47b278af24415	0	mixed.bin	-m4 --format=v4 -l256 -c128
 3a455fcee68231b9c216394e277f2e6baa01307a0f432556687a7561b23372e9	0	text.bin	-m5 --format=v4 -b1mb

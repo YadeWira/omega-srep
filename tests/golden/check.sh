@@ -68,6 +68,7 @@ replay() {
 replay tests/golden/manifest.tsv "v4/v5 (oracle-confirmed)"
 replay tests/golden/manifest-v6.tsv "v6 (no oracle)"
 [ -d tests/golden/cli ] && bash tests/golden/check-cli.sh
+[ -f tests/golden/hash_manifest.tsv ] && bash tests/golden/check-hash.sh
 
 [ "$failed" -eq 0 ] || fail "$failed of $((total + failed)) golden cases failed"
 say "golden: passed=$total mismatches=0"

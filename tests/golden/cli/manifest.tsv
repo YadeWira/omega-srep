@@ -16,3 +16,10 @@ index-v5	2
 index-v6	2
 missing-input	3
 output-dir	3
+decode-bad4	4
+verify-bad5-hdr	4
+verify-bad5-ftr	4
+decode-trunc5	4
+verify-trunc5	4
+decode-bad5-meta	4
+verify-bad5-meta	4

@@ -27,6 +27,25 @@ cp "$D/text.bin" "$W/in.bin"
 "$PORTABS" --format=v6 --seed=7 -m3 "$W/in.bin" "$W/a6.osr" >/dev/null 2>&1 || fail "cannot make v6"
 cp "$W/a5.osr" "$W/bad5.osr"
 printf '\377' | dd of="$W/bad5.osr" bs=1 seek=$(($(stat -c%s "$W/bad5.osr") / 2)) conv=notrunc status=none
+cp "$W/a4.osr" "$W/bad4.osr"
+printf '\377' | dd of="$W/bad4.osr" bs=1 seek=$(($(stat -c%s "$W/bad4.osr") / 2)) conv=notrunc status=none
+cp "$W/a5.osr" "$W/bad5hdr.osr"
+printf '\377' | dd of="$W/bad5hdr.osr" bs=1 seek=16 conv=notrunc status=none
+cp "$W/a5.osr" "$W/bad5ftr.osr"
+printf '\377' | dd of="$W/bad5ftr.osr" bs=1 seek=$(($(stat -c%s "$W/bad5ftr.osr") - 1)) conv=notrunc status=none
+head -c $(($(stat -c%s "$W/a5.osr") - 10)) "$W/a5.osr" > "$W/trunc5.osr"
+"$PORTABS" --format=v5 --seed=7 -m3 -dup "$W/in.bin" "$W/a5dup.osr" >/dev/null 2>&1 || fail "cannot make v5 -dup"
+cp "$W/a5dup.osr" "$W/bad5meta.osr"
+python3 - "$W/bad5meta.osr" <<'PY2'
+import struct, sys
+p = sys.argv[1]
+d = bytearray(open(p, 'rb').read())
+n = len(d); f = d[n - 32:]
+off = struct.unpack_from('<Q', f, 16)[0]; sz = struct.unpack_from('<I', f, 24)[0]
+assert sz > 16
+d[off + sz // 2] ^= 0xFF
+open(p, 'wb').write(d)
+PY2
 
 norm() { sed -e "s#$W#<W>#g" -e "s#$PORTABS#<BIN>#g" "$1"; }
 
@@ -49,6 +68,11 @@ while IFS= read -r line; do
         a=${a//@A5@/$W/a5.osr}
         a=${a//@A6@/$W/a6.osr}
         a=${a//@BAD5@/$W/bad5.osr}
+        a=${a//@BAD4@/$W/bad4.osr}
+        a=${a//@BAD5H@/$W/bad5hdr.osr}
+        a=${a//@BAD5F@/$W/bad5ftr.osr}
+        a=${a//@TRUNC5@/$W/trunc5.osr}
+        a=${a//@BAD5M@/$W/bad5meta.osr}
         a=${a//@OUT@/$W/out.bin}
         argv+=("$a")
     done
