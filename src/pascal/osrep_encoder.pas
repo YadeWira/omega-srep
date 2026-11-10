@@ -20,6 +20,7 @@ type
     MinMatch: LongWord;
     ChainDepth: LongWord;
     Stride: LongWord;
+    Method: LongInt;
     UseHash: Boolean;
     Threads: LongInt;
     Seed: TBytes;
@@ -134,6 +135,7 @@ begin
   Result.MinMatch := 4;
   Result.ChainDepth := 16;
   Result.Stride := 1;
+  Result.Method := 3;
   Result.UseHash := True;
   Result.Threads := 0; { auto: up to 8 }
   Result.Seed := SeedFromNumber(0);
@@ -307,15 +309,14 @@ end;
 procedure EncodeBlock(const Data: TBytes; const Opt: TEncoderOptions;
   out Records, Literals, Digest: TBytes);
 var
-  N, Pos, BestLen, BestSrc, MaxLen, HashBits, HeadSize: SizeInt;
+  N, Pos, BestLen, BestSrc, NextLen, NextSrc, HashBits, HeadSize: SizeInt;
   Head: array of LongInt;
   Prev: array of LongInt;
   HashMask: LongWord;
   Matches: TMatchArray;
   Sorted: TMatchArray;
-  I, K, Depth, L: SizeInt;
-  H, Needed: QWord;
-  Cand: LongInt;
+  I, K: SizeInt;
+  Needed: QWord;
   Buf: TByteBuffer;
   PrevSource: LongWord;
   M: TMatchRec;
@@ -332,6 +333,41 @@ var
     HH := Hash4(Data, P) and HashMask;
     Prev[P] := Head[HH];
     Head[HH] := P;
+  end;
+
+  procedure FindBest(P: SizeInt; out BLen, BSrc: SizeInt);
+  var
+    MaxLenC, D, L: SizeInt;
+    HH: LongWord;
+    C: LongInt;
+  begin
+    BLen := 0;
+    BSrc := -1;
+    MaxLenC := N - P;
+    if MaxLenC < 4 then
+      Exit;
+    HH := Hash4(Data, P) and HashMask;
+    C := Head[HH];
+    D := SizeInt(Opt.ChainDepth);
+    if Opt.Method >= 5 then
+    begin
+      D := D * 2;
+      if D > 256 then
+        D := 256;
+    end;
+    while (C >= 0) and (D > 0) do
+    begin
+      L := MatchLength(Data, SizeInt(C), P, MaxLenC);
+      if L > BLen then
+      begin
+        BLen := L;
+        BSrc := C;
+        if L = MaxLenC then
+          Break;
+      end;
+      C := Prev[C];
+      Dec(D);
+    end;
   end;
 
 begin
@@ -355,37 +391,31 @@ begin
     Pos := 0;
     while Pos < N do
     begin
-      BestLen := 0;
-      BestSrc := -1;
-      MaxLen := N - Pos;
-      if (MaxLen >= 4) then
-      begin
-        H := Hash4(Data, Pos) and HashMask;
-        Cand := Head[H];
-        Depth := SizeInt(Opt.ChainDepth);
-        while (Cand >= 0) and (Depth > 0) do
-        begin
-          L := MatchLength(Data, SizeInt(Cand), Pos, MaxLen);
-          if L > BestLen then
-          begin
-            BestLen := L;
-            BestSrc := Cand;
-            if L = MaxLen then
-              Break;
-          end;
-          Cand := Prev[Cand];
-          Dec(Depth);
-        end;
-      end;
-
+      FindBest(Pos, BestLen, BestSrc);
       if (BestLen >= SizeInt(Opt.MinMatch)) and (BestSrc >= 0) then
       begin
+        if (Opt.Method >= 4) and (Pos + 1 < N) and
+           (BestLen < N - Pos) then
+        begin
+          { lazy matching: if starting one byte later is clearly better,
+            emit this byte as a literal and let the next iteration take it }
+          InsertPos(Pos);
+          FindBest(Pos + 1, NextLen, NextSrc);
+          if NextLen > BestLen + 1 then
+          begin
+            Inc(Pos);
+            Continue;
+          end;
+          for K := Pos + 1 to Pos + BestLen - 1 do
+            InsertPos(K);
+        end
+        else
+          for K := Pos to Pos + BestLen - 1 do
+            InsertPos(K);
         SetLength(Matches, Length(Matches) + 1);
         Matches[High(Matches)].Source := LongWord(BestSrc);
         Matches[High(Matches)].Dest := LongWord(Pos);
         Matches[High(Matches)].Len := LongWord(BestLen);
-        for K := Pos to Pos + BestLen - 1 do
-          InsertPos(K);
         Inc(Pos, BestLen);
       end
       else

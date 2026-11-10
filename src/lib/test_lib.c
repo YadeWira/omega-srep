@@ -131,9 +131,9 @@ static void error_paths(void) {
   check(osrep_last_error()[0] != '\0', "last_error explains the failure", "");
 
   osrep_options_default(&o);
-  o.method = 4;
+  o.method = 1;
   rc = osrep_compress("x", 1, &out, &outn, &o);
-  check(rc == OSREP_E_UNSUPPORTED, "method 4 is E_UNSUPPORTED", "");
+  check(rc == OSREP_E_UNSUPPORTED, "method 1 is E_UNSUPPORTED", "");
   osrep_options_default(&o);
   o.dedup = 1;
   rc = osrep_compress("x", 1, &out, &outn, &o);

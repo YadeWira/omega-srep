@@ -47,6 +47,17 @@ echo "== -b/-l/-c/-a options =="
 "$BIN" -d "$TMP/mixed-opts.osr" "$TMP/mixed-opts.out" || fail "decode mixed-opts"
 cmp "$TMP/mixed-opts.out" "$CORPUS/mixed.bin" || fail "round-trip mixed-opts"
 
+echo "== -m4/-m5: lazy and deeper, round-trip =="
+for m in -m4 -m5; do
+  "$BIN" "$m" -t4 "$CORPUS/mixed.bin" "$TMP/${m#-}.osr" || fail "encode $m"
+  "$BIN" --verify "$TMP/${m#-}.osr" || fail "--verify $m"
+  "$BIN" -d "$TMP/${m#-}.osr" "$TMP/${m#-}.out" || fail "decode $m"
+  cmp "$TMP/${m#-}.out" "$CORPUS/mixed.bin" || fail "round-trip $m"
+done
+"$BIN" -m4 --seed=7 "$CORPUS/text.bin" "$TMP/m4a.osr" || fail "m4 seed a"
+"$BIN" -m4 --seed=7 "$CORPUS/text.bin" "$TMP/m4b.osr" || fail "m4 seed b"
+cmp "$TMP/m4a.osr" "$TMP/m4b.osr" || fail "m4 determinism"
+
 echo "== -t threads: same archive, round-trip =="
 "$BIN" -m3 -t1 "$CORPUS/mixed.bin" "$TMP/t1.osr" || fail "encode -t1"
 "$BIN" -m3 -t4 "$CORPUS/mixed.bin" "$TMP/t4.osr" || fail "encode -t4"
@@ -58,7 +69,7 @@ if "$BIN" -m3 -tx "$CORPUS/tiny.bin" "$TMP/tx.osr" >/dev/null 2>&1; then
 fi
 
 echo "== unimplemented methods are rejected =="
-for m in -m0 -m1 -m2 -m4 -m5; do
+for m in -m0 -m1 -m2; do
   if "$BIN" "$m" "$CORPUS/text.bin" "$TMP/unimplemented.osr" \
        >"$TMP/unimplemented.log" 2>&1; then
     fail "$m was accepted"

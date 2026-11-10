@@ -274,15 +274,15 @@ begin
           CmdError('only one mode can be selected');
         Mode := 'info';
       end
-      else if A = '-m3' then
+      else if (A = '-m3') or (A = '-m4') or (A = '-m5') then
       begin
         if Mode <> '' then
           CmdError('only one mode can be selected');
         Mode := 'encode';
+        EncOptions.Method := StrToInt(Copy(A, 3, 1));
         EncOptionsUsed := True;
       end
-      else if (A = '-m0') or (A = '-m1') or (A = '-m2') or
-              (A = '-m4') or (A = '-m5') then
+      else if (A = '-m0') or (A = '-m1') or (A = '-m2') then
         CmdError('method not implemented yet: ' + A)
       else if Copy(A, 1, 2) = '-t' then
       begin

@@ -38,7 +38,7 @@ type
   end;
 
   TOsrepOptions = record
-    Method: LongInt;        { 0 or 3 }
+    Method: LongInt;        { 0, 3, 4 or 5 }
     Format: LongInt;        { 0 or 6 }
     Dedup: LongInt;         { 0; 1 is not implemented for encoding }
     Threads: LongInt;       { accepted; the MVP encoder is single-threaded }
@@ -87,9 +87,10 @@ end;
 
 procedure OsrepCheckOptions(const Opt: TOsrepOptions; Encoding: Boolean);
 begin
-  if (Opt.Method <> 0) and (Opt.Method <> 3) then
+  if (Opt.Method <> 0) and (Opt.Method <> 3) and (Opt.Method <> 4) and
+     (Opt.Method <> 5) then
     raise EOsrepApiError.Create(OsrepEUnsupported,
-      Format('method %d is not implemented (only -m3)', [Opt.Method]));
+      Format('method %d is not implemented (only -m3/-m4/-m5)', [Opt.Method]));
   if (Opt.Format <> 0) and (Opt.Format <> OsrepVersion) then
     raise EOsrepApiError.Create(OsrepEUnsupported,
       Format('format %d is not implemented (only v6)', [Opt.Format]));
@@ -112,6 +113,8 @@ end;
 function OptionsToEncoder(const Opt: TOsrepOptions): TEncoderOptions;
 begin
   Result := DefaultEncoderOptions;
+  if Opt.Method <> 0 then
+    Result.Method := Opt.Method;
   if Opt.BlockSize <> 0 then
     Result.BlockSize := Opt.BlockSize;
   if Opt.MinMatch <> 0 then
