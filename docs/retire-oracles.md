@@ -169,6 +169,12 @@ versionada como `tests/mutations/` (el parche de cada una).
   `--format=v5` obliga a retirar o adaptar las suites diferenciales que
   escriben v5 (`rust_cli_conformance` con el port, `pascal_v5/dup/container`,
   `format_v5`), y ese corte es el de la 3.0.0. Queda listado en la Fase F.
+- **Verificado** en `91e9ec9`: `core` pasa sin oráculos (golden 69, v6 42,
+  frame 78, fuzz-replay 1) y `full` pasa desde el tarball extraído (rust
+  519/641, encode 506, decode 248, v5 1764, dup 797, cli 1599, container 84,
+  futurelz 80, m3grid 26, duplen 9, tie 64, real 6, selftest 19). El fix que
+  salió de ahí: los scripts que armaban la ruta como `$ROOT/$CXX_BIN` se
+  rompían con un `OSREP_ORACLES` absoluto.
 
 **Aceptación:** `git grep -i "oracle\|oráculo"` en `main` solo encuentra
 documentación histórica; ningún script de `tests/` resuelve rutas dentro de
