@@ -1,0 +1,4 @@
+63304e515f3830089248d1e0e0608371f397fd1683407c9a8fe73db33e8c3efc	text-b1mb-m3-seed7	text.bin	-m3 -b1mb --seed=7
+c5268cfdec30b66d0ea9dc14785224e323a708eab996614148a581690f281b6f	text-m3-seed7	text.bin	-m3 --seed=7
+288ff81287add5f995e0e3aec6615364185f892e1961543c325dece30c63f879	tiny-m3-l64	tiny.bin	-m3 -l64 --seed=7
+1968f48d8b0f0f0b1dce278809ace55866dc7c5973b7a35226e98296354d2d7c	zeros-m3-hashnone	zeros.bin	-m3 -hash- --seed=7

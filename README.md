@@ -4,12 +4,14 @@
 huge-dictionary LZ77 compressor. It is the successor of the previous
 **Omega SREP** project, restarted with new code and a single format: **v6**.
 
-- **Status: phase 1a (0.0.2).** The v6 reader is implemented in
-  `src/pascal/`: container, CRC-32C, VHASH-128 block digest, `-d`, `--verify`
-  and `-i` read the ten compatibility fixtures in `tests/fixtures/v6/`. The
-  encoder is the next step. Every 0.0.x release is a pre-release; 1.0.0 is
-  the first stable release. Implementation notes and the open specification
-  gaps are in `docs/implementation-notes.md`.
+- **Status: phase 1b (0.0.2).** The v6 reader and the MVP `-m3` encoder are
+  implemented in `src/pascal/`: container, CRC-32C, VHASH-128 block digest,
+  `-d`, `--verify`, `-i`, `-dup` read/restore, and a new hash-chain encoder.
+  The tests cover the ten compatibility fixtures in `tests/fixtures/v6/`, the
+  encoder round-trip/determinism, `-hash-`, and new golden archives in
+  `tests/fixtures/v6-new/`. Every 0.0.x release is a pre-release; 1.0.0 is
+  the first stable release. Implementation notes and the open limitations are
+  in `docs/implementation-notes.md`.
 - **Format:** v6 only (`OSR6`). OSREP reads the v6 archives written by the
   legacy Omega SREP 3.0.0; it does **not** read or write the SREP v1-v5
   formats, and there is no compatibility goal with upstream SREP.

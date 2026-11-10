@@ -1,19 +1,24 @@
-# Implementación OSREP 0.0.2 — notas de la Fase 1a (lector v6)
+# Implementación OSREP 0.0.2 — notas de las Fases 1a/1b (lector y encoder v6)
 
 **Equipo B (clean-room), 2026-11-10.** Este documento registra qué se
 implementó, de dónde sale cada comportamiento y los huecos de `spec/` que
 aparecieron. Nada de esto se dedujo del código legacy: sale de `spec/`,
-`tests/fixtures/v6/` y documentación pública de SREP.
+`tests/fixtures/` y documentación pública de SREP/VMAC.
 
 ## 1. Alcance
 
-- `src/pascal/osrep.lpr`: CLI.
+- `src/pascal/osrep.lpr`: CLI (encoder, lector, `-d`, `--verify`, `-i`).
 - `src/pascal/osrep_crc.pas`: CRC-32C con tabla software.
 - `src/pascal/osrep_format.pas`: header, footer, bloque, helpers LE.
-- `src/pascal/osrep_decoder.pas`: lector v6, `-d`, `--verify`, meta `DUPR`.
-- `tests/v6_read.sh`: build + aceptación.
+- `src/pascal/osrep_aes.pas`: AES-256 para VHASH.
+- `src/pascal/osrep_vhash.pas`: VHASH-128 sin nonce (digest de bloque).
+- `src/pascal/osrep_decoder.pas`: lector v6, Future-LZ multi-bloque, meta
+  `DUPR` y post-paso de `-dup`.
+- `src/pascal/osrep_encoder.pas`: encoder `-m3` con hash chain propio.
+- `tests/v6_read.sh`: aceptación del lector.
+- `tests/v6_encode.sh`: aceptación del encoder y de `-dup`.
 
-No hay encoder, ni v1–v5, ni SREP.
+No hay v1–v5 ni código de SREP.
 
 Compilar y probar:
 
@@ -21,6 +26,7 @@ Compilar y probar:
 fpc -Mobjfpc -O2 -Sh -Fu./src/pascal -FU./tests/tmp/units \
     -FE./tests/tmp/build ./src/pascal/osrep.lpr
 ./tests/v6_read.sh
+./tests/v6_encode.sh
 ```
 
 ## 2. La diferencia importante: los fixtures v6 son Future-LZ
@@ -142,11 +148,55 @@ el id se ignora; el fixture `text-hashnone-m3.osr` lo cubre.
 - Cualquier byte entre el último bloque y el footer/meta, o cualquier tamaño
   que no cuadre, es corrupto (exit 4).
 
+## 4.1. Encoder `-m3` (Fase 1b)
+
+El encoder es propio: un **hash chain** de 4 bytes, greedy, dentro de cada
+bloque. No reproduce el stream de SREP ni el de 3.0.0; solo produce un v6
+válido que el lector reconstruye. Parámetros:
+
+- `-bN` tamaño de bloque (default 8 MiB). Los matches se restringen al bloque
+  actual (`source >= block_start`, `destination + length <= block_start +
+  origsize`).
+- `-lN` largo mínimo de match (default 4; se eleva a 4 porque el hash es de 4
+  bytes).
+- `-cN` paso de inserción en el hash chain (default 1).
+- `-aN[/M]` profundidad máxima de la cadena (default 16; `M` se acepta y se
+  ignora).
+- `--seed=N`: semilla determinista. El seed de 32 bytes sale de `SplitMix64`
+  con `N xor 0xD1B54A32D192ED03`; no se usa aleatoriedad del sistema.
+- `-hash-` escribe `hash_id=1/hash_size=0`, sin seed ni digest.
+- `-m4`/`-m5` se aceptan como alias del mismo finder; `-m0..-m2` y `-dup` de
+  escritura todavía se rechazan con exit 2.
+
+El parse es greedy de izquierda a derecha: en cada `destination` busca el
+match más largo en el hash chain, y si no llega a `-l` emite un literal. Los
+matches quedan no solapados en destination y en orden de destination; después
+se ordenan por `source` para escribir `(skip, length, distance)`, con
+`skip = source - source_anterior` y el anterior inicializado en `block_start`.
+Los literales se generan recorriendo los huecos de destination y la cola. El
+digest VHASH-128 se calcula sobre los `origsize` bytes del bloque.
+
+## 4.2. `-dup` de lectura
+
+`-d` de un archivo con `flags.bit0` decodifica el cuerpo deduplicado (y
+verifica su digest), después lee la tabla `DUPR` de §2.8 y la aplica:
+
+- tag `0`: `u32` con el largo del chunk; los bytes salen del cuerpo en orden y
+  el chunk se agrega a la lista de únicos;
+- tag `1`: varint con el índice al chunk único ya visto; se repite ese chunk.
+
+El resultado es la entrada original (para `text-dup-m3.osr`, los 4 MiB de
+`text.bin`). `--verify` no aplica el post-paso: solo valida header/footer/meta
+y los CRC.
+
 ## 5. CLI y `-i`
 
 - `--version` → `OSREP 0.0.2 (2026-11-10)`.
+- `osrep -m3 [opciones] <input> [<output>]`: comprime; salida por defecto
+  `<input>.osr`. Opciones: `-b`, `-l`, `-c`, `-a`, `--seed`, `-hash-`.
 - `-d <archive> [<output>]`: salida derivada (`x.osr` → `x`; si no termina en
-  `.osr`, `x` → `x.out`). `-` como salida escribe a stdout.
+  `.osr`, `x` → `x.out`). `-` como salida escribe a stdout. Con `-dup`, la
+  salida es la entrada original restaurada.
 - `--verify <archive>`: valida header, footer, cada `block_crc`, `blocks_crc`,
   `meta_crc`, contadores y tamaños. No descomprime.
 - `-i <archive>`: salida estable key=value, sin path:
@@ -171,41 +221,62 @@ hash_size=16
 2. Genera las entradas con `tests/golden/inputs.sh`.
 3. Decodifica los 9 fixtures no-dup (incluye `text-b1mb-m3` de 4 bloques y
    `text-hashnone-m3` sin digest) y compara byte a byte con la entrada.
-4. `--verify` sobre los 10 (incluye `text-dup-m3.osr` y su `meta_crc`).
-5. Corrompe un byte de un bloque: `--verify` y `-d` deben dar exit 4.
-6. Corrompe un byte del meta: exit 4.
-7. Cambia un byte del digest y rehace `block_crc`/`blocks_crc`/`footer_crc`:
+4. `-d` de `text-dup-m3.osr` restaura los 4 MiB de `text.bin`.
+5. `--verify` sobre los 10 (incluye `text-dup-m3.osr` y su `meta_crc`).
+6. Corrompe un byte de un bloque: `--verify` y `-d` deben dar exit 4.
+7. Corrompe un byte del meta: exit 4.
+8. Cambia un byte del digest y rehace `block_crc`/`blocks_crc`/`footer_crc`:
    `--verify` debe pasar y `-d` debe dar exit 4 por digest.
-8. Fija la salida de `-i` para `text-m3.osr`.
-9. Prueba salida a stdout, opción desconocida (2), archivo inexistente (3) y
-   `-d` sin argumento (2).
+9. Fija la salida de `-i` para `text-m3.osr`.
+10. Prueba salida a stdout, opción desconocida (2), archivo inexistente (3) y
+    `-d` sin argumento (2).
+
+`tests/v6_encode.sh`:
+
+1. Comprime y descomprime `text`, `mixed`, `zeros`, `random` y `tiny` con
+   `-m3`; `--verify` y round-trip.
+2. Prueba `-b1mb -l64 -c16 -a32`.
+3. Determinismo: `--seed=7` dos veces da el mismo archivo.
+4. `-hash-`: sin digest, `hash_id=1`, `hash_size=0`, round-trip.
+5. Decodifica los fixtures nuevos de `tests/fixtures/v6-new/` contra el
+   manifiesto.
+6. `-d` de `text-dup-m3.osr` = `text.bin`.
+7. Corrupción del encoder: mueve un byte de literales a records, rehace
+   `stat_size`/`footer_crc`; `--verify` pasa y `-d` da exit 4.
+8. Vuelve a correr `tests/v6_read.sh` para comprobar que el lector no se
+   rompió.
+
+Resultado actual: `v6_read: PASS` y `v6_encode: PASS`.
 
 Resultado actual: `v6_read: PASS`.
 
-## 7. Huecos de `spec/` (para el Equipo A)
+## 7. Huecos de `spec/` / límites (para el Equipo A)
 
-La spec `14cfd76` cerró el hueco de VMAC (VHASH-128 sin nonce), el orden de
-`running_skip`, la identidad global y el caso `hash_size=0`. Quedan:
+La spec `14cfd76`/`931effa` cerró el digest VHASH-128, el orden de
+`running_skip`, la identidad global y las obligaciones del encoder. Quedan:
 
-1. **`-dup` no reconstruye la entrada original.** El lector valida el CRC del
-   meta y decodifica el cuerpo deduplicado (que es lo que cubre el digest),
-   pero no aplica la tabla de chunks de §2.8 para restaurar la entrada. Falta
-   implementar el post-paso y su test.
-
+1. **`-dup` de escritura.** El lector ya restaura `-dup`; el encoder todavía
+   rechaza `-dup` con exit 2. La spec §2.10.8 describe el cuerpo deduplicado y
+   la meta, pero no hace falta para el MVP actual.
 2. **Otros `hash_id`.** La tabla declara MD5 (0), SHA-1 (2), SHA-512 (3) y
    SipHash-2-4 (5), pero el lector solo verifica VHASH-128 (4) y el caso sin
-   digest. Con esos ids `-d` hoy termina en error de digest no implementado;
-   `--verify` sigue validando el `block_crc`. No hay fixtures para ellos.
-
-3. **Multiplataforma.** El código es Pascal puro; no se probó i386, ARM64 ni
+   digest. Con esos ids `-d` da un error claro de “digest hash id N is not
+   implemented”; `--verify` sigue pasando. No hay fixtures para ellos.
+3. **Opciones de encoder no equivalentes a SREP.** `-m4`/`-m5` son alias del
+   mismo finder; `-aN/M` ignora `M`; `-c` es el paso de inserción del hash
+   chain y `-l` el mínimo de match. La spec no fija estos detalles porque el
+   match finder es libre, pero conviene documentarlos en la CLI.
+4. **`-i` de `-dup`.** `original_size` es el tamaño del cuerpo deduplicado
+   (101907 en `text-dup-m3.osr`), no el de la entrada restaurada (4 MiB). Si
+   se quiere mostrar el tamaño final, hay que agregarlo al contrato de `-i`.
+5. **Multiplataforma.** El código es Pascal puro; no se probó i386, ARM64 ni
    Windows en esta fase. No hay código nativo todavía.
 
 ## 8. Lo que no se hizo
 
-- El digest VHASH-128 sí se verifica en `-d`; `--verify` valida el
-  `block_crc` que cubre el digest en disco.
-- No se interpreta la tabla de chunks del meta `DUPR` ni se aplica el
-  post-paso de `-dup`; `-d` de un `-dup` entrega el cuerpo deduplicado.
-- No se soporta stdin (`-` como entrada); sí stdout como salida.
-- No se implementan opciones de encoder (`-m*`, `-l`, `-c`, `-b`, `-hash=`,
-  etc.); se rechazan como opciones desconocidas con exit 2.
+- `-dup` de escritura (solo lectura/restauración).
+- MD5/SHA-1/SHA-512/SipHash como digest (solo VHASH-128 y sin digest).
+- stdin como entrada (`-`); stdout como salida sí funciona.
+- `-m0..-m2` y el encoder `-dup`; se rechazan con exit 2.
+- v1–v5 y compatibilidad con SREP.
+- Código nativo (C/asm) y la matriz de plataformas.
