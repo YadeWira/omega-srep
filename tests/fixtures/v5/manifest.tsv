@@ -1,0 +1,8 @@
+a5390fd43c8bf2b93d5c3ddec0093a25d61feb52a2672b8e78907d814025c692	text-m3	text.bin	-m3 --format=v5
+ddc4cf42046640ca1a8d144587370b45453f984195e8f98746ca411ab9a7230d	text-m4	text.bin	-m4 --format=v5 -l256 -c128
+ddc4cf42046640ca1a8d144587370b45453f984195e8f98746ca411ab9a7230d	text-m5	text.bin	-m5 --format=v5 -l1000 -ia-
+ef7883a84afec392af9fa758a8d6b7409333660ed9877a6c384d14002b3ad9b8	empty-m3	empty.bin	-m3 --format=v5
+b626b9bbc0d4b7735b9658286041e629ef5ebc40a2f77d1442c7f3190fb8ffd6	tiny-m1	tiny.bin	-m1 --format=v5
+8ac50d6978d2a14ede3d7140a95128c08f61be3b4297274582e8d865923c9523	zeros-m0	zeros.bin	-m0 --format=v5 -d16mb
+e58095e0713a4e53de69b6f35680a758619ca8a2e74154c9ceddce255932d5e3	text-dup-m3	text.bin	-dup -m3 --format=v5
+bb9072a99647f80efecff2817566a7cfe31a3ef4de56f835713d1f30565d83c8	zruns-dup-m3	zruns.bin	-dup -m3 --format=v5 --chunk-avg=2048

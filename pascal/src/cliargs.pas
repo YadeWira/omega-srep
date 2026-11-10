@@ -354,7 +354,7 @@ end;
 procedure DefaultOptions(out O: TOptions);
 begin
   O.CmdMode := cmCompress;
-  O.Format := fmtV5;
+  O.Format := fmtV6;
   O.Method := 3;
   O.Lz := lzIndex;
   O.DictSize := 0;
@@ -504,7 +504,8 @@ begin
     begin
       v := After(a, '--format=');
       if v = 'v4' then O.Format := fmtV4
-      else if v = 'v5' then O.Format := fmtV5
+      else if v = 'v5' then
+        raise ECmdLine.Create('--format=v5: v5 is read-only; write v6 (the default) or v4')
       else if v = 'v6' then O.Format := fmtV6
       else Bad(a);
     end

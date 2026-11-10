@@ -1,0 +1,62 @@
+name: macOS arm64
+
+# The one target that cannot be built on the Linux host: macOS 11+ on Apple
+# Silicon. The macOS runners are arm64, so this compiles with the native FPC
+# 3.2.2 and runs the same core gates as the release checklist, then leaves the
+# binary as an artifact. Dispatch it by hand (push triggers do not fire on
+# this account, see CHANGELOG 2.4.0):
+#
+#   gh workflow run macos-arm64.yml --ref main
+#   gh run watch
+#   gh run download <run-id> -n osrep-macos-aarch64
+#
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          brew install fpc coreutils
+          # GNU sha256sum/stat/dd/timeout for the test scripts, and the
+          # coreutils dd accepts status=none.
+          echo "$(brew --prefix coreutils)/libexec/gnubin" >> "$GITHUB_PATH"
+          fpc -iV
+          fpc -iTP -iTO
+
+      - name: Build osrep
+        run: |
+          mkdir -p pascal/bin/units-macos
+          fpc -Mobjfpc -O2 -Xs -Fupascal/src -FUpascal/bin/units-macos \
+              -opascal/bin/osrep-macos-aarch64 pascal/osrep.lpr
+          file pascal/bin/osrep-macos-aarch64
+          ./pascal/bin/osrep-macos-aarch64 --version
+
+      - name: Core gates
+        run: |
+          export OSREP_PORT_BIN="$PWD/pascal/bin/osrep-macos-aarch64"
+          export OSREP_BIN="$OSREP_PORT_BIN"
+          bash tests/gates.sh core
+
+      - name: Round-trip the six methods
+        run: |
+          B="$PWD/pascal/bin/osrep-macos-aarch64"
+          T="$(mktemp -d)"
+          bash tests/golden/inputs.sh "$T/in" >/dev/null
+          for m in m0 m1 m2 m3 m4 m5; do
+            "$B" -$m --seed=7 "$T/in/text.bin" "$T/$m.osr"
+            "$B" -d "$T/$m.osr" "$T/$m.out"
+            cmp "$T/in/text.bin" "$T/$m.out"
+          done
+          echo "six methods round-trip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: osrep-macos-aarch64
+          path: pascal/bin/osrep-macos-aarch64
+          if-no-files-found: error

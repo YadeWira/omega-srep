@@ -1,2 +1,0 @@
-
-  ERROR! -index= is a v4 feature: the v5 footer locates everything by offset, so the lists cannot move out. Use --format=v4

@@ -29,14 +29,14 @@ Windows 7, can never move. Free Pascal 3.2.2 targets both natively. See
 | Component | Status |
 |---|---|
 | Implementation | Free Pascal 3.2.2; C and embedded assembly are being added for 3.0.0 |
-| Container v6 | implemented, opt-in with `--format=v6`; default and frozen in 3.0.0 |
+| Container v6 | default since 3.0.0 and frozen; v5 is read-only, v1-v6 are read |
 | Linux x86_64 | release binary; the full local gate list |
 | Linux x86 (32-bit) | built and validated; ships with 3.0.0 |
 | Linux ARM64 | built and validated under `qemu-user`; ships with 3.0.0 |
 | Windows x86 / x86_64 (7 and later) | release binaries; verified on a real Windows 7 SP1 each release |
 | macOS ARM64 (11 and later) | planned for 3.0.0; native build (FPC 3.2.2 + Xcode CLT), no cross from Linux |
 | Test gates | local scripts in `tests/`; no hosted CI |
-| Latest release | [2.4.0](https://github.com/YadeWira/omega-srep/releases/tag/v2.4.0) (pre-release) |
+| Latest release | [3.0.0](https://github.com/YadeWira/omega-srep/releases/tag/v3.0.0) |
 
 ## Repository layout
 
@@ -58,12 +58,12 @@ how to run the differential suite from it and why they left.
 - **No backward compatibility** with `.srep` files. The on-disk magic bytes
   changed from `"SREP"` to `"OSRP"` — old archives must be decompressed with
   the upstream tool first.
-- **Container v5 is the default since 2.0.0**, written with a single `OSR5`
-  magic: varint records, CRC-32C integrity, and `-dup` metadata located
-  through a footer rather than an appended trailer. `--format=v4` writes the
-  `OSRP` container the 1.0.x releases read and stays supported permanently as
-  the interoperability escape hatch; both are always readable, so the option
-  only selects what `osrep` *writes*.
+- **Container v6 is the default since 3.0.0**, the v5 stream plus integrity:
+  a per-block CRC-32C and a `blocks_crc` chain in the footer, so `--verify`
+  covers stored blocks too. v5 (the default through 2.4.0, now read-only) and
+  v1-v4 are read forever; `--format=v4` writes the `OSRP` container the
+  1.0.x releases read and stays supported permanently as the interoperability
+  escape hatch.
 
   **What the v5 container buys you is `--verify`:** checking an archive is
   sound without reconstructing it. v1-v4 carry no checksum anywhere, so the

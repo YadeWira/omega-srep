@@ -31,13 +31,3 @@ b07c4d90f07ca9a3b8f4e58b519712757592053c981d932e9722c8ec2789bb01	0	text.bin	-dup
 39d61ad3b4f42a16f90bfad12ed8dd69b39c3a2318b90a2a3847055d6f1fb7e4	0	zruns.bin	-dup -m5 --format=v4
 0f60a82e21937af737647dad7cb8dfbe908ec356b5ce9714e82426d2ebbbc311	0	mixed.bin	-dup -m3 --format=v4 --chunk-avg=2048 --chunk-min=512 --chunk-max=8192
 92de9928a943f5f9214bb16784666846e59e60fa718631f7a998d0cfec6984e5	0	zruns.bin	-dup -m3 --format=v4 --chunk-hash=gear
-a5390fd43c8bf2b93d5c3ddec0093a25d61feb52a2672b8e78907d814025c692	0	text.bin	-m3 --format=v5
-bc4c779491b0cba6652fb2db920c8ffc0262ef2dd3ebd722baf5ff683ba2edb3	0	mixed.bin	-m4 --format=v5 -b1mb
-ddc4cf42046640ca1a8d144587370b45453f984195e8f98746ca411ab9a7230d	0	text.bin	-m5 --format=v5 -l1000 -ia-
-ef7883a84afec392af9fa758a8d6b7409333660ed9877a6c384d14002b3ad9b8	0	empty.bin	-m3 --format=v5
-b626b9bbc0d4b7735b9658286041e629ef5ebc40a2f77d1442c7f3190fb8ffd6	0	tiny.bin	-m1 --format=v5
-4e78c91a588c67e3a5f36b746afb28dcb34ddaa3efb5eb56bec4d745329e778a	0	random.bin	-m1 --format=v5 -b64k
-8ac50d6978d2a14ede3d7140a95128c08f61be3b4297274582e8d865923c9523	0	zeros.bin	-m0 --format=v5 -d16mb
-e58095e0713a4e53de69b6f35680a758619ca8a2e74154c9ceddce255932d5e3	0	text.bin	-dup -m3 --format=v5
-f8a6041dd7b29fc997990b5807631f9bde770b43bd7ce576864e54ffba0ae422	0	mixed.bin	-dup -m5 --format=v5 --chunk-hash=gear
-bb9072a99647f80efecff2817566a7cfe31a3ef4de56f835713d1f30565d83c8	0	zruns.bin	-dup -m3 --format=v5 --chunk-avg=2048

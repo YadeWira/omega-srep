@@ -25,21 +25,16 @@ pass=0
 run()  { "$B" "$@" >/dev/null 2>"$TMP/err"; }
 rc_of(){ local r=0; "$@" >/dev/null 2>"$TMP/err" || r=$?; echo "$r"; }
 
-say "v6 comprime y descomprime lo mismo que v5"
+say "v6 comprime y descomprime en todos los metodos"
 for f in tiny zeros random mixed text; do
     for o in "-m0" "-m1" "-m3" "-m4" "-m5 -l1000 -ia-" "-m3 -hash-"; do
-        rm -f "$TMP/6.osr" "$TMP/5.osr" "$TMP/o6" "$TMP/o5"
+        rm -f "$TMP/6.osr" "$TMP/o6"
         # shellcheck disable=SC2086
         run --format=v6 --seed=7 $o "tests/corpus/$f.bin" "$TMP/6.osr" \
             || fail "$f $o: no comprime v6: $(cat "$TMP/err")"
-        # shellcheck disable=SC2086
-        run --format=v5 --seed=7 $o "tests/corpus/$f.bin" "$TMP/5.osr" \
-            || fail "$f $o: no comprime v5"
         [ "$(head -c 4 "$TMP/6.osr")" = "OSR6" ] || fail "$f $o: falta la magia OSR6"
         run -d "$TMP/6.osr" "$TMP/o6" || fail "$f $o: v6 no descomprime: $(cat "$TMP/err")"
         cmp -s "tests/corpus/$f.bin" "$TMP/o6" || fail "$f $o: v6 no reconstruyo la entrada"
-        run -d "$TMP/5.osr" "$TMP/o5" || fail "$f $o: v5 no descomprime"
-        cmp -s "$TMP/o5" "$TMP/o6" || fail "$f $o: v5 y v6 dan otro dato"
         pass=$((pass + 1))
     done
 done
@@ -71,16 +66,6 @@ OSREP_CDC_POLY=1 "$B" --format=v6 --seed=7 -m1 -c64 -l8 "$TMP/cdc.bin" "$TMP/c6p
     >/dev/null 2>&1 || fail "no comprime v6 con OSREP_CDC_POLY"
 cmp -s "$TMP/c6.osr" "$TMP/c6p.osr" \
     || fail "v6 -m1 cambia con OSREP_CDC_POLY: la ruta de CDC depende de la CPU"
-run --format=v5 --seed=7 -m1 -c64 -l8 "$TMP/cdc.bin" "$TMP/c5.osr" \
-    || fail "no comprime v5 con -m1"
-OSREP_CDC_POLY=1 "$B" --format=v5 --seed=7 -m1 -c64 -l8 "$TMP/cdc.bin" "$TMP/c5p.osr" \
-    >/dev/null 2>&1 || fail "no comprime v5 con OSREP_CDC_POLY"
-# En una CPU sin SSE4.2 (ARM64) v5 ya usa la polinomial y las dos corridas
-# coinciden: ahi el control no aplica. En x86 (nativo y wine) tienen que
-# diferir, o la entrada no serviria para probar nada.
-if cmp -s "$TMP/c5.osr" "$TMP/c5p.osr"; then
-    say "  (sin SSE4.2 en esta plataforma: v5 ya usa la polinomial, el control de v5 no aplica)"
-fi
 pass=$((pass + 1))
 
 say "--verify acepta un v6 sano y dice que cubre los bloques guardados"
@@ -125,23 +110,18 @@ r=$(rc_of "$B" --verify "$TMP/tr.osr")
 [ "$r" -eq 4 ] || fail "verify de un v6 truncado salio $r, esperado 4"
 pass=$((pass + 1))
 
-say "-i lee un v6 y -dup con v6 va adentro como en v5"
+say "-i lee un v6 y -dup con v6 lleva su meta adentro"
 "$B" -i "$TMP/t6.osr" >/dev/null 2>"$TMP/err" || fail "-i de un v6 fallo: $(cat "$TMP/err")"
 pass=$((pass + 1))
 
 for f in text mixed; do
     for o in "-dup -m3" "-dup -m5 --chunk-avg=2048"; do
-        rm -f "$TMP/d6.osr" "$TMP/d5.osr" "$TMP/do6" "$TMP/do5"
+        rm -f "$TMP/d6.osr" "$TMP/do6"
         # shellcheck disable=SC2086
         run -dup --format=v6 --seed=7 $o "tests/corpus/$f.bin" "$TMP/d6.osr" \
             || fail "$f $o: no comprime -dup v6: $(cat "$TMP/err")"
-        # shellcheck disable=SC2086
-        run -dup --format=v5 --seed=7 $o "tests/corpus/$f.bin" "$TMP/d5.osr" \
-            || fail "$f $o: no comprime -dup v5"
         run -d "$TMP/d6.osr" "$TMP/do6" || fail "$f $o: -dup v6 no descomprime: $(cat "$TMP/err")"
         cmp -s "tests/corpus/$f.bin" "$TMP/do6" || fail "$f $o: -dup v6 no reconstruyo la entrada"
-        run -d "$TMP/d5.osr" "$TMP/do5" || fail "$f $o: -dup v5 no descomprime"
-        cmp -s "$TMP/do5" "$TMP/do6" || fail "$f $o: -dup v5 y v6 dan otro dato"
         r=$(rc_of "$B" --verify "$TMP/d6.osr")
         [ "$r" -eq 0 ] || fail "$f $o: --verify de un -dup v6 salio $r: $(cat "$TMP/err")"
         "$B" --verify "$TMP/d6.osr" 2>&1 | grep -q -- "-dup meta checksummed" \

@@ -1,11 +1,11 @@
 # Formato `.osr` v6 — borrador para la 3.0.0
 
-**Estado: implementado detrás de `--format=v6` el 2026-10-21, `-dup`
-incluido** (opt-in: v5 sigue siendo el default y el `--help` todavía no lo
-lista, porque el oráculo Rust no lo tiene y los textos tienen que seguir
-idénticos hasta que los oráculos salgan). Falta el congelamiento en la 3.0.0. La
-referencia del stream de matches sigue siendo `docs/format-spec-v5.md`: v6
-**no rediseña los records**, los hereda probados y les agrega lo que falta.
+**Estado: implementado el 2026-10-21 y congelado en la 3.0.0 (2026-11-10);
+es el contenedor por defecto, `-dup` incluido.** v5 queda solo lectura (se lee
+para siempre; `--format=v5` se rechaza) y v4 se sigue escribiendo con
+`--format=v4`. La referencia del stream de matches sigue siendo
+`docs/format-spec-v5.md`: v6 **no rediseña los records**, los hereda probados
+y les agrega lo que falta.
 
 ## 0. Decisiones acordadas
 

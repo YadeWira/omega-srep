@@ -23,7 +23,9 @@ D="$W/in"
 bash tests/golden/inputs.sh "$D" >/dev/null
 cp "$D/text.bin" "$W/in.bin"
 "$PORTABS" --format=v4 --seed=7 -m3 "$W/in.bin" "$W/a4.osr" >/dev/null 2>&1 || fail "cannot make v4"
-"$PORTABS" --format=v5 --seed=7 -m3 "$W/in.bin" "$W/a5.osr" >/dev/null 2>&1 || fail "cannot make v5"
+# v5 is read-only since 3.0.0: the archive is the fixture the port wrote
+# while v5 was still writable (byte-identical to the Rust 2.1.2 oracle).
+cp tests/fixtures/v5/text-m3.osr "$W/a5.osr"
 "$PORTABS" --format=v6 --seed=7 -m3 "$W/in.bin" "$W/a6.osr" >/dev/null 2>&1 || fail "cannot make v6"
 cp "$W/a5.osr" "$W/bad5.osr"
 printf '\377' | dd of="$W/bad5.osr" bs=1 seek=$(($(stat -c%s "$W/bad5.osr") / 2)) conv=notrunc status=none
@@ -34,7 +36,7 @@ printf '\377' | dd of="$W/bad5hdr.osr" bs=1 seek=16 conv=notrunc status=none
 cp "$W/a5.osr" "$W/bad5ftr.osr"
 printf '\377' | dd of="$W/bad5ftr.osr" bs=1 seek=$(($(stat -c%s "$W/bad5ftr.osr") - 1)) conv=notrunc status=none
 head -c $(($(stat -c%s "$W/a5.osr") - 10)) "$W/a5.osr" > "$W/trunc5.osr"
-"$PORTABS" --format=v5 --seed=7 -m3 -dup "$W/in.bin" "$W/a5dup.osr" >/dev/null 2>&1 || fail "cannot make v5 -dup"
+cp tests/fixtures/v5/text-dup-m3.osr "$W/a5dup.osr"
 cp "$W/a5dup.osr" "$W/bad5meta.osr"
 python3 - "$W/bad5meta.osr" <<'PY2'
 import struct, sys

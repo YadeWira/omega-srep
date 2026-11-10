@@ -14,8 +14,8 @@ const
   { Kept in step with the released version. The Pascal port reports the same
     line as the Rust one while it is being validated against it; once it is
     what ships, this is what a release bumps. }
-  VERSION     = '2.4.0';
-  RELEASE_DATE = 'October 20, 2026';
+  VERSION     = '3.0.0';
+  RELEASE_DATE = 'November 10, 2026';
   DESCRIPTION = 'huge-dictionary LZ77 preprocessor (Omega lineage, fork of SREP by Bulat Ziganshin)';
   HOMEPAGE    = 'https://github.com/YadeWira/omega-srep';
 
@@ -67,9 +67,10 @@ begin
     '  -hash=NAME        select hash (vmac, sha1, ...)' + LF +
     '  -mmap, -nommap    enable/disable POSIX mmap reads' + LF +
     '  -temp=PATH        tempfile path override' + LF +
-    '  --format=v4|v5    container to write (default v5). v4 is the' + LF +
-    '                    container the 1.0.x releases read, kept for' + LF +
-    '                    interoperability; both are always readable.' + LF +
+    '  --format=v4|v6    container to write (default v6). v6 is the current' + LF +
+    '                    format; v4 is the container the 1.0.x releases' + LF +
+    '                    read, kept for interoperability. v1-v5 are always' + LF +
+    '                    readable; v5 is not written anymore.' + LF +
     '  --seed=N          deterministic hash seed (uint64; default is' + LF +
     '                    random per-run). Same seed + same input ->' + LF +
     '                    byte-identical archive. Useful for content-' + LF +

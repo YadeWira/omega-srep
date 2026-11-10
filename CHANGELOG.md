@@ -9,7 +9,7 @@ Versions follow `<major>.<minor>.<patch>` for stable releases and
 written by the new default cannot be read by the previous release, which is
 what happened in 2.0.0.
 
-## [Unreleased]
+## [3.0.0] - 2026-11-10
 
 ### Removed
 
@@ -22,10 +22,21 @@ what happened in 2.0.0.
   is unset, and `core` needs no oracle, no `g++` and no `cargo`. The
   robustness fuzz now runs against the Pascal decoder: `tests/fuzz.sh` uses
   the port by default and `tests/fuzz_regression.sh` replays the crash
-  samples through it. v5 stays writable until the 3.0.0 CLI cut.
+  samples through it. v5 is read-only since 3.0.0: `--format=v5` is
+  rejected, and its stored archives live in `tests/fixtures/v5`.
 
 ### Added
 
+- **v6 is the default in 3.0.0; v5 is read-only.** `--format=v6` is no
+  longer needed, `--format=v5` is rejected with a clear message, and
+  `--format=v4` remains for the 1.0.x interoperability. The help lists
+  `v4|v6` and the version is 3.0.0 (the Rust oracle is archived at 2.4.0).
+  The v5 writer is gone from `osrep`: `tests/fixtures/v5` keeps eight
+  archives (m0/m1/m3/m4/m5, `-dup`, empty and tiny) and
+  `tests/v5_readonly.sh` decodes them with `--verify` and a byte-for-byte
+  round-trip on every core run. The differential suites that used to write
+  v5 ask for v4 now; the v5-only pins were re-recorded from the archived
+  Rust where they are still about the decoder.
 - **`tests/gates.sh core|full`**: `core` runs the gates that need no oracle
   (the golden cases, the v6 suite and its frame self-test) and passes on a
   clean worktree with `oracles/` removed; `full` adds the differential suites,

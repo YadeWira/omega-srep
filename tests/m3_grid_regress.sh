@@ -21,6 +21,7 @@
 # table bounds those sizes). An archive that decoded keeps its bytes, so the
 # second table pins archives 2.2.0 already wrote. Run by tests/rust_cli_conformance.sh against the Rust
 # and (OSREP_PORT_BIN) the Pascal build; both write these same archives.
+# The pins are v4: v5 is read-only since 3.0.0, so check() asks for v4.
 # The z66 -l9 and text.bin -l17 pins moved in 2.3.0 (L 9 and 17 run the C++'s
 # bitarr-filtered compress<1>, not compress<0>, and add_hash compares the -m3
 # digests); the others did not.
@@ -72,8 +73,9 @@ pass=0
 # want_rc md5 input options: the exit code, the archive, and a round trip.
 check() {
     local rc_want="$1" want="$2" input="$3"; shift 3
-    local rc=0
-    "$OSREP" --seed=7 "$@" "$TMP/$input" "$TMP/g.osr" >/dev/null 2>"$TMP/g.err" || rc=$?
+    local rc=0 extra=(--format=v4)
+    case " $* " in *" --format="*) extra=() ;; esac
+    "$OSREP" --seed=7 "$@" "${extra[@]}" "$TMP/$input" "$TMP/g.osr" >/dev/null 2>"$TMP/g.err" || rc=$?
     [ "$rc" -eq "$rc_want" ] || fail "$* on $input exited $rc, expected $rc_want: $(tr '\r' '\n' < "$TMP/g.err" | grep -a -m1 -E 'panicked|ERROR')"
     "$OSREP" -d "$TMP/g.osr" "$TMP/g.dec" >/dev/null 2>"$TMP/g.derr" \
         || fail "$* on $input: archive does not decode: $(tr '\r' '\n' < "$TMP/g.derr" | grep -a -m1 ERROR)"
@@ -90,21 +92,21 @@ check() {
 while read -r rc want input args; do
     check "$rc" "$want" "$input" $args
 done <<'EOF'
-0 c7da8437e1a472aa4b51b63d6e508fb4 craftB -m3 -l8 -b20b
-0 e195f565f2d084882e4c96c251bc316e rep3000 -m3 -b1025b
-0 19b7305637d04f8ed0539f6ed6c76a6e t300k -m3 -b65537b
-0 32e278c2c15c0cacb3c250eb99cbbaba t300k -m3 -b65537b -hash-
-0 b6f3042bfc195839dc3bb577a98896ad t300k -m3 -b65537b -d1mb
-0 b66609678ad43f4f3557f106414c3195 t300k -m3 -b1025b -d64kb
-0 f26f693aee7966fe027d859e00f76d3a t300k -m3 -l8192 -b100kb
-0 f26f693aee7966fe027d859e00f76d3a t300k -m3f -l8192 -b100kb
+0 7c0c43123d5f4d086d365ae176e311a4 craftB -m3 -l8 -b20b
+0 e953d6b3ef3debfdcbd95755f87cb59a rep3000 -m3 -b1025b
+0 7e376d1fdd77ea54c3be3c34a2be2a37 t300k -m3 -b65537b
+0 7434bb32a12f16e1e4a7be53973f2ac1 t300k -m3 -b65537b -hash-
+0 8c8eb041c4f2090068f47ed9cd4c6152 t300k -m3 -b65537b -d1mb
+0 4f748d8a4659087ff507f5401bd5942b t300k -m3 -b1025b -d64kb
+0 6ca609c2502d34ef6c74aa2436765213 t300k -m3 -l8192 -b100kb
+0 39c616a76490199ebc8fd5e3c656567d t300k -m3f -l8192 -b100kb
 0 1c0bf14d160e39d5e992bdc2fb1c31ea t300k -m3o -l8192 -b100kb --format=v4
-0 118be04477917236efa9ce93ce02b38e t300k -m3 -l16384 -b40kb
-1 74c1f456b282320006dfcd3c52c36ba9 t300k -m3 -l128 -c300 -b117kb
-0 8a96c3a1993719a09cabaccc69acd621 cr1b -m3 -l16 -b1000b
+0 9d471c47b9fb16ad35d766a72b039fbf t300k -m3 -l16384 -b40kb
+1 de962b1098f6cca8dae6c40b6246bc6a t300k -m3 -l128 -c300 -b117kb
+0 1fab6dfe267b1b20de74cf8800bde493 cr1b -m3 -l16 -b1000b
 0 1fab6dfe267b1b20de74cf8800bde493 cr1b -m3 -l16 -b1000b --format=v4
-1 669181f64290b946084d95142813de40 z66 -m3 -l9
-1 669181f64290b946084d95142813de40 z66 -m3o -l9
+1 1b555737eb6060b760cd50c67e35c5df z66 -m3 -l9
+1 322945654182de633592d3faf892a37a z66 -m3o -l9
 1 3da714f1149c046323c45229ef6f6fcf text.bin -m3 -l17 -b4kb --format=v4
 1 61c98db3cd9ffaff74847c941690e85c text.bin -m3f -l17 -b4kb --format=v4
 EOF
@@ -113,10 +115,10 @@ EOF
 while read -r rc want input args; do
     check "$rc" "$want" "$input" $args
 done <<'EOF'
-0 33026558e944336a2b01c398285cce05 craftB -m3 -l8 -b24b
-0 9dd7bef115c2138708177e544eb558fd rep3000 -m3 -b65537b
-0 6b9f25f0fdc2216ef6867e4536469f8d t300k -m3 -b65536b
-0 b83a7cbb98aaae938f9bd280e6bb011a t300k -m3 -l8192 -b100kb -d1mb
+0 4340bfeb991fe126b0bce715b3cca647 craftB -m3 -l8 -b24b
+0 1c5c7e92729b925e16c5d2ed1ad8d921 rep3000 -m3 -b65537b
+0 7081cd16a4b0552839dc002c458e3fb1 t300k -m3 -b65536b
+0 f59ee2cf3a1a5f9af51663b7e78eb072 t300k -m3 -l8192 -b100kb -d1mb
 EOF
 
 # Periodic text with -b off the grid compresses about as well as with an
@@ -127,18 +129,18 @@ while read -r rc want max input args; do
     check "$rc" "$want" "$input" $args
     [ "$size" -le "$max" ] || fail "$args on $input: archive is $size bytes, expected at most $max"
 done <<'EOF'
-0 a2b33d6835108c9a02686a7e32587b04 8000 text.bin -m3 -b1000001b
-0 bccf87152797f89d3d8ae6a631a28f72 80000 text.bin -m3 -b65537b
-0 19b7305637d04f8ed0539f6ed6c76a6e 8000 t300k -m3 -b65537b
+0 7c535ab97ae6a974b0e1703aa961250c 8000 text.bin -m3 -b1000001b
+0 929a79fa81504008d23de0a2f6f72034 80000 text.bin -m3 -b65537b
+0 7e376d1fdd77ea54c3be3c34a2be2a37 8000 t300k -m3 -b65537b
 1 3da714f1149c046323c45229ef6f6fcf 200000 text.bin -m3 -l17 -b4kb --format=v4
 EOF
 
 # Through a pipe (-s given) the fix rereads the same bytes: same archive.
 rc=0
-"$OSREP" --seed=7 -s300000 -m3 -b65537b - - < "$TMP/t300k" > "$TMP/p.osr" 2>"$TMP/p.err" || rc=$?
+"$OSREP" --seed=7 -s300000 -m3 -b65537b --format=v4 - - < "$TMP/t300k" > "$TMP/p.osr" 2>"$TMP/p.err" || rc=$?
 [ "$rc" -eq 0 ] || fail "-m3 -b65537b from a pipe exited $rc"
 got="$(md5sum < "$TMP/p.osr" | cut -c1-32)"
-[ "$got" = 19b7305637d04f8ed0539f6ed6c76a6e ] || fail "-m3 -b65537b from a pipe: archive md5 $got"
+[ "$got" = 7e376d1fdd77ea54c3be3c34a2be2a37 ] || fail "-m3 -b65537b from a pipe: archive md5 $got"
 "$OSREP" -d - - < "$TMP/p.osr" > "$TMP/p.dec" 2>/dev/null || fail "-m3 -b65537b from a pipe: does not decode"
 cmp -s "$TMP/t300k" "$TMP/p.dec" || fail "-m3 -b65537b from a pipe: round trip differs"
 pass=$((pass + 1))

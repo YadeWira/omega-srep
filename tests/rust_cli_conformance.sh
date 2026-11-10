@@ -10,7 +10,8 @@
 #      *front end* -- the option parsing, the defaults, the container choice --
 #      and cross-decoding in both directions.
 #
-#      Since phase 5c-2 the port's default container is v5, which the C++ cannot
+#      The port's default container (v5 through 2.4.0, v6 since 3.0.0) is one
+#      the C++ cannot
 #      write, so this layer pins `--format=v4` on the Rust side: what it is
 #      asking is "can the port still reproduce the oracle exactly when asked
 #      for the oracle's format", and that question outlives the default flip.
@@ -65,6 +66,19 @@ say "osrep: $("$RS" --version) / $("$CXX_BIN/osrep" --version)"
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
+
+# The 3.0.0 port writes v6 (default) and v4; v5 is read-only. When
+# OSREP_PORT_BIN runs the port through this suite, the assertions that write
+# v5 are skipped (the v5 decoder is tested in pas-v5 and v5_readonly). The
+# archived Rust still writes v5, so a plain run keeps them.
+RUSTV5="${OSREP_RUST_BIN:-$RUST_TARGET/x86_64-unknown-linux-gnu/release/osrep}"
+printf 'v5 probe\n' > "$TMP/v5probe.in"
+RS_WRITES_V5=0
+if "$RS" --format=v5 -m0 --seed=7 "$TMP/v5probe.in" "$TMP/v5probe.osr" >/dev/null 2>&1 \
+   && [ "$(head -c 4 "$TMP/v5probe.osr" 2>/dev/null)" = "OSR5" ]; then
+    RS_WRITES_V5=1
+fi
+rm -f "$TMP/v5probe.in" "$TMP/v5probe.osr"
 
 python3 - "$TMP" <<'PY'
 import os, sys
@@ -543,7 +557,7 @@ for a in "-dñ" "-d1m:ñ" "-dé5"; do
 done
 pass=$((pass + 1))
 
-say "-dup: an archive the C++ can read, and the same payload inside v5"
+say "-dup: an archive the C++ can read, and the same payload inside the default container"
 for m in m3 m4 m5; do
     "$CXX_BIN/osrep" -dup -$m --seed=7 "$TMP/dup1m.bin" "$TMP/cpp.osr" >/dev/null 2>&1 \
         || fail "cpp -dup -$m failed"
@@ -553,9 +567,9 @@ for m in m3 m4 m5; do
     # The C++ auto-detects the trailer of the Rust archive, and vice versa.
     "$CXX_BIN/osrep" -d "$TMP/rs.osr" "$TMP/cpp.dec" >/dev/null 2>&1 || fail "-dup -$m: C++ cannot decode the Rust archive"
     cmp -s "$TMP/dup1m.bin" "$TMP/cpp.dec" || fail "-dup -$m: cross-decode differs"
-    # And the default container, v5 since phase 5c-2: the C++ cannot read it,
+    # And the default container: the C++ cannot read v5 or v6,
     # so only the port's own round-trip is checked here
-    # (tests/dup_v5_conformance.sh does the payload comparison).
+    # (tests/dup_v5_conformance.sh does the v5 payload comparison).
     "$RS" -dup -$m --seed=7 "$TMP/dup1m.bin" "$TMP/rs5.osr" >/dev/null 2>&1 \
         || fail "rust --format=v5 -dup -$m failed"
     "$RS" -d "$TMP/rs5.osr" "$TMP/rs5.dec" >/dev/null 2>&1 || fail "-dup -$m v5: will not decode"
@@ -636,7 +650,9 @@ cmp -s "$TMP/n1.osr" "$TMP/n2.osr" && fail "two unseeded runs produced the same 
 # the 5c-2 default flip was predicted to move, and pinning both offsets is what
 # keeps it from silently drifting again.
 SEED=00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff
-for fmt_off in "v4 16 48" "v5 28 60"; do
+fmts=("v4 16 48")
+[ "$RS_WRITES_V5" = 1 ] && fmts+=("v5 28 60")
+for fmt_off in "${fmts[@]}"; do
     set -- $fmt_off
     OSREP_SEED_HEX=$SEED "$RS" -m4 --format="$1" --seed=1 "$TMP/dup1m.bin" "$TMP/hex.$1.osr" >/dev/null 2>&1
     stored=$(python3 -c "print(open('$TMP/hex.$1.osr','rb').read()[$2:$3].hex())")
@@ -653,9 +669,9 @@ say "the C++ refuses a v5 archive cleanly, and says why"
 # on a 1.0.x binary hits. It must be a clean refusal -- the archive is not
 # corrupt, it is newer -- and never a crash or a partial file, which is the
 # failure mode that would silently hand someone wrong bytes.
-"$RS" -m4 --seed=7 tests/corpus/text.bin "$TMP/v5.osr" >/dev/null 2>&1 \
-    || fail "the port could not write its own default container"
-[ "$(head -c 4 "$TMP/v5.osr")" = "OSR5" ] || fail "the default container is not v5"
+"$RUSTV5" -m4 --seed=7 tests/corpus/text.bin "$TMP/v5.osr" >/dev/null 2>&1 \
+    || fail "the archived Rust could not write a v5 archive"
+[ "$(head -c 4 "$TMP/v5.osr")" = "OSR5" ] || fail "the Rust did not write v5"
 rm -f "$TMP/v5.out"
 # `set -e` is on and these are expected to fail, so the status is captured.
 rc=0; "$CXX_BIN/osrep" -d "$TMP/v5.osr" "$TMP/v5.out" >"$TMP/v5.err" 2>&1 || rc=$?
@@ -726,7 +742,9 @@ PY2
 }
 show3() { printf '%s' "$1" | sed ':a;s/\B[0-9]\{3\}\>/,&/;ta'; }
 insize=$(stat -c%s "$TMP/dupg.bin")
-for spec in "cxx -m3 Index-LZ" "cxx -m3f Future-LZ" "cxx -m4o I/O" "port4 -m3 Index-LZ" "port5 -m3 v5"; do
+specs=("cxx -m3 Index-LZ" "cxx -m3f Future-LZ" "cxx -m4o I/O" "port4 -m3 Index-LZ")
+[ "$RS_WRITES_V5" = 1 ] && specs+=("port5 -m3 v5")
+for spec in "${specs[@]}"; do
     set -- $spec
     rm -f "$TMP/di.osr" "$TMP/di.out"
     case "$1" in
@@ -881,7 +899,7 @@ assert b[-4:] == b"ODUP"
 open(p, "wb").write(b)
 PY2
 }
-"$RS" --seed=7 tests/corpus/text.bin "$TMP/v5o.osr" >/dev/null 2>&1
+"$RUSTV5" --seed=7 tests/corpus/text.bin "$TMP/v5o.osr" >/dev/null 2>&1
 v5odup "$TMP/v5o.osr" || fail "v5 ending in ODUP: could not make one"
 rm -f "$TMP/od.out"
 "$RS" -d "$TMP/v5o.osr" "$TMP/od.out" >/dev/null 2>"$TMP/od.err" && cmp -s "$TMP/od.out" tests/corpus/text.bin \
@@ -1381,7 +1399,7 @@ done <<EOF
 c805e2c10d95ab8585977dfb3e50cf46 $TMP/txtmut200k -m3 -c8 -b4kb -l17
 124da8db254b1cc36b5a7d7f2d1993eb $TMP/txtmut200k -m3 -c8 -b4kb -l100
 EOF
-# The v5 default container takes the same matches.
+# The default container takes the same matches.
 for l in 16 17 24 100 498; do
     rc=0; "$RS" --seed=7 -m3 -c8 -b4kb "-l$l" "$TMP/txtmut200k" "$TMP/bl.osr" >/dev/null 2>"$TMP/bl.err" || rc=$?
     [ "$rc" -eq 0 ] || fail "-m3 -c8 -b4kb -l$l (v5) exited $rc: $(grep -a -m1 -E 'panicked|ERROR' "$TMP/bl.err")"
@@ -1400,7 +1418,8 @@ say "CDC (-m1/-m2) match lengths use the header's BASE_LEN, so the archives deco
 # at -d with "literal run does not fill the block". The lengths now count
 # from BASE_LEN; where it already was the min match nothing changes, so the
 # controls at the end keep the bytes 2.2.0 wrote. The fixed archives are
-# pinned (Rust and Pascal agree); the C++ still writes the broken ones.
+# pinned in v4 (Rust and Pascal agree; v5 is read-only since 3.0.0); the C++
+# still writes the broken ones.
 python3 - "$TMP" <<'PY'
 import os, random, sys
 d = sys.argv[1]
@@ -1412,7 +1431,7 @@ open(os.path.join(d, "cdc_t300k"), "wb").write(open("tests/corpus/text.bin", "rb
 open(os.path.join(d, "cdc_z1m"), "wb").write(bytes(1 << 20))
 PY
 if [ -n "${OSREP_CDC_POLY:-}" ]; then
-    say "  (the 18 pinned CDC archives are the SSE4.2 boundary hash; skipped because OSREP_CDC_POLY forces the polynomial one)"
+    say "  (the 16 pinned CDC archives are the SSE4.2 boundary hash; skipped because OSREP_CDC_POLY forces the polynomial one)"
 fi
 while read -r want input args; do
     if [ -n "${OSREP_CDC_POLY:-}" ]; then continue; fi
@@ -1429,23 +1448,22 @@ while read -r want input args; do
     rm -f "$TMP/cb.osr" "$TMP/cb.dec"
     pass=$((pass + 1))
 done <<EOF
-a5de3ae088ccfbf4d052cdd9f3bdf79e cdc_u300x4 -m1 -c64 -l8
+e339307302c10bfbb04920608eddb320 cdc_u300x4 -m1 -c64 -l8 --format=v4
 b524c3d98fc45504728bbd23bda93638 cdc_u300x4 -m2 -c64 -l8 --format=v4
-a5de3ae088ccfbf4d052cdd9f3bdf79e cdc_u300x4 -m1o -c64 -l8
-70e21360fcdf42120f0fe484bd637bab cdc_u20000x3 -m1 -dl16
+dbc908681b0da4bd8f0f83254446d32e cdc_u300x4 -m1o -c64 -l8 --format=v4
 b30a63bad32c44c1ec181852a4682071 cdc_u20000x3 -m1 -dl16 --format=v4
-6ded0c041446fbae96ac113219b079d3 cdc_u20000x3 -m2f -dl24
-bfe9358c21e0d646ae17646b3ed7509a cdc_u300x4 -m1 -c64 -l100 -dl64
-fa338c1cf020f2e8a4d7d0b1837aed0f cdc_t300k -m1 -c256 -l768
+0a43b8242c217ee9d01919e5be436ca0 cdc_u20000x3 -m2f -dl24 --format=v4
+2cdc85f196049cb6312352b7948e7f23 cdc_u300x4 -m1 -c64 -l100 -dl64 --format=v4
+d3ea67ae65c3000a8805b387fffa3016 cdc_t300k -m1 -c256 -l768 --format=v4
 8102defdf2cdabc0ca6262b4649ba7e7 cdc_u2000x3 -m2 -c64 -l600 --format=v4
-8388359a339f58a4bd81616b5960cd6f cdc_u2000x3 -m1 -c64 -l600
-1f96c037f642a3757af061ff79cc76c9 cdc_z1m -m2 -c512 -l1536
-d1fe91c313ddb8f7773a584ba0175fbc cdc_t300k -m1 -dl32
-fa338c1cf020f2e8a4d7d0b1837aed0f cdc_t300k -m1 -c64 -l768 -dl768
-d1fe91c313ddb8f7773a584ba0175fbc cdc_t300k -m1
-d1fe91c313ddb8f7773a584ba0175fbc cdc_t300k -m2
-70e21360fcdf42120f0fe484bd637bab cdc_u20000x3 -m1
-83ddf5a7fbf852bbdf1c913c36a4e9c9 cdc_u2000x3 -m2 -c64 -l512
+b248dfb4cdb096be92d72d2149ed73b5 cdc_u2000x3 -m1 -c64 -l600 --format=v4
+ab37a2abc670200f888f87aba45022e2 cdc_z1m -m2 -c512 -l1536 --format=v4
+802d8b740e5fec4a8dfe2d496ca756c0 cdc_t300k -m1 -dl32 --format=v4
+d3ea67ae65c3000a8805b387fffa3016 cdc_t300k -m1 -c64 -l768 -dl768 --format=v4
+802d8b740e5fec4a8dfe2d496ca756c0 cdc_t300k -m1 --format=v4
+802d8b740e5fec4a8dfe2d496ca756c0 cdc_t300k -m2 --format=v4
+b30a63bad32c44c1ec181852a4682071 cdc_u20000x3 -m1 --format=v4
+35f4290095e92e567438af8724a6b7f7 cdc_u2000x3 -m2 -c64 -l512 --format=v4
 EOF
 say "-m3 with blocks off the chunk grid writes archives that decode"
 # Any -b that is not a multiple of the chunk L (-b65537b, -l8192 -b100kb,
@@ -1481,7 +1499,7 @@ for opt in -t1 -t8 -a4/4 -mmap -nommap -ia+ -ia- -slp -slp- -slp+ -pc -pc16; do
         || fail "$opt changed the archive. The docs say it has no effect -- fix whichever is wrong."
     pass=$((pass + 1))
 done
-# -ia- does act on the default container too: the v5 -m5 -l1000 archive of
+# -ia- does act on the default container too: the -m5 -l1000 archive of
 # text.bin must move with it (and not with -ia+).
 "$RS" --seed=7 -m5 -l1000 tests/corpus/text.bin "$TMP/ia_base.osr" >/dev/null 2>&1 \
     || fail "could not write the -m5 -l1000 archive"
@@ -1489,10 +1507,10 @@ done
     || fail "-ia+ was rejected"
 "$RS" --seed=7 -m5 -l1000 -ia- tests/corpus/text.bin "$TMP/ia_minus.osr" >/dev/null 2>&1 \
     || fail "-ia- was rejected"
-cmp -s "$TMP/ia_base.osr" "$TMP/ia_plus.osr" || fail "-ia+ (the default) changed the v5 archive"
-cmp -s "$TMP/ia_base.osr" "$TMP/ia_minus.osr" && fail "-ia- left the v5 -m5 -l1000 archive unchanged"
+cmp -s "$TMP/ia_base.osr" "$TMP/ia_plus.osr" || fail "-ia+ (the default) changed the archive"
+cmp -s "$TMP/ia_base.osr" "$TMP/ia_minus.osr" && fail "-ia- left the -m5 -l1000 archive unchanged"
 "$RS" -d "$TMP/ia_minus.osr" "$TMP/ia_minus.dec" >/dev/null 2>&1 \
-    && cmp -s tests/corpus/text.bin "$TMP/ia_minus.dec" || fail "the v5 -ia- archive does not round-trip"
+    && cmp -s tests/corpus/text.bin "$TMP/ia_minus.dec" || fail "the -ia- archive does not round-trip"
 rm -f "$TMP/ia_base.osr" "$TMP/ia_plus.osr" "$TMP/ia_minus.osr" "$TMP/ia_minus.dec"
 pass=$((pass + 1))
 # -rem is a comment in both implementations, and takes a value.
@@ -1512,7 +1530,7 @@ say "a failed run takes back its output, and nothing else"
 # device, a symlink named as the output, the input, or a file it did not open.
 F="$TMP/fail"; mkdir -p "$F"
 { head -c 1048576 tests/corpus/text.bin; head -c 2097152 tests/corpus/random.bin; } > "$F/in.bin"
-"$RS" -v0 --seed=7 -b1mb "$F/in.bin" "$F/ok.osr" >/dev/null 2>&1 || fail "fail: could not write ok.osr"
+"$RUSTV5" -v0 --seed=7 -b1mb "$F/in.bin" "$F/ok.osr" >/dev/null 2>&1 || fail "fail: could not write ok.osr"
 "$RS" -v0 --seed=7 --format=v4 -m3f -b1mb -index="$F/ok.ix" "$F/in.bin" "$F/okf.osr" >/dev/null 2>&1 \
     || fail "fail: could not write okf.osr"
 "$RS" -v0 --seed=7 -dup --format=v4 "$F/in.bin" "$F/dup.osr" >/dev/null 2>&1 || fail "fail: could not write dup.osr"
@@ -1798,7 +1816,7 @@ say "--verify: what it accepts, what it catches, and what it admits it misses"
 # The one thing v5 can do that v4 cannot: answer "is this archive sound?"
 # without reconstructing it. v4 carries no checksum anywhere, so the only
 # answer there is a full decompress.
-"$RS" --seed=7 -m3 tests/corpus/text.bin "$TMP/vf.osr" >/dev/null 2>&1 \
+"$RUSTV5" --seed=7 -m3 tests/corpus/text.bin "$TMP/vf.osr" >/dev/null 2>&1 \
     || fail "could not write a v5 archive to verify"
 "$RS" --verify "$TMP/vf.osr" >/dev/null 2>&1 || fail "--verify rejected a healthy v5 archive"
 # Every mode, and -dup, which adds the meta blob and its CRC.
@@ -1939,7 +1957,11 @@ done
 # below). Kept as the edge it was: an input with no newline byte whose
 # archive is 1024 bytes, and one byte more.
 tr -d '\n' < tests/corpus/random.bin | head -c 1000 > "$TMP/fdnonl.bin"
-for spec in "904|" "920|--format=v4"; do
+# The input size that makes the default container's archive land on 1024 and
+# 1025 bytes depends on the container (v6's header and footer are larger than
+# v5's): 904 was measured for v5, 896 for v6.
+if [ "$RS_WRITES_V5" = 1 ]; then fd_n=904; else fd_n=896; fi
+for spec in "$fd_n|" "920|--format=v4"; do
     n=${spec%%|*}; f=${spec#*|}
     head -c "$n" "$TMP/fdnonl.bin" > "$TMP/fde0.bin"; head -c $((n + 1)) "$TMP/fdnonl.bin" > "$TMP/fde1.bin"
     seed=

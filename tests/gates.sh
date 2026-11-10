@@ -2,8 +2,9 @@
 # Gate runner.
 #
 #   tests/gates.sh core   the suite that must pass without the oracles: the
-#                         golden cases (archives, CLI, hashes), the v6 suite,
-#                         its frame self-test and the decoder's crash-replay.
+#                         golden cases (archives, CLI, hashes), the v5
+#                         read-only fixtures, the v6 suite, its frame
+#                         self-test and the decoder's crash-replay.
 #                         harness_selftest builds the Rust harness, so it is
 #                         differential.
 #   tests/gates.sh full   core plus the differential suites, which need the
@@ -50,7 +51,7 @@ run() {
     shift
     timeout 3600 "$@" > "$LOGS/$tag.log" 2>&1
     local rc=$?
-    printf '%-22s rc=%s :: %s\n' "$tag" "$rc" "$(grep -v '^\s*$' "$LOGS/$tag.log" | tail -1)"
+    printf '%-22s rc=%s :: %s\n' "$tag" "$rc" "$(grep -v '^[[:space:]]*$' "$LOGS/$tag.log" | tail -1)"
     [ "$rc" -eq 0 ] || FAILED=$((FAILED + 1))
 }
 
@@ -64,6 +65,7 @@ fi
 
 printf '== core (no oracles)\n'
 run golden       bash tests/golden/check.sh
+run v5-readonly  bash tests/v5_readonly.sh
 run v6           bash tests/v6_conformance.sh
 run v6-frame     bash tests/v6_frame_selftest.sh
 run fuzz-replay  bash tests/fuzz_regression.sh

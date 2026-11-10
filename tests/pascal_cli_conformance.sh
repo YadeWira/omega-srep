@@ -36,14 +36,15 @@ case "$PA" in /*) PAX="$PA";; *) PAX="$ROOT/$PA";; esac
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 pass=0
 
-say "--version y --help, byte a byte contra el binario Rust"
+say "--version y --help: mismo exit; los textos de la 3.0.0 los fija la golden"
+# Hasta la 2.4.0 el texto era byte a byte el del Rust. La 3.0.0 lista v6 y
+# rechaza --format=v5, asi que su texto es propio: tests/golden/cli/ lo fija.
 for flag in --version --help -V -h '-?'; do
     "$RS" "$flag" >"$TMP/r.out" 2>"$TMP/r.err"; rrc=$?
     "$PA" "$flag" >"$TMP/p.out" 2>"$TMP/p.err"; prc=$?
     [ "$rrc" -eq "$prc" ] || fail "$flag: exit $prc en Pascal, $rrc en Rust"
-    cmp -s "$TMP/r.out" "$TMP/p.out" \
-        || fail "$flag: stdout difiere ($(stat -c%s "$TMP/r.out") vs $(stat -c%s "$TMP/p.out") bytes)"
-    # Los dos escriben a stdout y dejan stderr vacio; si eso cambia hay que
+    [ -s "$TMP/p.out" ] || fail "$flag: el Pascal no escribio a stdout"
+    # El Pascal escribe a stdout y deja stderr vacio; si eso cambia hay que
     # saberlo, porque un consumidor que captura el fd equivocado no ve nada.
     [ ! -s "$TMP/p.err" ] || fail "$flag: el Pascal escribio en stderr"
     pass=$((pass + 1))
@@ -93,10 +94,17 @@ say "la misma linea de comandos da el mismo archivo, byte a byte"
 # --seed=7 en todas: sin semilla la clave es aleatoria y los dos difieren a
 # proposito. Incluye lo que la fase 6 no podia cubrir sin CLI: el corte Gear,
 # --dup-paranoid y las --chunk-*.
+# The archive comparisons ask for v4: the Rust defaults to v5 and the 3.0.0
+# port to v6, so a case without an explicit format would compare two different
+# containers. v4 is the one both still write.
+v4args() {
+    case " $1 " in *" --format="*) printf '%s' "$1" ;; *) printf '%s --format=v4' "$1" ;; esac
+}
 while IFS= read -r args; do
     [ -n "$args" ] || continue
     rm -f "$TMP/r.osr" "$TMP/p.osr" "$TMP/r.ix" "$TMP/p.ix"
     a_r=${args//@IX@/$TMP/r.ix}; a_p=${args//@IX@/$TMP/p.ix}
+    a_r=$(v4args "$a_r"); a_p=$(v4args "$a_p")
     rrc=0; "$RS" --seed=7 $a_r "$IN" "$TMP/r.osr" >/dev/null 2>&1 || rrc=$?
     prc=0; "$PA" --seed=7 $a_p "$IN" "$TMP/p.osr" >/dev/null 2>&1 || prc=$?
     [ "$rrc" -eq "$prc" ] || fail "[$args]: exit $prc en Pascal, $rrc en Rust"
@@ -155,8 +163,9 @@ ARGS
 
 say "por un pipe: stdin a stdout, con y sin -s"
 for args in "" "--format=v4" "--format=v4 -m5f" "-m0" "-s$(stat -c%s "$IN")" "-s99999999"; do
-    "$RS" --seed=7 $args - - <"$IN" >"$TMP/r.pipe" 2>/dev/null || fail "[$args]: el Rust fallo por pipe"
-    "$PA" --seed=7 $args - - <"$IN" >"$TMP/p.pipe" 2>/dev/null || fail "[$args]: el Pascal fallo por pipe"
+    use=$(v4args "$args")
+    "$RS" --seed=7 $use - - <"$IN" >"$TMP/r.pipe" 2>/dev/null || fail "[$args]: el Rust fallo por pipe"
+    "$PA" --seed=7 $use - - <"$IN" >"$TMP/p.pipe" 2>/dev/null || fail "[$args]: el Pascal fallo por pipe"
     cmp -s "$TMP/r.pipe" "$TMP/p.pipe" || fail "[$args]: por pipe los archivos difieren"
     "$PA" -d - - <"$TMP/p.pipe" >"$TMP/p.out" 2>/dev/null || fail "[$args]: -d por pipe fallo"
     cmp -s "$IN" "$TMP/p.out" || fail "[$args]: la vuelta por pipe no da la entrada"
@@ -249,14 +258,14 @@ K16=00112233445566778899aabbccddeeff
 for case in "vmac:$K16$K16" "siphash:$K16" "siphash:${K16}AB"; do
     hash=${case%%:*}; hex=${case#*:}
     rm -f "$TMP/r.osr" "$TMP/p.osr"
-    OSREP_SEED_HEX=$hex "$RS" --seed=7 -hash=$hash "$IN" "$TMP/r.osr" >/dev/null 2>&1
-    OSREP_SEED_HEX=$hex "$PA" --seed=7 -hash=$hash "$IN" "$TMP/p.osr" >/dev/null 2>&1
+    OSREP_SEED_HEX=$hex "$RS" --seed=7 -hash=$hash --format=v4 "$IN" "$TMP/r.osr" >/dev/null 2>&1
+    OSREP_SEED_HEX=$hex "$PA" --seed=7 -hash=$hash --format=v4 "$IN" "$TMP/p.osr" >/dev/null 2>&1
     cmp -s "$TMP/r.osr" "$TMP/p.osr" || fail "OSREP_SEED_HEX $case: los archivos difieren"
     pass=$((pass + 1))
 done
 # sin --seed, con la variable bien medida: tiene que ganarle al sorteo
-OSREP_SEED_HEX=$K16$K16 "$RS" "$IN" "$TMP/r.osr" >/dev/null 2>&1
-OSREP_SEED_HEX=$K16$K16 "$PA" "$IN" "$TMP/p.osr" >/dev/null 2>&1
+OSREP_SEED_HEX=$K16$K16 "$RS" --format=v4 "$IN" "$TMP/r.osr" >/dev/null 2>&1
+OSREP_SEED_HEX=$K16$K16 "$PA" --format=v4 "$IN" "$TMP/p.osr" >/dev/null 2>&1
 cmp -s "$TMP/r.osr" "$TMP/p.osr" || fail "OSREP_SEED_HEX sin --seed: los archivos difieren"
 pass=$((pass + 1))
 # y sin nada, dos corridas dan claves distintas: la clave es por corrida
@@ -661,9 +670,10 @@ case "$PA" in *linux*)
     # comprimir a un FIFO o a un pipe: el archivo sale entero y despues falla
     # el seek que lo mide (o, con -dup, mide 0); antes se colgaba en el open
     for c in "" "--format=v4" "-m3f --format=v4" "-dup" "-dup --format=v4" "-m0"; do
-        samesh "comprimir $c a un FIFO" 'rm -f fo; mkfifo fo; (timeout 5 md5sum <fo >fo.sum) & "$B" -v0 --seed=7 '"$c"' in.bin fo; r=$?; wait; cat fo.sum; rm -f fo fo.sum; exit $r'
-        samesh "comprimir $c a /dev/stdout" '"$B" -v0 --seed=7 '"$c"' in.bin /dev/stdout | md5sum'
-        samesh "comprimir $c desde un FIFO" 'rm -f fi; mkfifo fi; (timeout 5 cat in.bin >fi) & "$B" -v0 --seed=7 '"$c"' fi o.out; r=$?; wait; md5sum <o.out; rm -f fi o.out; exit $r'
+        cc=$(v4args "$c")
+        samesh "comprimir $c a un FIFO" 'rm -f fo; mkfifo fo; (timeout 5 md5sum <fo >fo.sum) & "$B" -v0 --seed=7 '"$cc"' in.bin fo; r=$?; wait; cat fo.sum; rm -f fo fo.sum; exit $r'
+        samesh "comprimir $c a /dev/stdout" '"$B" -v0 --seed=7 '"$cc"' in.bin /dev/stdout | md5sum'
+        samesh "comprimir $c desde un FIFO" 'rm -f fi; mkfifo fi; (timeout 5 cat in.bin >fi) & "$B" -v0 --seed=7 '"$cc"' fi o.out; r=$?; wait; md5sum <o.out; rm -f fi o.out; exit $r'
     done
     # un -dup con matches que caen en un bloque anterior: el Rust 2.1.2 abria
     # el cuerpo solo para escribir y fallaba con EBADF al releerlo
@@ -709,6 +719,8 @@ say "los porcentajes: el mismo texto que el Rust, tambien en los empates"
 # elegidos (barridos con el Rust) para que algun porcentaje caiga en un empate
 # racional: c = la linea final al comprimir, d = al descomprimir, i = la de -i,
 # s = el "% of file" de -i. La linea final trae segundos, que no se comparan.
+# The rows are v4 (v5 is read-only since 3.0.0) and the input sizes were
+# re-picked so the same 23 ties happen with v4's archive sizes.
 PS="$TMP/pct"; mkdir "$PS"
 head -c 16000 tests/corpus/text.bin > "$PS/src"
 pct_line() { tr '\r' '\n' < "$1" | grep -a ' -> ' | sed -E 's/  [0-9]+\.[0-9]{3} sec$//'; }
@@ -716,6 +728,7 @@ is_tie() { [ "$2" -gt 0 ] && [ $(( (20000 * $1) % $2 )) -eq 0 ] && [ $(( (20000 
 ties=0
 while read -r n opts; do
     [ -n "$n" ] || continue
+    opts=$(v4args "$opts")
     head -c "$n" "$PS/src" > "$PS/in"
     for w in r p; do
         if [ "$w" = r ]; then bin="$RS"; else bin="$PA"; fi
@@ -743,23 +756,22 @@ while read -r n opts; do
     fi
     pass=$((pass + 1))
 done <<'PCT'
+152 -m3 -l0
 256 -m3 -l0
-768 -m3 -l0
+1176 -m3 -l0
 1280 -m3 -l0
-4000 -m3 -l0
-5920 -m3 -l0
-12000 -m3 -l0
-136 -m3 -l0
-648 -m3 -l0
-1699 -m3 -l0
-1827 -m3 -l0
-1891 -m3 -l0
-4067 -m3 -l0
-5859 -m3 -l0
-6179 -m3 -l0
-9315 -m3 -l0
-10659 -m3 -l0
-14819 -m3 -l0
+2184 -m3 -l0
+3720 -m3 -l0
+3840 -m3 -l0
+5256 -m3 -l0
+6400 -m3 -l0
+6792 -m3 -l0
+8328 -m3 -l0
+9472 -m3 -l0
+9864 -m3 -l0
+11400 -m3 -l0
+12936 -m3 -l0
+14472 -m3 -l0
 256 --format=v4 -m3
 1280 --format=v4 -m3
 3840 --format=v4 -m3
@@ -855,13 +867,13 @@ fcase 'cp "$I/badok.osr" a.osr; "$B" -v0 -d -delete a.osr o.out' o.out
 fcase '"$B" -v0 -d -index=x.ix "$I/okf.osr" o.out' o.out
 fcase '"$B" -v0 -d -index="$I/bad.ix" "$I/okf.osr" o.out' o.out
 fcase '"$B" -v0 -d "$I/badmeta.osr" o.out' o.out
-fcase '"$B" -v0 --seed=7 $BIG "$I/in.bin" x.osr' x.osr
+fcase '"$B" -v0 --seed=7 --format=v4 $BIG "$I/in.bin" x.osr' x.osr
 fcase '"$B" -v0 --seed=7 --format=v4 -m3f -index=x.ix $BIG "$I/in.bin" x.osr' x.osr x.ix
-fcase '"$B" -v0 --seed=7 -dup $BIG "$I/in.bin" x.osr' x.osr
-fcase 'echo keep > x.osr; "$B" -v0 --seed=7 $BIG "$I/in.bin" x.osr' x.osr
-fcase 'cp "$I/in.bin" a.bin; "$B" -v0 --seed=7 -delete $BIG a.bin x.osr' x.osr
+fcase '"$B" -v0 --seed=7 --format=v4 -dup $BIG "$I/in.bin" x.osr' x.osr
+fcase 'echo keep > x.osr; "$B" -v0 --seed=7 --format=v4 $BIG "$I/in.bin" x.osr' x.osr
+fcase 'cp "$I/in.bin" a.bin; "$B" -v0 --seed=7 --format=v4 -delete $BIG a.bin x.osr' x.osr
 fcase '"$B" -v0 --seed=7 --format=v4 -m3f -index=x.ix nope.bin x.osr' x.osr x.ix
-fcase 'echo keep > x.osr; "$B" -v0 --seed=7 nope.bin x.osr'
+fcase 'echo keep > x.osr; "$B" -v0 --seed=7 --format=v4 nope.bin x.osr'
 grep -q keep "$F/p/x.osr" || fail "una corrida que no abrio x.osr la cambio"
 # la entrada con otro nombre como salida: se rechaza antes del open (ver la
 # seccion siguiente), asi que no hay nada que truncar ni que borrar
@@ -884,7 +896,7 @@ fi
 # un -b chico comprimia (exit 0) donde el Rust fallaba; sin tope, -b100000g
 # crecia hasta que lo mataban. Este es el caso acotado (1 GiB de direcciones).
 if [ "$FWINE" = 0 ]; then
-    fcase '"$B" -v0 --seed=7 -b256mb -d1g -dh1mb "$I/in.bin" x.osr' x.osr
+    fcase '"$B" -v0 --seed=7 --format=v4 -b256mb -d1g -dh1mb "$I/in.bin" x.osr' x.osr
 fi
 
 say "ningun archivo que la corrida escribe es uno que lee, ni otro que escribe"
@@ -929,15 +941,15 @@ scase() {
     pass=$((pass + 1))
 }
 # otras escrituras y links de la entrada, y de -index= a la vuelta
-scase 3 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 in.bin ./in.bin' in.bin
-scase 3 'cp "$I/in.bin" in.bin; ln in.bin y.bin; "$B" -v0 --seed=7 in.bin y.bin' in.bin
+scase 3 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 --format=v4 in.bin ./in.bin' in.bin
+scase 3 'cp "$I/in.bin" in.bin; ln in.bin y.bin; "$B" -v0 --seed=7 --format=v4 in.bin y.bin' in.bin
 scase 3 'cp "$I/ok.osr" ok.osr; ln ok.osr ok; "$B" -v0 -d ok.osr' ok.osr
 scase 3 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 --format=v4 -m3f -index=./in.bin in.bin o.osr' in.bin
 scase 3 'cp "$I/ok.ix" ok.ix; "$B" -v0 -d -index=ok.ix "$I/okf.osr" ./ok.ix' ok.ix
 # dos salidas que son un archivo: se rechaza al abrir la segunda, y la
 # primera, nueva, se borra
 scase 3 '"$B" -v0 --seed=7 --format=v4 -m3f -index=o.osr "$I/in.bin" ./o.osr'
-scase 3 '"$B" -v0 --seed=7 -temp=t.tmp - ./t.tmp < "$I/in.bin"'
+scase 3 '"$B" -v0 --seed=7 --format=v4 -temp=t.tmp - ./t.tmp < "$I/in.bin"'
 # -vmfile= sobre lo que lee el decoder
 scase 3 'cp "$I/far.osr" far.osr; "$B" -v0 -mem1mb -vmblock=128kb -vmfile=./far.osr -d far.osr o.out' far.osr
 scase 3 'cp "$I/ok.ix" ok.ix; "$B" -v0 -vmfile=./ok.ix -d -index=ok.ix "$I/okf.osr" o.out' ok.ix
@@ -957,14 +969,14 @@ cmp -s "$F/p/o.out" "$F/in/far.bin" || fail "-vmfile=o.out sin derrame: la vuelt
 # los archivos que abrio el shell para stdin y stdout tambien cuentan, aunque
 # ningun nombre de la linea los delate: como la salida, -temp=, -index= o
 # -vmfile=
-scase 3 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 - in.bin < in.bin' in.bin
-scase 3 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 -b0 - in.bin < in.bin' in.bin
+scase 3 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 --format=v4 - in.bin < in.bin' in.bin
+scase 3 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 --format=v4 -b0 - in.bin < in.bin' in.bin
 scase 3 'cp "$I/badok.osr" badok.osr; "$B" -v0 -d - badok.osr < badok.osr' badok.osr
 scase 3 'cp "$I/ok.osr" ok.osr; "$B" -v0 -d - ok.osr < ok.osr' ok.osr
-scase 3 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 -temp=in.bin - o.osr < in.bin' in.bin
+scase 3 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 --format=v4 -temp=in.bin - o.osr < in.bin' in.bin
 scase 3 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 --format=v4 -m3f -index=in.bin - o.osr < in.bin' in.bin
 scase 3 'cp "$I/far.osr" far.osr; "$B" -v0 -mem1mb -vmblock=128kb -vmfile=far.osr -d - o.out < far.osr' far.osr
-scase 3 '"$B" -v0 --seed=7 -temp=./o.osr < "$I/in.bin" > o.osr'
+scase 3 '"$B" -v0 --seed=7 --format=v4 -temp=./o.osr < "$I/in.bin" > o.osr'
 scase 3 '"$B" -v0 --seed=7 --format=v4 -m3f -index=./o.osr - - < "$I/in.bin" > o.osr'
 scase 3 '"$B" -v0 -mem1mb -vmblock=128kb -vmfile=o.out -d "$I/far.osr" - > o.out'
 [ -e "$F/p/o.out" ] || fail "-vmfile= sobre stdout: se borro"
@@ -972,14 +984,14 @@ scase 3 '"$B" -v0 -mem1mb -vmblock=128kb -vmfile=o.out -d "$I/far.osr" - > o.out
 # para leer y escribir (`1<> x`) sobre el archivo que la corrida lee, stdin y
 # stdout el mismo archivo. Hasta la 2.3.0 todos con exit 0: la entrada
 # danada, o con -delete borrada
-scase 3 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 -delete in.bin - >> in.bin' in.bin
-scase 3 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 in.bin - 1<> in.bin' in.bin
+scase 3 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 --format=v4 -delete in.bin - >> in.bin' in.bin
+scase 3 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 --format=v4 in.bin - 1<> in.bin' in.bin
 scase 3 'cp "$I/ok.osr" ok.osr; "$B" -v0 -delete -d ok.osr - >> ok.osr' ok.osr
 scase 3 'cp "$I/ok.osr" ok.osr; "$B" -v0 -d ok.osr - >> ok.osr' ok.osr
 scase 3 'cp "$I/ok.osr" ok.osr; "$B" -v0 -d ok.osr - 1<> ok.osr' ok.osr
 scase 3 'cp "$I/ok.ix" ok.ix; "$B" -v0 -d -index=ok.ix "$I/okf.osr" - >> ok.ix' ok.ix
-scase 3 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 - - < in.bin >> in.bin' in.bin
-scase 3 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 - - < in.bin 1<> in.bin' in.bin
+scase 3 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 --format=v4 - - < in.bin >> in.bin' in.bin
+scase 3 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 --format=v4 - - < in.bin 1<> in.bin' in.bin
 scase 3 'cp "$I/ok.osr" ok.osr; "$B" -v0 -d - - < ok.osr 1<> ok.osr' ok.osr
 # el archivo de stderr tambien, cuando la corrida escribe ahi al terminar
 # bien (las lineas de progreso y resumen, -bar, los avisos): `2>&1` con la
@@ -987,46 +999,46 @@ scase 3 'cp "$I/ok.osr" ok.osr; "$B" -v0 -d - - < ok.osr 1<> ok.osr' ok.osr
 # desde una terminal), `2>o` lo escribia sobre los primeros bytes de la
 # salida, `2>>x` al final de la entrada. Todos con exit 0, y con -delete sin
 # la entrada. Con -v0 no va nada ahi, y `-v0 x - > o 2>&1` sigue andando
-scase 3 'cp "$I/in.bin" in.bin; "$B" --seed=7 -delete in.bin - > o.osr 2>&1' in.bin
+scase 3 'cp "$I/in.bin" in.bin; "$B" --seed=7 --format=v4 -delete in.bin - > o.osr 2>&1' in.bin
 grep -qF 'Input and output files should have different names' "$F/p/o.osr" || fail "2>&1: el mensaje no esta en o.osr"
-scase 3 'cp "$I/in.bin" in.bin; "$B" --seed=7 -delete in.bin o.osr 2>o.osr' in.bin
-scase 3 'cp "$I/in.bin" in.bin; "$B" --seed=7 -delete in.bin o.osr 2>>o.osr' in.bin
+scase 3 'cp "$I/in.bin" in.bin; "$B" --seed=7 --format=v4 -delete in.bin o.osr 2>o.osr' in.bin
+scase 3 'cp "$I/in.bin" in.bin; "$B" --seed=7 --format=v4 -delete in.bin o.osr 2>>o.osr' in.bin
 scase 3 'cp "$I/ok.osr" ok.osr; "$B" -d -delete ok.osr - > o.out 2>&1' ok.osr
 scase 3 'cp "$I/ok.osr" ok.osr; "$B" -d -delete ok.osr o.out 2>>o.out' ok.osr
-scase 3 'cp "$I/in.bin" in.bin; "$B" -v0 -bar --seed=7 -delete in.bin - > o.osr 2>&1' in.bin
-scase 3 'cp "$I/in.bin" in.bin; "$B" -v0 -l100 --seed=7 in.bin - > o.osr 2>&1' in.bin
-scase 3 'cp "$I/in.bin" in.bin; "$B" -v0 -dup -m1 --seed=7 -delete in.bin o.osr 2>o.osr' in.bin
-scase 3 'cp "$I/in.bin" in.bin; "$B" --seed=7 - o.osr < in.bin 2>>in.bin'
+scase 3 'cp "$I/in.bin" in.bin; "$B" -v0 -bar --seed=7 --format=v4 -delete in.bin - > o.osr 2>&1' in.bin
+scase 3 'cp "$I/in.bin" in.bin; "$B" -v0 -l100 --seed=7 --format=v4 in.bin - > o.osr 2>&1' in.bin
+scase 3 'cp "$I/in.bin" in.bin; "$B" -v0 -dup -m1 --seed=7 --format=v4 -delete in.bin o.osr 2>o.osr' in.bin
+scase 3 'cp "$I/in.bin" in.bin; "$B" --seed=7 --format=v4 - o.osr < in.bin 2>>in.bin'
 # stderr sobre la entrada: el mensaje del rechazo todavia cae ahi, pero la
 # entrada no se lee mientras crece ni se borra
-scase 3 'cp "$I/in.bin" in.bin; "$B" --seed=7 -delete in.bin o.osr 2>>in.bin'
+scase 3 'cp "$I/in.bin" in.bin; "$B" --seed=7 --format=v4 -delete in.bin o.osr 2>>in.bin'
 cmp -s -n "$(stat -c%s "$F/in/in.bin")" "$F/p/in.bin" "$F/in/in.bin" || fail "2>>in.bin: cambio in.bin"
-scase 0 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 -delete in.bin - > o.osr 2>&1'
+scase 0 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 --format=v4 -delete in.bin - > o.osr 2>&1'
 "$PAX" -v0 -d "$F/p/o.osr" "$F/p/o.out" </dev/null >/dev/null 2>&1 && cmp -s "$F/p/o.out" "$F/in/in.bin" \
     || fail "-v0 ... - > o.osr 2>&1: la vuelta difiere"
-scase 0 'cp "$I/in.bin" in.bin; "$B" --seed=7 in.bin o.osr > log 2>&1; rm log' in.bin
+scase 0 'cp "$I/in.bin" in.bin; "$B" --seed=7 --format=v4 in.bin o.osr > log 2>&1; rm log' in.bin
 # un rechazo deja todo como estaba: un nombre que ya existe se compara antes
 # del primer open, no despues del que lo truncaria
 scase 3 'echo old > o.osr; "$B" -v0 --seed=7 --format=v4 -m3f -index=./o.osr "$I/in.bin" o.osr'
 grep -qx old "$F/p/o.osr" || fail "-index=./o.osr: cambio o.osr"
-scase 3 'echo old > o.osr; "$B" -v0 --seed=7 -temp=./o.osr - o.osr < "$I/in.bin"'
+scase 3 'echo old > o.osr; "$B" -v0 --seed=7 --format=v4 -temp=./o.osr - o.osr < "$I/in.bin"'
 grep -qx old "$F/p/o.osr" || fail "-temp=./o.osr: cambio o.osr"
 scase 3 'echo old > k.ix; "$B" -v0 --seed=7 --format=v4 -m3f -index=k.ix -temp=./k.ix - o.osr < "$I/in.bin"'
 grep -qx old "$F/p/k.ix" || fail "-temp=./k.ix: cambio k.ix"
 scase 0 'cp "$I/ok.osr" ok.osr; ln ok.osr ok; "$B" -i ok.osr' ok.osr
-scase 0 '"$B" -v0 --seed=7 -temp=t.tmp - o.osr < "$I/in.bin"'
+scase 0 '"$B" -v0 --seed=7 --format=v4 -temp=t.tmp - o.osr < "$I/in.bin"'
 [ ! -e "$F/p/t.tmp" ] && [ -s "$F/p/o.osr" ] || fail "-temp=: el spool quedo, o no hay archivo"
-scase 2 'echo keep > t.tmp; "$B" -v0 --seed=7 -s10 -temp=t.tmp - o.osr < "$I/in.bin"'
+scase 2 'echo keep > t.tmp; "$B" -v0 --seed=7 --format=v4 -s10 -temp=t.tmp - o.osr < "$I/in.bin"'
 [ ! -e "$F/p/t.tmp" ] || fail "-temp=: el spool quedo tras una corrida que fallo"
-scase 3 '"$B" -v0 --seed=7 -temp=nodir/t.tmp - o.osr < "$I/in.bin"'
+scase 3 '"$B" -v0 --seed=7 --format=v4 -temp=nodir/t.tmp - o.osr < "$I/in.bin"'
 scase 0 '"$B" -v0 -mem1mb -vmblock=128kb -vmfile=v.vm -d "$I/far.osr" o.out'
 [ ! -e "$F/p/v.vm" ] && cmp -s "$F/p/o.out" "$F/in/far.bin" || fail "-vmfile=: quedo, o la vuelta difiere"
-scase 0 'echo keep > ./-; "$B" -v0 --seed=7 -delete - o.osr < "$I/in.bin"'
+scase 0 'echo keep > ./-; "$B" -v0 --seed=7 --format=v4 -delete - o.osr < "$I/in.bin"'
 [ -e "$F/p/-" ] || fail "-delete - borro un archivo llamado -"
-scase 0 'echo keep > ./-; "$B" -v0 --seed=7 -delete < "$I/in.bin" > o.osr'
+scase 0 'echo keep > ./-; "$B" -v0 --seed=7 --format=v4 -delete < "$I/in.bin" > o.osr'
 [ -e "$F/p/-" ] || fail "-delete por pipe borro un archivo llamado -"
-scase 4 '"$B" -v0 --seed=7 -b0 "$I/in.bin" o.osr'
-scase 3 '"$B" -v0 --seed=7 -b0 -dup "$I/in.bin" o.osr'
+scase 4 '"$B" -v0 --seed=7 --format=v4 -b0 "$I/in.bin" o.osr'
+scase 3 '"$B" -v0 --seed=7 --format=v4 -b0 -dup "$I/in.bin" o.osr'
 # una entrada que cambia mientras se lee: un writer que agrega, un byte
 # reescrito en su lugar, un rename encima (el guardar de un editor, una
 # rotacion de logs). Hasta r231-files exit 0, un archivo que no se
@@ -1043,7 +1055,7 @@ for m in 'printf x >> t' 'printf y | dd of=t bs=1 seek=100 conv=notrunc 2>/dev/n
             || fail "[$run / $m]: $(cat "$F/p.e")"
     done
 done
-scase 0 'set -o pipefail; cp "$I/in.bin" t; "$B" -v0 --seed=7 -delete t - | { dd bs=1 count=1 of=/dev/null 2>/dev/null; cat >/dev/null; }'
+scase 0 'set -o pipefail; cp "$I/in.bin" t; "$B" -v0 --seed=7 --format=v4 -delete t - | { dd bs=1 count=1 of=/dev/null 2>/dev/null; cat >/dev/null; }'
 [ ! -e "$F/p/t" ] || fail "-delete t - sin cambios: quedo t"
 # -d de un nombre que no es un archivo: la salida derivada (a.osr para a, b
 # para b.osr) se creaba antes de mirar la entrada, y un archivo que estaba
@@ -1069,20 +1081,20 @@ cmp -s "$F/p/o.out" "$F/in/ok.osr" || fail "-d - o.out: cambio o.out"
 for b in -b9223372036854775808b -b9223372036854775809b "-d18446744073709551615b -b3m" \
          "-m0 -d18446744073709551615b -b3m" -b9223372036854775776b -b9223372036854775790b \
          -b9223372036854775807b "-d9223372036854775806b -b4611686018427387903b"; do
-    scase 4 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 -delete '"$b"' in.bin o.osr' in.bin
+    scase 4 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 --format=v4 -delete '"$b"' in.bin o.osr' in.bin
 done
 if [ "$FWINE" = 0 ]; then
     scase 3 'ln -s o.out v; "$B" -v0 -mem1mb -vmblock=128kb -vmfile=v -d "$I/far.osr" o.out'
     [ -L "$F/p/v" ] && [ ! -e "$F/p/o.out" ] || fail "-vmfile= por un symlink a la salida"
-    scase 3 'cp "$I/in.bin" in.bin; ln -s in.bin y.bin; "$B" -v0 --seed=7 in.bin y.bin' in.bin
-    scase 0 '"$B" -v0 --seed=7 /dev/null /dev/../dev/null'
-    scase 3 '"$B" -v0 --seed=7 /dev/null /dev/null'
-    scase 0 'ln -s target t.tmp; "$B" -v0 --seed=7 -temp=t.tmp - o.osr < "$I/in.bin"'
+    scase 3 'cp "$I/in.bin" in.bin; ln -s in.bin y.bin; "$B" -v0 --seed=7 --format=v4 in.bin y.bin' in.bin
+    scase 0 '"$B" -v0 --seed=7 --format=v4 /dev/null /dev/../dev/null'
+    scase 3 '"$B" -v0 --seed=7 --format=v4 /dev/null /dev/null'
+    scase 0 'ln -s target t.tmp; "$B" -v0 --seed=7 --format=v4 -temp=t.tmp - o.osr < "$I/in.bin"'
     [ -L "$F/p/t.tmp" ] && [ -s "$F/p/target" ] || fail "-temp= por un symlink: se borro algo"
     # la unica excepcion: -temp= o -index= un symlink a una salida que todavia
     # no existe. El open por el symlink crea el archivo de la salida, y un
     # nombre nunca se borra por un symlink, asi que la corrida rechazada lo deja
-    scase 3 'ln -s o.osr lnk; "$B" -v0 --seed=7 -temp=lnk - o.osr < "$I/far.bin"'
+    scase 3 'ln -s o.osr lnk; "$B" -v0 --seed=7 --format=v4 -temp=lnk - o.osr < "$I/far.bin"'
     scase 3 'ln -s o.osr lnk; "$B" -v0 --seed=7 --format=v4 -m3f -index=lnk "$I/in.bin" o.osr'
     # el open falla: el nombre no es de esta corrida (antes se borraba)
     scase 4 'echo x > ro; chmod 444 ro; "$B" -v0 -mem1mb -vmblock=128kb -vmfile=ro -d "$I/far.osr" o.out'
@@ -1095,25 +1107,25 @@ if [ "$FWINE" = 0 ]; then
     # Hasta la rama r231-stdfds quedaba abierto, la entrada iba al fd 4, el fd
     # 3 era un /dev/null, y `-d -delete y.osr /proc/self/fd/3 <&-` decodificaba
     # ahi y borraba y.osr en el Rust (exit 0)
-    scase 3 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 -delete in.bin /dev/stdin < in.bin' in.bin
-    scase 3 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 -delete in.bin /dev/stdout 1<> in.bin' in.bin
+    scase 3 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 --format=v4 -delete in.bin /dev/stdin < in.bin' in.bin
+    scase 3 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 --format=v4 -delete in.bin /dev/stdout 1<> in.bin' in.bin
     scase 3 'cp "$I/ok.osr" ok.osr; "$B" -v0 -d -delete ok.osr /dev/stdin < ok.osr' ok.osr
-    scase 3 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 -delete in.bin /proc/self/fd/3' in.bin
-    scase 3 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 -temp=/dev/stdin - o.osr < in.bin' in.bin
+    scase 3 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 --format=v4 -delete in.bin /proc/self/fd/3' in.bin
+    scase 3 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 --format=v4 -temp=/dev/stdin - o.osr < in.bin' in.bin
     scase 3 'cp "$I/far.osr" far.osr; "$B" -v0 -mem1mb -vmblock=128kb -vmfile=/proc/self/fd/0 -d - o.out < far.osr' far.osr
     scase 3 'cp "$I/ok.osr" ok.osr; "$B" -v0 -d -delete ok.osr /proc/self/fd/3 <&-' ok.osr
-    scase 3 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 -delete in.bin /proc/self/fd/3 <&-' in.bin
-    scase 3 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 -delete in.bin /proc/self/fd/4 <&- 3>&- 4>&-' in.bin
+    scase 3 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 --format=v4 -delete in.bin /proc/self/fd/3 <&-' in.bin
+    scase 3 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 --format=v4 -delete in.bin /proc/self/fd/4 <&- 3>&- 4>&-' in.bin
     grep -qF "Can't open /proc/self/fd/4 for write" "$F/p.e" || fail "/proc/self/fd/4 <&-: $(cat "$F/p.e")"
     scase 3 'cp "$I/in.bin" in.bin; "$B" -v0 --seed=7 --format=v4 -m3f -index=/proc/self/fd/3 -delete in.bin o.osr <&- 3>&-' in.bin
     # las tablas del match finder dimensionadas para los 25 GiB por defecto de
     # stdin, con 1 GiB de direcciones: el Rust abortaba (exit 134, con la
     # cabecera en disco) y el Pascal decia "Out of memory"
-    scase 4 '(ulimit -v 1048576; exec "$B" -v0 --seed=7 -b3g - x.osr < "$I/in.bin")'
+    scase 4 '(ulimit -v 1048576; exec "$B" -v0 --seed=7 --format=v4 -b3g - x.osr < "$I/in.bin")'
     # -temp= un dispositivo o un FIFO: el spool no se puede releer, y con
     # /dev/null salia un archivo de nada con exit 0 (el C++ escribe el bueno;
     # en Windows NUL ya fallaba)
-    scase 3 '"$B" -v0 --seed=7 -temp=/dev/null - o.osr < "$I/in.bin"'
+    scase 3 '"$B" -v0 --seed=7 --format=v4 -temp=/dev/null - o.osr < "$I/in.bin"'
     grep -qF "Can't open tempfile" "$F/p.e" || fail "-temp=/dev/null: $(cat "$F/p.e")"
     # un fd 0, 1 o 2 O_PATH heredado: el runtime del Rust abre un /dev/null
     # por cada uno, y solo se cerraba el del fd 0 cerrado. Quedaba en el fd 3,
@@ -1205,8 +1217,8 @@ pass=$((pass + 1))
 case "$PA" in *linux*)
     say "-b de 2 GiB o mas: el mismo archivo, y vuelve"
     for b in 2g 3g 4g; do
-        "$RS" --seed=7 -b$b "$IN" "$TMP/rb.osr" >/dev/null 2>&1 || fail "-b$b: el Rust fallo"
-        "$PA" --seed=7 -b$b "$IN" "$TMP/pb.osr" >/dev/null 2>&1 || fail "-b$b: el Pascal fallo"
+        "$RS" --seed=7 --format=v4 -b$b "$IN" "$TMP/rb.osr" >/dev/null 2>&1 || fail "-b$b: el Rust fallo"
+        "$PA" --seed=7 --format=v4 -b$b "$IN" "$TMP/pb.osr" >/dev/null 2>&1 || fail "-b$b: el Pascal fallo"
         cmp -s "$TMP/rb.osr" "$TMP/pb.osr" || fail "-b$b: archivos distintos"
         "$PA" -d "$TMP/pb.osr" "$TMP/pb.out" >/dev/null 2>&1 || fail "-b$b: -d fallo"
         cmp -s "$IN" "$TMP/pb.out" || fail "-b$b: la vuelta no da la entrada"
@@ -1261,7 +1273,7 @@ usame() {  # el mismo archivo en los dos lados
 for n in "${NAMES[@]}"; do
     for side in r p; do cp "$TMP/uni.in" "$U/$side/$UD/$n"; done
     # un nombre solo: el archivo sale al lado, con .osr; y vuelve
-    uboth --seed=7 "$n"; usame "$n.osr"
+    uboth --seed=7 --format=v4 "$n"; usame "$n.osr"
     uboth --verify "$n.osr"
     cmp -s "$U/r.e" "$U/p.e" || fail "no ASCII: --verify '$n.osr' no dice lo mismo: '$(cat "$U/p.e")'"
     uboth -i "$n.osr"
@@ -1270,7 +1282,7 @@ for n in "${NAMES[@]}"; do
     uboth -d "$n.osr"; usame "$n"
     cmp -s "$TMP/uni.in" "$U/p/$UD/$n" || fail "no ASCII: -d '$n.osr' no da la entrada"
     # -dup, con los temporales del cuerpo
-    uboth --seed=7 -dup "$n" "dup $n.osr"; usame "dup $n.osr"
+    uboth --seed=7 --format=v4 -dup "$n" "dup $n.osr"; usame "dup $n.osr"
     uboth -d "dup $n.osr" "dup $n.out"; usame "dup $n.out"
     cmp -s "$TMP/uni.in" "$U/p/$UD/dup $n.out" || fail "no ASCII: -dup '$n' no vuelve"
     # -index= en los dos sentidos
@@ -1279,12 +1291,12 @@ for n in "${NAMES[@]}"; do
     uboth -d "-index=índice $n.ix" "v4 $n.osr" "v4 $n.out"; usame "v4 $n.out"
     cmp -s "$TMP/uni.in" "$U/p/$UD/v4 $n.out" || fail "no ASCII: -index= '$n' no vuelve"
     # -temp=: el spool de stdin con nombre no ASCII, en un directorio no ASCII
-    UIN="$TMP/uni.in" uboth --seed=7 "-temp=../tmp ñ文/spool $n" - "st $n.osr"; usame "st $n.osr"
+    UIN="$TMP/uni.in" uboth --seed=7 --format=v4 "-temp=../tmp ñ文/spool $n" - "st $n.osr"; usame "st $n.osr"
     # y se borra al terminar, como en el C++ (srep.cpp:1336)
     [ ! -e "$U/r/tmp ñ文/spool $n" ] && [ ! -e "$U/p/tmp ñ文/spool $n" ] \
         || fail "no ASCII: el spool de -temp= quedo"
     # stdin a stdout: los bytes del archivo no pasan por ninguna conversion
-    UIN="$U/p/$UD/$n" uboth --seed=7 - -
+    UIN="$U/p/$UD/$n" uboth --seed=7 --format=v4 - -
     UIN="$U/p/$UD/$n.osr" uboth -d - -
     cmp -s "$TMP/uni.in" "$U/p.o" || fail "no ASCII: -d - - no da la entrada"
     # los errores que nombran el archivo: el texto byte a byte
@@ -1366,9 +1378,9 @@ rm -f "$FD/e.osr"
 FDLINUX=
 if [ "$WINE" = 0 ]; then
     FDCOMBOS="n 0 1 2 01 02 12 012 f1 f2 w0"
-    FDLINUX="/dev/null|--seed=7 in.txt /dev/stdin
+    FDLINUX="/dev/null|--seed=7 --format=v4 in.txt /dev/stdin
 /dev/null|-d a.osr /proc/self/fd/0
-/dev/null|--seed=7 /dev/stdin o.osr
+/dev/null|--seed=7 --format=v4 /dev/stdin o.osr
 /dev/null|-d /dev/stdin o.dec"
 else
     FDCOMBOS="n 1 2 12 f1 f2"
@@ -1440,9 +1452,15 @@ while IFS='|' read -r src args; do
         what="[$args] ($cl)"
         [ "$(cat "$FD/r/rc")" = "$(cat "$FD/p/rc")" ] \
             || fail "fd $what: exit $(cat "$FD/p/rc") en Pascal, $(cat "$FD/r/rc") en Rust"
-        cmp -s <(fdnorm "$FD/r/out") <(fdnorm "$FD/p/out") || fail "fd $what: stdout difiere"
-        cmp -s <(fdnorm "$FD/r/err") <(fdnorm "$FD/p/err") \
-            || fail "fd $what: stderr difiere: '$(cat "$FD/p/err")' vs '$(cat "$FD/r/err")'"
+        # --version/--help are the 3.0.0 texts (the golden pins them); the
+        # exit code is still compared above, which is what the closed-fd case
+        # is about.
+        case "$args" in --version|--help) ;; *)
+            cmp -s <(fdnorm "$FD/r/out") <(fdnorm "$FD/p/out") || fail "fd $what: stdout difiere"
+            cmp -s <(fdnorm "$FD/r/err") <(fdnorm "$FD/p/err") \
+                || fail "fd $what: stderr difiere: '$(cat "$FD/p/err")' vs '$(cat "$FD/r/err")'"
+            ;;
+        esac
         ( cd "$FD/r/w" && ls -A ) > "$FD/r.ls"; ( cd "$FD/p/w" && ls -A ) > "$FD/p.ls"
         cmp -s "$FD/r.ls" "$FD/p.ls" || fail "fd $what: otros archivos: $(tr '\n' ' ' <"$FD/p.ls") vs $(tr '\n' ' ' <"$FD/r.ls")"
         while IFS= read -r f; do
@@ -1463,20 +1481,20 @@ while IFS='|' read -r src args; do
 done <<ARGS
 /dev/null|--version
 /dev/null|--help
-$FD/fix/in.txt|--seed=7 -s$fdsize
+$FD/fix/in.txt|--seed=7 --format=v4 -s$fdsize
 $FD/fix/a.osr|-d
-/dev/null|--seed=7 -b64kb in.txt o.osr
-/dev/null|--seed=7 -bar in.txt o.osr
-/dev/null|--seed=7 -dup in.txt o.osr
+/dev/null|--seed=7 --format=v4 -b64kb in.txt o.osr
+/dev/null|--seed=7 --format=v4 -bar in.txt o.osr
+/dev/null|--seed=7 --format=v4 -dup in.txt o.osr
 /dev/null|--seed=7 --format=v4 -m3f in.txt o.osr
-$FD/fix/in.txt|--seed=7 -s$fdsize - o.osr
-$FD/fix/in.txt|--seed=7 -temp=t.tmp -s$fdsize - -
-/dev/null|--seed=7 in.txt -
-/dev/null|--seed=7 -m0 in.txt -
+$FD/fix/in.txt|--seed=7 --format=v4 -s$fdsize - o.osr
+$FD/fix/in.txt|--seed=7 --format=v4 -temp=t.tmp -s$fdsize - -
+/dev/null|--seed=7 --format=v4 in.txt -
+/dev/null|--seed=7 --format=v4 -m0 in.txt -
 /dev/null|--seed=7 --format=v4 in.txt -
 /dev/null|--seed=7 -bar --format=v4 in.txt -
-/dev/null|--seed=$FDS5 e904.bin -
-/dev/null|--seed=$FDS5 e905.bin -
+/dev/null|--seed=$FDS5 --format=v4 e904.bin -
+/dev/null|--seed=$FDS5 --format=v4 e905.bin -
 /dev/null|--seed=$FDS4 --format=v4 e920.bin -
 /dev/null|--seed=$FDS4 --format=v4 -bar e921.bin -
 $FDLINUX

@@ -6,8 +6,9 @@
 # tests/golden/check.sh replays the cases with the Pascal alone. Recording
 # still needs both references, and refuses to record a case unless:
 #   * for --format=v4, the C++ 1.0.7 and the Rust write the same bytes (twice
-#     each run, so a racing case is refused rather than pinned);
-#   * for --format=v5, the Rust writes it (the C++ cannot);
+#     each run, so a racing case is refused rather than pinned).
+# v5 is read-only since 3.0.0: it is not recorded here; its archives live in
+# tests/fixtures/v5 and are replayed by tests/v5_readonly.sh.
 #   * the port writes the same bytes and the same exit code as the reference
 #     (exit 1 is allowed only for the non-power-of-two -l warning, which the
 #     references print and the ports reproduce);
@@ -34,12 +35,13 @@ RUST="${OSREP_RUST_BIN:-$RUST_TARGET/x86_64-unknown-linux-gnu/release/osrep}"
 [ -x "$RUST" ] || fail "missing Rust binary $RUST (set OSREP_ORACLES and build the archived Rust (docs/retired-oracles.md))"
 [ -x "$CXX_BIN/osrep" ] || make_cxx bin/osrep || fail "cannot build the C++ oracle"
 
-# The references have to be the current version. A stale target/release/osrep
-# once made a careful comparison meaningless; refuse instead of pinning it.
+# Since 3.0.0 the port's version and help are its own (v6 is the default,
+# v5 is read-only), so the Rust no longer has to print the same text. The
+# archives still have to match. The archived Rust is pinned at 2.4.0.
 pv=$("$PORT" --version) || fail "the port does not run: $PORT"
 rv=$("$RUST" --version) || fail "the Rust reference does not run: $RUST"
-[ "$pv" = "$rv" ] || fail "the Rust reference is stale: '$rv' vs the port's '$pv' (rebuild it)"
-say "port and Rust: $pv"
+say "port: $pv"
+say "Rust: $rv"
 
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 D="$TMP/in"
@@ -77,9 +79,10 @@ while IFS= read -r line; do
         fail "malformed case (no args): '$line'"
     fi
     case " $args " in
-        *" --format=v5 "*) fmt=v5 ;;
-        *" --format=v4 "*) fmt=v4 ;;
-        *) fail "case without --format: '$line'" ;;
+        *" --format=v5 "*)
+            fail "v5 is read-only: use tests/fixtures/v5 for its archives" ;;
+        *" --format=v4 "*) ;;
+        *) fail "case without --format=v4: '$line'" ;;
     esac
 
     # shellcheck disable=SC2086
@@ -88,7 +91,7 @@ while IFS= read -r line; do
     ok_rc "$prc" || fail "port: '$line' exited $prc: $(tail -1 "$TMP/stderr")"
     psum=$(sha256sum < "$TMP/port.osr" | cut -d' ' -f1)
 
-    if [ "$fmt" = v4 ]; then
+    if true; then
         cargs=${args//--format=v4/}
         # shellcheck disable=SC2086
         run "$CXX_BIN/osrep" "$TMP/cxx.osr" -t1 $cargs --seed=7 "$D/$input"

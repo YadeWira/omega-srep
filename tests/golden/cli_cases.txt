@@ -16,10 +16,11 @@ verify-damaged-v5|--verify @BAD5@
 decode-not-an-archive|-d @IN@ @OUT@
 bad-option|-bogus @IN@ @OUT@
 format-bogus|--format=v7 @IN@ @OUT@
+# v5 is read-only since 3.0.0 (decision of 2026-11-10).
+format-v5-readonly|--format=v5 @IN@ @OUT@
 # --seed= is read like strtol: garbage is 0, not an error (a 3.0.0 cleanup candidate).
 a-octal-bad|-a08 @IN@ @OUT@
 dup-m0|-dup -m0 @IN@ @OUT@
-index-v5|-m3 --format=v5 -index=@W@/ix.ix @IN@ @OUT@
 index-v6|-m3 --format=v6 -index=@W@/ix.ix @IN@ @OUT@
 missing-input|-d @W@/no-such-file @OUT@
 output-dir|-d @A5@ @W@/no-such-dir/out

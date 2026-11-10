@@ -1,4 +1,4 @@
-Omega SREP 2.4.0 (October 20, 2026)
+Omega SREP 3.0.0 (November 10, 2026)
 huge-dictionary LZ77 preprocessor (Omega lineage, fork of SREP by Bulat Ziganshin)
 https://github.com/YadeWira/omega-srep
 
@@ -29,9 +29,10 @@ Common options:
   -hash=NAME        select hash (vmac, sha1, ...)
   -mmap, -nommap    enable/disable POSIX mmap reads
   -temp=PATH        tempfile path override
-  --format=v4|v5    container to write (default v5). v4 is the
-                    container the 1.0.x releases read, kept for
-                    interoperability; both are always readable.
+  --format=v4|v6    container to write (default v6). v6 is the current
+                    format; v4 is the container the 1.0.x releases
+                    read, kept for interoperability. v1-v5 are always
+                    readable; v5 is not written anymore.
   --seed=N          deterministic hash seed (uint64; default is
                     random per-run). Same seed + same input ->
                     byte-identical archive. Useful for content-

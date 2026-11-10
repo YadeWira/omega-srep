@@ -10,9 +10,9 @@ verify-damaged-v5	0
 decode-not-an-archive	4
 bad-option	2
 format-bogus	2
+format-v5-readonly	2
 a-octal-bad	2
 dup-m0	2
-index-v5	2
 index-v6	2
 missing-input	3
 output-dir	3

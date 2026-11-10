@@ -90,7 +90,11 @@ fi
 xa_in="$TMP/xa_in.bin"
 gen_input "$xa_in"
 "$CXX_BIN/dedup_test" split-encode "$xa_in" "$TMP/xa.meta" "$TMP/xa.body" --buf 8388608 >/dev/null
-"$OSREP" -m4 "$TMP/xa.body" "$TMP/xa.body.osr" >/dev/null 2>&1
+# The F5.3a wrapper is a v4-era format (an external ODUP trailer), so the
+# inner archive is v4: since 3.0.0 the default is v6, whose own -dup meta
+# lives inside the archive instead of in this trailer.
+# shellcheck disable=SC2086
+"$OSREP" -m4 $OSREP_V4 "$TMP/xa.body" "$TMP/xa.body.osr" >/dev/null 2>&1
 cat "$TMP/xa.body.osr" "$TMP/xa.meta" > "$TMP/xa.archive"
 meta_size=$(stat -c%s "$TMP/xa.meta")
 python3 -c "

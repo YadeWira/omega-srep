@@ -43,15 +43,3 @@ text.bin      -dup -m3 --format=v4
 zruns.bin     -dup -m5 --format=v4
 mixed.bin     -dup -m3 --format=v4 --chunk-avg=2048 --chunk-min=512 --chunk-max=8192
 zruns.bin     -dup -m3 --format=v4 --chunk-hash=gear
-
-# --- v5: only the Rust oracle can write it --------------------------------
-text.bin      -m3 --format=v5
-mixed.bin     -m4 --format=v5 -b1mb
-text.bin      -m5 --format=v5 -l1000 -ia-
-empty.bin     -m3 --format=v5
-tiny.bin      -m1 --format=v5
-random.bin    -m1 --format=v5 -b64k
-zeros.bin     -m0 --format=v5 -d16mb
-text.bin      -dup -m3 --format=v5
-mixed.bin     -dup -m5 --format=v5 --chunk-hash=gear
-zruns.bin     -dup -m3 --format=v5 --chunk-avg=2048
