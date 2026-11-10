@@ -144,6 +144,12 @@ hash_size=16"
 [ "$INFO" = "$EXPECTED" ] || fail "-i output changed:
 $INFO"
 
+INFO="$("$BIN" -i "$ROOT/tests/fixtures/v6/text-dup-m3.osr")"
+printf '%s\n' "$INFO" | grep -qx 'original_size=101907' || \
+  fail "-i -dup original_size: $INFO"
+printf '%s\n' "$INFO" | grep -qx 'restored_size=4194304' || \
+  fail "-i -dup restored_size: $INFO"
+
 echo "== stdout output =="
 "$BIN" -d "$ROOT/tests/fixtures/v6/tiny-m1.osr" - | cmp - "$IN/tiny.bin" || \
   fail "-d to stdout"

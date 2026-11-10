@@ -57,6 +57,10 @@ function OsrepCompressBytes(const Data: TBytes;
   const Opt: TOsrepOptions): TBytes;
 function OsrepDecompressBytes(const Data: TBytes;
   const Opt: TOsrepOptions): TBytes;
+procedure OsrepCompressFile(const InPath, OutPath: string;
+  const Opt: TOsrepOptions);
+procedure OsrepDecompressFile(const InPath, OutPath: string;
+  const Opt: TOsrepOptions);
 
 implementation
 
@@ -179,16 +183,82 @@ begin
     try
       Reader.MaxOutput := Opt.MaxOutput;
       Reader.ReadInfo(Info);
-      if (Opt.MaxOutput > 0) and (Info.OriginalSize > Opt.MaxOutput) then
+      if (Opt.MaxOutput > 0) and (Info.OutputSize > Opt.MaxOutput) then
         raise EOsrepApiError.Create(OsrepEMemory,
-          Format('original size %d exceeds max_output %d',
-            [Info.OriginalSize, Opt.MaxOutput]));
+          Format('output size %d exceeds max_output %d',
+            [Info.OutputSize, Opt.MaxOutput]));
       Reader.DecodeToBytes(Result);
     finally
       Reader.Free;
     end;
   finally
     InStream.Free;
+  end;
+end;
+
+procedure OsrepCompressFile(const InPath, OutPath: string;
+  const Opt: TOsrepOptions);
+var
+  InStream, OutStream: TFileStream;
+  EncOpt: TEncoderOptions;
+begin
+  OsrepCheckOptions(Opt, True);
+  EncOpt := OptionsToEncoder(Opt);
+  try
+    InStream := TFileStream.Create(InPath, fmOpenRead or fmShareDenyWrite);
+  except
+    on E: Exception do
+      raise EOsrepApiError.Create(OsrepEIo,
+        'cannot open input: ' + InPath + ': ' + E.Message);
+  end;
+  try
+    try
+      OutStream := TFileStream.Create(OutPath, fmCreate);
+    except
+      on E: Exception do
+        raise EOsrepApiError.Create(OsrepEIo,
+          'cannot create output: ' + OutPath + ': ' + E.Message);
+    end;
+    try
+      EncodeToStream(InStream, OutStream, EncOpt);
+    finally
+      OutStream.Free;
+    end;
+  finally
+    InStream.Free;
+  end;
+end;
+
+procedure OsrepDecompressFile(const InPath, OutPath: string;
+  const Opt: TOsrepOptions);
+var
+  Reader: TArchiveReader;
+  OutStream: TFileStream;
+  Info: TArchiveInfo;
+begin
+  OsrepCheckOptions(Opt, False);
+  Reader := TArchiveReader.Create(InPath);
+  try
+    Reader.MaxOutput := Opt.MaxOutput;
+    Reader.ReadInfo(Info);
+    if (Opt.MaxOutput > 0) and (Info.OutputSize > Opt.MaxOutput) then
+      raise EOsrepApiError.Create(OsrepEMemory,
+        Format('output size %d exceeds max_output %d',
+          [Info.OutputSize, Opt.MaxOutput]));
+    try
+      OutStream := TFileStream.Create(OutPath, fmCreate);
+    except
+      on E: Exception do
+        raise EOsrepApiError.Create(OsrepEIo,
+          'cannot create output: ' + OutPath + ': ' + E.Message);
+    end;
+    try
+      Reader.DecodeToStream(OutStream);
+    finally
+      OutStream.Free;
+    end;
+  finally
+    Reader.Free;
   end;
 end;
 

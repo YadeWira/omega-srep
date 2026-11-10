@@ -18,7 +18,7 @@ uses
 {$L osrep7z.o}
 
 const
-  VERSION_TEXT: PChar = 'OSREP 0.0.2';
+  VERSION_TEXT: PChar = 'OSREP ' + OsrepProductVersion;
 
 type
   {$packrecords c}
@@ -133,6 +133,8 @@ begin
 end;
 
 function OptionsFromC(p: POsrepCOptions): TOsrepOptions;
+var
+  I: Integer;
 begin
   if p = nil then
     Exit(DefaultOsrepOptions);
@@ -140,6 +142,10 @@ begin
     raise EOsrepApiError.Create(OsrepEArg,
       Format('osrep_options.struct_size is %d, expected %d',
         [p^.struct_size, SizeOf(TOsrepCOptions)]));
+  for I := 0 to High(p^.reserved) do
+    if p^.reserved[I] <> 0 then
+      raise EOsrepApiError.Create(OsrepEArg,
+        'osrep_options.reserved must be zero');
   if (p^.min_match < 0) or (p^.chain_depth < 0) or (p^.stride < 0) then
     raise EOsrepApiError.Create(OsrepEArg,
       'min_match, chain_depth and stride must not be negative');
@@ -273,6 +279,54 @@ begin
   end;
 end;
 
+function osrep_compress_file(inPath, outPath: PChar;
+  opt: POsrepCOptions): LongInt; cdecl;
+var
+  O: TOsrepOptions;
+begin
+  if (inPath = nil) or (outPath = nil) then
+  begin
+    SetLastError('osrep_compress_file: in_path and out_path are required');
+    Exit(OsrepEArg);
+  end;
+  try
+    O := OptionsFromC(opt);
+    OsrepCompressFile(string(inPath), string(outPath), O);
+    SetLastError('');
+    Result := OsrepOk;
+  except
+    on E: Exception do
+    begin
+      SetLastError(E.Message);
+      Result := MapException(E);
+    end;
+  end;
+end;
+
+function osrep_decompress_file(inPath, outPath: PChar;
+  opt: POsrepCOptions): LongInt; cdecl;
+var
+  O: TOsrepOptions;
+begin
+  if (inPath = nil) or (outPath = nil) then
+  begin
+    SetLastError('osrep_decompress_file: in_path and out_path are required');
+    Exit(OsrepEArg);
+  end;
+  try
+    O := OptionsFromC(opt);
+    OsrepDecompressFile(string(inPath), string(outPath), O);
+    SetLastError('');
+    Result := OsrepOk;
+  except
+    on E: Exception do
+    begin
+      SetLastError(E.Message);
+      Result := MapException(E);
+    end;
+  end;
+end;
+
 procedure osrep_free(p: Pointer); cdecl;
 begin
   if p <> nil then
@@ -313,6 +367,7 @@ end;
 exports
   osrep_options_default, osrep_version, osrep_last_error,
   osrep_compress, osrep_decompress, osrep_free,
+  osrep_compress_file, osrep_decompress_file,
   GetNumberOfMethods, GetMethodProperty, CreateDecoder, CreateEncoder,
   CreateObject, GetModuleProp;
 

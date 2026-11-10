@@ -27,14 +27,14 @@ v6 only (`OSR6`). There is no `--format=v4|v5`; OSREP does not write or read
 the SREP v1-v5 containers. `--format=v6` may be accepted as a no-op for
 scripts, but the default and only writer is v6.
 
-## Methods (phase 1)
+## Methods
 
-- `-m3`: LZ match finder, index-LZ.
-- `-m4`: LZ match finder, in-memory/re-read path.
-- `-m5`: exhaustive LZ match search.
+- `-m3`: LZ match finder, index-LZ. This is the only encoder in 0.0.2.
+- `-m4`, `-m5`: planned; they exit 2 with "not implemented yet" until the
+  finders exist. They are not aliases of `-m3`.
 
-`-m0` (in-memory), `-m1`/`-m2` (CDC) and `-dup` are phase 2; until then they
-exit 2 with a clear "not implemented yet" message.
+`-m0` (in-memory), `-m1`/`-m2` (CDC), `-m4`/`-m5` and `-dup` are phase 2;
+until then they exit 2 with a clear "not implemented yet" message.
 
 ## Options kept from the old contract
 
@@ -53,13 +53,16 @@ must not silently ignore it.
 OSREP v6
 blocks=N
 original_size=N
+restored_size=N
 stat_size=N
 meta_size=N
 hash_id=N
 hash_size=N
 ```
 
-This is the phase-1 contract; the new golden fixes it.
+`restored_size` is printed only when the `-dup` flag is set: in that case
+`original_size` is the deduplicated body and `restored_size` is the final
+output. This is the phase-1 contract; the new golden fixes it.
 
 ## Exit codes
 

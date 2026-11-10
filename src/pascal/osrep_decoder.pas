@@ -50,6 +50,7 @@ type
     procedure LoadHeaderFooter;
     procedure ValidateMeta;
     procedure ReadMeta(out Meta: TBytes);
+    function DupOutputSize: QWord;
     procedure RestoreDup(const Body: TBytes; out Output: TBytes);
     procedure ParseBlockRecords(const BH: TBlockHeader; const Payload: TBytes;
       BlockStart: QWord);
@@ -306,6 +307,72 @@ begin
     Exit;
   SetLength(Dest, Length(Dest) + Len);
   Move(Src[SrcOffset], Dest[Length(Dest) - Len], Len);
+end;
+
+function TArchiveReader.DupOutputSize: QWord;
+var
+  Meta: TBytes;
+  Pos, MetaEnd: SizeInt;
+  ChunkCount, UniqueCount, I: QWord;
+  Tag: Byte;
+  Len: LongWord;
+  Idx: QWord;
+  UniqueLens: array of LongWord;
+  Total: QWord;
+begin
+  ReadMeta(Meta);
+  if Length(Meta) < 24 + 4 then
+    DataError('dup meta is too short');
+  if GetU32LE(Meta, 0) <> OsrepMagicMeta then
+    DataError('dup meta magic is not DUPR');
+  if GetU32LE(Meta, 4) <> 1 then
+    DataError('unsupported dup meta version');
+  ChunkCount := GetU64LE(Meta, 8);
+  UniqueCount := GetU64LE(Meta, 16);
+  Pos := 24;
+  MetaEnd := Length(Meta) - 4;
+  SetLength(UniqueLens, 0);
+  Total := 0;
+  I := 0;
+  while I < ChunkCount do
+  begin
+    if Pos >= MetaEnd then
+      DataError('dup meta is truncated');
+    Tag := Meta[Pos];
+    Inc(Pos);
+    if Tag = 0 then
+    begin
+      if Pos + 4 > MetaEnd then
+        DataError('dup meta has a truncated unique chunk');
+      Len := GetU32LE(Meta, Pos);
+      Inc(Pos, 4);
+      if QWord(Length(UniqueLens)) >= UniqueCount then
+        DataError('dup meta has too many unique chunks');
+      SetLength(UniqueLens, Length(UniqueLens) + 1);
+      UniqueLens[High(UniqueLens)] := Len;
+      if Total > High(QWord) - QWord(Len) then
+        DataError('dup output size overflows 64 bits');
+      Inc(Total, Len);
+    end
+    else if Tag = 1 then
+    begin
+      if not ReadVarint(Meta, Pos, MetaEnd, Idx) then
+        DataError('dup meta has a bad chunk reference');
+      if Idx >= QWord(Length(UniqueLens)) then
+        DataError('dup chunk reference points to an undefined chunk');
+      if Total > High(QWord) - QWord(UniqueLens[SizeInt(Idx)]) then
+        DataError('dup output size overflows 64 bits');
+      Inc(Total, UniqueLens[SizeInt(Idx)]);
+    end
+    else
+      DataError(Format('unknown dup chunk tag %d', [Tag]));
+    Inc(I);
+  end;
+  if Pos <> MetaEnd then
+    DataError('dup meta has trailing bytes');
+  if QWord(Length(UniqueLens)) <> UniqueCount then
+    DataError('dup unique chunk count mismatch');
+  Result := Total;
 end;
 
 procedure TArchiveReader.RestoreDup(const Body: TBytes; out Output: TBytes);
@@ -651,6 +718,10 @@ begin
   LoadHeaderFooter;
   Info.BlockCount := FHeader.BlockCount;
   Info.OriginalSize := FHeader.OriginalSize;
+  if (FHeader.Flags and 1) <> 0 then
+    Info.OutputSize := DupOutputSize
+  else
+    Info.OutputSize := FHeader.OriginalSize;
   Info.StatSize := FFooter.StatSize;
   Info.MetaSize := FFooter.MetaSize;
   Info.HashId := FHeader.HashId;

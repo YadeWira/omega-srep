@@ -26,7 +26,8 @@ bash "$ROOT/src/lib/build.sh" "$LIB" || fail "src/lib/build.sh"
 SO="$LIB/libosrep.so"
 [ -f "$SO" ] || fail "libosrep.so was not produced"
 for sym in osrep_version osrep_options_default osrep_last_error \
-           osrep_compress osrep_decompress osrep_free; do
+           osrep_compress osrep_decompress osrep_free \
+           osrep_compress_file osrep_decompress_file; do
   nm -D --defined-only "$SO" | awk '{print $3}' | grep -qx "$sym" || \
     fail "missing exported symbol: $sym"
 done

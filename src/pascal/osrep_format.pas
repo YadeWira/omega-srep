@@ -19,6 +19,11 @@ const
   OsrepMagicMeta   = LongWord($52505544); { "DUPR", little endian }
 
   OsrepVersion          = 6;
+
+  { the product version, not the format version }
+  OsrepProductVersion   = '0.0.2';
+  OsrepProductDate      = '2026-11-10';
+
   OsrepHeaderSize       = 28;
   OsrepFooterSize       = 36;
   OsrepBlockHeaderSize  = 16;
@@ -70,6 +75,7 @@ type
   TArchiveInfo = record
     BlockCount: LongWord;
     OriginalSize: QWord;
+    OutputSize: QWord;
     StatSize: QWord;
     MetaSize: LongWord;
     HashId: Byte;

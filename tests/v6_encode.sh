@@ -47,6 +47,15 @@ echo "== -b/-l/-c/-a options =="
 "$BIN" -d "$TMP/mixed-opts.osr" "$TMP/mixed-opts.out" || fail "decode mixed-opts"
 cmp "$TMP/mixed-opts.out" "$CORPUS/mixed.bin" || fail "round-trip mixed-opts"
 
+echo "== unimplemented methods are rejected =="
+for m in -m0 -m1 -m2 -m4 -m5; do
+  if "$BIN" "$m" "$CORPUS/text.bin" "$TMP/unimplemented.osr" \
+       >"$TMP/unimplemented.log" 2>&1; then
+    fail "$m was accepted"
+  fi
+  grep -q 'not implemented yet' "$TMP/unimplemented.log" || fail "$m message"
+done
+
 echo "== determinism: --seed=7 twice =="
 "$BIN" -m3 --seed=7 "$CORPUS/text.bin" "$TMP/det-1.osr" || fail "encode det-1"
 "$BIN" -m3 --seed=7 "$CORPUS/text.bin" "$TMP/det-2.osr" || fail "encode det-2"

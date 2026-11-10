@@ -18,6 +18,14 @@
 #include <string.h>
 #include <stdint.h>
 #include <pthread.h>
+#include <time.h>
+#ifdef _WIN32
+#include <process.h>
+#define GETPID _getpid
+#else
+#include <unistd.h>
+#define GETPID getpid
+#endif
 #include "osrep.h"
 
 static int checks, failures;
@@ -134,6 +142,10 @@ static void error_paths(void) {
   o.struct_size = 1;
   rc = osrep_compress("x", 1, &out, &outn, &o);
   check(rc == OSREP_E_ARG, "a bad struct_size is E_ARG", "");
+  osrep_options_default(&o);
+  o.reserved[3] = 1;
+  rc = osrep_compress("x", 1, &out, &outn, &o);
+  check(rc == OSREP_E_ARG, "a non-zero reserved field is E_ARG", "");
 
   osrep_options_default(&o);
   {
@@ -251,6 +263,99 @@ static void threads(void) {
         "concurrent compress/decompress", "");
 }
 
+static void fuzz_api(void) {
+  unsigned char d[8192];
+  void *z = NULL, *out = NULL;
+  size_t zn = 0, outn = 0, i, k;
+  unsigned char *base, *bad;
+  osrep_options o;
+  int rc;
+
+  for (i = 0; i < sizeof d; i++)
+    d[i] = (unsigned char)((i * 29 + (i >> 3)) & 0xFF);
+  check(osrep_compress(d, sizeof d, &z, &zn, NULL) == OSREP_OK,
+        "compress for fuzz", "");
+  if (!z) return;
+  base = malloc(zn);
+  bad = malloc(zn);
+  if (!base || !bad) { free(base); free(bad); osrep_free(z); return; }
+  memcpy(base, z, zn);
+  osrep_free(z);
+  osrep_options_default(&o);
+  o.max_output = 1 << 20;
+  for (i = 0; i < 200; i++) {
+    unsigned long h = (unsigned long)(i * 1103515245u + 12345u);
+    memcpy(bad, base, zn);
+    for (k = 0; k <= i % 8; k++) {
+      h = h * 1103515245u + 12345u;
+      bad[h % zn] ^= (unsigned char)(h >> 16);
+    }
+    out = NULL; outn = 0;
+    rc = osrep_decompress(bad, zn, &out, &outn, &o);
+    osrep_free(out);
+  }
+  for (i = 0; i < 200; i++) {
+    unsigned char junk[4096];
+    size_t n = (i * 37) % sizeof junk, j;
+    for (j = 0; j < n; j++)
+      junk[j] = (unsigned char)((i * 131 + j * 17) & 0xFF);
+    out = NULL; outn = 0;
+    rc = osrep_decompress(junk, n, &out, &outn, &o);
+    osrep_free(out);
+  }
+  (void)rc;
+  check(1, "400 damaged/random inputs without a crash", "");
+  free(base);
+  free(bad);
+}
+
+static void file_api(void) {
+  const char *dir = getenv("TMPDIR");
+  char in[256], arc[256], back[256], missing[256];
+  unsigned char d[4096];
+  unsigned char *b;
+  size_t bn = 0, i;
+  osrep_options o;
+  long pid = (long)GETPID();
+  int rc;
+
+  if (!dir || !*dir) dir = "/tmp";
+  snprintf(in, sizeof in, "%s/osrep-lib-%ld-in.bin", dir, pid);
+  snprintf(arc, sizeof arc, "%s/osrep-lib-%ld.osr", dir, pid);
+  snprintf(back, sizeof back, "%s/osrep-lib-%ld-back.bin", dir, pid);
+  snprintf(missing, sizeof missing, "%s/osrep-lib-%ld-missing.bin", dir, pid);
+  remove(missing);
+
+  for (i = 0; i < sizeof d; i++)
+    d[i] = (unsigned char)((i * 13 + (i >> 4)) & 0xFF);
+  check(write_file(in, d, sizeof d), "write file input", "");
+  osrep_options_default(&o);
+  o.seed = 7;
+  rc = osrep_compress_file(in, arc, &o);
+  check(rc == OSREP_OK, "osrep_compress_file", "");
+  rc = osrep_decompress_file(arc, back, &o);
+  check(rc == OSREP_OK, "osrep_decompress_file", "");
+  b = read_file(back, &bn);
+  check(b != NULL && bn == sizeof d && memcmp(b, d, sizeof d) == 0,
+        "file round-trip bytes", "");
+  free(b);
+
+  rc = osrep_compress_file(missing, arc, NULL);
+  check(rc == OSREP_E_IO, "a missing input file is E_IO", "");
+  rc = osrep_compress_file(NULL, arc, NULL);
+  check(rc == OSREP_E_ARG, "a nil file path is E_ARG", "");
+
+  osrep_options_default(&o);
+  o.max_output = 16;
+  rc = osrep_decompress_file(arc, back, &o);
+  check(rc == OSREP_E_MEMORY, "file max_output is enforced", "");
+
+  remove(in);
+  remove(arc);
+  remove(back);
+  remove(missing);
+}
+
 int main(int argc, char **argv) {
   if (argc == 5 && strcmp(argv[1], "--emit") == 0) {
     size_t n = 0, zn = 0;
@@ -364,6 +469,8 @@ int main(int argc, char **argv) {
   threads();
   error_paths();
   damaged_and_limit();
+  fuzz_api();
+  file_api();
 
   if (argc > 1) {
     int i;

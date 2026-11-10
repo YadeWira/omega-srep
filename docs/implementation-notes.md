@@ -165,8 +165,8 @@ válido que el lector reconstruye. Parámetros:
 - `--seed=N`: semilla determinista. El seed de 32 bytes sale de `SplitMix64`
   con `N xor 0xD1B54A32D192ED03`; no se usa aleatoriedad del sistema.
 - `-hash-` escribe `hash_id=1/hash_size=0`, sin seed ni digest.
-- `-m4`/`-m5` se aceptan como alias del mismo finder; `-m0..-m2` y `-dup` de
-  escritura todavía se rechazan con exit 2.
+- `-m4`/`-m5` no están implementados: se rechazan con exit 2, igual que
+  `-m0..-m2` y `-dup` de escritura. No se presentan como alias de `-m3`.
 
 El parse es greedy de izquierda a derecha: en cada `destination` busca el
 match más largo en el hash chain, y si no llega a `-l` emite un literal. Los
@@ -262,13 +262,14 @@ La spec `14cfd76`/`931effa` cerró el digest VHASH-128, el orden de
    SipHash-2-4 (5), pero el lector solo verifica VHASH-128 (4) y el caso sin
    digest. Con esos ids `-d` da un error claro de “digest hash id N is not
    implemented”; `--verify` sigue pasando. No hay fixtures para ellos.
-3. **Opciones de encoder no equivalentes a SREP.** `-m4`/`-m5` son alias del
-   mismo finder; `-aN/M` ignora `M`; `-c` es el paso de inserción del hash
+3. **Opciones de encoder no equivalentes a SREP.** `-m4`/`-m5` todavía no
+   existen (exit 2); `-aN/M` ignora `M`; `-c` es el paso de inserción del hash
    chain y `-l` el mínimo de match. La spec no fija estos detalles porque el
    match finder es libre, pero conviene documentarlos en la CLI.
-4. **`-i` de `-dup`.** `original_size` es el tamaño del cuerpo deduplicado
-   (101907 en `text-dup-m3.osr`), no el de la entrada restaurada (4 MiB). Si
-   se quiere mostrar el tamaño final, hay que agregarlo al contrato de `-i`.
+4. **`-i` de `-dup`.** Resuelto el 2026-11-10: `original_size` sigue siendo
+   el cuerpo deduplicado (101907 en `text-dup-m3.osr`), y `-i` agrega
+   `restored_size=4194304`, el tamaño final, cuando el flag `-dup` está
+   puesto. `TArchiveInfo` ahora lleva `OutputSize`.
 5. **Multiplataforma.** El código es Pascal puro; no se probó i386, ARM64 ni
    Windows en esta fase. No hay código nativo todavía.
 
@@ -299,7 +300,7 @@ La librería no reimplementa el formato: envuelve el mismo `EncodeToStream` y
 - `src/lib/osrep_lib.pas`: `library` FPC con `exports`, `IsMultiThread` y
   `threadvar` para el error; ninguna excepción cruza la ABI.
 - `src/lib/build.sh` y `src/lib/test_lib.c`; `tests/lib.sh` compila la
-  librería, corre 54 checks propios, el corpus, 4 hilos, y compara el `.osr`
+  librería, corre 64 checks propios, el corpus, 4 hilos, y compara el `.osr`
   con el del CLI (default y `--seed=7`), además de leer los fixtures v6 y
   `text-dup-m3.osr` desde la librería.
 - `src/lib/osrep7z.c`: el plugin de 7-Zip en el mismo `.so`, método `OSREP`

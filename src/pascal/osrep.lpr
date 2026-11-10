@@ -9,7 +9,8 @@ uses
   SysUtils, Classes, osrep_format, osrep_decoder, osrep_encoder;
 
 const
-  OsrepVersionText = 'OSREP 0.0.2 (2026-11-10)';
+  OsrepVersionText = 'OSREP ' + OsrepProductVersion + ' (' +
+    OsrepProductDate + ')';
 
 var
   Mode: string = '';
@@ -182,6 +183,8 @@ begin
   WriteLn('OSREP v6');
   WriteLn('blocks=', Info.BlockCount);
   WriteLn('original_size=', Info.OriginalSize);
+  if (Info.Flags and 1) <> 0 then
+    WriteLn('restored_size=', Info.OutputSize);
   WriteLn('stat_size=', Info.StatSize);
   WriteLn('meta_size=', Info.MetaSize);
   WriteLn('hash_id=', Info.HashId);
@@ -228,6 +231,12 @@ var
   P: Integer;
 
 begin
+  {$ifdef windows}
+  { the CLI takes UTF-8 paths on every platform, as the library contract }
+  SetMultiByteConversionCodePage(CP_UTF8);
+  DefaultSystemCodePage := CP_UTF8;
+  DefaultFileSystemCodePage := CP_UTF8;
+  {$endif}
   PosArgs := nil;
   EncOptions := DefaultEncoderOptions;
   try
@@ -263,14 +272,15 @@ begin
           CmdError('only one mode can be selected');
         Mode := 'info';
       end
-      else if (A = '-m3') or (A = '-m4') or (A = '-m5') then
+      else if A = '-m3' then
       begin
         if Mode <> '' then
           CmdError('only one mode can be selected');
         Mode := 'encode';
         EncOptionsUsed := True;
       end
-      else if (A = '-m0') or (A = '-m1') or (A = '-m2') then
+      else if (A = '-m0') or (A = '-m1') or (A = '-m2') or
+              (A = '-m4') or (A = '-m5') then
         CmdError('method not implemented yet: ' + A)
       else if Copy(A, 1, 2) = '-b' then
       begin

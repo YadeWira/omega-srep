@@ -98,6 +98,15 @@ int OSREP_CALL osrep_decompress(const void *in, size_t in_size,
                                 void **out, size_t *out_size,
                                 const osrep_options *o);
 
+/* A file -> a .osr file, and back. Paths are UTF-8 on Unix; on Windows the
+   RTL's file system code page is used, so a host with non-ASCII names sets
+   it to CP_UTF8. The output is created/truncated; on failure it may be
+   partial. */
+int OSREP_CALL osrep_compress_file(const char *in_path, const char *out_path,
+                                   const osrep_options *o);
+int OSREP_CALL osrep_decompress_file(const char *in_path, const char *out_path,
+                                     const osrep_options *o);
+
 void OSREP_CALL osrep_free(void *p);
 
 #ifdef __cplusplus

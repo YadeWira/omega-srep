@@ -108,6 +108,11 @@ int OSREP_CALL osrep_compress(const void *in, size_t in_size,
 int OSREP_CALL osrep_decompress(const void *in, size_t in_size,
                                 void **out, size_t *out_size,
                                 const osrep_options *o);
+
+int OSREP_CALL osrep_compress_file(const char *in_path, const char *out_path,
+                                   const osrep_options *o);
+int OSREP_CALL osrep_decompress_file(const char *in_path, const char *out_path,
+                                     const osrep_options *o);
 void OSREP_CALL osrep_free(void *p);
 ```
 
@@ -121,8 +126,9 @@ tamaño final mientras se reconstruye (el `origsize` de un `-dup` es el cuerpo
 deduplicado, no la entrada restaurada). `struct_size` puede ser 0 o el tamaño
 actual; un tamaño distinto devuelve `OSREP_E_ARG`.
 
-L1 agrega `osrep_compress_file`, `osrep_decompress_file`,
-`osrep_compress_bound`, `osrep_compress_into` y los filtros por callbacks
+`osrep_compress_file`/`osrep_decompress_file` usan el mismo núcleo que las
+funciones de memoria. L1 agrega `osrep_compress_bound`,
+`osrep_compress_into` y los filtros por callbacks
 (`osrep_filter_encode`/`decode`). El ABI no cambia: solo se suman símbolos.
 
 ### 2.1 Modo fragmentador/dedup (zpaq-std y hosts que lo quieran)
@@ -329,8 +335,8 @@ miembros MIT de la familia.
 
 **Aceptación (cumplida):** un programa C comprime y descomprime el corpus,
 byte a byte; el `.osr` es idéntico al del CLI con las mismas opciones
-(inclusive `--seed=7`); `test_lib.c` pasa 54 checks y `tests/lib.sh` pasa
-84 con el corpus; 4 hilos concurrentes pasan; los fixtures v6 y `-dup` se
+(inclusive `--seed=7`); `test_lib.c` pasa 64 checks y `tests/lib.sh` pasa
+94 con el corpus; 4 hilos concurrentes pasan; los fixtures v6 y `-dup` se
 leen desde la librería; `tests/lib_7z.sh` prueba `-m0=OSREP` y
 `-m0=OSREP -m1=LZMA2` en 7-Zip 25.01 y 7-Zip-zstd 26.02 (también
 `-m1=zstd`) con todos los archivos de vuelta. Compilar:
