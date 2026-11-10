@@ -28,6 +28,8 @@ const
   OsrepDupThreshold = 1 shl (22 - OsrepDupFragment);
 
 type
+  TDedupChunker = (dcOrder1, dcFixedWindow);
+
   TDedupResult = record
     Body: TBytes;
     Meta: TBytes;
@@ -36,7 +38,8 @@ type
     OriginalSize: QWord;
   end;
 
-function BuildDedup(const Data: TBytes; out Res: TDedupResult): Boolean;
+function BuildDedup(const Data: TBytes; Chunker: TDedupChunker;
+  out Res: TDedupResult): Boolean;
 
 implementation
 
@@ -72,7 +75,8 @@ type
       Hash: QWord; out IsNew: Boolean): LongWord;
     procedure EmitChunk(const Data: TBytes; Start: SizeInt; Len: LongWord);
   public
-    function Build(const Data: TBytes; out Res: TDedupResult): Boolean;
+    function Build(const Data: TBytes; Chunker: TDedupChunker;
+      out Res: TDedupResult): Boolean;
   end;
 
 procedure TByteBuf.Init;
@@ -235,13 +239,14 @@ begin
   Inc(FChunkCount);
 end;
 
-function TDedupBuilder.Build(const Data: TBytes;
+function TDedupBuilder.Build(const Data: TBytes; Chunker: TDedupChunker;
   out Res: TDedupResult): Boolean;
 var
   I, Start, Len: SizeInt;
   C, Pred, C1: Byte;
   O1: array[0..255] of Byte;
   H: LongWord;
+  H64, Pow: QWord;
 begin
   Res.Body := nil;
   Res.Meta := nil;
@@ -255,28 +260,51 @@ begin
   FillChar(O1, SizeOf(O1), 0);
   C1 := 0;
   H := 0;
+  H64 := 0;
+  Pow := 1;
+  for I := 1 to 48 do
+    Pow := Pow * QWord($100000001B3);
   Start := 0;
   Len := 0;
   for I := 0 to Length(Data) - 1 do
   begin
     C := Data[I];
-    Pred := O1[C1];
-    if C = Pred then
-      H := (H + LongWord(C) + 1) * LongWord(314159265)
-    else
-      H := (H + LongWord(C) + 1) * LongWord(271828182);
-    O1[C1] := C;
-    C1 := C;
-    Inc(Len);
-    if (Len >= OsrepDupMinChunk) and
-       ((H < LongWord(OsrepDupThreshold)) or (Len >= OsrepDupMaxChunk)) then
+    if Chunker = dcOrder1 then
     begin
-      EmitChunk(Data, Start, LongWord(Len));
-      Inc(Start, Len);
-      Len := 0;
-      H := 0;
-      C1 := 0;
-      FillChar(O1, SizeOf(O1), 0);
+      Pred := O1[C1];
+      if C = Pred then
+        H := (H + LongWord(C) + 1) * LongWord(314159265)
+      else
+        H := (H + LongWord(C) + 1) * LongWord(271828182);
+      O1[C1] := C;
+      C1 := C;
+      Inc(Len);
+      if (Len >= OsrepDupMinChunk) and
+         ((H < LongWord(OsrepDupThreshold)) or (Len >= OsrepDupMaxChunk)) then
+      begin
+        EmitChunk(Data, Start, LongWord(Len));
+        Inc(Start, Len);
+        Len := 0;
+        H := 0;
+        C1 := 0;
+        FillChar(O1, SizeOf(O1), 0);
+      end;
+    end
+    else
+    begin
+      H64 := H64 * QWord($100000001B3) + QWord(C);
+      if I - Start >= 48 then
+        H64 := H64 - QWord(Data[I - 48]) * Pow;
+      Inc(Len);
+      if (Len >= OsrepDupMinChunk) and
+         ((H64 < QWord(High(QWord)) div QWord(65536)) or
+          (Len >= OsrepDupMaxChunk)) then
+      begin
+        EmitChunk(Data, Start, LongWord(Len));
+        Inc(Start, Len);
+        Len := 0;
+        H64 := 0;
+      end;
     end;
   end;
   if Len > 0 then
@@ -299,13 +327,14 @@ begin
   Result := True;
 end;
 
-function BuildDedup(const Data: TBytes; out Res: TDedupResult): Boolean;
+function BuildDedup(const Data: TBytes; Chunker: TDedupChunker;
+  out Res: TDedupResult): Boolean;
 var
   Builder: TDedupBuilder;
 begin
   Builder := TDedupBuilder.Create;
   try
-    Result := Builder.Build(Data, Res);
+    Result := Builder.Build(Data, Chunker, Res);
   finally
     Builder.Free;
   end;

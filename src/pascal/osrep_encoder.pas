@@ -373,6 +373,20 @@ var
 begin
   N := Length(Data);
   Matches := nil;
+  if Opt.Method in [1, 2] then
+  begin
+    { dedup-only modes: the body is stored, not LZ-parsed }
+    Records := nil;
+    Literals := Data;
+    Digest := nil;
+    if Opt.UseHash then
+    begin
+      if not Vhash128(Opt.Seed, Data, 0, Length(Data), Tag) then
+        raise EOsrepError.Create(3, 'encoder: VHASH failed');
+      Digest := Tag;
+    end;
+    Exit;
+  end;
   if N > 0 then
   begin
     HashBits := 12;

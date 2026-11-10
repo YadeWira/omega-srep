@@ -85,12 +85,19 @@ begin
   Result.Digest := 1;
 end;
 
+function DedupChunkerFor(Method: LongInt): TDedupChunker;
+begin
+  if Method = 1 then
+    Result := dcFixedWindow
+  else
+    Result := dcOrder1;
+end;
+
 procedure OsrepCheckOptions(const Opt: TOsrepOptions; Encoding: Boolean);
 begin
-  if (Opt.Method <> 0) and (Opt.Method <> 3) and (Opt.Method <> 4) and
-     (Opt.Method <> 5) then
+  if (Opt.Method < 0) or (Opt.Method > 5) then
     raise EOsrepApiError.Create(OsrepEUnsupported,
-      Format('method %d is not implemented (only -m3/-m4/-m5)', [Opt.Method]));
+      Format('method %d is not implemented (only -m1..-m5)', [Opt.Method]));
   if (Opt.Format <> 0) and (Opt.Format <> OsrepVersion) then
     raise EOsrepApiError.Create(OsrepEUnsupported,
       Format('format %d is not implemented (only v6)', [Opt.Format]));
@@ -146,9 +153,9 @@ begin
   InStream := TMemoryStream.Create;
   OutStream := TMemoryStream.Create;
   try
-    if Opt.Dedup = 1 then
+    if (Opt.Dedup = 1) or (Opt.Method in [1, 2]) then
     begin
-      BuildDedup(Data, Dedup);
+      BuildDedup(Data, DedupChunkerFor(Opt.Method), Dedup);
       Work := Dedup.Body;
       Meta := Dedup.Meta;
     end
@@ -222,7 +229,7 @@ var
 begin
   OsrepCheckOptions(Opt, True);
   EncOpt := OptionsToEncoder(Opt);
-  if Opt.Dedup = 1 then
+  if (Opt.Dedup = 1) or (Opt.Method in [1, 2]) then
   begin
     try
       InStream := TFileStream.Create(InPath, fmOpenRead or fmShareDenyWrite);
@@ -240,7 +247,7 @@ begin
     finally
       InStream.Free;
     end;
-    BuildDedup(Data, Dedup);
+    BuildDedup(Data, DedupChunkerFor(Opt.Method), Dedup);
     BodyStream := TMemoryStream.Create;
     try
       if Length(Dedup.Body) > 0 then

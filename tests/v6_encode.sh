@@ -47,6 +47,20 @@ echo "== -b/-l/-c/-a options =="
 "$BIN" -d "$TMP/mixed-opts.osr" "$TMP/mixed-opts.out" || fail "decode mixed-opts"
 cmp "$TMP/mixed-opts.out" "$CORPUS/mixed.bin" || fail "round-trip mixed-opts"
 
+echo "== -m1/-m2: dedup-only modes =="
+for m in -m1 -m2; do
+  "$BIN" "$m" "$CORPUS/zeros.bin" "$TMP/${m#-}-zeros.osr" || fail "encode $m"
+  "$BIN" --verify "$TMP/${m#-}-zeros.osr" || fail "--verify $m"
+  "$BIN" -d "$TMP/${m#-}-zeros.osr" "$TMP/${m#-}-zeros.out" || fail "decode $m"
+  cmp "$TMP/${m#-}-zeros.out" "$CORPUS/zeros.bin" || fail "round-trip $m"
+  INFO="$("$BIN" -i "$TMP/${m#-}-zeros.osr")"
+  printf '%s\n' "$INFO" | grep -qx 'restored_size=262144' || \
+    fail "$m restored_size: $INFO"
+  "$BIN" "$m" -t1 "$CORPUS/mixed.bin" "$TMP/${m#-}-t1.osr" || fail "$m -t1"
+  "$BIN" "$m" -t4 "$CORPUS/mixed.bin" "$TMP/${m#-}-t4.osr" || fail "$m -t4"
+  cmp "$TMP/${m#-}-t1.osr" "$TMP/${m#-}-t4.osr" || fail "$m -t changes the archive"
+done
+
 echo "== -m4/-m5: lazy and deeper, round-trip =="
 for m in -m4 -m5; do
   "$BIN" "$m" -t4 "$CORPUS/mixed.bin" "$TMP/${m#-}.osr" || fail "encode $m"
@@ -69,7 +83,7 @@ if "$BIN" -m3 -tx "$CORPUS/tiny.bin" "$TMP/tx.osr" >/dev/null 2>&1; then
 fi
 
 echo "== unimplemented methods are rejected =="
-for m in -m0 -m1 -m2; do
+for m in -m0; do
   if "$BIN" "$m" "$CORPUS/text.bin" "$TMP/unimplemented.osr" \
        >"$TMP/unimplemented.log" 2>&1; then
     fail "$m was accepted"

@@ -131,9 +131,9 @@ static void error_paths(void) {
   check(osrep_last_error()[0] != '\0', "last_error explains the failure", "");
 
   osrep_options_default(&o);
-  o.method = 1;
+  o.method = 6;
   rc = osrep_compress("x", 1, &out, &outn, &o);
-  check(rc == OSREP_E_UNSUPPORTED, "method 1 is E_UNSUPPORTED", "");
+  check(rc == OSREP_E_UNSUPPORTED, "method 6 is E_UNSUPPORTED", "");
   osrep_options_default(&o);
   o.dedup = 2;
   rc = osrep_compress("x", 1, &out, &outn, &o);
@@ -323,6 +323,17 @@ static void dedup_api(void) {
         "osrep_decompress dedup", "");
   check(bn == sizeof d && memcmp(back, d, sizeof d) == 0,
         "dedup round-trip", "");
+  osrep_free(z);
+  osrep_free(back);
+
+  osrep_options_default(&o);
+  o.method = 2;
+  check(osrep_compress(d, sizeof d, &z, &zn, &o) == OSREP_OK,
+        "osrep_compress -m2", "");
+  check(osrep_decompress(z, zn, &back, &bn, NULL) == OSREP_OK,
+        "osrep_decompress -m2", "");
+  check(bn == sizeof d && memcmp(back, d, sizeof d) == 0,
+        "-m2 round-trip", "");
   osrep_free(z);
   osrep_free(back);
 }

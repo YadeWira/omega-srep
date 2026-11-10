@@ -196,6 +196,14 @@ begin
   WriteLn('hash_size=', Info.HashSize);
 end;
 
+function DedupChunkerFor(Method: LongInt): TDedupChunker;
+begin
+  if Method = 1 then
+    Result := dcFixedWindow
+  else
+    Result := dcOrder1;
+end;
+
 procedure RunEncode;
 var
   InStream, OutStream: TStream;
@@ -226,7 +234,7 @@ begin
     finally
       InStream.Free;
     end;
-    BuildDedup(Data, Dedup);
+    BuildDedup(Data, DedupChunkerFor(EncOptions.Method), Dedup);
     BodyStream := TMemoryStream.Create;
     try
       if Length(Dedup.Body) > 0 then
@@ -311,15 +319,18 @@ begin
           CmdError('only one mode can be selected');
         Mode := 'info';
       end
-      else if (A = '-m3') or (A = '-m4') or (A = '-m5') then
+      else if (A = '-m1') or (A = '-m2') or (A = '-m3') or
+              (A = '-m4') or (A = '-m5') then
       begin
         if Mode <> '' then
           CmdError('only one mode can be selected');
         Mode := 'encode';
         EncOptions.Method := StrToInt(Copy(A, 3, 1));
+        if EncOptions.Method in [1, 2] then
+          DupMode := True;
         EncOptionsUsed := True;
       end
-      else if (A = '-m0') or (A = '-m1') or (A = '-m2') then
+      else if A = '-m0' then
         CmdError('method not implemented yet: ' + A)
       else if Copy(A, 1, 2) = '-t' then
       begin
