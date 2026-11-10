@@ -20,7 +20,7 @@ unit osrep_decoder;
 interface
 
 uses
-  SysUtils, Classes, osrep_crc, osrep_format;
+  SysUtils, Classes, osrep_crc, osrep_format, osrep_vhash;
 
 type
   TArchiveReader = class
@@ -75,12 +75,25 @@ var
 
 function VerifyBlockDigest(HashId: Byte; const Seed, Data: TBytes;
   Start: QWord; Len: LongWord; const Expected: TBytes): Boolean;
+var
+  Tag: TBytes;
+  I: Integer;
 begin
-  { The spec names VMAC with key=seed, but not the nonce or the exact VMAC
-    variant.  Standard VMAC-128/256 with key=seed and zero nonce does not
-    reproduce the fixture digests (see docs/implementation-notes.md §7.1).
-    Until that gap is closed this check cannot reject valid fixtures, so the
-    on-disk block_crc remains the integrity check actually enforced. }
+  Result := False;
+  if Length(Expected) = 0 then
+    Exit(True);
+  if HashId = OsrepHashIdDisabled then
+    Exit(True);
+  if (HashId <> OsrepHashIdVhash) or (Length(Seed) <> OsrepSeedSizeVhash) or
+     (Length(Expected) <> OsrepHashSizeVhash) then
+    Exit(False);
+  if not Vhash128(Seed, Data, SizeUInt(Start), SizeUInt(Len), Tag) then
+    Exit(False);
+  if Length(Tag) <> Length(Expected) then
+    Exit(False);
+  for I := 0 to High(Tag) do
+    if Tag[I] <> Expected[I] then
+      Exit(False);
   Result := True;
 end;
 
@@ -394,6 +407,9 @@ begin
     B := FBlocks[I];
     if Length(B.Digest) > 0 then
     begin
+      if FHeader.HashId <> OsrepHashIdVhash then
+        DataError(Format('block %d: digest hash id %d is not implemented',
+          [I + 1, FHeader.HashId]));
       if not VerifyBlockDigest(FHeader.HashId, FSeed, OutBuf, B.StartPos,
         B.OrigSize, B.Digest) then
         DataError(Format('block %d: digest mismatch', [I + 1]));

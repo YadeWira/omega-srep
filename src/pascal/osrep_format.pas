@@ -24,11 +24,12 @@ const
   OsrepBlockHeaderSize  = 16;
   OsrepMetaMinSize      = 8;  { magic + version u32 }
 
-  { fixture-observed hash ids: 4 = 16-byte digest with a 32-byte seed.
-    The specification has no hash-id table; see docs/implementation-notes.md. }
-  OsrepHashIdVmac     = 4;
-  OsrepHashSizeVmac   = 16;
-  OsrepSeedSizeVmac   = 32;
+  { fixture-observed hash ids: 4 = 16-byte VHASH-128 digest with a 32-byte
+    seed; 1 = checksum disabled (hash_size=0).  See spec/format-v6.md §2.6. }
+  OsrepHashIdVhash     = 4;
+  OsrepHashIdDisabled  = 1;
+  OsrepHashSizeVhash   = 16;
+  OsrepSeedSizeVhash   = 32;
 
 type
   EOsrepError = class(Exception)
@@ -130,18 +131,27 @@ begin
   SeedSize := 0;
   if HashSize = 0 then
   begin
-    { No per-block digest.  The fixtures always use hash 4/16; a future
-      writer may use 0/0 for "no hash". }
-    Result := HashId = 0;
-    Exit;
-  end;
-  if (HashId = OsrepHashIdVmac) and (HashSize = OsrepHashSizeVmac) then
-  begin
-    SeedSize := OsrepSeedSizeVmac;
+    { No per-block digest: no digest bytes and no seed; hash_id is ignored. }
     Result := True;
     Exit;
   end;
-  Result := False;
+  case HashId of
+    0: Result := HashSize = 16; { MD5, seed 0 }
+    2: Result := HashSize = 20; { SHA-1, seed 0 }
+    3: Result := HashSize = 64; { SHA-512, seed 0 }
+    4: begin
+         Result := HashSize = OsrepHashSizeVhash;
+         if Result then
+           SeedSize := OsrepSeedSizeVhash;
+       end;
+    5: begin
+         Result := HashSize = 8; { SipHash-2-4 }
+         if Result then
+           SeedSize := 16;
+       end;
+  else
+    Result := False;
+  end;
 end;
 
 procedure DataError(const Msg: string);
