@@ -47,6 +47,7 @@ tiny-m1 tiny.bin
 zeros-m0 zeros.bin
 zruns-m3 zruns.bin
 text-b1mb-m3 text.bin
+text-hashnone-m3 text.bin
 EOF
 
 echo "== fixtures: --verify (including the dup meta CRC) =="

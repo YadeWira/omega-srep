@@ -156,11 +156,21 @@ en disco.
 | 1 | desactivado | 0 | 0 |
 | 2 | SHA-1 | 20 | 0 |
 | 3 | SHA-512 | 64 | 0 |
-| 4 | VMAC | 16 | 32 |
+| 4 | VHASH-128 (VMAC) | 16 | 32 |
 | 5 | SipHash-2-4 | 8 | 16 |
 
 El seed va después del header del archivo, `seed_size` bytes (derivado de la
-tabla). Para VMAC la clave es el seed; para SipHash, los 16 bytes del seed.
+tabla). Para SipHash, los 16 bytes del seed.
+
+`hash_id = 4` es el **VHASH-128 sin nonce** del VMAC de referencia, no el MAC
+completo: `vmac_gen_tag`/`vmac` agregan un nonce y dan otro tag. Parámetros
+fijos: `VMAC_KEY_LEN = 256` (la clave son los 32 bytes del seed),
+`VMAC_TAG_LEN = 128`, `VMAC_NHBYTES = 4096`, y se usa la función `vhash` (sin
+nonce) de la implementación pública de Krovetz/Wei Dai. El tag son los dos
+QWord de `vhash` en little-endian, 16 bytes; el tweak de largo es
+`len8 = (len mod 4096) * 8`. Un vector de control: `text.bin` (4 MiB) con el
+seed del fixture `text-m3.osr` da `94303bebcecb2d284461e5972eebbaf0`.
+
 `hash_size = 0` significa "sin digest": no hay bytes de digest ni seed, y el
 `hash_id` se ignora. Cualquier otro `hash_size` tiene que coincidir con la
 tabla; si no, el archivo se rechaza.
@@ -180,10 +190,13 @@ Semántica (Future-LZ), con `block_start` la posición del bloque en la salida:
 ```
 running_skip = 0
 para cada record, en el orden del archivo (ordenado por source):
-    source      = block_start + running_skip
-    destination = source + distance
     running_skip = running_skip + skip
+    source       = block_start + running_skip
+    destination  = source + distance
 ```
+
+El `skip` se suma **antes** de calcular `source`: el primer record de un bloque
+con `skip=512` tiene `source = block_start + 512`, no `block_start`.
 
 Los records están guardados en orden de `source`. El decoder los ordena por
 `destination` y recorre el bloque de 0 a `origsize`:
@@ -194,11 +207,15 @@ Los records están guardados en orden de `source`. El decoder los ordena por
    permitido (`distance < length` es válido);
 3. después del último match, copia los literales restantes hasta `origsize`.
 
-`source` puede apuntar a un bloque anterior ya reconstruido. El stream de
-literales tiene `literal_bytes` bytes y se consume en orden de destino. Se
-cumple `sum(length) + literal_bytes = origsize`; `sum(skip)` **no** es la
-cuenta de literales y puede superar `literal_bytes`. `statsize` es el número de
-bytes de records; no hay centinela.
+`source` puede apuntar a un bloque anterior ya reconstruido y `destination`
+puede caer en un bloque posterior: el decoder mantiene una cola global de
+matches por `destination` y los emite cuando llega al bloque que los contiene.
+Un match puede empezar justo en el borde de un bloque y seguir en el siguiente;
+por eso `sum(length) + literal_bytes = origsize` vale para el archivo completo,
+no para cada bloque (un `length` puede cruzar el borde). El stream de literales
+tiene `literal_bytes` bytes y se consume en orden de destino. `sum(skip)` **no**
+es la cuenta de literales y puede superar `literal_bytes`. `statsize` es el
+número de bytes de records; no hay centinela.
 
 La lectura "Index-LZ" histórica (`lit_len` = literales antes del match, `dest`
 avanza desde el match anterior) **no** es la de v6; ver la nota de
