@@ -14,7 +14,7 @@ on:
   workflow_dispatch:
     inputs:
       runner:
-        description: macOS runner label (arm64: macos-14, macos-15, macos-latest)
+        description: 'macOS runner label: macos-14, macos-15 or macos-latest'
         default: macos-14
         type: string
 
