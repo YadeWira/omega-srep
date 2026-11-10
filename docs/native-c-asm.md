@@ -133,9 +133,9 @@ Notas:
 2. **memcmp/CommonPrefix/memcpy SIMD.** Aceptación: los 220 archivos dan los
    mismos `.osr` con y sin la ruta nativa.
 3. **AES-NI para VMAC / SHA-NI para SHA1.** Aceptación: digests idénticos.
-4. **Lazo del escaneo en asm/C.** El CDC ya está; sigue el match finder de
-   `-m3..-m5`. Aceptación: misma paridad + medición; si no hay ganancia clara,
-   se descarta.
+4. **Lazo del escaneo en asm/C.** CDC y match finder ya están, con paridad
+   byte a byte. Sigue el resto de la fase: CRC/AES y, si el perfil lo pide,
+   un parseo más profundo. Aceptación: misma paridad + medición.
 5. **macOS ARM64** (build nativo) y validación.
 
 ## 8. Decisiones abiertas

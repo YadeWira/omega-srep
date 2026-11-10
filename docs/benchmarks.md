@@ -139,3 +139,17 @@ referencia:
 
 Los archivos son byte-idénticos; `tests/native_cdc.sh` es la compuerta. El
 `-dup` apenas cambia porque el LZ domina el tiempo.
+
+## Match finder nativo (C) vs referencia Pascal
+
+`real64.bin`, mismos bytes de salida:
+
+| modo | Pascal | C | salida |
+|---|---:|---:|---:|
+| `-m3` | 1,33 s | 1,03 s | 39.551.315 |
+| `-m4` | 1,43 s | 1,13 s | 38.353.352 |
+| `-m5` | 1,53 s | 1,14 s | 38.083.480 |
+
+`tests/native_match.sh` es la compuerta (byte a byte, también con
+`-l64 -c64 -a32` y entrada vacía). El default `-m5` sigue ~1,8× más lento
+que Omega `-m4` (0,64 s), pero con 15 puntos menos de ratio.

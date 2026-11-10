@@ -85,7 +85,7 @@ reemplace) y se repiten en cada release.
 - Benchmarks contra SREP/Omega SREP: línea base hecha en `docs/benchmarks.md`.
 - Checkpoint `0.0.3`: release/pre-release con `-m1..-m5`, `-t` y `-dup`.
 - Codificación paralela de bloques (`-tN`): hecha; el `.osr` no cambia.
-- C/asm: CDC nativo hecho y verificado contra Pascal; el match finder sigue
-  pendiente.
+- C/asm: CDC y match finder nativos hechos y verificados contra Pascal; el
+  resto (CRC/AES, SIMD) sigue pendiente.
 - Dedup por contenido para zpaq: diseñado en `docs/zpaq-dedup-study.md`,
   no implementado.
