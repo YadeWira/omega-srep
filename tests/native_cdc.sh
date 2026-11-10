@@ -31,6 +31,8 @@ $CC -O2 -fPIC -fno-builtin -fno-stack-protector \
   -c "$ROOT/src/c/osrep_cdc.c" -o "$NAT/osrep_cdc.o" || fail "cc cdc"
 $CC -O2 -fPIC -fno-builtin -fno-stack-protector \
   -c "$ROOT/src/c/osrep_match.c" -o "$NAT/osrep_match.o" || fail "cc match"
+$CC -O2 -fPIC -fno-builtin -fno-stack-protector \
+  -c "$ROOT/src/c/osrep_crc.c" -o "$NAT/osrep_crc.o" || fail "cc crc"
 fpc -Mobjfpc -O2 -Sh -Fu"$ROOT/src/pascal" -Fo"$NAT" \
   -FU"$NAT/u" -FE"$NAT" "$ROOT/src/pascal/osrep.lpr" >"$TMP/native.log" 2>&1 || {
   cat "$TMP/native.log"

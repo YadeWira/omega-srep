@@ -21,6 +21,12 @@ function Crc32C(const Buf: TBytes; Offset, Len: SizeInt): LongWord; overload;
 
 implementation
 
+{$ifndef OSREP_NO_NATIVE}
+{$L osrep_crc.o}
+function OsrepCrc32c(Crc: LongWord; Data: Pointer; Len: SizeUInt): LongWord;
+  cdecl; external name 'osrep_crc32c';
+{$endif}
+
 const
   Crc32cPoly = LongWord($82F63B78);
 
@@ -49,6 +55,11 @@ begin
 end;
 
 function Crc32CUpdate(Crc: LongWord; const Data; Len: PtrUInt): LongWord;
+{$ifndef OSREP_NO_NATIVE}
+begin
+  Result := OsrepCrc32c(Crc, @Data, Len);
+end;
+{$else}
 var
   P: PByte;
   I: PtrUInt;
@@ -61,6 +72,7 @@ begin
     Crc := CrcTable[(Crc xor P[I]) and $FF] xor (Crc shr 8);
   Result := Crc;
 end;
+{$endif}
 
 function Crc32C(const Data; Len: PtrUInt): LongWord;
 begin
