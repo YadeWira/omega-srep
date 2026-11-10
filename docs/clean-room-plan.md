@@ -124,7 +124,7 @@ benchmark contra 3.0.0 y SREP 3.93a.
 - CLI/UX, docs, packaging, man/completions.
 - Golden completa y mutaciones adaptadas.
 - Matriz de seis plataformas (macOS arm64 en CI).
-- Release `v1.0.0` con `LICENSE` MIT y `NOTICE`.
+- Release `v0.0.x` (pre-release) y, al cerrar la fase, `v1.0.0` con `LICENSE` MIT y `NOTICE`.
 
 **Total estimado:** ~2–3 meses de trabajo efectivo.
 
@@ -153,7 +153,9 @@ benchmark contra 3.0.0 y SREP 3.93a.
   **legacy (Omega SREP 3.0.0)**.
 - Binarios nuevos: `osrep-*`, `--version` imprime `OSREP x.y.z`. Los binarios
   3.0.0 legacy conservan su nombre y su texto.
-- Versión nueva: `0.1.0` durante el MVP; `1.0.0` en el primer release estable.
+- Versión nueva: `0.0.1` en la fase 0; `0.0.2` en el MVP y `0.0.x` durante el
+  resto; `1.0.0` en el primer release estable. Todos los `0.0.x` son
+  pre-releases.
 
 ## 10. Riesgos
 

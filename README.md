@@ -4,8 +4,10 @@
 huge-dictionary LZ77 compressor. It is the successor of the previous
 **Omega SREP** project, restarted with new code and a single format: **v6**.
 
-- **Status: phase 0.** Specifications, fixtures and the clean-room plan are
-  in place; the implementation starts in `src/`.
+- **Status: phase 0 (0.0.1).** Specifications, fixtures and the clean-room
+  plan are in place; the implementation starts in `src/`. The version line
+  starts at 0.0.1 and every 0.0.x release is a pre-release; 1.0.0 is the first
+  stable release.
 - **Format:** v6 only (`OSR6`). OSREP reads the v6 archives written by the
   legacy Omega SREP 3.0.0; it does **not** read or write the SREP v1-v5
   formats, and there is no compatibility goal with upstream SREP.

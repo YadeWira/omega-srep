@@ -49,5 +49,6 @@ must not silently ignore it.
 
 ## Version
 
-`--version` prints `OSREP <version> (<date>)`. The phase-1 line is
-`OSREP 0.1.0 (2026-11-10)`; the first stable release is `1.0.0`.
+`--version` prints `OSREP <version> (<date>)`. The OSREP line starts at
+`0.0.1`; phase 0 is `OSREP 0.0.1 (2026-11-10)`, phase 1 is `0.0.2` and the
+first stable release is `1.0.0`. Every 0.0.x release is a pre-release.
