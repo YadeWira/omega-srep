@@ -7,7 +7,7 @@ L0 está en el árbol: `include/osrep.h`, `src/lib/osrep_lib.pas`,
 `src/lib/test_lib.c`, `tests/lib.sh` y `tests/lib_7z.sh`. Este documento
 fija la API, el empaquetado y el orden de integración, usando **PJA, PMPA,
 PRA, PPA y PAIA** como primeros consumidores. PJA (`libpja`) es el modelo,
-por veterano y por compartir FPC + C + asm y licencia MIT. Los proyectos
+por veterano y por compartir FPC + C (asm previsto) y licencia MIT. Los proyectos
 `pack*` **no son la familia**: son sus predecesores ("Successor of" en las
 tablas de la familia) y solo aparecen aquí como historia de la API.
 
@@ -348,10 +348,13 @@ cc -O2 -Iinclude src/lib/test_lib.c -Lbuild/lib -losrep -o test_lib
 ./tests/lib_7z.sh
 ```
 
-### L1 — API completa (2–3 semanas)
+### L1 — API completa (en curso)
 
-- `compress_file`/`decompress_file`, `filter_encode`/`filter_decode`,
-  `compress_into`/`compress_bound`; hilos reales en el encoder.
+- Hecho: `compress_file`/`decompress_file` sobre el mismo núcleo,
+  `max_output` también para `-dup`, validación de `reserved` y errores de
+  E/S.
+- Falta: `filter_encode`/`filter_decode`, `compress_into`/`compress_bound`,
+  hilos reales en el encoder y la matriz de plataformas.
 - Estática y compartida; Windows x86/x64 y macOS ARM64; pkg-config/CMake.
 - ABI: `nm` de símbolos, versión, `struct_size`, test de compatibilidad.
 - Hilos: dos llamadas concurrentes; `last_error` por hilo.

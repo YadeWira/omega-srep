@@ -5,10 +5,10 @@ dictionaries, deterministic output and integrity-checked files. It turns the
 input into a compact match/literal stream; it is **not** an entropy coder or an
 archiver. The final compression is a separate stage (a backend such as
 `zpaq-std`), and OSREP is also meant to be the deduplication engine for that
-backend. It is written in Free Pascal with C/asm hot paths, licensed MIT, and
-its own format is **v6**: blocks with CRC-32C and a VHASH-128 digest, a footer
-that chains the block CRCs, and a CLI for preprocessing, decompression,
-verification and inspection.
+backend. Its core is Free Pascal, with C/asm hot paths planned for phase 2;
+it is licensed MIT, and its own format is **v6**: blocks with CRC-32C and a
+VHASH-128 digest, a footer that chains the block CRCs, and a CLI for
+preprocessing, decompression, verification and inspection.
 
 - **Status: phase 1b (0.0.2).** The v6 reader and the MVP `-m3` preprocessor are
   implemented in `src/pascal/`: container, CRC-32C, VHASH-128 block digest,
@@ -23,8 +23,9 @@ verification and inspection.
 - **License:** MIT, from the first commit of this branch (`LICENSE`).
 - **Platforms (planned):** Linux x86_64/i386/ARM64, Windows x86/x64 (7+),
   macOS 11+ ARM64.
-- **Languages:** Free Pascal for the format, container, CLI and orchestration;
-  C with intrinsics for CRC/SIMD/hashes; FPC asm for prefetch/CPUID.
+- **Languages:** Free Pascal for the format, container, CLI, library and
+  orchestration; C for the 7-Zip plugin now, and C/asm hot paths (CRC,
+  SIMD, hashes, prefetch/CPUID) in phase 2.
 
 ## Library
 
