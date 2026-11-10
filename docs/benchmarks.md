@@ -219,3 +219,16 @@ Lectura:
 `tests`/scripts de esta medición: snapshots con `git archive`, `tar`, y las
 dos pipelines; los números son reproducibles con los mismos commits y el
 mismo `zpaq-std v2.7.0`.
+
+### Segundo corpus: PJA
+
+Cinco snapshots de `pja` (`git archive` de cinco commits), tar de **33,6 MB**.
+Mismo backend `zpaq-std -m1`:
+
+| flujo | archivo final | tiempo total |
+|---|---:|---:|
+| zpaq-std `-m1` sobre el tar | 2.817.606 | 0,50 s |
+| OSREP `-m1` (8 KiB) + zpaq `-m1` | **1.732.628** | 0,66 s |
+
+Otra vez ~38 % más chico con el dedup fijo de OSREP, a 1,3× el tiempo. El
+default de 8 KiB no está sobreajustado a un solo árbol.
