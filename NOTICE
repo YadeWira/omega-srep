@@ -1,0 +1,33 @@
+OSREP
+Copyright (c) 2026 Yade E. Bravo
+
+The MIT license in LICENSE applies to the code in the `osrep` branch, from
+its first commit (2026-11-10) onward.
+
+Scope and history
+-----------------
+The `main` branch, the tags up to `v3.0.0` and the releases up to 3.0.0 are
+the previous Omega SREP project. They contain a derivative of SREP 3.93a
+(Bulat Ziganshin, "All rights reserved") and are NOT covered by this MIT
+license. They are kept for history; their code must not be copied into
+OSREP.
+
+Format compatibility
+--------------------
+OSREP uses the v6 format defined by `spec/format-v6.md`. It reads the v6
+archives written by Omega SREP 3.0.0 (the files in
+`tests/fixtures/v6/`). It does not implement the SREP v1-v5 formats and
+does not contain SREP code.
+
+Third-party components
+----------------------
+If a public-domain component is reused, its notice stays with it:
+
+- LibTomCrypt (AES, SHA, MD5, SHA-512): "free for all purposes".
+- VMAC/VHASH (Ted Krovetz, Wei Dai): public domain.
+- LZMA2 (Igor Pavlov): public domain.
+- SipHash reference: public domain/CC0 (verify the exact upstream before
+  reusing it).
+
+The current `osrep` branch has no implementation code; this list is a
+placeholder for phase 1 and will be completed when the C/asm components land.
