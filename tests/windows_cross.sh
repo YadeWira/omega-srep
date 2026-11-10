@@ -38,7 +38,12 @@ for exe in "$W64" "$W32"; do
   (cd "$work" && WINEDEBUG=-all wine "$exe" --verify out.osr) || fail "$name verify"
   (cd "$work" && WINEDEBUG=-all wine "$exe" -d out.osr back.bin) || fail "$name decode"
   cmp "$work/back.bin" "$work/in.bin" || fail "$name round-trip"
-  echo "$name: version, encode, verify and round-trip OK"
+  (cd "$work" && cat in.bin | WINEDEBUG=-all wine "$exe" -m3 - - > pipe.osr) || \
+    fail "$name stdin encode"
+  (cd "$work" && WINEDEBUG=-all wine "$exe" --verify pipe.osr) || fail "$name stdin verify"
+  (cd "$work" && WINEDEBUG=-all wine "$exe" -d pipe.osr pipe.out) || fail "$name stdin decode"
+  cmp "$work/pipe.out" "$work/in.bin" || fail "$name stdin round-trip"
+  echo "$name: version, encode, verify, round-trip and stdin OK"
 done
 
 echo "windows cross: all checks passed"

@@ -121,13 +121,31 @@ begin
   Result := InputName + '.osr';
 end;
 
+function OsrepStdinHandle: THandle;
+begin
+{$ifdef windows}
+  Result := StdInputHandle;
+{$else}
+  Result := 0;
+{$endif}
+end;
+
+function OsrepStdoutHandle: THandle;
+begin
+{$ifdef windows}
+  Result := StdOutputHandle;
+{$else}
+  Result := 1;
+{$endif}
+end;
+
 procedure ReadStdinToStream(Stream: TStream);
 var
   H: THandleStream;
   Buf: array[0..65535] of Byte;
   N: LongInt;
 begin
-  H := THandleStream.Create(0);
+  H := THandleStream.Create(OsrepStdinHandle);
   try
     repeat
       N := H.Read(Buf, SizeOf(Buf));
@@ -173,7 +191,7 @@ end;
 function CreateOutputStream(const Name: string): TStream;
 begin
   if Name = '-' then
-    Result := THandleStream.Create(1)
+    Result := THandleStream.Create(OsrepStdoutHandle)
   else
     Result := TFileStream.Create(Name, fmCreate);
 end;
