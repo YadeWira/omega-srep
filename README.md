@@ -50,7 +50,8 @@ man/, completions/  the man page and the bash/zsh completions
 ```
 
 The two oracles are not shipped and not needed to use `osrep`; they are what
-the Pascal is diffed against. See `oracles/README.md`.
+the Pascal is diffed against. See `oracles/README.md`. How they leave without
+losing the measurement: `docs/retire-oracles.md`.
 
 ## What is different from upstream SREP
 
