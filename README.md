@@ -228,6 +228,11 @@ the preprocessor. For Windows, see `docs/windows-build.md` (FOSS
 MinGW-w64 toolchain, no Visual Studio needed) and `docs/32bit-support.md`
 for the opt-in 32-bit (i686) cross-compile path.
 
+`tests/gates.sh core` runs the gates that need no oracle: the golden cases in
+`tests/golden/` (archives, CLI transcripts and hash vectors), the v6 suite and
+its frame self-test. `tests/gates.sh full` adds the differential suites, which
+build the C++ and the Rust; the release checklist adds the wine runs on top.
+
 Point the CLI-level test scripts at either oracle with `OSREP_BIN`; that is
 how the Rust port is run through the suite the C++ was developed against.
 `tests/rust_cli_conformance.sh` runs the Pascal binary through the whole Rust

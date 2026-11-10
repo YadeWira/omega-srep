@@ -13,6 +13,11 @@ what happened in 2.0.0.
 
 ### Added
 
+- **`tests/gates.sh core|full`**: `core` runs the gates that need no oracle
+  (the golden cases, the v6 suite and its frame self-test) and passes on a
+  clean worktree with `oracles/` removed; `full` adds the differential suites,
+  which build the C++ and the Rust. Logs go to `OSREP_GATES_LOGS` and the exit
+  code is non-zero if any gate failed.
 - **v6, opt-in with `--format=v6`**: the v5 container plus integrity — a
   16-byte block header with a CRC-32C over the block payload as stored
   (uncompressed blocks included), and a 36-byte footer with `blocks_crc`, the

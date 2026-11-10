@@ -66,8 +66,10 @@ if [ "$MODE" = full ]; then
         run "pas-$s" bash "tests/pascal_${s}_conformance.sh"
     done
     run pas-rustcli  env OSREP_PORT_BIN="$PWD/pascal/bin/osrep-linux-x86_64" bash tests/rust_cli_conformance.sh
-    run m3grid       bash tests/m3_grid_regress.sh
-    run duplen       bash tests/dup_length_regression.sh
+    # These two are regressions of the port: run them against the Pascal, not
+    # against the C++ oracle (dup_length fails on the C++, which has the bug).
+    run m3grid       env OSREP_BIN="$PWD/pascal/bin/osrep-linux-x86_64" bash tests/m3_grid_regress.sh
+    run duplen       env OSREP_BIN="$PWD/pascal/bin/osrep-linux-x86_64" bash tests/dup_length_regression.sh
     run tie          bash tests/cxx_sort_tie_divergence.sh
     run realworld    bash tests/real_world_scan_regression.sh
     run selftest     bash tests/harness_selftest.sh

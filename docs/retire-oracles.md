@@ -94,6 +94,12 @@ errores de la CLI sin abrir un binario de `oracles/`.
 - Las suites que hoy comparan contra el Rust (textos, CLI) se reemplazan por
   las fixtures de CLI.
 
+**Implementado el 2026-11-10:** `tests/gates.sh core` corre solo el núcleo
+(golden, v6 y su self-test); `full` agrega las diferenciales. Probado en un
+worktree con `oracles/` borrado y un build limpio: **core pasa entero**
+(golden 65, v6 42, frame 78). `harness_selftest` quedó del lado diferencial
+porque compila el harness Rust.
+
 **Aceptación:** en un clon sin `oracles/`, `g++` ni `cargo`, el núcleo pasa
 entero y ninguna suite se saltea en silencio (las diferenciales dicen por qué).
 
