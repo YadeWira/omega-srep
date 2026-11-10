@@ -33,6 +33,14 @@ procedure EncodeToStream(InStream, OutStream: TStream;
 
 implementation
 
+{$ifndef OSREP_NO_NATIVE}
+{$L osrep_match.o}
+function OsrepMatchFind(Data: Pointer; N: SizeUInt; MinMatch, ChainDepth,
+  Stride: LongWord; Method: LongInt; Head: PLongInt; HashMask: LongWord;
+  Prev: PLongInt; OutMatches: Pointer; Cap: SizeUInt): SizeUInt; cdecl;
+  external name 'osrep_match_find';
+{$endif}
+
 type
   TMatchRec = record
     Source: LongWord;
@@ -316,6 +324,7 @@ var
   Matches: TMatchArray;
   Sorted: TMatchArray;
   I, K: SizeInt;
+  Count: SizeUInt;
   Needed: QWord;
   Buf: TByteBuffer;
   PrevSource: LongWord;
@@ -402,6 +411,7 @@ begin
     SetLength(Prev, N);
     FillChar(Prev[0], N * SizeOf(LongInt), $FF);
 
+{$ifdef OSREP_NO_NATIVE}
     Pos := 0;
     while Pos < N do
     begin
@@ -438,6 +448,18 @@ begin
         Inc(Pos);
       end;
     end;
+{$else}
+    if N > 0 then
+    begin
+      SetLength(Matches, N div 4 + 2);
+      Count := OsrepMatchFind(@Data[0], SizeUInt(N), Opt.MinMatch,
+        Opt.ChainDepth, Opt.Stride, Opt.Method, @Head[0], HashMask,
+        @Prev[0], @Matches[0], SizeUInt(Length(Matches)));
+      if Count = High(SizeUInt) then
+        raise EOsrepError.Create(2, 'match finder capacity is too small');
+      SetLength(Matches, SizeInt(Count));
+    end;
+{$endif}
   end;
 
   BuildLiterals(Data, Matches, Literals);
