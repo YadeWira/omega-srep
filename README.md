@@ -34,7 +34,7 @@ Windows 7, can never move. Free Pascal 3.2.2 targets both natively. See
 | Linux x86 (32-bit) | built and validated; ships with 3.0.0 |
 | Linux ARM64 | built and validated under `qemu-user`; ships with 3.0.0 |
 | Windows x86 / x86_64 (7 and later) | release binaries; verified on a real Windows 7 SP1 each release |
-| macOS ARM64 (11 and later) | planned for 3.0.0; native build (FPC 3.2.2 + Xcode CLT), no cross from Linux |
+| macOS ARM64 (11 and later) | release binary; built and tested on GitHub Actions (macOS 15, native FPC 3.2.2) |
 | Test gates | local scripts in `tests/`; no hosted CI |
 | Latest release | [3.0.0](https://github.com/YadeWira/omega-srep/releases/tag/v3.0.0) |
 

@@ -32,7 +32,7 @@ Esta es la matriz que la 3.0.0 tiene que construir, publicar y verificar:
 | Linux | aarch64 | construido y validado (con la ruta polinomial de CDC) | `qemu-user` + VM ARM64 |
 | Windows | x86_64 (Win7 SP1 o superior) | se distribuye | Win7 real |
 | Windows | i386 (Win7 SP1 o superior) | se distribuye | Win7 real |
-| macOS (11 o superior) | arm64 | planificado para 3.0.0 | build nativo (FPC 3.2.2 + Xcode CLT); no hay cross desde Linux |
+| macOS (11 o superior) | arm64 | construido y validado en CI (2026-11-10) | `macos-15` de GitHub Actions, FPC 3.2.2 nativo, `core` + artefacto |
 
 Fuera de la matriz: BSD, Windows anteriores a 7, macOS x86 y cualquier target
 sin compilador de FPC 3.2.2. La 3.0.0 no promete nada que no esté en esta

@@ -182,17 +182,30 @@ documentación histórica; ningún script de `tests/` resuelve rutas dentro de
 
 ### Fase F — Verificación final
 
-- **CLI 3.0.0**: default `v6`, `--format=v5` rechazado con el mensaje de
-  `format-spec-v6.md` §4, `--help` listando `v4|v6`. Antes hay que retirar o
-  adaptar las suites diferenciales que escriben v5 (`rust_cli_conformance` con
-  `OSREP_PORT_BIN`, `pascal_v5/dup/container`, `format_v5`) y re-grabar los
-  fixtures de CLI; los archivos v5 viejos se siguen leyendo.
-- Clon limpio, sin `oracles/`, sin `g++`, sin `cargo`: `bash pascal/build.sh`
-  (FPC + C + asm) y el núcleo completo.
-- La misma matriz en Win7 real, wine32/64, linux-x86/ARM64 y macOS ARM64.
-- Comparar los binarios de la 3.0.0 con los de 2.4.0: los `.osr` de v4/v5
-  decodifican igual; los de v6 son nuevos.
-- Release 3.0.0 (estable) con la spec normativa y la golden como contrato.
+**Implementado el 2026-11-10.**
+
+- **CLI 3.0.0**: v6 por defecto, `--format=v5` rechazado con un mensaje claro,
+  `--help` lista `v4|v6` y `--version` es 3.0.0. v5 quedó solo lectura: sus
+  ocho archivos viven en `tests/fixtures/v5` y `tests/v5_readonly.sh` los
+  verifica (`sha256`, `--verify`, `-d` byte a byte) en cada `core`. Las suites
+  diferenciales que escribían v5 se adaptaron a v4 o generan el material v5
+  con el Rust archivado (`$RUSTV5`); las que solo tenían sentido para un
+  escritor v5 se saltean cuando el binario bajo prueba es el port.
+- **Matriz**: `tests/gates.sh core` pasa en linux-x86_64 (nativo), linux-x86
+  (i386), linux-aarch64 (qemu), win-x86_64 y win-x86 (wine), y macOS arm64.
+  En Win7 SP1 x64 real, los dos `.exe` comprimen v6 por defecto, `--verify`
+  cubre los bloques guardados, `-d` devuelve el archivo byte a byte, leen un
+  v5 y `--format=v5` sale con 2.
+- **macOS arm64**: `.github/workflows/macos-arm64.yml` compila con el FPC
+  3.2.2 nativo del runner, deployment target 11.0, corre `core` y sube
+  `osrep-macos-aarch64` como artefacto. Se dispara a mano porque los push
+  triggers de esta cuenta no encienden runners (CHANGELOG 2.4.0);
+  `macos-14` no está habilitado en la cuenta y `macos-15` sí.
+- **Release 3.0.0**: tag `v3.0.0` con los seis binarios y `SHA256SUMS`. El
+  `full` desde el tarball de oráculos pasa entero antes del tag (core
+  59/8/42/78 + rust 519/640, encode 506, decode 248, v5 1764, dup 797,
+  cli 1598, container 84, futurelz 80, grid 26, duplen 9, tie 64, real 6,
+  selftest 19).
 
 ## 4. Riesgos y mitigaciones
 
