@@ -43,6 +43,22 @@ function BuildDedup(const Data: TBytes; Chunker: TDedupChunker;
 
 implementation
 
+{$ifndef OSREP_NO_NATIVE}
+{$L osrep_cdc.o}
+type
+  {$packrecords c}
+  TOsrepChunk = record
+    Offset: QWord;
+    Len: LongWord;
+    Hash: QWord;
+  end;
+  {$packrecords default}
+
+function OsrepCdcFind(Data: Pointer; Len: SizeUInt; Chunker: LongInt;
+  OutChunks: Pointer; Cap: SizeUInt): SizeUInt; cdecl;
+  external name 'osrep_cdc_find';
+{$endif}
+
 type
   TByteBuf = record
     Data: TBytes;
@@ -73,7 +89,13 @@ type
     procedure GrowTable;
     function InternChunk(const Data: TBytes; Start: SizeInt; Len: LongWord;
       Hash: QWord; out IsNew: Boolean): LongWord;
+    procedure EmitChunkHashed(const Data: TBytes; Start: SizeInt;
+      Len: LongWord; Hash: QWord);
     procedure EmitChunk(const Data: TBytes; Start: SizeInt; Len: LongWord);
+    procedure BuildPascal(const Data: TBytes; Chunker: TDedupChunker);
+{$ifndef OSREP_NO_NATIVE}
+    procedure BuildNative(const Data: TBytes; Chunker: TDedupChunker);
+{$endif}
   public
     function Build(const Data: TBytes; Chunker: TDedupChunker;
       out Res: TDedupResult): Boolean;
@@ -217,14 +239,12 @@ begin
   Inc(FUniqueCount);
 end;
 
-procedure TDedupBuilder.EmitChunk(const Data: TBytes; Start: SizeInt;
-  Len: LongWord);
+procedure TDedupBuilder.EmitChunkHashed(const Data: TBytes; Start: SizeInt;
+  Len: LongWord; Hash: QWord);
 var
-  Hash: QWord;
   Index: LongWord;
   IsNew: Boolean;
 begin
-  Hash := HashChunk(Data, Start, Len);
   Index := InternChunk(Data, Start, Len, Hash, IsNew);
   if IsNew then
   begin
@@ -239,8 +259,14 @@ begin
   Inc(FChunkCount);
 end;
 
-function TDedupBuilder.Build(const Data: TBytes; Chunker: TDedupChunker;
-  out Res: TDedupResult): Boolean;
+procedure TDedupBuilder.EmitChunk(const Data: TBytes; Start: SizeInt;
+  Len: LongWord);
+begin
+  EmitChunkHashed(Data, Start, Len, HashChunk(Data, Start, Len));
+end;
+
+procedure TDedupBuilder.BuildPascal(const Data: TBytes;
+  Chunker: TDedupChunker);
 var
   I, Start, Len: SizeInt;
   C, Pred, C1: Byte;
@@ -248,15 +274,6 @@ var
   H: LongWord;
   H64, Pow: QWord;
 begin
-  Res.Body := nil;
-  Res.Meta := nil;
-  Res.ChunkCount := 0;
-  Res.UniqueCount := 0;
-  Res.OriginalSize := Length(Data);
-  FBody.Init;
-  FEntries.Init;
-  FChunkCount := 0;
-  InitTable(1024);
   FillChar(O1, SizeOf(O1), 0);
   C1 := 0;
   H := 0;
@@ -309,6 +326,49 @@ begin
   end;
   if Len > 0 then
     EmitChunk(Data, Start, LongWord(Len));
+end;
+
+{$ifndef OSREP_NO_NATIVE}
+procedure TDedupBuilder.BuildNative(const Data: TBytes;
+  Chunker: TDedupChunker);
+var
+  Chunks: array of TOsrepChunk;
+  Cap, N: SizeUInt;
+  I: SizeInt;
+  P: Pointer;
+begin
+  Cap := SizeUInt(Length(Data) div OsrepDupMinChunk) + 2;
+  SetLength(Chunks, Cap);
+  if Length(Data) > 0 then
+    P := @Data[0]
+  else
+    P := nil;
+  N := OsrepCdcFind(P, SizeUInt(Length(Data)), Ord(Chunker), @Chunks[0], Cap);
+  if N = High(SizeUInt) then
+    raise Exception.Create('CDC chunk capacity is too small');
+  for I := 0 to SizeInt(N) - 1 do
+    EmitChunkHashed(Data, SizeInt(Chunks[I].Offset), Chunks[I].Len,
+      Chunks[I].Hash);
+end;
+{$endif}
+
+function TDedupBuilder.Build(const Data: TBytes; Chunker: TDedupChunker;
+  out Res: TDedupResult): Boolean;
+begin
+  Res.Body := nil;
+  Res.Meta := nil;
+  Res.ChunkCount := 0;
+  Res.UniqueCount := 0;
+  Res.OriginalSize := Length(Data);
+  FBody.Init;
+  FEntries.Init;
+  FChunkCount := 0;
+  InitTable(1024);
+{$ifdef OSREP_NO_NATIVE}
+  BuildPascal(Data, Chunker);
+{$else}
+  BuildNative(Data, Chunker);
+{$endif}
 
   SetLength(Res.Body, FBody.Len);
   if FBody.Len > 0 then

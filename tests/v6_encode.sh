@@ -17,8 +17,11 @@ fail() {
   exit 1
 }
 
-echo "== building with fpc =="
-fpc -Mobjfpc -O2 -Sh -Fu"$ROOT/src/pascal" -FU"$UNITS" -FE"$BUILD" \
+echo "== building with fpc + native CDC =="
+CC=${CC:-cc}
+$CC -O2 -fPIC -fno-builtin -fno-stack-protector \
+  -c "$ROOT/src/c/osrep_cdc.c" -o "$BUILD/osrep_cdc.o" || fail "cc osrep_cdc.c"
+fpc -Mobjfpc -O2 -Sh -Fu"$ROOT/src/pascal" -Fo"$BUILD" -FU"$UNITS" -FE"$BUILD" \
   "$ROOT/src/pascal/osrep.lpr" >"$TMP/fpc.log" 2>&1 || {
   cat "$TMP/fpc.log"
   fail "fpc build"
