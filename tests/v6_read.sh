@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# v6 reader acceptance: build with FPC, decode the seven non-dup fixtures,
-# verify all eight, and exercise the negative CLI/data paths.
+# v6 reader acceptance: build with FPC, decode the nine non-dup fixtures,
+# restore the -dup fixture, verify all ten, and exercise the negative
+# CLI/data paths.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -49,6 +50,11 @@ zruns-m3 zruns.bin
 text-b1mb-m3 text.bin
 text-hashnone-m3 text.bin
 EOF
+
+echo "== dup fixture: -d restores the original input =="
+"$BIN" -d "$ROOT/tests/fixtures/v6/text-dup-m3.osr" "$OUT/text-dup-m3.out" || \
+  fail "-d text-dup-m3"
+cmp "$OUT/text-dup-m3.out" "$IN/text.bin" || fail "text-dup restore != text.bin"
 
 echo "== fixtures: --verify (including the dup meta CRC) =="
 for f in "$ROOT"/tests/fixtures/v6/*.osr; do

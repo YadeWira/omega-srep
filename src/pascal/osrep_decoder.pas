@@ -37,6 +37,8 @@ type
     FMatches: TList;
     procedure LoadHeaderFooter;
     procedure ValidateMeta;
+    procedure ReadMeta(out Meta: TBytes);
+    procedure RestoreDup(const Body: TBytes; out Output: TBytes);
     procedure ParseBlockRecords(const BH: TBlockHeader; const Payload: TBytes;
       BlockStart: QWord);
     procedure DecodeAll(OutStream: TStream);
@@ -243,11 +245,9 @@ begin
     DataError('block count does not fit in the block area');
 end;
 
-procedure TArchiveReader.ValidateMeta;
-var
-  Meta: TBytes;
-  Stored, Calculated: LongWord;
+procedure TArchiveReader.ReadMeta(out Meta: TBytes);
 begin
+  Meta := nil;
   if (FHeader.Flags and 1) = 0 then
     Exit;
   if FFooter.MetaSize < OsrepMetaMinSize then
@@ -257,6 +257,16 @@ begin
   SetLength(Meta, SizeInt(FFooter.MetaSize));
   FStream.Position := Int64(FFooter.MetaOffset);
   ReadExact(FStream, Meta[0], Length(Meta), 'dup meta');
+end;
+
+procedure TArchiveReader.ValidateMeta;
+var
+  Meta: TBytes;
+  Stored, Calculated: LongWord;
+begin
+  if (FHeader.Flags and 1) = 0 then
+    Exit;
+  ReadMeta(Meta);
   if GetU32LE(Meta, 0) <> OsrepMagicMeta then
     DataError('dup meta magic is not DUPR');
   if GetU32LE(Meta, 4) <> 1 then
@@ -265,6 +275,87 @@ begin
   Calculated := Crc32C(Meta, 0, Length(Meta) - 4);
   if Stored <> Calculated then
     DataError('dup meta CRC mismatch');
+end;
+
+procedure AppendChunk(var Dest: TBytes; const Src: TBytes;
+  SrcOffset, Len: SizeInt);
+begin
+  if Len <= 0 then
+    Exit;
+  SetLength(Dest, Length(Dest) + Len);
+  Move(Src[SrcOffset], Dest[Length(Dest) - Len], Len);
+end;
+
+procedure TArchiveReader.RestoreDup(const Body: TBytes; out Output: TBytes);
+var
+  Meta: TBytes;
+  Pos, MetaEnd, BodyPos: SizeInt;
+  ChunkCount, UniqueCount, I: QWord;
+  Tag: Byte;
+  Len: LongWord;
+  Idx: QWord;
+  Unique: array of TBytes;
+  Chunk: TBytes;
+begin
+  ReadMeta(Meta);
+  if Length(Meta) < 24 + 4 then
+    DataError('dup meta is too short');
+  if GetU32LE(Meta, 0) <> OsrepMagicMeta then
+    DataError('dup meta magic is not DUPR');
+  if GetU32LE(Meta, 4) <> 1 then
+    DataError('unsupported dup meta version');
+  ChunkCount := GetU64LE(Meta, 8);
+  UniqueCount := GetU64LE(Meta, 16);
+  Pos := 24;
+  MetaEnd := Length(Meta) - 4;
+  BodyPos := 0;
+  SetLength(Unique, 0);
+  SetLength(Output, 0);
+
+  I := 0;
+  while I < ChunkCount do
+  begin
+    if Pos >= MetaEnd then
+      DataError('dup meta is truncated');
+    Tag := Meta[Pos];
+    Inc(Pos);
+    if Tag = 0 then
+    begin
+      if Pos + 4 > MetaEnd then
+        DataError('dup meta has a truncated unique chunk');
+      Len := GetU32LE(Meta, Pos);
+      Inc(Pos, 4);
+      if QWord(BodyPos) + QWord(Len) > QWord(Length(Body)) then
+        DataError('dup body is shorter than its unique chunks');
+      SetLength(Chunk, SizeInt(Len));
+      if Len > 0 then
+        Move(Body[BodyPos], Chunk[0], Len);
+      Inc(BodyPos, SizeInt(Len));
+      if QWord(Length(Unique)) >= UniqueCount then
+        DataError('dup meta has too many unique chunks');
+      SetLength(Unique, Length(Unique) + 1);
+      Unique[High(Unique)] := Copy(Chunk);
+      AppendChunk(Output, Unique[High(Unique)], 0, Length(Unique[High(Unique)]));
+    end
+    else if Tag = 1 then
+    begin
+      if not ReadVarint(Meta, Pos, MetaEnd, Idx) then
+        DataError('dup meta has a bad chunk reference');
+      if Idx >= QWord(Length(Unique)) then
+        DataError('dup chunk reference points to an undefined chunk');
+      AppendChunk(Output, Unique[SizeInt(Idx)], 0, Length(Unique[SizeInt(Idx)]));
+    end
+    else
+      DataError(Format('unknown dup chunk tag %d', [Tag]));
+    Inc(I);
+  end;
+
+  if Pos <> MetaEnd then
+    DataError('dup meta has trailing bytes');
+  if BodyPos <> Length(Body) then
+    DataError('dup body has trailing bytes');
+  if QWord(Length(Unique)) <> UniqueCount then
+    DataError('dup unique chunk count mismatch');
 end;
 
 procedure TArchiveReader.ParseBlockRecords(const BH: TBlockHeader;
@@ -541,9 +632,29 @@ begin
 end;
 
 procedure TArchiveReader.DecodeToStream(OutStream: TStream);
+var
+  BodyStream: TMemoryStream;
+  Body, Final: TBytes;
 begin
   LoadHeaderFooter;
-  IterateBlocks(True, OutStream);
+  if (FHeader.Flags and 1) = 0 then
+  begin
+    IterateBlocks(True, OutStream);
+    Exit;
+  end;
+
+  BodyStream := TMemoryStream.Create;
+  try
+    IterateBlocks(True, BodyStream);
+    SetLength(Body, BodyStream.Size);
+    if Length(Body) > 0 then
+      Move(BodyStream.Memory^, Body[0], Length(Body));
+  finally
+    BodyStream.Free;
+  end;
+  RestoreDup(Body, Final);
+  if Length(Final) > 0 then
+    OutStream.WriteBuffer(Final[0], Length(Final));
 end;
 
 end.
