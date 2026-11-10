@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Cross-implementation test: C++ dedup module vs Python prototype.
-# Builds oracles/cxx/bin/dedup_test, runs its selftest, then verifies that on
+# Builds the archived C++ dedup_test (docs/retired-oracles.md), runs its selftest, then verifies that on
 # identical input the C++ and Python encoders produce byte-identical
 # .dupref blobs and each can decode the other's output.
 

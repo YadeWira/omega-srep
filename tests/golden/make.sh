@@ -31,7 +31,7 @@ say()  { printf '  %s\n' "$*"; }
 PORT="${OSREP_PORT_BIN:-pascal/bin/osrep-linux-x86_64}"
 RUST="${OSREP_RUST_BIN:-$RUST_TARGET/x86_64-unknown-linux-gnu/release/osrep}"
 [ -x "$PORT" ] || fail "missing port binary $PORT (bash pascal/build.sh)"
-[ -x "$RUST" ] || fail "missing Rust binary $RUST (cd oracles/rust && cargo build --release --target x86_64-unknown-linux-gnu -p osrep-cli)"
+[ -x "$RUST" ] || fail "missing Rust binary $RUST (set OSREP_ORACLES and build the archived Rust (docs/retired-oracles.md))"
 [ -x "$CXX_BIN/osrep" ] || make_cxx bin/osrep || fail "cannot build the C++ oracle"
 
 # The references have to be the current version. A stale target/release/osrep

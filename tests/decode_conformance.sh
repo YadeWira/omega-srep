@@ -43,7 +43,7 @@ say()  { printf '  %s\n' "$*"; }
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 
 if ! command -v cargo >/dev/null 2>&1; then
-    say "cargo not found -- skipping decoder conformance (oracles/rust/rust-toolchain.toml pins 1.77.2)"
+    say "cargo not found -- skipping decoder conformance (the archived Rust pins 1.77.2; see docs/retired-oracles.md)"
     exit 0
 fi
 
@@ -247,7 +247,7 @@ for case in "io-lz|-m3o" "io-lz|-m1o" "future-lz|-m3f" "future-lz|-m3"; do
         # shellcheck disable=SC2086
         $OSREP $flags $BFLAGS -t1 "$src" "$arc" >/dev/null 2>&1 \
             || fail "[corrupt/$tag/$input] compress"
-        layout=$("$ROOT/$RUST_TARGET/release/container_conformance" blocks "$arc" 2>&1) \
+        layout=$("$RUST_TARGET/release/container_conformance" blocks "$arc" 2>&1) \
             || fail "[corrupt/$tag/$input] blocks: $layout"
         lit_start=$(printf '%s\n' "$layout" | sed -n 's/.*literal_start=\([0-9]*\) literal_len=\([0-9]*\).*/\1/p' | head -1)
         lit_len=$(printf '%s\n' "$layout" | sed -n 's/.*literal_start=\([0-9]*\) literal_len=\([0-9]*\).*/\2/p' | head -1)

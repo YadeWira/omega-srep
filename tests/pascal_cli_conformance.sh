@@ -315,7 +315,7 @@ DUPX=""
 if [ -x "$CXX_BIN/osrep" ]; then
     for spec in "v3dup -m3f" "v2dup -m3o" "v3dupix -m3f -index=v3dupix.ix"; do
         set -- $spec; name="$1"; shift
-        (cd "$D" && "$ROOT/$CXX_BIN/osrep" --seed=7 -b64k -dup --chunk-hash=gear "$@" in.bin "$name.osr" >/dev/null 2>&1) \
+        (cd "$D" && "$CXX_BIN/osrep" --seed=7 -b64k -dup --chunk-hash=gear "$@" in.bin "$name.osr" >/dev/null 2>&1) \
             || fail "no se pudo armar $name.osr con el C++"
         DUPX="$DUPX $name"
     done
@@ -433,7 +433,7 @@ for m in m0 m0f m0o m1 m1f m1o m2 m2f m2o m3 m3f m3o m4 m4f m4o m5 m5f m5o m3f/-
     "$PAX" -v0 --seed=7 -b64k --format=v4 $h -$m v4dup.osr pw.osr >/dev/null 2>&1 || fail "-$m $h: el Pascal no comprimio"
     cmp -s rw.osr pw.osr || fail "-$m $h de v4dup.osr: el Pascal escribio otros bytes"
     if [ -n "$DUPX" ]; then
-        "$ROOT/$CXX_BIN/osrep" --seed=7 -b64k $h -$m v4dup.osr cw.osr >/dev/null 2>&1 \
+        "$CXX_BIN/osrep" --seed=7 -b64k $h -$m v4dup.osr cw.osr >/dev/null 2>&1 \
             && cmp -s rw.osr cw.osr || fail "-$m $h de v4dup.osr: no son los bytes del C++"
     fi
     same -v0 -d rw.osr o.out

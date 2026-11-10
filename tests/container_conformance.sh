@@ -28,7 +28,7 @@ say()  { printf '  %s\n' "$*"; }
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 
 if ! command -v cargo >/dev/null 2>&1; then
-    say "cargo not found -- skipping container conformance (oracles/rust/rust-toolchain.toml pins 1.77.2)"
+    say "cargo not found -- skipping container conformance (the archived Rust pins 1.77.2; see docs/retired-oracles.md)"
     exit 0
 fi
 

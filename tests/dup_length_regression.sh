@@ -10,7 +10,7 @@
 # size. The smallest case with default options is 2049 zero bytes: FNV cuts
 # the zero run into 1025-byte chunks and the final 1024-byte chunk took the
 # key of the first one. 2.2.0, 2.1.x and the C++ 1.0.7 all have the bug, so
-# this script fails against the C++ oracle (oracles/cxx/bin/osrep): run it
+# this script fails against the archived C++ oracle: run it
 # with OSREP_BIN pointing at a port (tests/rust_cli_conformance.sh does).
 #
 # A hit of a different length is now a new unique chunk, with or without

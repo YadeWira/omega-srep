@@ -11,6 +11,19 @@ what happened in 2.0.0.
 
 ## [Unreleased]
 
+### Removed
+
+- **The `oracles/` tree**: the C++ 1.0.7 and the Rust 2.1.2 left `main`.
+  They are archived at the annotated tags `oracle-cxx-1.0.7` and
+  `oracle-rust-2.1.2` and in the tarball on the `oracle-cxx-1.0.7` release
+  (`docs/retired-oracles.md`); both build from the extracted tarball. Nothing
+  in `main` needs them: `tests/_paths.sh` takes `OSREP_ORACLES` for the
+  differential suites, `tests/gates.sh full` fails with instructions when it
+  is unset, and `core` needs no oracle, no `g++` and no `cargo`. The
+  robustness fuzz now runs against the Pascal decoder: `tests/fuzz.sh` uses
+  the port by default and `tests/fuzz_regression.sh` replays the crash
+  samples through it. v5 stays writable until the 3.0.0 CLI cut.
+
 ### Added
 
 - **`tests/gates.sh core|full`**: `core` runs the gates that need no oracle

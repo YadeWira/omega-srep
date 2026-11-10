@@ -2,9 +2,10 @@
 # Gate runner.
 #
 #   tests/gates.sh core   the suite that must pass without the oracles: the
-#                         golden cases (archives, CLI, hashes), the v6 suite
-#                         and its frame self-test. harness_selftest builds the
-#                         Rust harness, so it is differential.
+#                         golden cases (archives, CLI, hashes), the v6 suite,
+#                         its frame self-test and the decoder's crash-replay.
+#                         harness_selftest builds the Rust harness, so it is
+#                         differential.
 #   tests/gates.sh full   core plus the differential suites, which need the
 #                         C++ and the Rust oracles (builds them if missing).
 #
@@ -25,6 +26,16 @@ case "$MODE" in
     core|full) ;;
     *) printf 'usage: tests/gates.sh core|full\n' >&2; exit 2 ;;
 esac
+
+# full needs the archived oracles; fail before the corpus and the core run so
+# the instruction is the first thing on screen.
+if [ "$MODE" = full ] && [ -z "${OSREP_ORACLES:-}" ]; then
+    printf 'FAIL: full needs the archived oracles: extract the tarball from\n' >&2
+    printf '  https://github.com/YadeWira/omega-srep/releases/tag/oracle-cxx-1.0.7\n' >&2
+    printf 'and set OSREP_ORACLES to the directory that contains cxx/ and rust/\n' >&2
+    printf '(see docs/retired-oracles.md).\n' >&2
+    exit 2
+fi
 
 LOGS="${OSREP_GATES_LOGS:-}"
 if [ -z "$LOGS" ]; then
@@ -55,11 +66,12 @@ printf '== core (no oracles)\n'
 run golden       bash tests/golden/check.sh
 run v6           bash tests/v6_conformance.sh
 run v6-frame     bash tests/v6_frame_selftest.sh
+run fuzz-replay  bash tests/fuzz_regression.sh
 
 if [ "$MODE" = full ]; then
     printf '== differential (needs C++ and Rust)\n'
-    run cargo-build  env -C oracles/rust cargo build --release --target x86_64-unknown-linux-gnu -p osrep-cli
-    run cargo-test   env -C oracles/rust cargo test --release
+    run cargo-build  env -C "$RUST_DIR" cargo build --release --target x86_64-unknown-linux-gnu -p osrep-cli
+    run cargo-test   env -C "$RUST_DIR" cargo test --release
     run rust-conf    bash tests/rust_conformance.sh
     run rust-cli     bash tests/rust_cli_conformance.sh
     for s in hash encode decode v5 dup cli container futurelz; do

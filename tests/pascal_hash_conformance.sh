@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Los digests del port a Pascal contra `oracles/cxx/bin/hash_test`
+# Los digests del port a Pascal contra el `hash_test` del C++ archivado
 # (docs/pascal-port.md, fase 2).
 #
 # El oraculo no son vectores publicados sino el MISMO codigo que el encoder

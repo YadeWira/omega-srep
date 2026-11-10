@@ -72,8 +72,15 @@ modos.
 
 Eso es estrictamente más fuerte, y hay que explotarlo: una discrepancia contra
 uno solo es ambigua (¿quién tiene razón?), pero contra dos que coinciden entre
-sí, el que está mal es el nuevo. **Por lo tanto el Rust se queda en el árbol,
-igual que el C++, y por el mismo motivo.**
+sí, el que está mal es el nuevo. **Por eso el Rust se quedó en el árbol,
+igual que el C++, mientras duró la comparación.**
+
+> **Nota histórica (2026-11-10).** Los dos oráculos ya no están en `main`:
+> están en los tags `oracle-cxx-1.0.7` y `oracle-rust-2.1.2` y en el tarball
+> del release `oracle-cxx-1.0.7`. La comparación no se perdió: quedó en la
+> golden (archivos, CLI y hashes) y en `tests/mutations/`, y las suites
+> diferenciales siguen corriendo con `OSREP_ORACLES` apuntando al archivo
+> extraído. Ver `docs/retired-oracles.md`.
 
 ## Fase 0 — toolchain: **CUMPLIDA** (2026-09-25)
 

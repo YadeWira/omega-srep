@@ -454,7 +454,7 @@ EOF
 
 say "el desempate del orden por origen, contra el std::sort de libstdc++"
 # SortBySrc transcribe el std::sort de libstdc++, que no es estable. encodetool
-# sortfixture la corre sobre los arreglos de oracles/cxx/tools/stdsort_fixture.cpp
+# sortfixture la corre sobre los arreglos del fixture std::sort del C++ archivado
 # (muchos empates, ordenados, al reves, organ pipe, 0..2048 elementos, con el
 # corte a heapsort por profundidad) y tiene que imprimir lo mismo que el
 # std::sort real. Con OSREP_PASCAL_ENCODETOOL apuntando a un wrapper de wine

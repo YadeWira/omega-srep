@@ -1,9 +1,9 @@
 # Resolve the `osrep` under test, for the CLI-level scripts.
 #
 # `OSREP_BIN` puts a different build through the whole suite -- that is how
-# tests/rust_cli_conformance.sh runs the Rust port against it. Left unset (the
-# default) the C++ oracle in oracles/cxx/bin/osrep is used, and built if it is
-# missing.
+# tests/rust_cli_conformance.sh runs the archived Rust port against it. Left
+# unset (the default) the Pascal binary is used; the differential scripts take
+# the archived C++ from $CXX_BIN when OSREP_ORACLES is configured.
 #
 # Scripts source this after `cd "$ROOT"`, and use `"$OSREP"` in place of a
 # literal path. `$CXX_BIN/dedup_test` is deliberately *not* parameterized: it
@@ -12,8 +12,8 @@
 
 source "$(dirname "${BASH_SOURCE[0]}")/_paths.sh"
 
-OSREP="${OSREP_BIN:-$CXX_BIN/osrep}"
-if [ -z "${OSREP_BIN:-}" ] && [ ! -x "$OSREP" ]; then
+OSREP="${OSREP_BIN:-pascal/bin/osrep-linux-x86_64}"
+if [ -z "${OSREP_BIN:-}" ] && [ ! -x "$OSREP" ] && [ -n "$CXX_BIN" ]; then
     make_cxx bin/osrep >/dev/null 2>&1 || true
 fi
 if [ ! -x "$OSREP" ]; then

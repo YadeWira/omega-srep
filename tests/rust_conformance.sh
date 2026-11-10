@@ -6,8 +6,8 @@
 # second reading of the format spec: the same inputs go through both
 # implementations and the produced bytes must match exactly.
 #
-# Currently covers osrep-core::dedup against oracles/cxx/tools/dedup_test.cpp
-# (oracles/cxx/bin/dedup_test). As more modules are ported they get added here.
+# Currently covers osrep-core::dedup against the C++ `dedup_test.cpp`
+# (the archived C++ dedup_test). As more modules are ported they get added here.
 #
 # Skips cleanly (exit 0 with a notice) if the Rust toolchain or the C++
 # test binary cannot be built, so it can sit in a lane that also runs on
@@ -24,7 +24,7 @@ fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 # --- Toolchains ------------------------------------------------------ #
 
 if ! command -v cargo >/dev/null 2>&1; then
-    say "cargo not found -- skipping Rust conformance (install rustup; oracles/rust/rust-toolchain.toml pins 1.77.2)"
+    say "cargo not found -- skipping Rust conformance (install rustup; the archived Rust pins 1.77.2; see docs/retired-oracles.md)"
     exit 0
 fi
 

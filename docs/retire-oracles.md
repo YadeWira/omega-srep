@@ -145,28 +145,42 @@ versionada como `tests/mutations/` (el parche de cada una).
 
 ### Fase E — Archivar y sacar
 
-- Crear tags anotados **`oracle-cxx-1.0.7`** y **`oracle-rust-2.1.2`** en el
-  último commit que los contiene (además de los tags de release que ya los
-  tienen).
-- Adjuntar a un release de "oráculos" (o dejar solo los tags) un tarball con
-  los dos árboles y las instrucciones de build, para no depender de que GitHub
-  guarde el historial para siempre.
-- Borrar `oracles/` de `main` en un commit propio; actualizar:
-  - `README.md` (implementación: FPC + C + asm; los oráculos, archivados);
-  - `oracles/README.md` → se va con el árbol; su contenido pasa a
-    `docs/retired-oracles.md` con los tags y el porqué;
-  - `docs/pascal-port.md` "Dos oráculos, no uno" → nota histórica;
-  - `.gitignore` y `tests/_paths.sh` (ya sin CXX/RUST).
-- **CLI**: al no haber Rust contra el que comparar, el `--help` deja de estar
-  clavado; se actualiza para listar v6 (y limpiar lo que la 3.0.0 decida:
-  octal, textos, `-a9`, etc. — ver `format-spec-v6.md` §4).
-- `--version`/fecha: la 3.0.0 las fija como propias, no como "igual al Rust".
+**Implementado el 2026-11-10.**
+
+- Tags anotados **`oracle-cxx-1.0.7`** y **`oracle-rust-2.1.2`** en `b57e4e8`,
+  el último commit con `oracles/`, pusheados.
+- Release **`oracle-cxx-1.0.7`** con el tarball
+  `omega-srep-oracles-cxx-1.0.7-rust-2.1.2.tar.gz` (388 KB, 135 archivos,
+  los dos árboles trackeados + `RETIRED.md`). Comprobado: el C++ compila con
+  su Makefile y el Rust con el pin 1.77.2 desde el tarball extraído.
+- `oracles/` fuera de `main` en un commit propio. `tests/_paths.sh` deriva
+  `CXX_DIR`/`CXX_BIN`/`RUST_DIR`/`RUST_TARGET` de **`OSREP_ORACLES`**;
+  `tests/gates.sh full` se niega con las instrucciones del release si falta, y
+  `core` no lo necesita. Las suites diferenciales siguen enteras para cuando
+  se extraiga el archivo.
+- `README.md` reescrito (los oráculos, archivados; cómo correr el `full`);
+  `oracles/README.md` → `docs/retired-oracles.md`; nota histórica en
+  `docs/pascal-port.md`; `.gitignore` sin las rutas de los oráculos.
+- El fuzz de robustez pasa a ser el del decoder Pascal: `tests/fuzz.sh` usa
+  el port por defecto y `tests/fuzz_regression.sh` (en `core`) reproduce los
+  artefactos de crash contra el decoder. Los harnesses C++-only
+  (`local_hardening.sh`, `pgo_train*.sh`) se fueron con los tags.
+- **CLI**: queda como está hasta la 3.0.0. Pasar el default a v6 y rechazar
+  `--format=v5` obliga a retirar o adaptar las suites diferenciales que
+  escriben v5 (`rust_cli_conformance` con el port, `pascal_v5/dup/container`,
+  `format_v5`), y ese corte es el de la 3.0.0. Queda listado en la Fase F.
 
 **Aceptación:** `git grep -i "oracle\|oráculo"` en `main` solo encuentra
-documentación histórica; ningún script de `tests/` referencia `oracles/`.
+documentación histórica; ningún script de `tests/` resuelve rutas dentro de
+`oracles/` (los comentarios de procedencia quedan como historia).
 
 ### Fase F — Verificación final
 
+- **CLI 3.0.0**: default `v6`, `--format=v5` rechazado con el mensaje de
+  `format-spec-v6.md` §4, `--help` listando `v4|v6`. Antes hay que retirar o
+  adaptar las suites diferenciales que escriben v5 (`rust_cli_conformance` con
+  `OSREP_PORT_BIN`, `pascal_v5/dup/container`, `format_v5`) y re-grabar los
+  fixtures de CLI; los archivos v5 viejos se siguen leyendo.
 - Clon limpio, sin `oracles/`, sin `g++`, sin `cargo`: `bash pascal/build.sh`
   (FPC + C + asm) y el núcleo completo.
 - La misma matriz en Win7 real, wine32/64, linux-x86/ARM64 y macOS ARM64.

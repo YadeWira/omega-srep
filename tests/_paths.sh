@@ -1,24 +1,50 @@
-# Where the oracles live, for every test script.
+# Where the archived oracles live, for every test script.
 #
-# The shipped implementation is pascal/. The C++ 1.0.7 and the Rust port are
-# kept under oracles/ as references the Pascal is diffed against (see
-# oracles/README.md). Scripts source this after `cd "$ROOT"` and use these
-# names instead of literal paths, so the layout is spelled out in one place.
+# The shipped implementation is pascal/. The C++ 1.0.7 and the Rust 2.1.2 are
+# no longer in the tree: they are archived in the tags `oracle-cxx-1.0.7` /
+# `oracle-rust-2.1.2` and in the tarball attached to that release. To run the
+# differential suites, extract it and set OSREP_ORACLES to the directory that
+# contains cxx/ and rust/ (see docs/retired-oracles.md):
 #
-# Paths are relative to the repository root.
+#   OSREP_ORACLES=/tmp/omega-srep-oracles tests/gates.sh full
+#
+# Without it the core suite runs and the differential scripts stop with the
+# same instruction, never silently.
 
-CXX_DIR=oracles/cxx
-CXX_BIN="$CXX_DIR/bin"                  # bin/osrep, bin/dedup_test, bin/hash_test
-RUST_DIR=oracles/rust
-RUST_TARGET="$RUST_DIR/target"          # target/release/..., target/<triple>/release/...
+ORACLE_ROOT=${OSREP_ORACLES:-}
+CXX_DIR=""
+CXX_BIN=""
+RUST_DIR=""
+RUST_TARGET=""
+if [ -n "$ORACLE_ROOT" ]; then
+    CXX_DIR="$ORACLE_ROOT/cxx"
+    CXX_BIN="$CXX_DIR/bin"              # bin/osrep, bin/dedup_test, bin/hash_test
+    RUST_DIR="$ORACLE_ROOT/rust"
+    RUST_TARGET="$RUST_DIR/target"      # target/release/..., target/<triple>/release/...
+fi
+
+# need_oracles: say where the archive is and fail, for the scripts that need
+# the C++ or the Rust.
+need_oracles() {
+    printf 'the C++/Rust oracles are archived (docs/retired-oracles.md): extract\n' >&2
+    printf '  omega-srep-oracles-cxx-1.0.7-rust-2.1.2.tar.gz\n' >&2
+    printf 'and set OSREP_ORACLES to the directory that contains cxx/ and rust/\n' >&2
+    return 1
+}
 
 # make_cxx bin/osrep ...: build C++ targets with the oracle's own Makefile.
-make_cxx() { make -C "$CXX_DIR" "$@"; }
+make_cxx() {
+    [ -n "$CXX_DIR" ] || { need_oracles; return 1; }
+    make -C "$CXX_DIR" "$@"
+}
 
 # cargo_rs build --release ...: run cargo inside the workspace, so its
 # rust-toolchain.toml (pinned 1.77.2) and .cargo/config.toml apply. They are
 # looked up from the current directory, not from --manifest-path.
-cargo_rs() { (cd "$RUST_DIR" && cargo "$@"); }
+cargo_rs() {
+    [ -n "$RUST_DIR" ] || { need_oracles; return 1; }
+    (cd "$RUST_DIR" && cargo "$@")
+}
 
 # ensure_corpus: tests/corpus/ is in .gitignore, so a fresh worktree has none.
 # Harnesses that need it used to substitute another input on the quiet

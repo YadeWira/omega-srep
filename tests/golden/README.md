@@ -67,11 +67,15 @@ Es una semilla, no el reemplazo completo: las suites diferenciales siguen
 cubriendo mucho más, y la fase B de `docs/retire-oracles.md` amplía v1–v3 y
 los casos de corrupción.
 
-## Cuando los oráculos se vayan
+## Cuando los oráculos se fueron (2026-11-10)
 
-1. Que `check.sh` corra en las compuertas junto a las diferenciales, y que las
-   diferenciales pasen a ser opcionales.
-2. Congelar más casos hasta que las diferenciales no encuentren nada que la
-   suite no cubra.
-3. Archivar `oracles/cxx` y `oracles/rust` en un tag, sacarlos de `main`, y
-   dejar `docs/format-spec*.md` y este manifiesto como la definición.
+`check.sh` corre en `tests/gates.sh core`, junto a las diferenciales cuando
+están disponibles: el C++ 1.0.7 y el Rust 2.1.2 están archivados en los tags
+`oracle-cxx-1.0.7`/`oracle-rust-2.1.2` y en el tarball de ese release. Las
+suites diferenciales siguen existiendo y se corren con `OSREP_ORACLES`
+apuntando al archivo extraído (`docs/retired-oracles.md`); sin él, `full` se
+niega con instrucciones y `core` no las necesita.
+
+Este manifiesto, los fixtures de CLI y hashes y `docs/format-spec*.md` son la
+definición del formato. `tests/mutations/` audita que sigan viendo lo que veían
+los oráculos.

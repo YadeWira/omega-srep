@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Regression test for the chunk_hash() swap (FNV-1a -> word-at-a-time
-# 64-bit hash, oracles/cxx/Compression/SREP/dedup.cpp).
+# 64-bit hash, the C++ oracle's dedup.cpp).
 #
 # Why this test exists, specifically: the real `osrep -dup` CLI always
 # goes through encode_streaming() (dup_wrapper.cpp), and by DEFAULT

@@ -21,7 +21,7 @@
 #
 # Tools required (auto-detected, missing tools just leave their row
 # blank in the output):
-#   oracles/cxx/bin/osrep                    Omega 1.0a-beta.3+
+#   the archived C++ osrep                  Omega 1.0a-beta.3+
 #   $OSREP_SREP392 (default /tmp/bench-tools/linux/srep64)
 #                                            upstream SREP 3.92 binary
 #   $OSREP_FA011  (default /tmp/bench-tools/linux/fa)

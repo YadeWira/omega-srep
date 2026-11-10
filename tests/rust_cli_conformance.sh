@@ -4,7 +4,7 @@
 # Two layers:
 #
 #   1. **Same argv, same bytes.** For a matrix of inputs and options the C++
-#      binary and `oracles/rust/target/release/osrep` are run with identical
+#      binary and the archived Rust (`$RUST_TARGET/release/osrep`) are run with identical
 #      arguments and the archives must compare byte for byte. The algorithm is
 #      already pinned by tests/encode_conformance.sh; what this adds is the
 #      *front end* -- the option parsing, the defaults, the container choice --
@@ -34,7 +34,7 @@ say()  { printf '  %s\n' "$*"; }
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 
 if ! command -v cargo >/dev/null 2>&1; then
-    say "cargo not found -- skipping Rust CLI conformance (install rustup; oracles/rust/rust-toolchain.toml pins 1.77.2)"
+    say "cargo not found -- skipping Rust CLI conformance (install rustup; the archived Rust pins 1.77.2; see docs/retired-oracles.md)"
     exit 0
 fi
 
@@ -1880,7 +1880,7 @@ say "closed or full stdin/stdout/stderr: no text inside an output, no data throw
 # `<&- 2>&-` the archive lands on fd 2 and the progress and summary lines are
 # written into it (exit 0), and `-d` writes them into the decompressed data
 # the same way; the Pascal did both until 2.3.0. The
-# rules both ports now follow (oracles/rust/crates/osrep-cli/src/stdio.rs,
+# rules both ports now follow (the archived Rust's `osrep-cli/src/stdio.rs`,
 # pascal/src/stdfds.pas): a closed fd 0-2 is reserved before anything is
 # opened; a closed stdin reads as empty; data for a closed or failing stdout
 # is an error, so -delete keeps its input; messages to a closed or failing

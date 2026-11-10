@@ -3,7 +3,7 @@
 # duplicates that --chunk-hash=fnv (the default) misses.
 #
 # Background: the CDC boundary hash used by the dedup pre-pass
-# (oracles/cxx/Compression/SREP/dedup.cpp) is selectable via --chunk-hash=fnv|gear
+# (the C++ oracle's dedup.cpp) is selectable via --chunk-hash=fnv|gear
 # (see dup_wrapper.cpp's --chunk-hash flag). FNV's rolling hash has no
 # fixed window -- its cut-point sequence depends on distance-since-
 # last-buffer-reset, not on local content alone -- so it only finds a

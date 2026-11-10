@@ -1,8 +1,6 @@
-# Build output. Anchored: an unanchored `bin/` would also swallow the
-# crates' `src/bin/` sources. The C++ oracle builds into oracles/cxx/bin/,
-# the Rust oracle into oracles/rust/target/, the Pascal into pascal/bin/.
-/oracles/cxx/bin/
-/oracles/rust/target/
+# Build output. Anchored: an unanchored `bin/` would also swallow source
+# directories named bin/. The Pascal builds into pascal/bin/; the archived
+# oracles build inside their extracted tarball, not here.
 pascal/bin/
 # Pre-reorg build output (up to 2.2.1), so stale dirs in old checkouts stay ignored.
 /bin/

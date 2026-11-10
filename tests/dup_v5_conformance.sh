@@ -23,7 +23,7 @@ say()  { printf '  %s\n' "$*"; }
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 
 if ! command -v cargo >/dev/null 2>&1; then
-    say "cargo not found -- skipping -dup conformance (install rustup; oracles/rust/rust-toolchain.toml pins 1.77.2)"
+    say "cargo not found -- skipping -dup conformance (install rustup; the archived Rust pins 1.77.2; see docs/retired-oracles.md)"
     exit 0
 fi
 
@@ -32,8 +32,8 @@ make_cxx bin/osrep >/dev/null 2>&1
 
 say "building the Rust port (osrep-conformance)"
 mkdir -p "$RUST_TARGET"
-if ! cargo_rs build --release -p osrep-conformance >"$ROOT/$RUST_TARGET/rust-dup-build.log" 2>&1; then
-    cat "$ROOT/$RUST_TARGET/rust-dup-build.log" >&2
+if ! cargo_rs build --release -p osrep-conformance >"$RUST_TARGET/rust-dup-build.log" 2>&1; then
+    cat "$RUST_TARGET/rust-dup-build.log" >&2
     fail "cargo build failed"
 fi
 RS="$RUST_TARGET/release/encode_conformance"
