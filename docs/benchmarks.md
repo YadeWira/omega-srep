@@ -113,7 +113,7 @@ directorio; OSREP deduplicó la concatenación (`versions.bin`).
 |---|---:|---:|
 | zpaq-std `-m1` | 42.516.733 | 0,89 s |
 | zpaq-std `-m5` | 36.018.487 | 215 s |
-| OSREP `-m1` (dedup stored) | 75.792.589 | 2,25 s |
+| OSREP `-m1` (dedup stored, 8 KiB) | 75.320.943 | ~2,2 s |
 | OSREP `-m2` (dedup stored) | 76.319.202 | 2,08 s |
 | OSREP `-dup -m5` | 41.355.999 | 3,80 s |
 | OSREP `-dup -m5`, después zpaq-std `-m1` | 41.177.567 | +0,60 s |
@@ -198,14 +198,16 @@ el tiempo de `tar`).
 | flujo | archivo final | tiempo total |
 |---|---:|---:|
 | zpaq-std `-m1` sobre el tar | 15.293.540 | 0,74 s |
-| OSREP `-m1` (fixed-window) + zpaq `-m1` | **12.227.041** | 1,79 s |
+| OSREP `-m1` (fixed-window, 8 KiB) + zpaq `-m1` | **8.873.745** | ~1,51 s |
 | OSREP `-m2` (order-1 CDC) + zpaq `-m1` | 15.300.762 | 2,06 s |
 | OSREP `-dup -m5` + zpaq `-m1` | 21.940.622 | 3,43 s |
 
 Lectura:
 
-- El **`-m1` fijo** de OSREP deja un cuerpo que zpaq comprime un **20 % más
-  chico** que su propio dedup+compresión, a ~2,4× el tiempo.
+- El **`-m1` fijo** de OSREP deja un cuerpo que zpaq comprime un **42 % más
+  chico** que su propio dedup+compresión, a ~2× el tiempo. El default de
+  `-m1` es un promedio de 8 KiB (el de SREP m1); con 4 KiB baja a 8,53 MB,
+  pero sube el overhead de meta.
 - El **`-m2` orden-1** queda empatado con zpaq: no sorprende, es el mismo
   tipo de CDC que usa zpaq.
 - Pasar `-dup -m5` antes de zpaq **empeora** el resultado: el LZ de OSREP

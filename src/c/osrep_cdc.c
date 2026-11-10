@@ -20,6 +20,9 @@ typedef struct {
 #define DUP_MIN      (64u << 6)
 #define DUP_MAX      (8128u << 6)
 #define DUP_THRESHOLD (1u << (22 - 6))
+#ifndef DUP_AVG
+#define DUP_AVG 8192u
+#endif
 #define FNV_PRIME    UINT64_C(0x100000001B3)
 #define FNV_OFFSET   UINT64_C(0xCBF29CE484222325)
 
@@ -61,7 +64,7 @@ size_t osrep_cdc_find(const uint8_t *data, size_t n, int chunker,
       h64 = h64 * FNV_PRIME + c;
       if (i - start >= 48)
         h64 -= (uint64_t)data[i - 48] * pow;
-      cut = (len >= DUP_MIN) && (h64 < UINT64_MAX / 65536 || len >= DUP_MAX);
+      cut = (len >= DUP_MIN) && (h64 < UINT64_MAX / DUP_AVG || len >= DUP_MAX);
     }
     if (cut) {
       if (count >= cap) return (size_t)-1;

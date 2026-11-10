@@ -319,7 +319,9 @@ La librería no reimplementa el formato: envuelve el mismo `EncodeToStream` y
 
 El chunk scan del CDC tiene una implementación C (`src/c/osrep_cdc.c`) con
 el mismo resultado que la de Pascal; `tests/native_cdc.sh` compila los dos
-builds y compara `-m1`, `-m2` y `-dup` byte a byte. En `twice64.bin` baja el
+builds y compara `-m1`, `-m2` y `-dup` byte a byte. `-m1` usa un promedio de
+8 KiB (ventana fija); en el tar multi-versión de zpaq eso baja el pipeline
+de 12,23 MB a 8,87 MB. En `twice64.bin` baja el
 scan de ~1,17 s a ~0,83 s (`-m1`) y de ~1,33 s a ~1,07 s (`-m2`).
 
 El match finder de `-m3/-m4/-m5` está en `src/c/osrep_match.c`, con el mismo

@@ -26,6 +26,7 @@ const
   OsrepDupMinChunk  = 64 shl OsrepDupFragment;
   OsrepDupMaxChunk  = 8128 shl OsrepDupFragment;
   OsrepDupThreshold = 1 shl (22 - OsrepDupFragment);
+  OsrepDupFixedAverage = 8192;
 
 type
   TDedupChunker = (dcOrder1, dcFixedWindow);
@@ -314,7 +315,7 @@ begin
         H64 := H64 - QWord(Data[I - 48]) * Pow;
       Inc(Len);
       if (Len >= OsrepDupMinChunk) and
-         ((H64 < QWord(High(QWord)) div QWord(65536)) or
+         ((H64 < QWord(High(QWord)) div QWord(OsrepDupFixedAverage)) or
           (Len >= OsrepDupMaxChunk)) then
       begin
         EmitChunk(Data, Start, LongWord(Len));

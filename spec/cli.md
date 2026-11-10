@@ -29,8 +29,8 @@ scripts, but the default and only writer is v6.
 
 ## Methods
 
-- `-m1`: fixed-window content-defined deduplication (48-byte rolling hash);
-  the unique chunks are stored, not LZ-parsed.
+- `-m1`: fixed-window content-defined deduplication (48-byte rolling hash,
+  8 KiB average); the unique chunks are stored, not LZ-parsed.
 - `-m2`: order-1 content-defined deduplication (the zpaq CDC parameters:
   4 KiB minimum, ~64 KiB average, 520 KiB maximum); the unique chunks are
   stored.
