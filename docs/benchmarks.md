@@ -232,3 +232,11 @@ Mismo backend `zpaq-std -m1`:
 
 Otra vez ~38 % más chico con el dedup fijo de OSREP, a 1,3× el tiempo. El
 default de 8 KiB no está sobreajustado a un solo árbol.
+
+### AVX2 en `match_len` (descartado)
+
+Se probó una ruta AVX2 (32 bytes por iteración) con dispatch por CPUID para
+la comparación de longitud de match. En `real64.bin` no mejoró: `-m3`
+~1,12→1,14 s y `-m5` ~1,21→1,24 s (medianas de 3 corridas). La mayoría de
+los candidatos fallan en los primeros 8 bytes, así que el costo de la ruta
+AVX2 no se compensa. Se revirtió; queda la comparación de 8 bytes.
