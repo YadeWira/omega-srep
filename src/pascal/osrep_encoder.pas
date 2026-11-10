@@ -29,7 +29,7 @@ type
 function DefaultEncoderOptions: TEncoderOptions;
 function SeedFromNumber(N: QWord): TBytes;
 procedure EncodeToStream(InStream, OutStream: TStream;
-  const Opt: TEncoderOptions);
+  const Opt: TEncoderOptions; const Meta: TBytes = nil);
 
 implementation
 
@@ -502,7 +502,7 @@ begin
 end;
 
 procedure EncodeToStream(InStream, OutStream: TStream;
-  const Opt: TEncoderOptions);
+  const Opt: TEncoderOptions; const Meta: TBytes);
 var
   InSize, BlockStartQ, BlockLenQ: QWord;
   BlockCountQ: QWord;
@@ -515,6 +515,7 @@ var
   HashId, HashSize: Byte;
   StatSize: QWord;
   ThreadCount, BatchCount, J: SizeInt;
+  MetaOffset: QWord;
   ErrMsg: string;
   Jobs: array of TEncodeJob;
   Workers: array of TEncodeThread;
@@ -549,7 +550,10 @@ begin
   SetLength(Hdr, OsrepHeaderSize);
   PutU32LE(Hdr, 0, OsrepMagicHeader);
   Hdr[4] := OsrepVersion;
-  Hdr[5] := 0;
+  if Length(Meta) > 0 then
+    Hdr[5] := 1
+  else
+    Hdr[5] := 0;
   Hdr[6] := HashId;
   Hdr[7] := HashSize;
   PutU32LE(Hdr, 8, LongWord(Opt.BlockSize));
@@ -649,12 +653,22 @@ begin
     SetLength(Workers, 0);
   end;
 
+  if Length(Meta) > 0 then
+  begin
+    if QWord(Length(Meta)) > High(LongWord) then
+      raise EOsrepError.Create(2, 'dup meta is too large');
+    MetaOffset := QWord(OutStream.Position);
+    OutStream.WriteBuffer(Meta[0], Length(Meta));
+  end
+  else
+    MetaOffset := 0;
+
   SetLength(Ftr, OsrepFooterSize);
   PutU32LE(Ftr, 0, OsrepMagicFooter);
   PutU32LE(Ftr, 4, LongWord(BlockCountQ));
   PutU64LE(Ftr, 8, StatSize);
-  PutU64LE(Ftr, 16, 0);
-  PutU32LE(Ftr, 24, 0);
+  PutU64LE(Ftr, 16, MetaOffset);
+  PutU32LE(Ftr, 24, LongWord(Length(Meta)));
   PutU32LE(Ftr, 28, BlocksCrc);
   PutU32LE(Ftr, 32, Crc32C(Ftr, 0, 32));
   OutStream.WriteBuffer(Ftr[0], Length(Ftr));

@@ -11,7 +11,7 @@ unit osrep_codec;
 interface
 
 uses
-  SysUtils, Classes, osrep_format, osrep_encoder, osrep_decoder;
+  SysUtils, Classes, osrep_format, osrep_encoder, osrep_decoder, osrep_dedup;
 
 const
   OsrepApiVersion = 1;
@@ -40,7 +40,7 @@ type
   TOsrepOptions = record
     Method: LongInt;        { 0, 3, 4 or 5 }
     Format: LongInt;        { 0 or 6 }
-    Dedup: LongInt;         { 0; 1 is not implemented for encoding }
+    Dedup: LongInt;         { 0 = off, 1 = -dup }
     Threads: LongInt;       { accepted; the MVP encoder is single-threaded }
     Seed: QWord;            { 0 = the CLI's default deterministic seed }
     BlockSize: QWord;       { 0 = 8 MiB }
@@ -94,12 +94,9 @@ begin
   if (Opt.Format <> 0) and (Opt.Format <> OsrepVersion) then
     raise EOsrepApiError.Create(OsrepEUnsupported,
       Format('format %d is not implemented (only v6)', [Opt.Format]));
-  if Opt.Dedup < -1 then
+  if (Opt.Dedup < -1) or (Opt.Dedup > 1) then
     raise EOsrepApiError.Create(OsrepEArg,
       Format('invalid dedup value %d', [Opt.Dedup]));
-  if Encoding and (Opt.Dedup = 1) then
-    raise EOsrepApiError.Create(OsrepEUnsupported,
-      'dedup encoding is not implemented yet');
   if Opt.Threads < 0 then
     raise EOsrepApiError.Create(OsrepEArg,
       Format('invalid thread count %d', [Opt.Threads]));
@@ -141,16 +138,29 @@ function OsrepCompressBytes(const Data: TBytes;
 var
   InStream, OutStream: TMemoryStream;
   EncOpt: TEncoderOptions;
+  Dedup: TDedupResult;
+  Work, Meta: TBytes;
 begin
   OsrepCheckOptions(Opt, True);
   EncOpt := OptionsToEncoder(Opt);
   InStream := TMemoryStream.Create;
   OutStream := TMemoryStream.Create;
   try
-    if Length(Data) > 0 then
-      InStream.WriteBuffer(Data[0], Length(Data));
+    if Opt.Dedup = 1 then
+    begin
+      BuildDedup(Data, Dedup);
+      Work := Dedup.Body;
+      Meta := Dedup.Meta;
+    end
+    else
+    begin
+      Work := Data;
+      Meta := nil;
+    end;
+    if Length(Work) > 0 then
+      InStream.WriteBuffer(Work[0], Length(Work));
     InStream.Position := 0;
-    EncodeToStream(InStream, OutStream, EncOpt);
+    EncodeToStream(InStream, OutStream, EncOpt, Meta);
     if OutStream.Size > Int64(High(SizeInt)) then
       raise EOsrepApiError.Create(OsrepEMemory, 'output does not fit in memory');
     SetLength(Result, SizeInt(OutStream.Size));
@@ -206,9 +216,53 @@ procedure OsrepCompressFile(const InPath, OutPath: string;
 var
   InStream, OutStream: TFileStream;
   EncOpt: TEncoderOptions;
+  Data: TBytes;
+  Dedup: TDedupResult;
+  BodyStream: TMemoryStream;
 begin
   OsrepCheckOptions(Opt, True);
   EncOpt := OptionsToEncoder(Opt);
+  if Opt.Dedup = 1 then
+  begin
+    try
+      InStream := TFileStream.Create(InPath, fmOpenRead or fmShareDenyWrite);
+    except
+      on E: Exception do
+        raise EOsrepApiError.Create(OsrepEIo,
+          'cannot open input: ' + InPath + ': ' + E.Message);
+    end;
+    try
+      if InStream.Size > Int64(High(SizeInt)) then
+        raise EOsrepApiError.Create(OsrepEMemory, 'input is too large');
+      SetLength(Data, SizeInt(InStream.Size));
+      if Length(Data) > 0 then
+        InStream.ReadBuffer(Data[0], Length(Data));
+    finally
+      InStream.Free;
+    end;
+    BuildDedup(Data, Dedup);
+    BodyStream := TMemoryStream.Create;
+    try
+      if Length(Dedup.Body) > 0 then
+        BodyStream.WriteBuffer(Dedup.Body[0], Length(Dedup.Body));
+      BodyStream.Position := 0;
+      try
+        OutStream := TFileStream.Create(OutPath, fmCreate);
+      except
+        on E: Exception do
+          raise EOsrepApiError.Create(OsrepEIo,
+            'cannot create output: ' + OutPath + ': ' + E.Message);
+      end;
+      try
+        EncodeToStream(BodyStream, OutStream, EncOpt, Dedup.Meta);
+      finally
+        OutStream.Free;
+      end;
+    finally
+      BodyStream.Free;
+    end;
+    Exit;
+  end;
   try
     InStream := TFileStream.Create(InPath, fmOpenRead or fmShareDenyWrite);
   except

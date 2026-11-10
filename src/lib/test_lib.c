@@ -135,9 +135,9 @@ static void error_paths(void) {
   rc = osrep_compress("x", 1, &out, &outn, &o);
   check(rc == OSREP_E_UNSUPPORTED, "method 1 is E_UNSUPPORTED", "");
   osrep_options_default(&o);
-  o.dedup = 1;
+  o.dedup = 2;
   rc = osrep_compress("x", 1, &out, &outn, &o);
-  check(rc == OSREP_E_UNSUPPORTED, "dedup encoding is E_UNSUPPORTED", "");
+  check(rc == OSREP_E_ARG, "dedup 2 is E_ARG", "");
   osrep_options_default(&o);
   o.struct_size = 1;
   rc = osrep_compress("x", 1, &out, &outn, &o);
@@ -309,6 +309,24 @@ static void fuzz_api(void) {
   free(bad);
 }
 
+static void dedup_api(void) {
+  unsigned char d[262144];
+  void *z = NULL, *back = NULL;
+  size_t zn = 0, bn = 0;
+  osrep_options o;
+  memset(d, 0, sizeof d);
+  osrep_options_default(&o);
+  o.dedup = 1;
+  check(osrep_compress(d, sizeof d, &z, &zn, &o) == OSREP_OK,
+        "osrep_compress dedup", "");
+  check(osrep_decompress(z, zn, &back, &bn, NULL) == OSREP_OK,
+        "osrep_decompress dedup", "");
+  check(bn == sizeof d && memcmp(back, d, sizeof d) == 0,
+        "dedup round-trip", "");
+  osrep_free(z);
+  osrep_free(back);
+}
+
 static void file_api(void) {
   const char *dir = getenv("TMPDIR");
   char in[256], arc[256], back[256], missing[256];
@@ -349,6 +367,17 @@ static void file_api(void) {
   o.max_output = 16;
   rc = osrep_decompress_file(arc, back, &o);
   check(rc == OSREP_E_MEMORY, "file max_output is enforced", "");
+
+  osrep_options_default(&o);
+  o.dedup = 1;
+  rc = osrep_compress_file(in, arc, &o);
+  check(rc == OSREP_OK, "osrep_compress_file dedup", "");
+  rc = osrep_decompress_file(arc, back, &o);
+  check(rc == OSREP_OK, "osrep_decompress_file dedup", "");
+  b = read_file(back, &bn);
+  check(b != NULL && bn == sizeof d && memcmp(b, d, sizeof d) == 0,
+        "file dedup round-trip", "");
+  free(b);
 
   remove(in);
   remove(arc);
@@ -470,6 +499,7 @@ int main(int argc, char **argv) {
   error_paths();
   damaged_and_limit();
   fuzz_api();
+  dedup_api();
   file_api();
 
   if (argc > 1) {

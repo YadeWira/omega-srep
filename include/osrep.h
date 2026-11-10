@@ -58,8 +58,8 @@ typedef struct osrep_options {
   uint32_t struct_size;   /* sizeof(osrep_options), or 0 */
   int32_t  method;        /* 0 = default, 3/4/5 = -m3/-m4/-m5 */
   int32_t  format;        /* 0 = default, 6 = v6 */
-  int32_t  dedup;         /* 0 = off; 1 is not implemented for encoding
-                             yet (E_UNSUPPORTED); ignored when decoding */
+  int32_t  dedup;         /* 0 = off, 1 = -dup (CDC + DUPR meta); ignored
+                             when decoding (the flag in the archive decides) */
   int32_t  threads;       /* 0 = auto, 1 = one; the MVP encoder is
                              single-threaded, the value is accepted so the
                              ABI does not change when it uses it */

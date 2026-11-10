@@ -7,7 +7,8 @@ program osrep;
 
 uses
   {$ifdef unix}cthreads,{$endif}
-  SysUtils, Classes, osrep_format, osrep_decoder, osrep_encoder;
+  SysUtils, Classes, osrep_format, osrep_decoder, osrep_encoder,
+  osrep_dedup;
 
 const
   OsrepVersionText = 'OSREP ' + OsrepProductVersion + ' (' +
@@ -18,6 +19,7 @@ var
   PosArgs: array of string;
   EncOptions: TEncoderOptions;
   EncOptionsUsed: Boolean = False;
+  DupMode: Boolean = False;
 
 procedure CmdError(const Msg: string);
 begin
@@ -43,6 +45,7 @@ begin
   WriteLn('  -tN      encoder threads (default auto, up to 8)');
   WriteLn('  --seed=N deterministic VHASH seed');
   WriteLn('  -hash-   no per-block digest');
+  WriteLn('  -dup     deduplicate before encoding');
 end;
 
 function ParseNumber(const S: string; out V: QWord): Boolean;
@@ -196,7 +199,10 @@ end;
 procedure RunEncode;
 var
   InStream, OutStream: TStream;
+  BodyStream: TMemoryStream;
   OutName: string;
+  Data: TBytes;
+  Dedup: TDedupResult;
 begin
   if Length(PosArgs) < 1 then
     CmdError('missing input file');
@@ -209,6 +215,37 @@ begin
     OutName := PosArgs[1]
   else
     OutName := DefaultArchiveName(PosArgs[0]);
+
+  if DupMode then
+  begin
+    InStream := TFileStream.Create(PosArgs[0], fmOpenRead or fmShareDenyWrite);
+    try
+      SetLength(Data, SizeInt(InStream.Size));
+      if Length(Data) > 0 then
+        InStream.ReadBuffer(Data[0], Length(Data));
+    finally
+      InStream.Free;
+    end;
+    BuildDedup(Data, Dedup);
+    BodyStream := TMemoryStream.Create;
+    try
+      if Length(Dedup.Body) > 0 then
+        BodyStream.WriteBuffer(Dedup.Body[0], Length(Dedup.Body));
+      BodyStream.Position := 0;
+      if OutName = '-' then
+        OutStream := THandleStream.Create(1)
+      else
+        OutStream := TFileStream.Create(OutName, fmCreate);
+      try
+        EncodeToStream(BodyStream, OutStream, EncOptions, Dedup.Meta);
+      finally
+        OutStream.Free;
+      end;
+    finally
+      BodyStream.Free;
+    end;
+    Exit;
+  end;
 
   InStream := TFileStream.Create(PosArgs[0], fmOpenRead or fmShareDenyWrite);
   try
@@ -351,7 +388,10 @@ begin
         EncOptionsUsed := True;
       end
       else if A = '-dup' then
-        CmdError('-dup encoding is not implemented yet')
+      begin
+        DupMode := True;
+        EncOptionsUsed := True;
+      end
       else if (A <> '') and (A[1] = '-') and (A <> '-') then
         CmdError('unknown option: ' + A)
       else

@@ -92,6 +92,35 @@ INFO="$("$BIN" -i "$TMP/hashnone.osr")"
 printf '%s\n' "$INFO" | grep -qx 'hash_id=1' || fail "-hash- hash_id"
 printf '%s\n' "$INFO" | grep -qx 'hash_size=0' || fail "-hash- hash_size"
 
+echo "== -dup write: dedup, restore, determinism =="
+"$BIN" -dup -m3 "$CORPUS/zeros.bin" "$TMP/dup-zeros.osr" || fail "encode -dup zeros"
+"$BIN" --verify "$TMP/dup-zeros.osr" || fail "--verify -dup zeros"
+"$BIN" -d "$TMP/dup-zeros.osr" "$TMP/dup-zeros.out" || fail "decode -dup zeros"
+cmp "$TMP/dup-zeros.out" "$CORPUS/zeros.bin" || fail "restore -dup zeros"
+DUPINFO="$("$BIN" -i "$TMP/dup-zeros.osr")"
+printf '%s\n' "$DUPINFO" | grep -qx 'original_size=55429' || \
+  fail "-dup body size changed: $DUPINFO"
+printf '%s\n' "$DUPINFO" | grep -qx 'restored_size=262144' || \
+  fail "-dup restored size: $DUPINFO"
+
+"$BIN" -dup -m3 -t1 "$CORPUS/zeros.bin" "$TMP/dup-t1.osr" || fail "-dup -t1"
+"$BIN" -dup -m3 -t4 "$CORPUS/zeros.bin" "$TMP/dup-t4.osr" || fail "-dup -t4"
+cmp "$TMP/dup-t1.osr" "$TMP/dup-t4.osr" || fail "-dup -t changes the archive"
+
+"$BIN" -dup -m3 -hash- "$CORPUS/zeros.bin" "$TMP/dup-hashnone.osr" || \
+  fail "-dup -hash-"
+"$BIN" -d "$TMP/dup-hashnone.osr" "$TMP/dup-hashnone.out" || fail "-d -dup -hash-"
+cmp "$TMP/dup-hashnone.out" "$CORPUS/zeros.bin" || fail "-dup -hash- restore"
+
+"$BIN" -dup -m5 "$CORPUS/mixed.bin" "$TMP/dup-m5.osr" || fail "-dup -m5"
+"$BIN" -d "$TMP/dup-m5.osr" "$TMP/dup-m5.out" || fail "-d -dup -m5"
+cmp "$TMP/dup-m5.out" "$CORPUS/mixed.bin" || fail "-dup -m5 round-trip"
+
+: > "$TMP/dup-empty.bin"
+"$BIN" -dup -m3 "$TMP/dup-empty.bin" "$TMP/dup-empty.osr" || fail "-dup empty"
+"$BIN" -d "$TMP/dup-empty.osr" "$TMP/dup-empty.out" || fail "-d -dup empty"
+[ ! -s "$TMP/dup-empty.out" ] || fail "-dup empty content"
+
 echo "== pinned v6-new fixtures =="
 [ -f "$ROOT/tests/fixtures/v6-new/manifest.tsv" ] || fail "missing v6-new manifest"
 while IFS=$'\t' read -r sha id input args; do
