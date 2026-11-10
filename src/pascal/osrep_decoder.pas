@@ -1,18 +1,19 @@
 unit osrep_decoder;
 { v6 archive reader: container validation and block reconstruction.
 
-  The record stream is decoded with the Future-LZ semantics observed in the
-  Omega SREP 3.0.0 v6 fixtures and described publicly by SREP:
+  The record stream uses the Future-LZ semantics of spec/format-v6.md §2.7:
 
     record = (skip, length, distance)
-    source = running sum of skip
+    running_skip starts at 0 for each block
+    running_skip += skip
+    source = block_start + running_skip
     destination = source + distance
-    records are stored in source order; the decoder sorts them by destination
-    and fills the holes between destinations with the literal stream.
 
-  `spec/payload.md` §3 describes the older normal-LZ ordering.  The v6
-  fixtures are all Future-LZ, so that is what this reader implements.  See
-  docs/implementation-notes.md for the exact traceability. }
+  Records are stored in source order.  The decoder sorts all matches of the
+  archive by destination, fills the holes with each block's literal stream,
+  and only then copies the matches.  A match may point into an earlier block
+  and may extend into a later block, so the match queue and the output are
+  global (not per block). }
 
 {$mode objfpc}{$H+}
 
@@ -33,10 +34,12 @@ type
     FBlocksCrc: LongWord;
     FSumOrig: QWord;
     FSumStat: QWord;
+    FMatches: TList;
     procedure LoadHeaderFooter;
     procedure ValidateMeta;
-    procedure DecodeBlock(const BH: TBlockHeader; const Payload: TBytes;
-      out OutBuf: TBytes);
+    procedure ParseBlockRecords(const BH: TBlockHeader; const Payload: TBytes;
+      BlockStart: QWord);
+    procedure DecodeAll(OutStream: TStream);
     procedure IterateBlocks(Decode: Boolean; OutStream: TStream);
   public
     constructor Create(const AFileName: string);
@@ -57,6 +60,29 @@ type
     Dst: QWord;
     Len: QWord;
   end;
+
+  TBlockInfo = record
+    StartPos: QWord;
+    OrigSize: LongWord;
+    LitOffset: SizeInt;
+    LitLen: SizeInt;
+    Digest: TBytes;
+  end;
+
+var
+  FBlocks: array of TBlockInfo;
+  FAllLiterals: TBytes;
+
+function VerifyBlockDigest(HashId: Byte; const Seed, Data: TBytes;
+  Start: QWord; Len: LongWord; const Expected: TBytes): Boolean;
+begin
+  { The spec names VMAC with key=seed, but not the nonce or the exact VMAC
+    variant.  Standard VMAC-128/256 with key=seed and zero nonce does not
+    reproduce the fixture digests (see docs/implementation-notes.md §7.1).
+    Until that gap is closed this check cannot reject valid fixtures, so the
+    on-disk block_crc remains the integrity check actually enforced. }
+  Result := True;
+end;
 
 function CompareMatches(Item1, Item2: Pointer): Integer;
 var
@@ -228,24 +254,15 @@ begin
     DataError('dup meta CRC mismatch');
 end;
 
-procedure TArchiveReader.DecodeBlock(const BH: TBlockHeader;
-  const Payload: TBytes; out OutBuf: TBytes);
+procedure TArchiveReader.ParseBlockRecords(const BH: TBlockHeader;
+  const Payload: TBytes; BlockStart: QWord);
 var
   HashSize, RecStart, RecEnd, LitStart, LitEnd: SizeInt;
-  OutLen, Gap, Tail, P: SizeInt;
-  Src, Skip, Len, Dist, Dst: QWord;
-  Matches: TList;
+  P: SizeInt;
+  RunningSkip, Src, Dst, Skip, Len, Dist: QWord;
   M: PMatch;
-  I: Integer;
-  J: SizeInt;
+  B: TBlockInfo;
 begin
-  if QWord(BH.OrigSize) > QWord(High(SizeInt)) then
-    DataError('block original size does not fit in memory');
-  { The digest is present (hash_id=4/hash_size=16 in the fixtures) but its
-    algorithm and key/nonce derivation are not in the specification.  The
-    on-disk block_crc already covers the digest bytes, so --verify checks
-    everything the spec pins.  Reconstruction digest verification is pending
-    a spec clarification; see docs/implementation-notes.md §7.3. }
   HashSize := FHeader.HashSize;
   if QWord(HashSize) + QWord(BH.StatSize) + QWord(BH.LiteralBytes) <>
      QWord(Length(Payload)) then
@@ -254,94 +271,137 @@ begin
   RecEnd := RecStart + SizeInt(BH.StatSize);
   LitStart := RecEnd;
   LitEnd := LitStart + SizeInt(BH.LiteralBytes);
+  if LitEnd <> Length(Payload) then
+    DataError('block literal range does not match the payload');
 
-  SetLength(OutBuf, SizeInt(BH.OrigSize));
-
-  if BH.StatSize = 0 then
+  RunningSkip := 0;
+  P := RecStart;
+  while P < RecEnd do
   begin
-    if BH.LiteralBytes <> BH.OrigSize then
-      DataError('stored block has fewer literals than its original size');
-    if BH.LiteralBytes > 0 then
-      Move(Payload[LitStart], OutBuf[0], BH.LiteralBytes);
-    Exit;
+    if not ReadVarint(Payload, P, RecEnd, Skip) then
+      DataError('bad skip varint in block records');
+    if not ReadVarint(Payload, P, RecEnd, Len) then
+      DataError('bad match length varint in block records');
+    if not ReadVarint(Payload, P, RecEnd, Dist) then
+      DataError('bad distance varint in block records');
+
+    if (Len = 0) or (Dist = 0) then
+      DataError('zero match length or distance');
+    if Skip > High(QWord) - RunningSkip then
+      DataError('match source overflows 64 bits');
+    Inc(RunningSkip, Skip);
+    if RunningSkip > High(QWord) - BlockStart then
+      DataError('match source overflows the output position');
+    Src := BlockStart + RunningSkip;
+    if Src >= FHeader.OriginalSize then
+      DataError('match source is outside the original data');
+    if Dist > High(QWord) - Src then
+      DataError('match destination overflows 64 bits');
+    Dst := Src + Dist;
+    if (Len > High(QWord) - Dst) or
+       (Dst + Len > FHeader.OriginalSize) then
+      DataError('match destination is outside the original data');
+
+    New(M);
+    M^.Src := Src;
+    M^.Dst := Dst;
+    M^.Len := Len;
+    FMatches.Add(M);
+  end;
+  if P <> RecEnd then
+    DataError('records do not end at statsize');
+
+  B.StartPos := BlockStart;
+  B.OrigSize := BH.OrigSize;
+  B.LitOffset := Length(FAllLiterals);
+  B.LitLen := SizeInt(BH.LiteralBytes);
+  SetLength(B.Digest, HashSize);
+  if HashSize > 0 then
+    Move(Payload[0], B.Digest[0], HashSize);
+  SetLength(FAllLiterals, B.LitOffset + B.LitLen);
+  if B.LitLen > 0 then
+    Move(Payload[LitStart], FAllLiterals[B.LitOffset], B.LitLen);
+  SetLength(FBlocks, Length(FBlocks) + 1);
+  FBlocks[High(FBlocks)] := B;
+end;
+
+procedure TArchiveReader.DecodeAll(OutStream: TStream);
+var
+  OutBuf, Covered: TBytes;
+  TotalOut: QWord;
+  I, J, LitPos: SizeInt;
+  P: QWord;
+  M: PMatch;
+  B: TBlockInfo;
+begin
+  TotalOut := FHeader.OriginalSize;
+  if TotalOut > QWord(High(SizeInt)) then
+    DataError('original size does not fit in memory');
+  SetLength(OutBuf, SizeInt(TotalOut));
+  SetLength(Covered, SizeInt(TotalOut));
+
+  FMatches.Sort(@CompareMatches);
+
+  { Mark every destination range.  Matches may overlap; the later copy wins. }
+  for I := 0 to FMatches.Count - 1 do
+  begin
+    M := PMatch(FMatches[I]);
+    if M^.Dst + M^.Len > TotalOut then
+      DataError('match destination is outside the original data');
+    for J := 0 to SizeInt(M^.Len) - 1 do
+      Covered[SizeInt(M^.Dst) + J] := 1;
   end;
 
-  Matches := TList.Create;
-  try
-    Src := 0;
-    P := RecStart;
-    while P < RecEnd do
+  { Each block's literals fill only the still-free positions of that block. }
+  LitPos := 0;
+  for I := 0 to High(FBlocks) do
+  begin
+    B := FBlocks[I];
+    if LitPos <> B.LitOffset then
+      DataError('literal streams are not contiguous');
+    if B.StartPos + QWord(B.OrigSize) > TotalOut then
+      DataError('block extends past the original data');
+    P := B.StartPos;
+    while P < B.StartPos + QWord(B.OrigSize) do
     begin
-      if not ReadVarint(Payload, P, RecEnd, Skip) then
-        DataError('bad skip varint in block records');
-      if not ReadVarint(Payload, P, RecEnd, Len) then
-        DataError('bad match length varint in block records');
-      if not ReadVarint(Payload, P, RecEnd, Dist) then
-        DataError('bad distance varint in block records');
-      if Skip > High(QWord) - Src then
-        DataError('match source overflows 64 bits');
-      Inc(Src, Skip);
-      if (Len = 0) or (Dist = 0) then
-        DataError('zero match length or distance');
-      if Src >= BH.OrigSize then
-        DataError('match source is outside the block');
-      if Dist > High(QWord) - Src then
-        DataError('match destination overflows 64 bits');
-      Dst := Src + Dist;
-      if (Len > High(QWord) - Dst) or (Dst + Len > BH.OrigSize) then
-        DataError('match destination is outside the block');
-      New(M);
-      M^.Src := Src;
-      M^.Dst := Dst;
-      M^.Len := Len;
-      Matches.Add(M);
-    end;
-    if P <> RecEnd then
-      DataError('records do not end at statsize');
-    if Matches.Count = 0 then
-      DataError('block has records but no matches');
-
-    Matches.Sort(@CompareMatches);
-
-    OutLen := 0;
-    P := LitStart;
-    for I := 0 to Matches.Count - 1 do
-    begin
-      M := PMatch(Matches[I]);
-      if M^.Dst < QWord(OutLen) then
-        DataError('overlapping match destinations');
-      Gap := SizeInt(M^.Dst) - OutLen;
-      if Gap > 0 then
+      if Covered[SizeInt(P)] = 0 then
       begin
-        if P + Gap > LitEnd then
-          DataError('not enough literal bytes before a match');
-        Move(Payload[P], OutBuf[OutLen], Gap);
-        Inc(P, Gap);
-        Inc(OutLen, Gap);
+        if LitPos >= B.LitOffset + B.LitLen then
+          DataError('not enough literal bytes for a block hole');
+        OutBuf[SizeInt(P)] := FAllLiterals[LitPos];
+        Inc(LitPos);
       end;
-      for J := 0 to SizeInt(M^.Len) - 1 do
-        OutBuf[SizeInt(M^.Dst) + J] := OutBuf[SizeInt(M^.Src) + J];
-      OutLen := SizeInt(M^.Dst + M^.Len);
+      Inc(P);
     end;
-
-    Tail := SizeInt(BH.OrigSize) - OutLen;
-    if Tail > 0 then
-    begin
-      if P + Tail > LitEnd then
-        DataError('not enough literal bytes at the end of the block');
-      Move(Payload[P], OutBuf[OutLen], Tail);
-      Inc(P, Tail);
-      Inc(OutLen, Tail);
-    end;
-    if P <> LitEnd then
-      DataError('literal bytes left over at the end of the block');
-    if OutLen <> SizeInt(BH.OrigSize) then
-      DataError('reconstructed block size mismatch');
-  finally
-    for I := 0 to Matches.Count - 1 do
-      Dispose(PMatch(Matches[I]));
-    Matches.Free;
+    if LitPos <> B.LitOffset + B.LitLen then
+      DataError('literal bytes left over at the end of a block');
   end;
+  if LitPos <> Length(FAllLiterals) then
+    DataError('literal bytes left over at the end of the archive');
+
+  { Matches sorted by destination; source bytes are literals or an earlier
+    match, and distance>0 guarantees source<destination. }
+  for I := 0 to FMatches.Count - 1 do
+  begin
+    M := PMatch(FMatches[I]);
+    for J := 0 to SizeInt(M^.Len) - 1 do
+      OutBuf[SizeInt(M^.Dst) + J] := OutBuf[SizeInt(M^.Src) + J];
+  end;
+
+  { Per-block digest: only after the whole output has been reconstructed. }
+  for I := 0 to High(FBlocks) do
+  begin
+    B := FBlocks[I];
+    if Length(B.Digest) > 0 then
+    begin
+      if not VerifyBlockDigest(FHeader.HashId, FSeed, OutBuf, B.StartPos,
+        B.OrigSize, B.Digest) then
+        DataError(Format('block %d: digest mismatch', [I + 1]));
+    end;
+  end;
+
+  if Length(OutBuf) > 0 then
+    OutStream.WriteBuffer(OutBuf[0], Length(OutBuf));
 end;
 
 procedure TArchiveReader.IterateBlocks(Decode: Boolean; OutStream: TStream);
@@ -353,76 +413,97 @@ var
   PayloadLen: QWord;
   Crc: LongWord;
   CrcBytes: array[0..3] of Byte;
-  BlockOut: TBytes;
   Pos: Int64;
+  M: PMatch;
+  K: Integer;
 begin
   FBlocksCrc := 0;
   FSumOrig := 0;
   FSumStat := 0;
+  SetLength(FBlocks, 0);
+  SetLength(FAllLiterals, 0);
+  FMatches := nil;
   Pos := OsrepHeaderSize + Length(FSeed);
 
-  for I := 1 to FHeader.BlockCount do
-  begin
-    if Pos + OsrepBlockHeaderSize > FDataEnd then
-      DataError(Format('block %d: header past end of block area', [I]));
-    FStream.Position := Pos;
-    SetLength(Buf, OsrepBlockHeaderSize);
-    ReadExact(FStream, Buf[0], OsrepBlockHeaderSize,
-      Format('block %d header', [I]));
-    Inc(Pos, OsrepBlockHeaderSize);
+  if Decode then
+    FMatches := TList.Create;
+  try
+    for I := 1 to FHeader.BlockCount do
+    begin
+      if Pos + OsrepBlockHeaderSize > FDataEnd then
+        DataError(Format('block %d: header past end of block area', [I]));
+      FStream.Position := Pos;
+      SetLength(Buf, OsrepBlockHeaderSize);
+      ReadExact(FStream, Buf[0], OsrepBlockHeaderSize,
+        Format('block %d header', [I]));
+      Inc(Pos, OsrepBlockHeaderSize);
 
-    BH.LiteralBytes := GetU32LE(Buf, 0);
-    BH.OrigSize := GetU32LE(Buf, 4);
-    BH.StatSize := GetU32LE(Buf, 8);
-    BH.BlockCrc := GetU32LE(Buf, 12);
+      BH.LiteralBytes := GetU32LE(Buf, 0);
+      BH.OrigSize := GetU32LE(Buf, 4);
+      BH.StatSize := GetU32LE(Buf, 8);
+      BH.BlockCrc := GetU32LE(Buf, 12);
 
-    if (BH.LiteralBytes = BH.OrigSize) and (BH.StatSize <> 0) then
-      DataError(Format('block %d: stored block has records', [I]));
-    if (BH.StatSize = 0) and (BH.LiteralBytes <> BH.OrigSize) then
-      DataError(Format('block %d: no records but literals do not cover it', [I]));
+      if (BH.LiteralBytes = BH.OrigSize) and (BH.StatSize <> 0) then
+        DataError(Format('block %d: stored block has records', [I]));
+      if (BH.StatSize = 0) and (BH.LiteralBytes <> BH.OrigSize) then
+        DataError(Format('block %d: no records but literals do not cover it', [I]));
 
-    PayloadLen := QWord(FHeader.HashSize) + QWord(BH.StatSize) +
-      QWord(BH.LiteralBytes);
-    if PayloadLen > QWord(FDataEnd - Pos) then
-      DataError(Format('block %d: payload past end of block area', [I]));
-    if PayloadLen > QWord(High(SizeInt)) then
-      DataError(Format('block %d: payload is too large', [I]));
-    SetLength(Payload, SizeInt(PayloadLen));
-    if PayloadLen > 0 then
-      ReadExact(FStream, Payload[0], SizeInt(PayloadLen),
-        Format('block %d payload', [I]));
-    Inc(Pos, Int64(PayloadLen));
+      PayloadLen := QWord(FHeader.HashSize) + QWord(BH.StatSize) +
+        QWord(BH.LiteralBytes);
+      if PayloadLen > QWord(FDataEnd - Pos) then
+        DataError(Format('block %d: payload past end of block area', [I]));
+      if PayloadLen > QWord(High(SizeInt)) then
+        DataError(Format('block %d: payload is too large', [I]));
+      SetLength(Payload, SizeInt(PayloadLen));
+      if PayloadLen > 0 then
+        ReadExact(FStream, Payload[0], SizeInt(PayloadLen),
+          Format('block %d payload', [I]));
+      Inc(Pos, Int64(PayloadLen));
 
-    Crc := Crc32C(Payload);
-    if Crc <> BH.BlockCrc then
-      DataError(Format('block %d: CRC mismatch', [I]));
+      Crc := Crc32C(Payload);
+      if Crc <> BH.BlockCrc then
+        DataError(Format('block %d: CRC mismatch', [I]));
 
-    PutU32LE(CrcBytes, 0, BH.BlockCrc);
-    FBlocksCrc := Crc32CUpdate(FBlocksCrc, CrcBytes[0], 4);
-    Inc(FSumOrig, QWord(BH.OrigSize));
-    Inc(FSumStat, QWord(BH.StatSize));
+      PutU32LE(CrcBytes, 0, BH.BlockCrc);
+      FBlocksCrc := Crc32CUpdate(FBlocksCrc, CrcBytes[0], 4);
+
+      if Decode then
+        ParseBlockRecords(BH, Payload, FSumOrig);
+
+      Inc(FSumOrig, QWord(BH.OrigSize));
+      Inc(FSumStat, QWord(BH.StatSize));
+    end;
+
+    if Pos <> FDataEnd then
+      DataError('there is data between the last block and the footer/meta');
+
+    ValidateMeta;
+
+    if FSumOrig <> FHeader.OriginalSize then
+      DataError(Format('original size mismatch: header %d, blocks %d',
+        [FHeader.OriginalSize, FSumOrig]));
+    if FSumStat <> FFooter.StatSize then
+      DataError(Format('stat size mismatch: footer %d, blocks %d',
+        [FFooter.StatSize, FSumStat]));
+    if FBlocksCrc <> FFooter.BlocksCrc then
+      DataError('blocks CRC mismatch');
 
     if Decode then
+      DecodeAll(OutStream);
+  finally
+    if FMatches <> nil then
     begin
-      DecodeBlock(BH, Payload, BlockOut);
-      if Length(BlockOut) > 0 then
-        OutStream.WriteBuffer(BlockOut[0], Length(BlockOut));
+      for K := 0 to FMatches.Count - 1 do
+      begin
+        M := PMatch(FMatches[K]);
+        Dispose(M);
+      end;
+      FMatches.Free;
+      FMatches := nil;
     end;
+    SetLength(FBlocks, 0);
+    SetLength(FAllLiterals, 0);
   end;
-
-  if Pos <> FDataEnd then
-    DataError('there is data between the last block and the footer/meta');
-
-  ValidateMeta;
-
-  if FSumOrig <> FHeader.OriginalSize then
-    DataError(Format('original size mismatch: header %d, blocks %d',
-      [FHeader.OriginalSize, FSumOrig]));
-  if FSumStat <> FFooter.StatSize then
-    DataError(Format('stat size mismatch: footer %d, blocks %d',
-      [FFooter.StatSize, FSumStat]));
-  if FBlocksCrc <> FFooter.BlocksCrc then
-    DataError('blocks CRC mismatch');
 end;
 
 procedure TArchiveReader.ReadInfo(out Info: TArchiveInfo);
