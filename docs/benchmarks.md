@@ -169,3 +169,21 @@ que Omega `-m4` (0,64 s), pero con 15 puntos menos de ratio. A igual
 `real64.osr` (38 MB, `-m5`): `--verify` con la tabla Pascal 0,116 s; con
 SSE4.2 0,029 s (~4×). El encode `-m3` baja de ~1,43 s a ~1,04 s, aunque ahí
 también influye el match finder nativo. Los bytes son los mismos.
+
+### El parámetro `-c` y el ratio
+
+`-m5 -l64 -a32` en `real64.bin`, variando `-c` (posición de inserción del
+hash chain):
+
+| `-c` | salida | tiempo |
+|---|---:|---:|
+| 1 | 49.584.278 | 2,55 s |
+| 4 | 49.758.002 | 1,25 s |
+| 16 | 50.113.181 | 1,05 s |
+| 64 | 51.005.877 | 0,93 s |
+
+Con `-c1`/`-c4` OSREP ya baja de los 49,81 MB de Omega `-m4`, pero a más
+tiempo; con `-c64` Omega gana ratio y tiempo. La diferencia no es solo el
+hash: `-c` controla cuántas posiciones entran a la cadena, y el `-c` de SREP
+no tiene exactamente la misma semántica. El default de OSREP (`-m5`, `-c1`)
+sigue siendo el mejor ratio de la tabla, a ~1,14 s.
