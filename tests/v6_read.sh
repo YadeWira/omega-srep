@@ -89,6 +89,43 @@ rc=$?
 set -e
 [ "$rc" -eq 4 ] || fail "corrupt meta rc=$rc (expected 4)"
 
+echo "== negative: changed block digest must pass --verify but fail -d =="
+cp "$ROOT/tests/fixtures/v6/text-m3.osr" "$TMP/bad-digest.osr"
+python3 - "$TMP/bad-digest.osr" <<'PY'
+import struct
+import sys
+
+p = sys.argv[1]
+d = bytearray(open(p, 'rb').read())
+
+def crc32c(data):
+    crc = 0
+    for byte in data:
+        crc ^= byte
+        for _ in range(8):
+            crc = (crc >> 1) ^ 0x82F63B78 if crc & 1 else crc >> 1
+    return crc
+
+boff = 60
+lit, orig, stat, _ = struct.unpack('<IIII', d[boff:boff + 16])
+digest_off = boff + 16
+d[digest_off] ^= 0x01
+payload = d[digest_off:digest_off + 16 + stat + lit]
+d[boff + 12:boff + 16] = struct.pack('<I', crc32c(payload))
+footer = len(d) - 36
+d[footer + 28:footer + 32] = struct.pack(
+    '<I', crc32c(d[boff + 12:boff + 16]))
+d[footer + 32:footer + 36] = struct.pack(
+    '<I', crc32c(d[footer:footer + 32]))
+open(p, 'wb').write(d)
+PY
+"$BIN" --verify "$TMP/bad-digest.osr" || fail "--verify rejected bad-digest"
+set +e
+"$BIN" -d "$TMP/bad-digest.osr" "$OUT/bad-digest.out" >/dev/null 2>&1
+rc=$?
+set -e
+[ "$rc" -eq 4 ] || fail "bad digest -d rc=$rc (expected 4)";
+
 echo "== info output is stable =="
 INFO="$("$BIN" -i "$ROOT/tests/fixtures/v6/text-m3.osr")"
 EXPECTED="OSREP v6
