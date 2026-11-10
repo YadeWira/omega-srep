@@ -32,3 +32,7 @@ SREP_Technical_Documentation.zip
 message-from-*.md
 credenciales.md
 handoff.md
+
+# build artifacts from manual unit compiles
+pascal/src/*.o
+pascal/src/*.ppu
