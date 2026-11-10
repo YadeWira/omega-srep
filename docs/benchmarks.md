@@ -20,8 +20,12 @@ Nada de esto es una promesa: son los números de hoy y el punto de partida.
 | herramienta | ajustes | salida (bytes) | ratio | tiempo |
 |---|---|---:|---:|---:|
 | OSREP | `-m3` (default: `-l4 -c1 -a16`, `-t` auto) | 39.551.315 | 58,94 % | 1,23 s |
+| OSREP | `-m4` (default, `-t` auto) | 38.353.352 | 57,15 % | 1,53 s |
+| OSREP | `-m5` (default, `-t` auto) | 38.083.480 | 56,75 % | 1,51 s |
 | OSREP | `-m3 -t1` | 39.551.315 | 58,94 % | 4,8 s |
 | OSREP | `-m3 -l64 -c64` (`-t` auto) | 51.278.520 | 76,41 % | 0,92 s |
+| OSREP | `-m4 -l64 -c64` (`-t` auto) | 51.249.808 | 76,37 % | 1,02 s |
+| OSREP | `-m5 -l64 -c64` (`-t` auto) | 51.155.786 | 76,23 % | 1,42 s |
 | OSREP | `-m3 -l128 -c128` (`-t` auto) | 54.107.363 | 80,63 % | 0,94 s |
 | SREP 3.92 | `-m3` (default: `-l512 -c512 -a4/4`) | 58.333.128 | 86,92 % | 0,24 s |
 | SREP 3.92 | `-m3 -l64 -c64` | 51.925.720 | 77,38 % | 0,35 s |
@@ -42,14 +46,16 @@ entre Omega `-m3` y `-m4`, y muy por detrás en tiempo.
    `-l512 -c512` para archivos enormes. El ratio de OSREP en default es
    mucho mejor (39,6 MB contra 58,3 MB), pero su default hace mucho más
    trabajo.
-2. **La codificación paralela cambió el Pareto.** El default bajó de 4,8 s
-   (`-t1`) a 1,23 s (auto, 8 hilos) sin cambiar un byte del archivo. Sigue
-   siendo ~2× más lento que Omega `-m4`, pero el ratio es 15 puntos mejor.
+2. **La codificación paralela cambió el Pareto.** El default `-m3` bajó de
+   4,8 s (`-t1`) a 1,23 s (auto, 8 hilos) sin cambiar un byte del archivo.
+   `-m4`/`-m5` bajan el stream a 38,1 MB (56,75 %) en ~1,5 s: el mejor ratio
+   de la tabla, a cambio de ~2,4× el tiempo de Omega `-m4`.
 3. **A igualdad de ajustes, Omega `-m4`/`-m5` gana:** 49,8 MB contra
-   51,3 MB de OSREP `-m3`, y 0,64 s contra 0,92 s. SREP `-m4` es aún más
-   rápido (0,32 s) con 50,5 MB.
-4. **Faltan métodos.** `-m4`/`-m5` de SREP/Omega son los que hay que
-   alcanzar. OSREP solo tiene `-m3`; `-m4`/`-m5` salen con exit 2.
+   51,2 MB de OSREP `-m5`, y 0,64 s contra 1,42 s. SREP `-m4` es aún más
+   rápido (0,32 s) con 50,5 MB. OSREP `-m5` sí gana en el default
+   (38,1 MB contra 49,8 MB).
+4. **El hueco que queda** es el match finder a igualdad de `-l/-c`: C/asm o
+   un parseo más inteligente, no otro método nominal.
 5. **El objetivo medible** es un Pareto: a igual ratio que Omega `-m4`,
    tiempos comparables, y a igual tiempo, mejor ratio. Hoy el default de
    OSREP es un punto fuerte en ratio, pero falta el método que compita en

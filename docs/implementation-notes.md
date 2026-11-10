@@ -263,9 +263,10 @@ La spec `14cfd76`/`931effa` cerró el digest VHASH-128, el orden de
    SipHash-2-4 (5), pero el lector solo verifica VHASH-128 (4) y el caso sin
    digest. Con esos ids `-d` da un error claro de “digest hash id N is not
    implemented”; `--verify` sigue pasando. No hay fixtures para ellos.
-3. **Opciones de encoder no equivalentes a SREP.** `-m4`/`-m5` todavía no
-   existen (exit 2); `-aN/M` ignora `M`; `-c` es el paso de inserción del hash
-   chain y `-l` el mínimo de match. La spec no fija estos detalles porque el
+3. **Opciones de encoder no equivalentes a SREP.** `-m4`/`-m5` existen
+   (lazy y cadena más profunda) pero no replican exactamente los métodos de
+   SREP; `-aN/M` ignora `M`; `-c` es el paso de inserción del hash chain y
+   `-l` el mínimo de match. La spec no fija estos detalles porque el
    match finder es libre, pero conviene documentarlos en la CLI.
 4. **`-i` de `-dup`.** Resuelto el 2026-11-10: `original_size` sigue siendo
    el cuerpo deduplicado (101907 en `text-dup-m3.osr`), y `-i` agrega

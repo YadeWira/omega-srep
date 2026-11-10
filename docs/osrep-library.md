@@ -84,7 +84,7 @@ enum {
 
 typedef struct osrep_options {
     uint32_t struct_size;   /* sizeof(osrep_options), o 0 */
-    int32_t  method;        /* 0 = default, 3 = -m3 */
+    int32_t  method;        /* 0 = default, 3/4/5 = -m3/-m4/-m5 */
     int32_t  format;        /* 0 = default, 6 = v6 */
     int32_t  dedup;         /* 0; 1 aún no se escribe (E_UNSUPPORTED) */
     int32_t  threads;       /* aceptado; el encoder MVP es de un hilo */

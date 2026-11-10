@@ -75,7 +75,8 @@ reemplace) y se repiten en cada release.
 - Lector v6 y encoder `-m3`: funcionando; tests `v6_read` y `v6_encode`.
 - `libosrep` L0/L1 parcial y plugin de 7-Zip: congelados, no se amplían.
 - `-dup` de escritura: no implementado.
-- `-m4`/`-m5`: no implementados (exit 2).
+- `-m4`/`-m5`: implementados (lazy y cadena más profunda); el ratio y el
+  tiempo están en `docs/benchmarks.md`.
 - Benchmarks contra SREP/Omega SREP: línea base hecha en `docs/benchmarks.md`.
 - Codificación paralela de bloques (`-tN`): hecha; el `.osr` no cambia.
 - Dedup por contenido para zpaq: diseñado en `docs/zpaq-dedup-study.md`,

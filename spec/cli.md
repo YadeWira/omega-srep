@@ -29,12 +29,14 @@ scripts, but the default and only writer is v6.
 
 ## Methods
 
-- `-m3`: LZ match finder, index-LZ. This is the only encoder in 0.0.2.
-- `-m4`, `-m5`: planned; they exit 2 with "not implemented yet" until the
-  finders exist. They are not aliases of `-m3`.
+- `-m3`: greedy hash-chain match finder.
+- `-m4`: the same finder with one-byte lazy matching.
+- `-m5`: lazy matching and a deeper chain (twice the `-a` depth, capped at
+  256). The v6 match stream is free, so the three methods write the same
+  format; only the parse changes.
 
-`-m0` (in-memory), `-m1`/`-m2` (CDC), `-m4`/`-m5` and `-dup` are phase 2;
-until then they exit 2 with a clear "not implemented yet" message.
+`-m0` (in-memory), `-m1`/`-m2` (CDC) and `-dup` are phase 2; until then they
+exit 2 with a clear "not implemented yet" message.
 
 ## Threads
 
