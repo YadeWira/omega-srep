@@ -80,6 +80,7 @@ type
 function GetU32LE(const Buf: TBytes; Offset: SizeInt): LongWord;
 function GetU64LE(const Buf: TBytes; Offset: SizeInt): QWord;
 procedure PutU32LE(var Buf: array of Byte; Offset: SizeInt; Value: LongWord);
+procedure PutU64LE(var Buf: array of Byte; Offset: SizeInt; Value: QWord);
 procedure ReadExact(Stream: TStream; var Buf; Count: SizeInt; const What: string);
 function SeedSizeFor(HashId, HashSize: Byte; out SeedSize: SizeInt): Boolean;
 procedure DataError(const Msg: string);
@@ -112,6 +113,12 @@ begin
   Buf[Offset + 1] := Byte(Value shr 8);
   Buf[Offset + 2] := Byte(Value shr 16);
   Buf[Offset + 3] := Byte(Value shr 24);
+end;
+
+procedure PutU64LE(var Buf: array of Byte; Offset: SizeInt; Value: QWord);
+begin
+  PutU32LE(Buf, Offset, LongWord(Value and QWord($FFFFFFFF)));
+  PutU32LE(Buf, Offset + 4, LongWord(Value shr 32));
 end;
 
 procedure ReadExact(Stream: TStream; var Buf; Count: SizeInt; const What: string);

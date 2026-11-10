@@ -1,0 +1,484 @@
+unit osrep_encoder;
+{ Minimal v6 encoder (-m3): a new hash-chain match finder, no legacy code.
+
+  The format does not require a particular match stream.  This encoder uses a
+  greedy LZ parse inside each block, keeps source and destination inside the
+  block, then emits the matches in source order (as required by §2.7) and the
+  uncovered bytes in destination order. }
+
+{$mode objfpc}{$H+}
+{$modeswitch advancedrecords}
+
+interface
+
+uses
+  SysUtils, Classes, osrep_crc, osrep_format, osrep_vhash;
+
+type
+  TEncoderOptions = record
+    BlockSize: QWord;
+    MinMatch: LongWord;
+    ChainDepth: LongWord;
+    Stride: LongWord;
+    UseHash: Boolean;
+    Seed: TBytes;
+  end;
+
+function DefaultEncoderOptions: TEncoderOptions;
+function SeedFromNumber(N: QWord): TBytes;
+procedure EncodeToStream(InStream, OutStream: TStream;
+  const Opt: TEncoderOptions);
+
+implementation
+
+type
+  TMatchRec = record
+    Source: LongWord;
+    Dest: LongWord;
+    Len: LongWord;
+  end;
+  TMatchArray = array of TMatchRec;
+
+  TByteBuffer = record
+    Data: TBytes;
+    Len: SizeInt;
+    procedure Init;
+    procedure Ensure(Cap: SizeInt);
+    procedure AddByte(B: Byte);
+    procedure AddBytes(const Src; Count: SizeInt);
+    function Finish: TBytes;
+  end;
+
+procedure TByteBuffer.Init;
+begin
+  Data := nil;
+  Len := 0;
+end;
+
+procedure TByteBuffer.Ensure(Cap: SizeInt);
+var
+  NewCap: SizeInt;
+begin
+  if Cap <= Length(Data) then
+    Exit;
+  NewCap := Length(Data);
+  if NewCap < 4096 then
+    NewCap := 4096;
+  while NewCap < Cap do
+  begin
+    if NewCap > High(SizeInt) div 2 then
+    begin
+      NewCap := Cap;
+      Break;
+    end;
+    NewCap := NewCap * 2;
+  end;
+  SetLength(Data, NewCap);
+end;
+
+procedure TByteBuffer.AddByte(B: Byte);
+begin
+  Ensure(Len + 1);
+  Data[Len] := B;
+  Inc(Len);
+end;
+
+procedure TByteBuffer.AddBytes(const Src; Count: SizeInt);
+begin
+  if Count <= 0 then
+    Exit;
+  Ensure(Len + Count);
+  Move(Src, Data[Len], Count);
+  Inc(Len, Count);
+end;
+
+function TByteBuffer.Finish: TBytes;
+begin
+  SetLength(Data, Len);
+  Result := Data;
+  Data := nil;
+  Len := 0;
+end;
+
+function SplitMix64(var X: QWord): QWord;
+var
+  Z: QWord;
+begin
+  X := X + QWord($9E3779B97F4A7C15);
+  Z := X;
+  Z := (Z xor (Z shr 30)) * QWord($BF58476D1CE4E5B9);
+  Z := (Z xor (Z shr 27)) * QWord($94D049BB133111EB);
+  Result := Z xor (Z shr 31);
+end;
+
+function SeedFromNumber(N: QWord): TBytes;
+var
+  X, V: QWord;
+  I, J: Integer;
+begin
+  Result := nil;
+  SetLength(Result, 32);
+  X := N xor QWord($D1B54A32D192ED03);
+  for I := 0 to 3 do
+  begin
+    V := SplitMix64(X);
+    for J := 0 to 7 do
+      Result[I * 8 + J] := Byte(V shr (8 * J));
+  end;
+end;
+
+function DefaultEncoderOptions: TEncoderOptions;
+begin
+  Result.BlockSize := 8 * 1024 * 1024;
+  Result.MinMatch := 4;
+  Result.ChainDepth := 16;
+  Result.Stride := 1;
+  Result.UseHash := True;
+  Result.Seed := SeedFromNumber(0);
+end;
+
+function Hash4(const Data: TBytes; P: SizeInt): LongWord; inline;
+var
+  H: LongWord;
+begin
+  H := LongWord(Data[P]) * LongWord($9E3779B1);
+  H := H xor (LongWord(Data[P + 1]) * LongWord($85EBCA77));
+  H := H xor (LongWord(Data[P + 2]) * LongWord($C2B2AE3D));
+  H := H xor (LongWord(Data[P + 3]) * LongWord($27D4EB2F));
+  H := H xor (H shr 15);
+  Result := H;
+end;
+
+procedure AddVarint(var Buf: TByteBuffer; Value: QWord);
+var
+  B: Byte;
+begin
+  repeat
+    B := Byte(Value and $7F);
+    Value := Value shr 7;
+    if Value <> 0 then
+      B := B or $80;
+    Buf.AddByte(B);
+  until Value = 0;
+end;
+
+procedure SortMatches(var A: TMatchArray);
+var
+  Tmp: TMatchArray;
+  Width, L, M, R, I, J, K: SizeInt;
+
+  function Less(const X, Y: TMatchRec): Boolean; inline;
+  begin
+    if X.Source <> Y.Source then
+      Exit(X.Source < Y.Source);
+    if X.Dest <> Y.Dest then
+      Exit(X.Dest < Y.Dest);
+    Result := X.Len < Y.Len;
+  end;
+
+begin
+  if Length(A) < 2 then
+    Exit;
+  SetLength(Tmp, Length(A));
+  Width := 1;
+  while Width < Length(A) do
+  begin
+    L := 0;
+    while L < Length(A) do
+    begin
+      M := L + Width;
+      if M > Length(A) then
+        M := Length(A);
+      R := L + 2 * Width;
+      if R > Length(A) then
+        R := Length(A);
+      I := L;
+      J := M;
+      K := L;
+      while (I < M) and (J < R) do
+      begin
+        if Less(A[I], A[J]) then
+        begin
+          Tmp[K] := A[I];
+          Inc(I);
+        end
+        else
+        begin
+          Tmp[K] := A[J];
+          Inc(J);
+        end;
+        Inc(K);
+      end;
+      while I < M do
+      begin
+        Tmp[K] := A[I];
+        Inc(I);
+        Inc(K);
+      end;
+      while J < R do
+      begin
+        Tmp[K] := A[J];
+        Inc(J);
+        Inc(K);
+      end;
+      Inc(L, 2 * Width);
+    end;
+    for I := 0 to High(A) do
+      A[I] := Tmp[I];
+    Width := Width * 2;
+  end;
+end;
+
+procedure BuildLiterals(const Data: TBytes; const Matches: TMatchArray;
+  out Literals: TBytes);
+var
+  Buf: TByteBuffer;
+  I, Pos: SizeInt;
+  M: TMatchRec;
+begin
+  Buf.Init;
+  Pos := 0;
+  for I := 0 to High(Matches) do
+  begin
+    M := Matches[I];
+    if M.Dest < LongWord(Pos) then
+      raise EOsrepError.Create(3, 'encoder: overlapping match destinations');
+    if M.Dest > LongWord(Pos) then
+      Buf.AddBytes(Data[Pos], SizeInt(M.Dest) - Pos);
+    Pos := SizeInt(M.Dest) + SizeInt(M.Len);
+  end;
+  if Pos < Length(Data) then
+    Buf.AddBytes(Data[Pos], Length(Data) - Pos);
+  Literals := Buf.Finish;
+end;
+
+procedure EncodeBlock(const Data: TBytes; const Opt: TEncoderOptions;
+  out Records, Literals, Digest: TBytes);
+var
+  N, Pos, BestLen, BestSrc, MaxLen, HashBits, HeadSize: SizeInt;
+  Head: array of LongInt;
+  Prev: array of LongInt;
+  HashMask: LongWord;
+  Matches: TMatchArray;
+  Sorted: TMatchArray;
+  I, K, Depth, L: SizeInt;
+  H, Needed: QWord;
+  Cand: LongInt;
+  Buf: TByteBuffer;
+  PrevSource: LongWord;
+  M: TMatchRec;
+  Tag: TBytes;
+
+  procedure InsertPos(P: SizeInt); inline;
+  var
+    HH: LongWord;
+  begin
+    if P + 4 > N then
+      Exit;
+    if (Opt.Stride > 1) and ((P mod SizeInt(Opt.Stride)) <> 0) then
+      Exit;
+    HH := Hash4(Data, P) and HashMask;
+    Prev[P] := Head[HH];
+    Head[HH] := P;
+  end;
+
+begin
+  N := Length(Data);
+  Matches := nil;
+  if N > 0 then
+  begin
+    HashBits := 12;
+    Needed := QWord(N div 4) + 1;
+    while (QWord(1) shl HashBits) < Needed do
+      Inc(HashBits);
+    if HashBits > 22 then
+      HashBits := 22;
+    HeadSize := 1 shl HashBits;
+    HashMask := LongWord(HeadSize - 1);
+    SetLength(Head, HeadSize);
+    FillChar(Head[0], HeadSize * SizeOf(LongInt), $FF);
+    SetLength(Prev, N);
+    FillChar(Prev[0], N * SizeOf(LongInt), $FF);
+
+    Pos := 0;
+    while Pos < N do
+    begin
+      BestLen := 0;
+      BestSrc := -1;
+      MaxLen := N - Pos;
+      if (MaxLen >= 4) then
+      begin
+        H := Hash4(Data, Pos) and HashMask;
+        Cand := Head[H];
+        Depth := SizeInt(Opt.ChainDepth);
+        while (Cand >= 0) and (Depth > 0) do
+        begin
+          L := 0;
+          while (L < MaxLen) and
+                (Data[SizeInt(Cand) + L] = Data[Pos + L]) do
+            Inc(L);
+          if L > BestLen then
+          begin
+            BestLen := L;
+            BestSrc := Cand;
+            if L = MaxLen then
+              Break;
+          end;
+          Cand := Prev[Cand];
+          Dec(Depth);
+        end;
+      end;
+
+      if (BestLen >= SizeInt(Opt.MinMatch)) and (BestSrc >= 0) then
+      begin
+        SetLength(Matches, Length(Matches) + 1);
+        Matches[High(Matches)].Source := LongWord(BestSrc);
+        Matches[High(Matches)].Dest := LongWord(Pos);
+        Matches[High(Matches)].Len := LongWord(BestLen);
+        for K := Pos to Pos + BestLen - 1 do
+          InsertPos(K);
+        Inc(Pos, BestLen);
+      end
+      else
+      begin
+        InsertPos(Pos);
+        Inc(Pos);
+      end;
+    end;
+  end;
+
+  BuildLiterals(Data, Matches, Literals);
+
+  Sorted := Copy(Matches);
+  SortMatches(Sorted);
+  Buf.Init;
+  PrevSource := 0;
+  for I := 0 to High(Sorted) do
+  begin
+    M := Sorted[I];
+    if M.Source < PrevSource then
+      raise EOsrepError.Create(3, 'encoder: matches are not source-ordered');
+    AddVarint(Buf, QWord(M.Source - PrevSource));
+    AddVarint(Buf, QWord(M.Len));
+    AddVarint(Buf, QWord(M.Dest - M.Source));
+    PrevSource := M.Source;
+  end;
+  Records := Buf.Finish;
+
+  Digest := nil;
+  if Opt.UseHash then
+  begin
+    if not Vhash128(Opt.Seed, Data, 0, Length(Data), Tag) then
+      raise EOsrepError.Create(3, 'encoder: VHASH failed');
+    Digest := Tag;
+  end;
+end;
+
+procedure EncodeToStream(InStream, OutStream: TStream;
+  const Opt: TEncoderOptions);
+var
+  InSize, BlockStartQ, BlockLenQ: QWord;
+  BlockCountQ: QWord;
+  Hdr, Ftr: TBytes;
+  BlocksCrc, BlockCrc: LongWord;
+  CrcBytes: array[0..3] of Byte;
+  Data, Payload, Records, Literals, Digest: TBytes;
+  BlockHdr: TBytes;
+  BlockIndex: QWord;
+  HashId, HashSize: Byte;
+  StatSize: QWord;
+begin
+  if Opt.BlockSize = 0 then
+    raise EOsrepError.Create(2, 'block size must be positive');
+  if Opt.BlockSize > QWord(High(LongWord)) then
+    raise EOsrepError.Create(2, 'block size does not fit in v6');
+  if Opt.BlockSize > QWord(High(LongInt)) then
+    raise EOsrepError.Create(2, 'block size is too large for this encoder');
+  if Opt.UseHash and (Length(Opt.Seed) <> 32) then
+    raise EOsrepError.Create(2, 'VHASH seed must be 32 bytes');
+  if Opt.UseHash then
+  begin
+    HashId := 4;
+    HashSize := 16;
+  end
+  else
+  begin
+    HashId := 1;
+    HashSize := 0;
+  end;
+
+  InSize := QWord(InStream.Size);
+  if InSize = 0 then
+    BlockCountQ := 0
+  else
+    BlockCountQ := (InSize + Opt.BlockSize - 1) div Opt.BlockSize;
+  if BlockCountQ > QWord(High(LongWord)) then
+    raise EOsrepError.Create(2, 'too many blocks');
+
+  SetLength(Hdr, OsrepHeaderSize);
+  PutU32LE(Hdr, 0, OsrepMagicHeader);
+  Hdr[4] := OsrepVersion;
+  Hdr[5] := 0;
+  Hdr[6] := HashId;
+  Hdr[7] := HashSize;
+  PutU32LE(Hdr, 8, LongWord(Opt.BlockSize));
+  PutU32LE(Hdr, 12, LongWord(BlockCountQ));
+  PutU64LE(Hdr, 16, InSize);
+  PutU32LE(Hdr, 24, Crc32C(Hdr, 0, 24));
+  OutStream.WriteBuffer(Hdr[0], Length(Hdr));
+  if Opt.UseHash then
+    OutStream.WriteBuffer(Opt.Seed[0], 32);
+
+  BlocksCrc := 0;
+  StatSize := 0;
+  BlockStartQ := 0;
+  BlockIndex := 0;
+  while BlockIndex < BlockCountQ do
+  begin
+    BlockLenQ := Opt.BlockSize;
+    if BlockStartQ + BlockLenQ > InSize then
+      BlockLenQ := InSize - BlockStartQ;
+    SetLength(Data, SizeInt(BlockLenQ));
+    if BlockLenQ > 0 then
+      InStream.ReadBuffer(Data[0], SizeInt(BlockLenQ));
+
+    EncodeBlock(Data, Opt, Records, Literals, Digest);
+
+    SetLength(Payload, Length(Digest) + Length(Records) + Length(Literals));
+    if Length(Digest) > 0 then
+      Move(Digest[0], Payload[0], Length(Digest));
+    if Length(Records) > 0 then
+      Move(Records[0], Payload[Length(Digest)], Length(Records));
+    if Length(Literals) > 0 then
+      Move(Literals[0], Payload[Length(Digest) + Length(Records)],
+        Length(Literals));
+    BlockCrc := Crc32C(Payload);
+
+    SetLength(BlockHdr, OsrepBlockHeaderSize);
+    PutU32LE(BlockHdr, 0, LongWord(Length(Literals)));
+    PutU32LE(BlockHdr, 4, LongWord(BlockLenQ));
+    PutU32LE(BlockHdr, 8, LongWord(Length(Records)));
+    PutU32LE(BlockHdr, 12, BlockCrc);
+    OutStream.WriteBuffer(BlockHdr[0], Length(BlockHdr));
+    if Length(Payload) > 0 then
+      OutStream.WriteBuffer(Payload[0], Length(Payload));
+
+    PutU32LE(CrcBytes, 0, BlockCrc);
+    BlocksCrc := Crc32CUpdate(BlocksCrc, CrcBytes[0], 4);
+    Inc(StatSize, QWord(Length(Records)));
+    Inc(BlockStartQ, BlockLenQ);
+    Inc(BlockIndex);
+  end;
+
+  SetLength(Ftr, OsrepFooterSize);
+  PutU32LE(Ftr, 0, OsrepMagicFooter);
+  PutU32LE(Ftr, 4, LongWord(BlockCountQ));
+  PutU64LE(Ftr, 8, StatSize);
+  PutU64LE(Ftr, 16, 0);
+  PutU32LE(Ftr, 24, 0);
+  PutU32LE(Ftr, 28, BlocksCrc);
+  PutU32LE(Ftr, 32, Crc32C(Ftr, 0, 32));
+  OutStream.WriteBuffer(Ftr[0], Length(Ftr));
+end;
+
+end.
