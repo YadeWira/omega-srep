@@ -414,8 +414,15 @@ begin
   Result.Id.A := QWord(st.st_dev);
   Result.Id.B := QWord(st.st_ino);
   Result.Size := QWord(st.st_size);
+  {$IFDEF DARWIN}
+  { FPC's Darwin stat carries the nanoseconds in st_mtimensec/st_ctimensec;
+    the _nsec spelling is the Linux record. }
+  Result.T1 := Int64(st.st_mtime); Result.T2 := Int64(st.st_mtimensec);
+  Result.T3 := Int64(st.st_ctime); Result.T4 := Int64(st.st_ctimensec);
+  {$ELSE}
   Result.T1 := Int64(st.st_mtime); Result.T2 := Int64(st.st_mtime_nsec);
   Result.T3 := Int64(st.st_ctime); Result.T4 := Int64(st.st_ctime_nsec);
+  {$ENDIF}
 end;
 {$ELSE}
 function StampInput(const Path: AnsiString): TInputStamp;
