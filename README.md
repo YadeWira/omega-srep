@@ -1,8 +1,11 @@
 # OSREP
 
-**OSREP** is a clean-room, MIT-licensed implementation of the `.osr`
-huge-dictionary LZ77 compressor. It is the successor of the previous
-**Omega SREP** project, restarted with new code and a single format: **v6**.
+**OSREP** is a new LZ77 compressor for `.osr` archives, built for huge
+dictionaries, deterministic output and integrity-checked files. It is written
+in Free Pascal with C/asm hot paths, licensed MIT, and its own format is
+**v6**: blocks with CRC-32C and a VHASH-128 digest, a footer that chains the
+block CRCs, and a CLI for compression, decompression, verification and
+inspection.
 
 - **Status: phase 1b (0.0.2).** The v6 reader and the MVP `-m3` encoder are
   implemented in `src/pascal/`: container, CRC-32C, VHASH-128 block digest,
@@ -12,21 +15,31 @@ huge-dictionary LZ77 compressor. It is the successor of the previous
   `tests/fixtures/v6-new/`. Every 0.0.x release is a pre-release; 1.0.0 is
   the first stable release. Implementation notes and the open limitations are
   in `docs/implementation-notes.md`.
-- **Format:** v6 only (`OSR6`). OSREP reads the v6 archives written by the
-  legacy Omega SREP 3.0.0; it does **not** read or write the SREP v1-v5
-  formats, and there is no compatibility goal with upstream SREP.
+- **Format:** v6 only (`OSR6`). OSREP does **not** read or write the SREP
+  v1-v5 formats, and there is no compatibility goal with upstream SREP.
 - **License:** MIT, from the first commit of this branch (`LICENSE`).
 - **Platforms (planned):** Linux x86_64/i386/ARM64, Windows x86/x64 (7+),
   macOS 11+ ARM64.
 - **Languages:** Free Pascal for the format, container, CLI and orchestration;
   C with intrinsics for CRC/SIMD/hashes; FPC asm for prefetch/CPUID.
 
-## Legacy
+## Where it comes from
 
-The previous project, **Omega SREP 3.0.0**, lives in the `main` branch and in
-the tags up to `v3.0.0`, with its releases. It is a derivative of SREP 3.93a
-and is **not** covered by OSREP's MIT license. It is kept for history and for
-reading its v6 archives; do not mix its code with this branch.
+OSREP is new code, not a continuation of a codebase. The method and the format
+have a history:
+
+- **SREP** — Bulat Ziganshin's huge-dictionary LZ77 preprocessor (2009–2014,
+  frozen at 3.93a), the origin of the method and the reference the earlier
+  project measured against.
+- **Omega SREP** — the previous project (1.0–3.0.0) that made a Free Pascal
+  port of SREP and designed the v6 container. OSREP keeps the v6 format and
+  the lessons, but the implementation is a clean-room rewrite. Omega SREP
+  stays in `main` and in the tags up to `v3.0.0` as legacy; it is **not**
+  covered by OSREP's MIT license, and its code must not be mixed with this
+  branch.
+
+OSREP reads the v6 archives written by Omega SREP 3.0.0
+(`tests/fixtures/v6/`), but it does not depend on it to build or run.
 
 ## Layout
 
