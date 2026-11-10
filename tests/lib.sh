@@ -94,6 +94,8 @@ cmp "$TMP/text.out" "$INPUTS/text.bin" || fail "text-m3.osr content"
 "$TMP/test_lib" --decode "$ROOT/tests/fixtures/v6/text-dup-m3.osr" "$TMP/dup.out" || \
   fail "library decode text-dup-m3.osr"
 cmp "$TMP/dup.out" "$INPUTS/text.bin" || fail "text-dup-m3.osr content"
+"$TMP/test_lib" --decode-limit "$ROOT/tests/fixtures/v6/text-dup-m3.osr" 1048576 || \
+  fail "max_output on the -dup final output"
 "$TMP/test_lib" --decode "$ROOT/tests/fixtures/v6/empty-m3.osr" "$TMP/empty.out" || \
   fail "library decode empty-m3.osr"
 [ ! -s "$TMP/empty.out" ] || fail "empty-m3.osr content"

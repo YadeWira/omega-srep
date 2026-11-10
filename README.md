@@ -38,13 +38,27 @@ options.
 ```sh
 src/lib/build.sh build/lib          # build/lib/libosrep.so (or .dylib/.dll)
 cc -Iinclude src/lib/test_lib.c -Lbuild/lib -losrep -o test_lib
-./tests/lib.sh                      # build + self-tests + CLI comparison
+./tests/lib.sh                      # C ABI, corpus, threads, CLI comparison
+./tests/lib_7z.sh                   # 7-Zip: -m0=OSREP and OSREP+LZMA2
 ```
+
+`libosrep` is also a **7-Zip codec plugin**, the method `OSREP`, as `pja.so`
+is for PJA. Put the library in 7-Zip's `Codecs/` folder (or run the test,
+which builds a private copy) and use:
+
+```sh
+7z a -m0=OSREP -m1=LZMA2 files.7z files/     # 7-Zip-zstd: -m1=zstd
+7z x files.7z                                # needs the plugin
+```
+
+OSREP is the preprocessor; LZMA2 (or zstd on 7-Zip-zstd) is the final coder.
+The method ID `03 7F 03` is the experimental slot until 7-Zip assigns one.
 
 The API, packaging and integration plan for external projects — the **PJA**
 family (**PJA**, **PMPA**, **PRA**, **PPA**, **PAIA**) and **zpaq-std** — are
 in `docs/osrep-library.md`. PJA's `libpja` is the model: one shared object, a
-C header, the CLI as a client, and the same FPC + C + asm build.
+C header, the CLI as a client, the 7-Zip plugin, and the same FPC + C + asm
+build.
 
 ## Where it comes from
 

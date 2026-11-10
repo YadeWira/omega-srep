@@ -29,5 +29,12 @@ If a public-domain component is reused, its notice stays with it:
 - SipHash reference: public domain/CC0 (verify the exact upstream before
   reusing it).
 
-The current `osrep` branch has no implementation code; this list is a
-placeholder for phase 1 and will be completed when the C/asm components land.
+7-Zip plugin
+------------
+`src/lib/osrep7z.c` implements 7-Zip's codec interfaces for the method
+OSREP. Its structure follows `libpja`'s `pja7z.c` (PJA, MIT, Copyright
+(c) 2026 Yade Bravo), with OSREP's codec in place of PJA's; 7-Zip's
+interfaces and GUIDs are the ABI published by 7-Zip (Igor Pavlov).
+
+The `osrep` branch's own code is MIT. This list will grow when the C/asm
+components land.

@@ -38,6 +38,7 @@ type
     FSize: Int64;
     FBlocks: array of TBlockInfo;
     FAllLiterals: TBytes;
+    FMaxOutput: QWord;
     FHeader: TArchiveHeader;
     FFooter: TArchiveFooter;
     FSeed: TBytes;
@@ -64,6 +65,8 @@ type
     procedure DecodeToBytes(out Data: TBytes);
     property Header: TArchiveHeader read FHeader;
     property Footer: TArchiveFooter read FFooter;
+    { 0 = no extra cap; otherwise the final output may not exceed it. }
+    property MaxOutput: QWord read FMaxOutput write FMaxOutput;
   end;
 
 implementation
@@ -315,6 +318,15 @@ var
   Idx: QWord;
   Unique: array of TBytes;
   Chunk: TBytes;
+
+  procedure AddLimited(const Src: TBytes);
+  begin
+    if (FMaxOutput > 0) and
+       (QWord(Length(Output)) + QWord(Length(Src)) > FMaxOutput) then
+      raise EOsrepError.Create(6, 'dup output exceeds max_output');
+    AppendChunk(Output, Src, 0, Length(Src));
+  end;
+
 begin
   ReadMeta(Meta);
   if Length(Meta) < 24 + 4 then
@@ -354,7 +366,7 @@ begin
         DataError('dup meta has too many unique chunks');
       SetLength(Unique, Length(Unique) + 1);
       Unique[High(Unique)] := Copy(Chunk);
-      AppendChunk(Output, Unique[High(Unique)], 0, Length(Unique[High(Unique)]));
+      AddLimited(Unique[High(Unique)]);
     end
     else if Tag = 1 then
     begin
@@ -362,7 +374,7 @@ begin
         DataError('dup meta has a bad chunk reference');
       if Idx >= QWord(Length(Unique)) then
         DataError('dup chunk reference points to an undefined chunk');
-      AppendChunk(Output, Unique[SizeInt(Idx)], 0, Length(Unique[SizeInt(Idx)]));
+      AddLimited(Unique[SizeInt(Idx)]);
     end
     else
       DataError(Format('unknown dup chunk tag %d', [Tag]));
@@ -458,6 +470,8 @@ var
   B: TBlockInfo;
 begin
   TotalOut := FHeader.OriginalSize;
+  if (FMaxOutput > 0) and (TotalOut > FMaxOutput) then
+    raise EOsrepError.Create(6, 'original size exceeds max_output');
   if TotalOut > QWord(High(SizeInt)) then
     DataError('original size does not fit in memory');
   SetLength(OutBuf, SizeInt(TotalOut));

@@ -67,7 +67,8 @@ typedef struct osrep_options {
                              otherwise SeedFromNumber(seed) */
   uint64_t block_size;    /* 0 = 8 MiB */
   uint64_t max_output;    /* decompress: 0 = no extra cap; checked before
-                             the output is allocated */
+                             the output is allocated and while a -dup
+                             archive is restored */
   int32_t  min_match;     /* 0 = 4 */
   int32_t  chain_depth;   /* 0 = 16 */
   int32_t  stride;        /* 0 = 1 */

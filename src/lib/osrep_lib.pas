@@ -15,6 +15,8 @@ uses
   {$ifdef unix}cthreads,{$endif}
   SysUtils, Classes, osrep_format, osrep_codec;
 
+{$L osrep7z.o}
+
 const
   VERSION_TEXT: PChar = 'OSREP 0.0.2';
 
@@ -38,6 +40,25 @@ type
   {$packrecords default}
   POsrepCOptions = ^TOsrepCOptions;
 
+  { osrep7z.c's host7z_t }
+  THost7z = record
+    bstr: function(bytes: Pointer; len: LongWord): Pointer; cdecl;
+    alloc: function(size: SizeUInt): Pointer; cdecl;
+    release: procedure(p: Pointer); cdecl;
+    threads: LongInt;
+  end;
+
+  { 7-Zip's calling convention for its exports and interfaces }
+  HRESULT = LongInt;
+
+procedure osrep7z_host(constref h: THost7z); cdecl; external;
+function osrep7z_GetNumberOfMethods(n: PLongWord): HRESULT; cdecl; external;
+function osrep7z_GetMethodProperty(index, prop: LongWord; v: Pointer): HRESULT; cdecl; external;
+function osrep7z_CreateDecoder(index: LongWord; iid: Pointer; out obj: Pointer): HRESULT; cdecl; external;
+function osrep7z_CreateEncoder(index: LongWord; iid: Pointer; out obj: Pointer): HRESULT; cdecl; external;
+function osrep7z_CreateObject(clsid, iid: Pointer; out obj: Pointer): HRESULT; cdecl; external;
+function osrep7z_GetModuleProp(prop: LongWord; v: Pointer): HRESULT; cdecl; external;
+
 threadvar
   LastError: array[0..511] of Char;
 
@@ -53,6 +74,49 @@ begin
   LastError[N] := #0;
 end;
 
+function HostAlloc(size: SizeUInt): Pointer; cdecl;
+begin
+  try
+    Result := GetMem(size);
+  except
+    Result := nil;
+  end;
+end;
+
+procedure HostRelease(p: Pointer); cdecl;
+begin
+  if p <> nil then
+    FreeMem(p);
+end;
+
+{$ifdef windows}
+function SysAllocStringByteLen(s: Pointer; len: LongWord): Pointer;
+  stdcall; external 'oleaut32.dll';
+
+function MakeBstr(bytes: Pointer; len: LongWord): Pointer; cdecl;
+begin
+  Result := SysAllocStringByteLen(bytes, len);
+end;
+{$else}
+function malloc(size: SizeUInt): Pointer; cdecl; external 'c';
+
+{ 7-Zip's BSTR outside Windows (CPP/Common/MyWindows.cpp): from malloc, a
+  32-bit byte count, the bytes, and two zero bytes; 7-Zip frees it }
+function MakeBstr(bytes: Pointer; len: LongWord): Pointer; cdecl;
+var
+  p: PByte;
+begin
+  p := malloc(SizeUInt(len) + 4 + 4);
+  if p = nil then
+    Exit(nil);
+  PLongWord(p)^ := len;
+  Result := p + 4;
+  if len > 0 then
+    Move(bytes^, Result^, len);
+  FillChar((p + 4 + len)^, 4, 0);
+end;
+{$endif}
+
 function MapException(E: Exception): LongInt;
 begin
   if E is EOsrepApiError then
@@ -61,6 +125,7 @@ begin
     case EOsrepError(E).Code of
       2: Result := OsrepEArg;
       3: Result := OsrepEIo;
+      6: Result := OsrepEMemory;
       else Result := OsrepEData;
     end
   else
@@ -214,10 +279,53 @@ begin
     FreeMem(p);
 end;
 
+{ the 7-Zip plugin's exports: STDAPI, __stdcall on Windows x86 }
+function GetNumberOfMethods(n: PLongWord): HRESULT; {$ifdef windows}stdcall{$else}cdecl{$endif};
+begin
+  Result := osrep7z_GetNumberOfMethods(n);
+end;
+
+function GetMethodProperty(index, prop: LongWord; v: Pointer): HRESULT; {$ifdef windows}stdcall{$else}cdecl{$endif};
+begin
+  Result := osrep7z_GetMethodProperty(index, prop, v);
+end;
+
+function CreateDecoder(index: LongWord; iid: Pointer; out obj: Pointer): HRESULT; {$ifdef windows}stdcall{$else}cdecl{$endif};
+begin
+  Result := osrep7z_CreateDecoder(index, iid, obj);
+end;
+
+function CreateEncoder(index: LongWord; iid: Pointer; out obj: Pointer): HRESULT; {$ifdef windows}stdcall{$else}cdecl{$endif};
+begin
+  Result := osrep7z_CreateEncoder(index, iid, obj);
+end;
+
+function CreateObject(clsid, iid: Pointer; out obj: Pointer): HRESULT; {$ifdef windows}stdcall{$else}cdecl{$endif};
+begin
+  Result := osrep7z_CreateObject(clsid, iid, obj);
+end;
+
+function GetModuleProp(prop: LongWord; v: Pointer): HRESULT; {$ifdef windows}stdcall{$else}cdecl{$endif};
+begin
+  Result := osrep7z_GetModuleProp(prop, v);
+end;
+
 exports
   osrep_options_default, osrep_version, osrep_last_error,
-  osrep_compress, osrep_decompress, osrep_free;
+  osrep_compress, osrep_decompress, osrep_free,
+  GetNumberOfMethods, GetMethodProperty, CreateDecoder, CreateEncoder,
+  CreateObject, GetModuleProp;
+
+var
+  Host7z: THost7z;
 
 begin
   IsMultiThread := True;
+  Host7z.bstr := @MakeBstr;
+  Host7z.alloc := @HostAlloc;
+  Host7z.release := @HostRelease;
+  Host7z.threads := CpuCount;
+  if Host7z.threads > 8 then
+    Host7z.threads := 8;
+  osrep7z_host(Host7z);
 end.

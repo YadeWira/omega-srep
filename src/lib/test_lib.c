@@ -8,6 +8,9 @@
      test_lib --emit-opt SEED BLOCK MIN CHAIN STRIDE IN OUT
                                the same with every encoder option
      test_lib --decode IN OUT  decompress IN and write OUT
+     test_lib --decode-limit IN N
+                               decompress IN with max_output N; succeed
+                               only if it stops with OSREP_E_MEMORY
 
    Prints a line per failure and "N checks, 0 failures" at the end. */
 #include <stdio.h>
@@ -312,6 +315,26 @@ int main(int argc, char **argv) {
     }
     if (!write_file(argv[3], back, bn)) {
       fprintf(stderr, "test_lib: cannot write %s\n", argv[3]);
+      osrep_free(back); free(d);
+      return 1;
+    }
+    osrep_free(back);
+    free(d);
+    return 0;
+  }
+  if (argc == 4 && strcmp(argv[1], "--decode-limit") == 0) {
+    size_t n = 0, bn = 0;
+    unsigned char *d = read_file(argv[2], &n);
+    osrep_options o;
+    void *back = NULL;
+    int rc;
+    if (!d) { fprintf(stderr, "test_lib: cannot read %s\n", argv[2]); return 1; }
+    osrep_options_default(&o);
+    o.max_output = strtoull(argv[3], NULL, 10);
+    rc = osrep_decompress(d, n, &back, &bn, &o);
+    if (rc != OSREP_E_MEMORY) {
+      fprintf(stderr, "test_lib: max_output %s: got %d, expected E_MEMORY (%s)\n",
+              argv[3], rc, osrep_last_error());
       osrep_free(back); free(d);
       return 1;
     }

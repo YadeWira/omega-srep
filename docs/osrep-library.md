@@ -3,7 +3,8 @@
 **Estado: L0 implementado, 2026-11-10.** La dirección es **library-first**:
 el núcleo es `libosrep` con ABI C, y el CLI es un cliente del mismo núcleo.
 L0 está en el árbol: `include/osrep.h`, `src/lib/osrep_lib.pas`,
-`src/lib/build.sh`, `src/lib/test_lib.c` y `tests/lib.sh`. Este documento
+`src/lib/osrep7z.c` (el plugin de 7-Zip), `src/lib/build.sh`,
+`src/lib/test_lib.c`, `tests/lib.sh` y `tests/lib_7z.sh`. Este documento
 fija la API, el empaquetado y el orden de integración, usando **PJA, PMPA,
 PRA, PPA y PAIA** como primeros consumidores. PJA (`libpja`) es el modelo,
 por veterano y por compartir FPC + C + asm y licencia MIT. Los proyectos
@@ -115,7 +116,9 @@ de 8 MiB, mínimo 4, cadena 16, stride 1, digest VHASH-128 y la semilla
 determinista 0. **No** hay semilla aleatoria: `seed=0` es el default
 determinista, y cualquier otro valor se expande con `SeedFromNumber`, igual
 que `--seed=N` en el CLI. `max_output` se comprueba contra el `origsize` del
-header antes de reservar la salida. `struct_size` puede ser 0 o el tamaño
+header antes de reservar la salida y, en un archivo `-dup`, también contra el
+tamaño final mientras se reconstruye (el `origsize` de un `-dup` es el cuerpo
+deduplicado, no la entrada restaurada). `struct_size` puede ser 0 o el tamaño
 actual; un tamaño distinto devuelve `OSREP_E_ARG`.
 
 L1 agrega `osrep_compress_file`, `osrep_decompress_file`,
@@ -183,14 +186,18 @@ Modelo `libpja` (`pas/lib/build.sh`, `pjalib.pas`, `pja.h`, `test_lib.c`).
   atrapa excepciones. `src/pascal/osrep_codec.pas` es la API Pascal limpia
   que usan la librería y, más adelante, el CLI.
 - Artefactos: `libosrep.so` (Linux); `include/osrep.h`; `src/lib/test_lib.c`;
-  `tests/lib.sh`. `src/lib/build.sh` detecta Windows/macOS igual que el de
-  PJA, aunque L0 solo se probó en Linux x86_64.
+  `tests/lib.sh`. `src/lib/osrep7z.c` compila dentro del mismo `.so` y
+  exporta las seis funciones de 7-Zip; `tests/lib_7z.sh` arma una copia
+  privada de 7-Zip con el plugin en `Codecs/`. `src/lib/build.sh` detecta
+  Windows/macOS igual que el de PJA, aunque L0 solo se probó en Linux
+  x86_64.
 - Build y prueba:
 
   ```sh
   src/lib/build.sh build/lib
   cc -O2 -Iinclude src/lib/test_lib.c -Lbuild/lib -losrep -o test_lib
   ./tests/lib.sh
+  ./tests/lib_7z.sh
   ```
 
 - Hilos: cada llamada es independiente; `osrep_last_error` es thread-local;
@@ -214,6 +221,38 @@ Modelo `libpja` (`pas/lib/build.sh`, `pjalib.pas`, `pja.h`, `test_lib.c`).
   encoder.
 
 ## 4. Integración con los proyectos
+
+### 4.0 7-Zip / 7-Zip-zstd (prueba de la librería)
+
+`libosrep.so` es también un codec de 7-Zip, como `pja.so`: el método
+`OSREP`, ID experimental `03 7F 03`. No es un compresor final; en el archivo
+va delante del coder real:
+
+```sh
+7z a -m0=OSREP -m1=LZMA2 files.7z files/     # 7-Zip
+7z a -m0=OSREP -m1=zstd  files.7z files/     # 7-Zip-zstd
+7z x files.7z                                # necesita el plugin
+```
+
+El plugin toma el bloque sólido como un stream, llama a `osrep_compress` y
+entrega el `.osr` al siguiente coder; al extraer, `osrep_decompress` hace el
+camino inverso. `GetMethodProperty` publica `OSREP` y `CreateEncoder`/
+`CreateDecoder` son el coder de un solo stream (`ICompressCoder`); acepta
+`-mmt` con `ICompressSetCoderMt` aunque el encoder MVP siga siendo de un
+hilo. Los errores se mapean a 7-Zip: datos dañados `S_FALSE` ("Data Error"),
+versión nueva `E_NOTIMPL` ("Unsupported Method"), memoria `E_OUTOFMEMORY`.
+
+`tests/lib_7z.sh` compila la librería, copia `7z`/`7z.so` a un directorio
+privado, pone `libosrep.so` en `Codecs/` y comprueba, en **7-Zip 25.01** y
+en **7-Zip-zstd 26.02** (este último también con `-m1=zstd`): `7z i` lista
+`37F03 OSREP`; `-m0=OSREP` solo; `-m0=OSREP -m1=LZMA2`; todos los archivos
+vuelven byte a byte; un archivo dañado falla con "Data Error". También mide
+el tamaño contra LZMA2 solo: en el corpus de prueba, OSREP+LZMA2 quedó 830
+bytes más chico, y OSREP+zstd fue más grande que zstd solo (depende del
+corpus y del nivel; no es una promesa general). Es la primera prueba de la
+librería en un archivador real. zpaq-std queda para después, coordinado con
+su agente, porque ahí OSREP entra como fragmentador/dedup y no como filtro
+de bloque.
 
 ### 4.1 PJA (primero)
 
@@ -287,12 +326,15 @@ miembros MIT de la familia.
 byte a byte; el `.osr` es idéntico al del CLI con las mismas opciones
 (inclusive `--seed=7`); `test_lib.c` pasa 54 checks y `tests/lib.sh` pasa
 84 con el corpus; 4 hilos concurrentes pasan; los fixtures v6 y `-dup` se
-leen desde la librería. Compilar:
+leen desde la librería; `tests/lib_7z.sh` prueba `-m0=OSREP` y
+`-m0=OSREP -m1=LZMA2` en 7-Zip 25.01 y 7-Zip-zstd 26.02 (también
+`-m1=zstd`) con todos los archivos de vuelta. Compilar:
 
 ```sh
 src/lib/build.sh build/lib
 cc -O2 -Iinclude src/lib/test_lib.c -Lbuild/lib -losrep -o test_lib
 ./tests/lib.sh
+./tests/lib_7z.sh
 ```
 
 ### L1 — API completa (2–3 semanas)

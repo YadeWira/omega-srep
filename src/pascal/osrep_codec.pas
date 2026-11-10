@@ -177,6 +177,7 @@ begin
     InStream.Position := 0;
     Reader := TArchiveReader.CreateFromStream(InStream, False);
     try
+      Reader.MaxOutput := Opt.MaxOutput;
       Reader.ReadInfo(Info);
       if (Opt.MaxOutput > 0) and (Info.OriginalSize > Opt.MaxOutput) then
         raise EOsrepApiError.Create(OsrepEMemory,
