@@ -20,6 +20,7 @@ f0552282e80f914b5b0ad8424e0c6e71b8d9962df8e56c532f0bbb8464fa97a8	0	text.bin	-m3 
 0b81b92f2768a33c863c9dff593e40e5c853d085d762baccb8dc942f5d370fe2	0	mixed.bin	-m4 --format=v6 -b1mb
 0c6e7da6e75f71e34340eb5ffe1206c7fe643b19fc816a4937694c310363bbc8	0	text.bin	-m5 --format=v6 -l1000 -ia-
 fb3857e35b1d12a749d4307b89816d41183e5e479ab3979a6fd4ef490bf2a53a	1	a33929.bin	-m3 --format=v6 -l130 -b261b
+42e70fd9c6eb6bcc71c9d075a1a39fb7466f35cd29f7b41cfc3ff005717ca310	0	text.bin	-m3 --format=v6 -b1000001b
 fecf597a21b00e34fee06a2ba25095b2bda0b27d8ad78ec18e1ec47a36636955	0	text.bin	-dup -m3 --format=v6
 d96166d894bfc74a6354d6b07d8a3265ca74c6612f4569b433dce89ad0e50f13	0	mixed.bin	-dup -m5 --format=v6 --chunk-hash=gear
 fa495b2f1e070ba673311e6593d9f7f5200547cdd0291a3e4591d4de11a4cf9a	0	zruns.bin	-dup -m3 --format=v6 --chunk-avg=2048

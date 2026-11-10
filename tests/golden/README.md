@@ -53,7 +53,7 @@ y `tests/rust_cli_conformance.sh`.
 ## Estado
 
 - **v4/v5** (`manifest.tsv`): 43 casos grabados contra los dos oráculos.
-- **v6** (`manifest-v6.tsv`): 25 casos grabados solo con el port, con
+- **v6** (`manifest-v6.tsv`): 26 casos grabados solo con el port, con
   `OSR6`, `--verify` y la ida y vuelta comprobadas antes de grabar.
 - **CLI** (`cli/`): 25 transcripciones (stdout, stderr y exit code) de
   `--help`, `--version`, `-i`, `--verify` y `-d` de archivos sanos y dañados
