@@ -95,9 +95,11 @@ them, and the accelerated scan has a real-data gate.
 - **`tests/golden/`**: recorded cases (archive sha256, exit code and a
   round-trip) that `tests/golden/check.sh` replays with the Pascal alone.
   It now also carries 24 v6 cases (`manifest-v6.tsv`, recorded from the port
-  with `--verify` and the round trip, since v6 has no oracle) and 18 CLI
+  with `--verify` and the round trip, since v6 has no oracle), 25 CLI
   transcripts (stdout, stderr and exit code for `--help`, `--version`, `-i`,
-  `--verify` on sound and damaged archives, and option/input errors).
+  `--verify` and `-d` on sound and damaged archives — header, footer, block,
+  meta, truncation — and option/input errors), and 38 hash vectors (md5,
+  sha1, sha512, siphash, vmac and AES, recorded with C++ and Pascal agreeing).
   `tests/golden/make.sh` records them only when the C++ and the Rust agree
   with the port, so the suite is the first step towards running the gates
   without the two oracles. 39 cases; they pass natively and under wine32 and
