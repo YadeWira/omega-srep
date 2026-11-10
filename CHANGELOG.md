@@ -18,9 +18,11 @@ what happened in 2.0.0.
   (uncompressed blocks included), and a 36-byte footer with `blocks_crc`, the
   CRC of every block's CRC in order. `--verify` walks a v6 without
   decompressing and now covers what v5 could not: a byte flipped inside a
-  stored block is "block N: bad CRC". v5 keeps reading v1-v5 and writing v5 by
-  default; `--help` still lists `v4|v5` (the Rust oracle has no v6), and
-  `-dup` with v6 is refused until the meta path is wired. The footer has no
+  stored block is "block N: bad CRC". `-dup` works in v6 the way it does in
+  v5 (the meta inside, before the footer, located by `meta_offset`/`meta_size`
+  and with its CRC checked); v5 keeps reading v1-v5 and writing v5 by default,
+  and `--help` still lists `v4|v5` because the Rust oracle has no v6. The
+  footer has no
   digest of the whole original data: the project's hashes are one-shot, and
   the per-block digests plus `blocks_crc` already cover the reconstruction.
   `tests/v6_conformance.sh` (35 checks) and `tests/v6_frame_selftest.sh` (78)

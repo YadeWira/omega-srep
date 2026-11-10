@@ -359,6 +359,8 @@ begin
     Info.OrigSize := r.OriginalSize;
     Info.CompSize := n;
     Info.StatSize := f6.StatSize;
+    if (B[5] and V6_FLAG_HAS_DUP) <> 0 then
+      Exit(WithDup(B, f6.MetaOffset, QWord(f6.MetaSize) - 4, Info));
     Exit(True);
   end;
   if (n >= HEADER_SIZE) and (L32(B, 0) = MAGIC) then
@@ -541,6 +543,7 @@ var
   info: THashInfo;
   bh: TBlockHeader;
   bhcrc, crcAcc, crc: DWord;
+  metaBlob: TBytes;
   at, metaAt, payloadLen, payloadAt, recEnd, recPos, totalStat, totalOrig, blocks: QWord;
   lit, mlen, dist: QWord;
   recs: QWord;
@@ -560,6 +563,21 @@ begin
     raise EV5.Create('-dup meta disagrees with the flags');
   if QWord(f.MetaSize) > QWord(Length(B)) - V6_FOOTER_SIZE then
     raise EV5.Create('meta runs past the file');
+  if (h.Flags and V6_FLAG_HAS_DUP) <> 0 then
+  begin
+    if (f.MetaSize < 28) or
+       (f.MetaOffset > QWord(Length(B)) - QWord(f.MetaSize)) or
+       (f.MetaOffset + QWord(f.MetaSize) <> QWord(Length(B)) - V6_FOOTER_SIZE) then
+      raise EV5.Create('bad -dup meta');
+    metaBlob := Copy(B, f.MetaOffset, f.MetaSize);
+    if (metaBlob[0] <> Ord('D')) or (metaBlob[1] <> Ord('U')) or
+       (metaBlob[2] <> Ord('P')) or (metaBlob[3] <> Ord('R')) or (metaBlob[4] <> 1) then
+      raise EV5.Create('bad -dup meta');
+    crc := DWord(metaBlob[f.MetaSize - 4]) or (DWord(metaBlob[f.MetaSize - 3]) shl 8) or
+           (DWord(metaBlob[f.MetaSize - 2]) shl 16) or (DWord(metaBlob[f.MetaSize - 1]) shl 24);
+    if crc <> Crc32c(metaBlob, 0, QWord(f.MetaSize) - 4) then
+      raise EV5.Create('bad -dup meta');
+  end;
   metaAt := QWord(Length(B)) - V6_FOOTER_SIZE - QWord(f.MetaSize);
   at := QWord(V6_HEADER_SIZE) + QWord(info.SeedSize);
   if at > metaAt then raise EV5.Create('truncated');

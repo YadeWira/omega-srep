@@ -98,11 +98,50 @@ r=$(rc_of "$B" --verify "$TMP/tr.osr")
 [ "$r" -eq 4 ] || fail "verify de un v6 truncado salio $r, esperado 4"
 pass=$((pass + 1))
 
-say "-i lee un v6 y -dup con v6 se rechaza por ahora"
+say "-i lee un v6 y -dup con v6 va adentro como en v5"
 "$B" -i "$TMP/t6.osr" >/dev/null 2>"$TMP/err" || fail "-i de un v6 fallo: $(cat "$TMP/err")"
-r=$(rc_of "$B" -dup --format=v6 --seed=7 tests/corpus/text.bin "$TMP/dup6.osr")
-[ "$r" -eq 2 ] || fail "-dup --format=v6 salio $r, esperado 2"
-grep -q "not implemented yet" "$TMP/err" || fail "-dup --format=v6 no dijo que no esta: $(cat "$TMP/err")"
+pass=$((pass + 1))
+
+for f in text mixed; do
+    for o in "-dup -m3" "-dup -m5 --chunk-avg=2048"; do
+        rm -f "$TMP/d6.osr" "$TMP/d5.osr" "$TMP/do6" "$TMP/do5"
+        # shellcheck disable=SC2086
+        run -dup --format=v6 --seed=7 $o "tests/corpus/$f.bin" "$TMP/d6.osr" \
+            || fail "$f $o: no comprime -dup v6: $(cat "$TMP/err")"
+        # shellcheck disable=SC2086
+        run -dup --format=v5 --seed=7 $o "tests/corpus/$f.bin" "$TMP/d5.osr" \
+            || fail "$f $o: no comprime -dup v5"
+        run -d "$TMP/d6.osr" "$TMP/do6" || fail "$f $o: -dup v6 no descomprime: $(cat "$TMP/err")"
+        cmp -s "tests/corpus/$f.bin" "$TMP/do6" || fail "$f $o: -dup v6 no reconstruyo la entrada"
+        run -d "$TMP/d5.osr" "$TMP/do5" || fail "$f $o: -dup v5 no descomprime"
+        cmp -s "$TMP/do5" "$TMP/do6" || fail "$f $o: -dup v5 y v6 dan otro dato"
+        r=$(rc_of "$B" --verify "$TMP/d6.osr")
+        [ "$r" -eq 0 ] || fail "$f $o: --verify de un -dup v6 salio $r: $(cat "$TMP/err")"
+        "$B" --verify "$TMP/d6.osr" 2>&1 | grep -q -- "-dup meta checksummed" \
+            || fail "$f $o: --verify no dijo '-dup meta checksummed'"
+        "$B" -i "$TMP/d6.osr" 2>&1 | grep -q -- "-dup:" \
+            || fail "$f $o: -i no mostro la linea de -dup"
+        pass=$((pass + 1))
+    done
+done
+
+say "una meta de -dup danada se rechaza con y sin descomprimir"
+rm -f "$TMP/d6.osr"
+run -dup --format=v6 --seed=7 -m3 tests/corpus/text.bin "$TMP/d6.osr" || fail "no comprime -dup v6"
+python3 - "$TMP/d6.osr" "$TMP/d6bad.osr" <<'PY2'
+import struct, sys
+d = bytearray(open(sys.argv[1], 'rb').read())
+n = len(d); f = d[n - 36:]
+off = struct.unpack_from('<Q', f, 16)[0]; sz = struct.unpack_from('<I', f, 24)[0]
+assert sz > 16
+d[off + sz // 2] ^= 0xFF
+open(sys.argv[2], 'wb').write(d)
+PY2
+r=$(rc_of "$B" --verify "$TMP/d6bad.osr")
+[ "$r" -eq 4 ] || fail "verify de una meta danada salio $r, esperado 4"
+grep -q "dup meta" "$TMP/err" || fail "verify no reporto la meta: $(cat "$TMP/err")"
+r=$(rc_of "$B" -d "$TMP/d6bad.osr" "$TMP/do6bad")
+[ "$r" -eq 4 ] || fail "-d de una meta danada salio $r, esperado 4"
 pass=$((pass + 1))
 
 echo "  v6_conformance: passed=$pass mismatches=0"

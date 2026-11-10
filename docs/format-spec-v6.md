@@ -1,9 +1,9 @@
 # Formato `.osr` v6 — borrador para la 3.0.0
 
-**Estado: implementado detrás de `--format=v6` el 2026-10-21** (opt-in: v5
-sigue siendo el default y el `--help` todavía no lo lista, porque el oráculo
-Rust no lo tiene y los textos tienen que seguir idénticos hasta que los
-oráculos salgan). Falta `-dup` con v6 y el congelamiento en la 3.0.0. La
+**Estado: implementado detrás de `--format=v6` el 2026-10-21, `-dup`
+incluido** (opt-in: v5 sigue siendo el default y el `--help` todavía no lo
+lista, porque el oráculo Rust no lo tiene y los textos tienen que seguir
+idénticos hasta que los oráculos salgan). Falta el congelamiento en la 3.0.0. La
 referencia del stream de matches sigue siendo `docs/format-spec-v5.md`: v6
 **no rediseña los records**, los hereda probados y les agrega lo que falta.
 
@@ -16,7 +16,7 @@ referencia del stream de matches sigue siendo `docs/format-spec-v5.md`: v6
 | `--verify` | pasa a ser completo: con el CRC por bloque no hace falta descomprimir para detectar daño en un bloque guardado |
 | Lectura | v1–v5 **para siempre** |
 | Escritura | v6 por defecto; `--format=v4` se mantiene para interoperar con 1.0.x; los sufijos `o`/`f` (v1/v2/v3) pasan a **solo lectura** |
-| `-dup` | mismo diseño CDC y mismo meta, adentro y con CRC como en v5 (**pendiente de cablear en v6**; hoy se rechaza con un mensaje) |
+| `-dup` | mismo diseño CDC y mismo meta, adentro y con CRC como en v5 (implementado) |
 | Compatibilidad | v6 **no** lo lee ninguna 2.x ni 1.x: es el bump de major |
 | Determinismo de CPU | **el hash de frontera de CDC deja de depender de SSE4.2**: v6 fija una sola ruta (propuesta: la polinomial) y el mismo input da el mismo archivo en x86, x86-64, ARM64 y Windows |
 | Congelamiento | a partir de 3.0.0 el layout no cambia; la spec y el manifiesto dorado son la definición |

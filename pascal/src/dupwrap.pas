@@ -144,14 +144,45 @@ end;
 
 { la meta de un v5, o nil si no la trae. Plain: un v5 sin la flag de -dup
   que termina en un footer v5 valido, que no lleva trailer ODUP (v5_meta) }
-function V5Meta(S: TStream; Len: QWord; out Plain: Boolean): TBytes;
-var head, tail, blob: TBytes; h: TV5Header; f: TV5Footer; blobLen, ending: QWord;
+function V5Meta(S: TStream; Len: QWord; out Plain: Boolean; out V6: Boolean): TBytes;
+var head, tail, blob: TBytes; h: TV5Header; f: TV5Footer;
+    h6: TV6Header; f6: TV6Footer; blobLen, ending: QWord;
     crc: DWord;
 begin
   Result := nil;
   Plain := False;
+  V6 := False;
   if Len < V5_HEADER_SIZE + V5_FOOTER_SIZE then Exit;
   head := ReadAt(S, 0, V5_HEADER_SIZE);
+  { v6: mismo layout, footer de 36 y header de 28; la meta va adentro y el
+    footer la ubica, igual que v5 }
+  if IsV6(head) then
+  begin
+    if Len < V6_HEADER_SIZE + V6_FOOTER_SIZE then Exit;
+    if DecodeV6Header(head, h6) <> ceOK then raise EDup.Create('BadDup');
+    tail := ReadAt(S, Len - V6_FOOTER_SIZE, V6_FOOTER_SIZE);
+    if DecodeV6Footer(tail, 0, f6) <> ceOK then raise EDup.Create('BadDup');
+    if (h6.Flags and V6_FLAG_HAS_DUP) = 0 then
+    begin
+      { un v6 sin -dup que termina en su footer: no es un -dup }
+      Plain := True;
+      Exit;
+    end;
+    blobLen := QWord(f6.MetaSize);
+    if f6.MetaOffset > High(QWord) - blobLen then raise EDup.Create('BadDup');
+    ending := f6.MetaOffset + blobLen;
+    if (blobLen = 0) or (ending > Len) then raise EDup.Create('BadDup');
+    blob := ReadAt(S, f6.MetaOffset, blobLen);
+    if blobLen < 24 + 4 then raise EDup.Create('BadDup');
+    if (blob[0] <> Ord('D')) or (blob[1] <> Ord('U')) or (blob[2] <> Ord('P')) or
+       (blob[3] <> Ord('R')) or (blob[4] <> 1) then raise EDup.Create('BadDup');
+    crc := DWord(blob[blobLen - 4]) or (DWord(blob[blobLen - 3]) shl 8) or
+           (DWord(blob[blobLen - 2]) shl 16) or (DWord(blob[blobLen - 1]) shl 24);
+    if crc <> Crc32c(blob, 0, blobLen - 4) then raise EDup.Create('BadDup');
+    Result := Copy(blob, 0, blobLen - 4);
+    V6 := True;
+    Exit;
+  end;
   if not IsV5(head) then Exit;
   if DecodeV5Header(head, h) <> ceOK then raise EDup.Create('BadDup');
   tail := ReadAt(S, Len - V5_FOOTER_SIZE, V5_FOOTER_SIZE);
@@ -319,13 +350,13 @@ end;
   anteriores (el Rust 2.1.2 la abria solo para escribir, con File::create, y
   esos archivos fallaban con EBADF). }
 procedure DecodeAny(InS: TStream; const OutPath: AnsiString; const Opts: TFutureLzOptions;
-                    V5: Boolean);
+                    V5, V6: Boolean);
 var outS: TRawFileStream; st: TFutureLzStats; err: TDecodeFault; ok: Boolean;
 begin
   outS := CreateRaw(OutPath);
   if outS = nil then raise EDup.Create('Io');
   try
-    if V5 then ok := DecodeV5(InS, outS, Opts, st, err) = deOK
+    if V5 then ok := DecodeV5(InS, outS, Opts, st, err, nil, V6) = deOK
     else ok := DecodeArchive(InS, outS, Opts, nil, err);
     if not ok then raise EDup.Create('Decode(' + FaultDebug(err) + ')');
   finally
@@ -368,7 +399,7 @@ var
   bodyIn: TFileStream;
   len, bodyLen, orig, metaSize: QWord;
   meta: TBytes;
-  isOdup, isV5Plain, holds, haveMeta: Boolean;
+  isOdup, isV5Plain, isV6, holds, haveMeta: Boolean;
   sm: TMetaSummary;
   sniffErr: AnsiString;
   body, decoded: AnsiString;
@@ -380,7 +411,7 @@ begin
   if s = nil then raise EDup.Create('Io');
   try
     len := SeekOrIo(s, 0, soEnd);
-    meta := V5Meta(s, len, isV5Plain);
+    meta := V5Meta(s, len, isV5Plain, isV6);
     isOdup := False;
     haveMeta := False;
     metaSize := 0;
@@ -440,7 +471,7 @@ begin
       body := NewTempPath('osrep-dup-body');
       try
         SeekOrIo(s, 0, soBeginning);
-        DecodeAny(s, body, Opts, True);
+        DecodeAny(s, body, Opts, True, isV6);
         try
           DecodeStreaming(meta, body, OutPath);
         except
@@ -466,7 +497,7 @@ begin
         raise EDup.Create('Io');
       end;
       try
-        DecodeAny(bodyIn, decoded, Opts, False);
+        DecodeAny(bodyIn, decoded, Opts, False, False);
       finally
         bodyIn.Free;
       end;

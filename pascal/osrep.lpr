@@ -752,8 +752,6 @@ begin
         enc.Index := indexS;
       end;
 
-      if O.Dup and (O.Format = fmtV6) then
-        Fail(ERROR_CMDLINE, '-dup with --format=v6 is not implemented yet; use --format=v5');
       if O.Dup then
       begin
         if (O.Format = fmtV5) or (O.Format = fmtV6) then dm := dmV5 else dm := dmV4;
