@@ -27,33 +27,47 @@ TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 D="$TMP/in"
 bash tests/golden/inputs.sh "$D" >/dev/null
 
-n=0; bad=0
-while IFS=$'\t' read -r want wrc input args; do
-    case "$want" in ''|\#*) continue;; esac
-    [ -f "$D/$input" ] || fail "manifest names a missing input: $input"
+total=0; failed=0
 
-    rc=0
-    # shellcheck disable=SC2086
-    "$PORT" $args --seed=7 "$D/$input" "$TMP/port.osr" >/dev/null 2>"$TMP/stderr" || rc=$?
-    got=$( [ -f "$TMP/port.osr" ] && sha256sum < "$TMP/port.osr" | cut -d' ' -f1 || echo -)
+# replay MANIFEST LABEL: checks every line, accumulates total/failed.
+replay() {
+    local manifest=$1 label=$2
+    local n=0 bad=0 want wrc input args rc got
+    [ -f "$manifest" ] || return 0
+    while IFS=$'\t' read -r want wrc input args; do
+        case "$want" in ''|\#*) continue;; esac
+        [ -f "$D/$input" ] || fail "manifest names a missing input: $input"
 
-    if [ "$rc" -ne "$wrc" ] || [ "$got" != "$want" ]; then
-        printf 'FAIL: %s %s: exit %s (pinned %s), sha256 %s (pinned %s)\n' \
-            "$input" "$args" "$rc" "$wrc" "${got:0:16}" "${want:0:16}" >&2
-        bad=$((bad + 1))
-        continue
-    fi
+        rc=0
+        # shellcheck disable=SC2086
+        "$PORT" $args --seed=7 "$D/$input" "$TMP/port.osr" >/dev/null 2>"$TMP/stderr" || rc=$?
+        got=$( [ -f "$TMP/port.osr" ] && sha256sum < "$TMP/port.osr" | cut -d' ' -f1 || echo -)
 
-    rc=0
-    "$PORT" -d "$TMP/port.osr" "$TMP/dec" >/dev/null 2>&1 || rc=$?
-    if [ "$rc" -ne 0 ] || ! cmp -s "$D/$input" "$TMP/dec"; then
-        printf 'FAIL: %s %s: the archive does not decode back to the input\n' "$input" "$args" >&2
-        bad=$((bad + 1))
-        continue
-    fi
-    rm -f "$TMP/port.osr" "$TMP/dec"
-    n=$((n + 1))
-done < tests/golden/manifest.tsv
+        if [ "$rc" -ne "$wrc" ] || [ "$got" != "$want" ]; then
+            printf 'FAIL: [%s] %s %s: exit %s (pinned %s), sha256 %s (pinned %s)\n' \
+                "$label" "$input" "$args" "$rc" "$wrc" "${got:0:16}" "${want:0:16}" >&2
+            bad=$((bad + 1))
+            continue
+        fi
 
-[ "$bad" -eq 0 ] || fail "$bad of $((n + bad)) golden cases failed"
-say "golden: passed=$n mismatches=0"
+        rc=0
+        "$PORT" -d "$TMP/port.osr" "$TMP/dec" >/dev/null 2>&1 || rc=$?
+        if [ "$rc" -ne 0 ] || ! cmp -s "$D/$input" "$TMP/dec"; then
+            printf 'FAIL: [%s] %s %s: the archive does not decode back to the input\n' \
+                "$label" "$input" "$args" >&2
+            bad=$((bad + 1))
+            continue
+        fi
+        rm -f "$TMP/port.osr" "$TMP/dec"
+        n=$((n + 1))
+    done < "$manifest"
+    say "$label: passed=$n"
+    total=$((total + n)); failed=$((failed + bad))
+}
+
+replay tests/golden/manifest.tsv "v4/v5 (oracle-confirmed)"
+replay tests/golden/manifest-v6.tsv "v6 (no oracle)"
+[ -d tests/golden/cli ] && bash tests/golden/check-cli.sh
+
+[ "$failed" -eq 0 ] || fail "$failed of $((total + failed)) golden cases failed"
+say "golden: passed=$total mismatches=0"

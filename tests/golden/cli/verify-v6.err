@@ -1,0 +1,3 @@
+<W>/a6.osr: v6 archive intact. 1 blocks, 1 records, 4194304 bytes of original data.
+  Checked without decompressing: header, footer and meta CRC-32C, every block CRC-32C over the bytes as stored (uncompressed blocks included), blocks_crc, framing, block count, every record, and that the file ends where the footer says.
+  Not checked without decompressing: the per-block digest of the original data.

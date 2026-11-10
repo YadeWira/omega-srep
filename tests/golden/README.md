@@ -5,8 +5,10 @@ exit code y la ida y vuelta. `check.sh` los reproduce **con el Pascal solo**,
 sin C++ ni Rust.
 
 ```
-bash tests/golden/make.sh     # graba manifest.tsv (necesita los oráculos)
-bash tests/golden/check.sh    # verifica (no necesita los oráculos)
+bash tests/golden/make.sh      # graba manifest.tsv (necesita los oráculos)
+bash tests/golden/make-v6.sh   # graba manifest-v6.tsv (solo el port)
+bash tests/golden/make-cli.sh  # graba cli/ (stdout, stderr y exit)
+bash tests/golden/check.sh     # verifica todo (no necesita los oráculos)
 ```
 
 ## Para qué
@@ -47,10 +49,16 @@ y `tests/rust_cli_conformance.sh`.
 
 ## Estado
 
-Primera versión (2026-10-20): 39 casos, v4 y v5, modos m0..m5, los tres
-contenedores viejos (`o`), Future-LZ (`f`), hashes, `-dup` y las opciones que
-cambian los bytes (`-a`, `-ia-`, `-l/-c`, `--chunk-*`). Es una semilla, no el
-reemplazo completo: las suites diferenciales siguen cubriendo mucho más.
+- **v4/v5** (`manifest.tsv`): 39 casos grabados contra los dos oráculos.
+- **v6** (`manifest-v6.tsv`): 24 casos grabados solo con el port, con
+  `OSR6`, `--verify` y la ida y vuelta comprobadas antes de grabar.
+- **CLI** (`cli/`): 18 transcripciones (stdout, stderr y exit code) de
+  `--help`, `--version`, `-i`, `--verify` de archivos sanos y dañados, y los
+  errores de opciones y de entrada; las rutas se normalizan a `<W>`.
+
+Es una semilla, no el reemplazo completo: las suites diferenciales siguen
+cubriendo mucho más, y la fase B de `docs/retire-oracles.md` amplía v1–v3 y
+los casos de corrupción.
 
 ## Cuando los oráculos se vayan
 

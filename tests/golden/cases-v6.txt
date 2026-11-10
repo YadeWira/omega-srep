@@ -1,0 +1,30 @@
+# v6 cases for the golden suite: `<input> <args...>`, always --format=v6.
+# These have no oracle (neither the C++ nor the Rust writes v6), so make-v6.sh
+# records them from the port and proves the round trip and --verify instead of
+# comparing with a reference. When v6 becomes the default, this is the part of
+# the suite that keeps it pinned.
+
+empty.bin     -m3 --format=v6
+tiny.bin      -m3 --format=v6
+tiny.bin      -m4 --format=v6 -hash=siphash
+zeros.bin     -m5 --format=v6 -b64k
+text.bin      -m0 --format=v6
+text.bin      -m1 --format=v6
+random.bin    -m1 --format=v6 -b1mb
+text.bin      -m2 --format=v6
+mixed.bin     -m2 --format=v6 -b1mb
+text.bin      -m2 --format=v6 -l512
+text.bin      -m3 --format=v6
+zruns.bin     -m3 --format=v6 -b64k
+mixed.bin     -m3 --format=v6 -hash=sha1
+text.bin      -m3 --format=v6 -hash-
+text.bin      -m3 --format=v6 -a0
+text.bin      -m3 --format=v6 -a8/4
+text.bin      -m3 --format=v6 -b1mb
+text.bin      -m3 --format=v6 -c512 -l1024
+text.bin      -m4 --format=v6 -l256 -c128
+mixed.bin     -m4 --format=v6 -b1mb
+text.bin      -m5 --format=v6 -l1000 -ia-
+text.bin      -dup -m3 --format=v6
+mixed.bin     -dup -m5 --format=v6 --chunk-hash=gear
+zruns.bin     -dup -m3 --format=v6 --chunk-avg=2048

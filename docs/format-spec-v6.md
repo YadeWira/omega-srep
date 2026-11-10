@@ -15,7 +15,7 @@ referencia del stream de matches sigue siendo `docs/format-spec-v5.md`: v6
 | Integridad nueva | **CRC-32C por bloque** sobre los bytes tal como quedan en disco + **`blocks_crc`** en el footer (CRC de los CRC de bloque, en orden) |
 | `--verify` | pasa a ser completo: con el CRC por bloque no hace falta descomprimir para detectar daño en un bloque guardado |
 | Lectura | v1–v5 **para siempre** |
-| Escritura | v6 por defecto; `--format=v4` se mantiene para interoperar con 1.0.x; los sufijos `o`/`f` (v1/v2/v3) pasan a **solo lectura** |
+| Escritura | v6 por defecto; `--format=v4` se mantiene para interoperar con 1.0.x; **v5 y los sufijos `o`/`f` (v1/v2/v3) pasan a solo lectura** |
 | `-dup` | mismo diseño CDC y mismo meta, adentro y con CRC como en v5 (implementado) |
 | Compatibilidad | v6 **no** lo lee ninguna 2.x ni 1.x: es el bump de major |
 | Determinismo de CPU | **el hash de frontera de CDC deja de depender de SSE4.2**: v6 fija una sola ruta (propuesta: la polinomial) y el mismo input da el mismo archivo en x86, x86-64, ARM64 y Windows |
@@ -169,8 +169,9 @@ del archivo. Queda así:
 - **Ninguna 2.x lee v6** (el magic es distinto), y eso es el bump de major.
   No hay migración automática: se re-comprime con 3.0.0 si se quiere el
   checksum.
-- `--format=v5` en 3.0.0: rechazado con un mensaje que dice que v5 solo se lee
-  (o se mantiene como opción de escritura si se decide lo contrario).
+- `--format=v5` en 3.0.0: **rechazado** con un mensaje que dice que v5 solo se
+  lee (decisión del 2026-11-10). Se escribe v6 por defecto y v4 con
+  `--format=v4`.
 
 ## 6. Verificación antes de congelar
 

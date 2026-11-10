@@ -1,0 +1,82 @@
+Omega SREP 2.4.0 (October 20, 2026)
+huge-dictionary LZ77 preprocessor (Omega lineage, fork of SREP by Bulat Ziganshin)
+https://github.com/YadeWira/omega-srep
+
+Usage:
+  osrep [options] -mN  input  output       compress
+  osrep [options] -d   archive output      decompress
+  osrep -i archive                         show archive info
+  osrep --verify archive                   check it without unpacking
+
+Compression methods:
+  -m0       REP only (in-memory; works with -dBYTES)
+  -m1, -m2  Content-defined chunking (CDC)
+  -m3       Digest-comparison match search (default)
+  -m4       Full match search (best ratio for general data)
+  -m5       Exhaustive match search (slowest, best ratio)
+
+Common options:
+  -lN, -cN          minimum-match / chunk-size tuning
+  -aN[/M]           match-finder accelerator (-m3/-m4/-m5): N bytes
+                    of bit array per chunk, and the scan variant M
+                    (default N, at most 16); -a0 turns it off.
+                    Like -l/-c, it changes the archive.
+  -ia-, -ia+        -ia- turns off the slice filter of -m5 (and of
+                    -m4 with -c well below -l); -ia+, the default,
+                    keeps it. Like -l/-c, it changes the archive.
+  -bN               buffer size (default 8mb)
+  -dBYTES           dictionary size for -m0
+  -hash=NAME        select hash (vmac, sha1, ...)
+  -mmap, -nommap    enable/disable POSIX mmap reads
+  -temp=PATH        tempfile path override
+  --format=v4|v5    container to write (default v5). v4 is the
+                    container the 1.0.x releases read, kept for
+                    interoperability; both are always readable.
+  --seed=N          deterministic hash seed (uint64; default is
+                    random per-run). Same seed + same input ->
+                    byte-identical archive. Useful for content-
+                    addressed storage and reproducible builds.
+  -bar              emit "PROGRESS <done> <total>" to stderr every
+                    ~0.5s, plus a guaranteed final line at
+                    done==total. Machine-parseable, for wrapping
+                    osrep as a subprocess.
+
+Dedup pre-pass (Omega F5):
+  -dup              enable FA-style dedup pre-pass
+  --dup-paranoid    byte-compare on every dedup hit (slower, no
+                    silent corruption on 64-bit hash collision)
+  --chunk-avg=N     CDC average chunk size (default 4096)
+  --chunk-min=N     CDC minimum chunk size (default 1024)
+  --chunk-max=N     CDC maximum chunk size (default 16384)
+  --chunk-buf=N     buffer-bounded CDC, bytes (default 8388608)
+  --chunk-hash=NAME CDC boundary hash: fnv (default) or gear.
+                    gear = Gear-hash CDC with an implicit ~64-byte
+                    content window (FastCDC-style normalized
+                    chunking); finds non-buffer-aligned duplicates
+                    that fnv's unwindowed rolling hash misses.
+                    Opt-in; does not change the .dupref format.
+
+Accepted and not acted on:
+  -tN               the implementation is single-threaded per block,
+                    so there is no worker count to set
+  -mmap, -nommap    mmap reads
+  -slp, -slp-       large-page mode
+  -pc[N]            progress counters
+  These are parsed and validated so scripts written against the
+  1.0.x C++ keep working unchanged. None of them changes the
+  archive: that was measured before the port, not assumed.
+
+Checking:
+  --verify          v5 only: check an archive's framing, CRCs and
+                    records without decompressing it. Catches
+                    truncation and framing damage in the time it
+                    takes to read the file. It does NOT cover the
+                    stored block bytes -- damage inside a literal
+                    run still needs a -d. v1-v4 carry no checksum
+                    at all and are refused.
+
+Help:
+  --help, -h, -?    this synopsis
+  --version, -V     version line
+
+Project page: https://github.com/YadeWira/omega-srep

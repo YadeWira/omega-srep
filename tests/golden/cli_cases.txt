@@ -1,0 +1,25 @@
+# CLI transcripts for the golden suite: `<id>|<args...>`, one per line.
+# Placeholders: @W@ work dir, @IN@ input, @A4@/@A5@/@A6@ archives written by the
+# port for this run, @BAD5@ a damaged v5, @OUT@ an output path.
+# These are the texts and exit codes the Rust oracle used to pin; after it is
+# retired they are the contract. Output paths are normalized to <W>.
+
+version|--version
+help|--help
+info-v4|-i @A4@
+info-v5|-i @A5@
+info-v6|-i @A6@
+verify-v5|--verify @A5@
+verify-v6|--verify @A6@
+verify-v4|--verify @A4@
+verify-damaged-v5|--verify @BAD5@
+decode-not-an-archive|-d @IN@ @OUT@
+bad-option|-bogus @IN@ @OUT@
+format-bogus|--format=v7 @IN@ @OUT@
+# --seed= is read like strtol: garbage is 0, not an error (a 3.0.0 cleanup candidate).
+a-octal-bad|-a08 @IN@ @OUT@
+dup-m0|-dup -m0 @IN@ @OUT@
+index-v5|-m3 --format=v5 -index=@W@/ix.ix @IN@ @OUT@
+index-v6|-m3 --format=v6 -index=@W@/ix.ix @IN@ @OUT@
+missing-input|-d @W@/no-such-file @OUT@
+output-dir|-d @A5@ @W@/no-such-dir/out

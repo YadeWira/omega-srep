@@ -1,0 +1,2 @@
+
+  ERROR! <W>/a4.osr is a v1-v4 archive, which carries no checksum anywhere, so it cannot be verified without reconstructing it. Decompress it to check it (the per-block digests are verified on the way), or re-create it with --format=v5

@@ -171,15 +171,14 @@ documentación histórica; ningún script de `tests/` referencia `oracles/`.
 Total: **~2 semanas** de trabajo efectivo, sin contar la implementación de v6
 (que ya está) ni C/asm.
 
-## 6. Decisiones para Wira
+## 6. Decisiones (tomadas el 2026-11-10)
 
-1. **¿Se mantiene `--format=v5` como escritura en 3.0.0?** Si sí, sus fixtures
-   se graban antes de retirar el Rust; si no, v5 queda solo lectura.
-2. **¿Los oráculos se archivan como tags, como tarball adjunto, o los dos?**
-   Recomiendo los dos: el tag para el historial y el tarball para no depender
-   de GitHub.
-3. **¿Se hace la auditoría de mutaciones completa antes del retiro?**
-   Recomiendo sí; es la única prueba de que la golden mide lo que medía el
-   oráculo.
-4. **¿El fuzz del C++ (`local_hardening`) se reemplaza por el fuzz del decoder
-   del Pascal?** Recomiendo sí, y archivar el del C++ con el oráculo.
+1. **`--format=v5` no se escribe en 3.0.0**: v5 queda **solo lectura**, como
+   v1–v3. Se escribe v6 por defecto y v4 con `--format=v4`. Sus fixtures de
+   lectura se graban ahora, mientras el port y el Rust todavía pueden
+   escribirlos.
+2. **Archivo doble**: tags `oracle-cxx-1.0.7` / `oracle-rust-2.1.2` **y**
+   tarball adjunto a un release de oráculos.
+3. **Auditoría de mutaciones completa** antes de retirar.
+4. **El fuzz del C++ se reemplaza por el fuzz del decoder del Pascal**, y el
+   del C++ se archiva con el oráculo.

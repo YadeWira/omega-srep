@@ -1,0 +1,3 @@
+v5: -hash=vmac
+.  4,194,304 -> 1,151: 0.03%
+Decompression memory with -m8388584 is 0 mb.  0 matches = 7 bytes = 0.61% of file
