@@ -83,4 +83,8 @@ begin
     Result := Crc32CUpdate(0, Buf[Offset], PtrUInt(Len));
 end;
 
+initialization
+  { Build the table once, before any thread can race on it. }
+  InitCrcTable;
+
 end.

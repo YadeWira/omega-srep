@@ -23,10 +23,21 @@ uses
   SysUtils, Classes, osrep_crc, osrep_format, osrep_vhash;
 
 type
+  TBlockInfo = record
+    StartPos: QWord;
+    OrigSize: LongWord;
+    LitOffset: SizeInt;
+    LitLen: SizeInt;
+    Digest: TBytes;
+  end;
+
   TArchiveReader = class
   private
-    FStream: TFileStream;
+    FStream: TStream;
+    FOwnsStream: Boolean;
     FSize: Int64;
+    FBlocks: array of TBlockInfo;
+    FAllLiterals: TBytes;
     FHeader: TArchiveHeader;
     FFooter: TArchiveFooter;
     FSeed: TBytes;
@@ -45,10 +56,12 @@ type
     procedure IterateBlocks(Decode: Boolean; OutStream: TStream);
   public
     constructor Create(const AFileName: string);
+    constructor CreateFromStream(AStream: TStream; AOwnsStream: Boolean = False);
     destructor Destroy; override;
     procedure ReadInfo(out Info: TArchiveInfo);
     procedure Verify;
     procedure DecodeToStream(OutStream: TStream);
+    procedure DecodeToBytes(out Data: TBytes);
     property Header: TArchiveHeader read FHeader;
     property Footer: TArchiveFooter read FFooter;
   end;
@@ -62,18 +75,6 @@ type
     Dst: QWord;
     Len: QWord;
   end;
-
-  TBlockInfo = record
-    StartPos: QWord;
-    OrigSize: LongWord;
-    LitOffset: SizeInt;
-    LitLen: SizeInt;
-    Digest: TBytes;
-  end;
-
-var
-  FBlocks: array of TBlockInfo;
-  FAllLiterals: TBytes;
 
 function VerifyBlockDigest(HashId: Byte; const Seed, Data: TBytes;
   Start: QWord; Len: LongWord; const Expected: TBytes): Boolean;
@@ -140,20 +141,38 @@ begin
 end;
 
 constructor TArchiveReader.Create(const AFileName: string);
+var
+  S: TFileStream;
 begin
   inherited Create;
   try
-    FStream := TFileStream.Create(AFileName, fmOpenRead or fmShareDenyWrite);
+    S := TFileStream.Create(AFileName, fmOpenRead or fmShareDenyWrite);
   except
     on E: Exception do
       raise EOsrepError.Create(3, 'cannot open input: ' + AFileName + ': ' + E.Message);
   end;
+  FStream := S;
+  FOwnsStream := True;
+  FSize := FStream.Size;
+end;
+
+constructor TArchiveReader.CreateFromStream(AStream: TStream;
+  AOwnsStream: Boolean);
+begin
+  inherited Create;
+  if AStream = nil then
+    raise EOsrepError.Create(4, 'nil archive stream');
+  FStream := AStream;
+  FOwnsStream := AOwnsStream;
   FSize := FStream.Size;
 end;
 
 destructor TArchiveReader.Destroy;
 begin
-  FreeAndNil(FStream);
+  if FOwnsStream then
+    FreeAndNil(FStream)
+  else
+    FStream := nil;
   inherited Destroy;
 end;
 
@@ -655,6 +674,26 @@ begin
   RestoreDup(Body, Final);
   if Length(Final) > 0 then
     OutStream.WriteBuffer(Final[0], Length(Final));
+end;
+
+procedure TArchiveReader.DecodeToBytes(out Data: TBytes);
+var
+  M: TMemoryStream;
+begin
+  M := TMemoryStream.Create;
+  try
+    DecodeToStream(M);
+    if M.Size > QWord(High(SizeInt)) then
+      raise EOsrepError.Create(4, 'original size does not fit in memory');
+    SetLength(Data, SizeInt(M.Size));
+    if M.Size > 0 then
+    begin
+      M.Position := 0;
+      M.ReadBuffer(Data[0], SizeInt(M.Size));
+    end;
+  finally
+    M.Free;
+  end;
 end;
 
 end.

@@ -280,3 +280,29 @@ La spec `14cfd76`/`931effa` cerró el digest VHASH-128, el orden de
 - `-m0..-m2` y el encoder `-dup`; se rechazan con exit 2.
 - v1–v5 y compatibilidad con SREP.
 - Código nativo (C/asm) y la matriz de plataformas.
+
+## 9. L0 de `libosrep` (2026-11-10)
+
+La librería no reimplementa el formato: envuelve el mismo `EncodeToStream` y
+`TArchiveReader` que usa el CLI.
+
+- `src/pascal/osrep_codec.pas`: API Pascal limpia (`TOsrepOptions`,
+  `OsrepCompressBytes`, `OsrepDecompressBytes`, `EOsrepApiError`).
+- `src/pascal/osrep_decoder.pas`: `CreateFromStream` (un `TStream`, no solo
+  un archivo) y `DecodeToBytes`; `FBlocks`/`FAllLiterals` pasaron de variables
+  de unidad a campos de `TArchiveReader`, para que dos hilos no compartan
+  estado.
+- `src/pascal/osrep_crc.pas`: la tabla CRC-32C se inicializa al cargar la
+  unidad, no en la primera llamada, para que no haya una carrera entre hilos.
+- `include/osrep.h`: `osrep_options`, `osrep_compress`, `osrep_decompress`,
+  `osrep_free`, `osrep_last_error`, `osrep_version`.
+- `src/lib/osrep_lib.pas`: `library` FPC con `exports`, `IsMultiThread` y
+  `threadvar` para el error; ninguna excepción cruza la ABI.
+- `src/lib/build.sh` y `src/lib/test_lib.c`; `tests/lib.sh` compila la
+  librería, corre 54 checks propios, el corpus, 4 hilos, y compara el `.osr`
+  con el del CLI (default y `--seed=7`), además de leer los fixtures v6 y
+  `text-dup-m3.osr` desde la librería.
+
+`seed = 0` en `osrep_options` significa el default determinista del CLI
+(`SeedFromNumber(0)`), no una semilla aleatoria. `max_output` se comprueba
+contra el `origsize` del header antes de reservar la salida.

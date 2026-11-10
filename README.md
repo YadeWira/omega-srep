@@ -28,11 +28,23 @@ verification and inspection.
 
 ## Library
 
-OSREP is being built **library-first**: the core will be `libosrep` with a
-stable C ABI (`osrep.h`), and the CLI will be a client of it. The API,
-packaging and integration plan for external projects — the **PJA** family
-(**PJA**, **PMPA**, **PRA**, **PPA**, **PAIA**) and **zpaq-std** — are in
-`docs/osrep-library.md`.
+OSREP is **library-first**: the core is `libosrep`, a shared object with a C
+ABI (`include/osrep.h`), and the CLI is a client of the same v6 core. L0 is
+in place: `osrep_compress`/`osrep_decompress` in memory, `osrep_free`,
+`osrep_options`, a thread-local `osrep_last_error`, and `test_lib.c` against
+the header. The library's `.osr` is byte-for-byte the CLI's for the same
+options.
+
+```sh
+src/lib/build.sh build/lib          # build/lib/libosrep.so (or .dylib/.dll)
+cc -Iinclude src/lib/test_lib.c -Lbuild/lib -losrep -o test_lib
+./tests/lib.sh                      # build + self-tests + CLI comparison
+```
+
+The API, packaging and integration plan for external projects — the **PJA**
+family (**PJA**, **PMPA**, **PRA**, **PPA**, **PAIA**) and **zpaq-std** — are
+in `docs/osrep-library.md`. PJA's `libpja` is the model: one shared object, a
+C header, the CLI as a client, and the same FPC + C + asm build.
 
 ## Where it comes from
 
@@ -56,10 +68,12 @@ OSREP reads the v6 archives written by Omega SREP 3.0.0
 
 ```
 spec/        format-v6.md, payload.md, cli.md (normative)
-src/pascal/  container, CLI, encoder/decoder orchestration
-src/c/       CRC-32C, SIMD memops, AES/VMAC, SHA, hot loops
-src/asm/     prefetch, CPUID/HWCAP
-tests/       corpus, golden, v6 read-compatibility fixtures, C/asm differential
+include/     osrep.h, the C ABI of libosrep
+src/pascal/  container, CLI, encoder/decoder, the clean Pascal API
+src/lib/     the FPC library, osrep.h's exports, build and test_lib.c
+src/c/       CRC-32C, SIMD memops, AES/VMAC, SHA, hot loops (planned)
+src/asm/     prefetch, CPUID/HWCAP (planned)
+tests/       corpus, golden, v6 read-compatibility fixtures, lib.sh
 docs/        plan, native-code rules
 ```
 

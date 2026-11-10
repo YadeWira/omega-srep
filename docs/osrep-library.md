@@ -1,12 +1,14 @@
 # OSREP como librería para proyectos externos
 
-**Estado: diseño, 2026-11-10.** OSREP hoy es un CLI. La dirección que se
-quiere es **library-first**: el núcleo es una librería con ABI C, y el CLI es
-un cliente más. Este documento fija la API, el empaquetado y el orden de
-integración, usando **PJA, PMPA, PRA, PPA y PAIA** como primeros
-consumidores. Los proyectos `pack*` **no son la familia**: son sus
-predecesores ("Successor of" en las tablas de la familia) y solo aparecen
-aquí como historia de la API.
+**Estado: L0 implementado, 2026-11-10.** La dirección es **library-first**:
+el núcleo es `libosrep` con ABI C, y el CLI es un cliente del mismo núcleo.
+L0 está en el árbol: `include/osrep.h`, `src/lib/osrep_lib.pas`,
+`src/lib/build.sh`, `src/lib/test_lib.c` y `tests/lib.sh`. Este documento
+fija la API, el empaquetado y el orden de integración, usando **PJA, PMPA,
+PRA, PPA y PAIA** como primeros consumidores. PJA (`libpja`) es el modelo,
+por veterano y por compartir FPC + C + asm y licencia MIT. Los proyectos
+`pack*` **no son la familia**: son sus predecesores ("Successor of" en las
+tablas de la familia) y solo aparecen aquí como historia de la API.
 
 ## 0. Por qué
 
@@ -49,8 +51,8 @@ PAIA son consumidores naturales, aunque sus librerías aún no existan. Los
 3. **Sin estado global.** Cada llamada recibe su contexto/opciones; el error
    es thread-local. Se puede llamar desde varios hilos a la vez.
 4. **Memoria del llamador o de la librería, explícita.** Las funciones que
-   devuelven buffers usan `osrep_free`; las que escriben en un buffer del
-   llamador piden `osrep_compress_bound`/`osrep_decompress_bound`.
+   devuelven buffers usan `osrep_free`; L1 agrega
+   `osrep_compress_bound`/`osrep_compress_into` para el buffer del llamador.
 5. **Ninguna excepción escapa.** Cada export atrapa y devuelve un código de
    error; el detalle queda en `osrep_last_error()` (thread-local).
 6. **El formato no cambia.** La librería escribe/lee el v6 de la spec; no
@@ -60,94 +62,65 @@ PAIA son consumidores naturales, aunque sus librerías aún no existan. Los
    predecesores `pack*` son LGPL-3.0 (salvo packPNG, MIT); solo importan si
    alguna vez se usan como host, y ahí el linkeo dinámico es lo simple.
 
-## 2. API propuesta (`osrep.h`)
+## 2. API de L0 (`osrep.h`)
 
-Modelo `libpja`/`libppa`: versión, memoria, archivo, callbacks y opciones.
+El header normativo es `include/osrep.h`; esto es lo que exporta la librería
+hoy. Modelo `libpja`: versión, memoria, opciones y `osrep_free`.
 
 ```c
-#ifndef OSREP_H
-#define OSREP_H
-
-#include <stddef.h>
-#include <stdint.h>
-
-#ifdef __cplusplus
-extern "C" {
-#endif
-
-#if defined(_WIN32) && !defined(_WIN64)
-#define OSREP_CALL __cdecl
-#else
-#define OSREP_CALL
-#endif
-
 #define OSREP_API_VERSION 1
 
 enum {
     OSREP_OK = 0,
-    OSREP_E_DATA = 1,       /* archivo dañado o no es .osr v6 */
-    OSREP_E_MEMORY = 2,     /* sin memoria, o sobre el límite */
-    OSREP_E_IO = 3,         /* falló una lectura/escritura */
-    OSREP_E_ARG = 4,        /* puntero nulo, opción inválida */
-    OSREP_E_VERSION = 5,    /* escrito por una versión más nueva */
-    OSREP_E_NOT_TAKEN = 6,  /* el input no es algo que OSREP tome */
-    OSREP_E_UNSUPPORTED = 7 /* opción/modo no implementado todavía */
+    OSREP_E_DATA = 1,        /* dañado, truncado o no es OSR6 */
+    OSREP_E_MEMORY = 2,      /* sin memoria, o sobre max_output */
+    OSREP_E_IO = 3,          /* falló una lectura/escritura */
+    OSREP_E_ARG = 4,         /* puntero nulo u opción inválida */
+    OSREP_E_VERSION = 5,     /* escrito por una versión más nueva */
+    OSREP_E_NOT_TAKEN = 6,   /* reservado: OSREP toma cualquier byte */
+    OSREP_E_UNSUPPORTED = 7  /* opción o método no implementado */
 };
 
 typedef struct osrep_options {
-    uint32_t struct_size;   /* sizeof(osrep_options), para compatibilidad */
-    int32_t  method;        /* 0..5; -1 = default (m3) */
-    int32_t  format;        /* 6 = v6; 0 = default */
-    int32_t  dedup;         /* 0/1; -1 = default */
-    int32_t  threads;       /* 0 = auto, 1 = un hilo */
-    uint64_t seed;          /* 0 = aleatorio; != 0 = determinista */
-    uint64_t block_size;    /* 0 = default (8 MiB) */
-    uint64_t max_output;    /* 0 = sin límite adicional al descomprimir */
+    uint32_t struct_size;   /* sizeof(osrep_options), o 0 */
+    int32_t  method;        /* 0 = default, 3 = -m3 */
+    int32_t  format;        /* 0 = default, 6 = v6 */
+    int32_t  dedup;         /* 0; 1 aún no se escribe (E_UNSUPPORTED) */
+    int32_t  threads;       /* aceptado; el encoder MVP es de un hilo */
+    uint64_t seed;          /* 0 = default determinista; si no, esa semilla */
+    uint64_t block_size;    /* 0 = 8 MiB */
+    uint64_t max_output;    /* descompresión: 0 = sin tope extra */
+    int32_t  min_match;     /* 0 = 4 */
+    int32_t  chain_depth;   /* 0 = 16 */
+    int32_t  stride;        /* 0 = 1 */
+    int32_t  digest;        /* -1 = default, 0 = ninguno (-hash-) */
     uint32_t reserved[8];   /* debe ir en cero */
 } osrep_options;
 
 void OSREP_CALL osrep_options_default(osrep_options *o);
-
-const char *OSREP_CALL osrep_version(void);       /* "osrep 0.0.x" */
+const char *OSREP_CALL osrep_version(void);       /* "OSREP 0.0.2" */
 const char *OSREP_CALL osrep_last_error(void);    /* thread-local */
 
-/* Memoria: *out lo libera el llamador con osrep_free. */
 int OSREP_CALL osrep_compress(const void *in, size_t in_size,
                               void **out, size_t *out_size,
                               const osrep_options *o);
 int OSREP_CALL osrep_decompress(const void *in, size_t in_size,
                                 void **out, size_t *out_size,
                                 const osrep_options *o);
-
-/* Sin asignar: el llamador pone el buffer. Devuelve el tamaño necesario. */
-size_t OSREP_CALL osrep_compress_bound(size_t in_size, const osrep_options *o);
-int OSREP_CALL osrep_compress_into(const void *in, size_t in_size,
-                                   void *out, size_t out_cap, size_t *out_size,
-                                   const osrep_options *o);
-
-/* Archivo: mismos códigos; el path es UTF-8 en todas las plataformas. */
-int OSREP_CALL osrep_compress_file(const char *in_path, const char *out_path,
-                                   const osrep_options *o);
-int OSREP_CALL osrep_decompress_file(const char *in_path, const char *out_path,
-                                     const osrep_options *o);
-
-/* Filtro/stream: para archivers que pasan un bloque sólido. */
-typedef ptrdiff_t (OSREP_CALL *osrep_read_fn)(void *ctx, void *buf, size_t size);
-typedef int       (OSREP_CALL *osrep_write_fn)(void *ctx, const void *buf, size_t size);
-int OSREP_CALL osrep_filter_encode(osrep_read_fn read, void *read_ctx,
-                                   osrep_write_fn write, void *write_ctx,
-                                   const osrep_options *o);
-int OSREP_CALL osrep_filter_decode(osrep_read_fn read, void *read_ctx,
-                                   osrep_write_fn write, void *write_ctx,
-                                   const osrep_options *o);
-
 void OSREP_CALL osrep_free(void *p);
-
-#ifdef __cplusplus
-}
-#endif
-#endif
 ```
+
+`osrep_options_default()` llena los mismos valores que `osrep -m3`: bloques
+de 8 MiB, mínimo 4, cadena 16, stride 1, digest VHASH-128 y la semilla
+determinista 0. **No** hay semilla aleatoria: `seed=0` es el default
+determinista, y cualquier otro valor se expande con `SeedFromNumber`, igual
+que `--seed=N` en el CLI. `max_output` se comprueba contra el `origsize` del
+header antes de reservar la salida. `struct_size` puede ser 0 o el tamaño
+actual; un tamaño distinto devuelve `OSREP_E_ARG`.
+
+L1 agrega `osrep_compress_file`, `osrep_decompress_file`,
+`osrep_compress_bound`, `osrep_compress_into` y los filtros por callbacks
+(`osrep_filter_encode`/`decode`). El ABI no cambia: solo se suman símbolos.
 
 ### 2.1 Modo fragmentador/dedup (zpaq-std y hosts que lo quieran)
 
@@ -201,28 +174,44 @@ históricos. La API recomendada sigue siendo la de §2, y la familia
 
 ## 3. Empaquetado y build
 
-Modelo `libpja` (`pas/lib/build.sh`, `pjalib.pas`, `pja.h`, `test_lib.c`):
+Modelo `libpja` (`pas/lib/build.sh`, `pjalib.pas`, `pja.h`, `test_lib.c`).
 
-- `src/lib/osrep_lib.pas` es un `library` de FPC con `exports` y
-  `IsMultiThread := True`; cada export atrapa excepciones.
-- Los `.c`/`.asm` del núcleo se compilan por target con `-fPIC` y se enlazan.
-- Artefactos:
-  - `libosrep.so` (Linux), `libosrep.dylib` (macOS), `osrep.dll` (Windows);
-  - `libosrep.a` estática;
-  - `include/osrep.h`, `include/osrep_compat.h`;
-  - `osrep.pc` (pkg-config) y `osrep-config.cmake`;
-  - `test_lib.c` y ejemplos.
-- Targets: Linux x86_64/i386/ARM64, Windows x86/x64, macOS ARM64 (los mismos
-  del build actual). macOS en CI; Windows con el cruce FPC + mingw.
+**L0, en el árbol:**
+
+- `src/lib/osrep_lib.pas` es un `library` de FPC con `exports`,
+  `IsMultiThread := True` y `threadvar` para `osrep_last_error`; cada export
+  atrapa excepciones. `src/pascal/osrep_codec.pas` es la API Pascal limpia
+  que usan la librería y, más adelante, el CLI.
+- Artefactos: `libosrep.so` (Linux); `include/osrep.h`; `src/lib/test_lib.c`;
+  `tests/lib.sh`. `src/lib/build.sh` detecta Windows/macOS igual que el de
+  PJA, aunque L0 solo se probó en Linux x86_64.
+- Build y prueba:
+
+  ```sh
+  src/lib/build.sh build/lib
+  cc -O2 -Iinclude src/lib/test_lib.c -Lbuild/lib -losrep -o test_lib
+  ./tests/lib.sh
+  ```
+
+- Hilos: cada llamada es independiente; `osrep_last_error` es thread-local;
+  `IsMultiThread` en la inicialización de la librería. El reader ya no tiene
+  `FBlocks`/`FAllLiterals` globales: son campos de la instancia.
+- Memoria: `osrep_free` para los buffers que devuelve la librería.
+
+**L1, plan:**
+
+- `libosrep.a` estática; `include/osrep_compat.h` (solo para los
+  predecesores `pack*`, si alguna vez se usan como host).
+- `osrep.pc` (pkg-config) y `osrep-config.cmake`.
+- Targets Linux x86_64/i386/ARM64, Windows x86/x64, macOS ARM64 (los mismos
+  del CLI). macOS en CI; Windows con el cruce FPC + mingw.
 - Windows x86: `OSREP_CALL` = `__cdecl`, como PJA; el `.dll` no debe depender
   de un runtime C++ (PJA ya lo hace).
 - ABI: `OSREP_API_VERSION`, versión semver; los símbolos nuevos se agregan,
   los existentes no cambian de firma. `osrep_options.struct_size` y
   `reserved` para crecer sin romper.
-- Hilos: cada llamada es independiente; `osrep_last_error` es thread-local;
-  `IsMultiThread` en la inicialización de la librería.
-- Memoria: `osrep_free` para los buffers que devuelve; `osrep_compress_into`
-  para el que pone el llamador.
+- `osrep_compress_into` para el buffer del llamador; hilos reales en el
+  encoder.
 
 ## 4. Integración con los proyectos
 
@@ -283,21 +272,33 @@ miembros MIT de la familia.
 
 ## 5. Plan por fases
 
-### L0 — Librería mínima (1–2 semanas)
+### L0 — Librería mínima (hecho, 2026-11-10)
 
-- Extraer el núcleo del CLI a unidades con una API Pascal limpia.
+- Núcleo accesible por una API Pascal limpia: `src/pascal/osrep_codec.pas`.
 - `include/osrep.h`; `osrep_version`, `osrep_compress`, `osrep_decompress`,
   `osrep_free`, `osrep_last_error`, `osrep_options_default`.
-- `src/lib/osrep_lib.pas` (`library`), build Linux x86_64, `test_lib.c`.
-- Probar desde un programa C y desde PJA (unidad Pascal o `libosrep.so`).
+- `src/lib/osrep_lib.pas` (`library`), `src/lib/build.sh` (Linux `.so`;
+  Windows/macOS por las mismas variables que PJA), `src/lib/test_lib.c`.
+- El reader acepta un `TStream`, no solo un archivo: `DecodeToBytes` y
+  `CreateFromStream`; `TArchiveReader` ya no usa estado global, así que dos
+  hilos pueden descomprimir a la vez.
 
-**Aceptación:** un programa C comprime y descomprime el corpus, byte a byte;
-el `.osr` es idéntico al del CLI; `test_lib.c` pasa; no hay fugas.
+**Aceptación (cumplida):** un programa C comprime y descomprime el corpus,
+byte a byte; el `.osr` es idéntico al del CLI con las mismas opciones
+(inclusive `--seed=7`); `test_lib.c` pasa 54 checks y `tests/lib.sh` pasa
+84 con el corpus; 4 hilos concurrentes pasan; los fixtures v6 y `-dup` se
+leen desde la librería. Compilar:
+
+```sh
+src/lib/build.sh build/lib
+cc -O2 -Iinclude src/lib/test_lib.c -Lbuild/lib -losrep -o test_lib
+./tests/lib.sh
+```
 
 ### L1 — API completa (2–3 semanas)
 
 - `compress_file`/`decompress_file`, `filter_encode`/`filter_decode`,
-  `compress_into`/`compress_bound`, opciones/threads/seed.
+  `compress_into`/`compress_bound`; hilos reales en el encoder.
 - Estática y compartida; Windows x86/x64 y macOS ARM64; pkg-config/CMake.
 - ABI: `nm` de símbolos, versión, `struct_size`, test de compatibilidad.
 - Hilos: dos llamadas concurrentes; `last_error` por hilo.
@@ -326,8 +327,9 @@ misma API (no hay dos caminos).
 
 ## 6. Pruebas
 
-- `test_lib.c` estilo PJA: memoria, archivo, callbacks, errores, límites,
-  hilos, `osrep_free`.
+- `test_lib.c` estilo PJA: memoria, errores, límites, hilos y `osrep_free`;
+  ya cubre round-trip, determinismo, daño/truncado, `max_output`, 4 hilos y
+  la identidad con el CLI. L1 suma archivo, callbacks y la ABI completa.
 - Diferencial: el `.osr` de la librería == el del CLI, byte a byte, en el
   corpus y en los fixtures.
 - ABI: `nm -D`/`dumpbin` de los símbolos; cargar con `dlopen`; versión.
@@ -350,8 +352,9 @@ misma API (no hay dos caminos).
 
 ## 8. Recomendación
 
-**Hacer `libosrep` ahora, antes de más funciones del CLI.** El CLI pasa a ser
-un cliente de la librería. Empezar por L0 (memoria + v6 + `test_lib.c`) y
+**L0 ya está hecho.** El siguiente paso es L1 (archivo, callbacks, ABI
+completa y las otras plataformas), y después usarlo desde PJA. El CLI pasa a
+ser un cliente de la librería. Empezar por L0 (memoria + v6 + `test_lib.c`) y
 usar **PJA** como primer consumidor, porque comparte lenguaje, licencia y
 patrón de build. Después **PPA**, que ya tiene `libppa`; luego **PAIA** y, en
 cuanto tengan librería, **PMPA** y **PRA**. zpaq-std entra por el modo
