@@ -102,3 +102,26 @@ copia); el archivo final es el cuerpo comprimido con `-m3`.
 OSREP gana tamaño en los dos casos y pierde tiempo en el grande; el CDC y la
 tabla de chunks son Pascal todavía. Falta el corpus multi-versión real para
 comparar con zpaq-std/zpaqfranz, que es el siguiente paso de dedup.
+
+## Dedup multi-versión (`versions.bin`)
+
+Cuatro versiones de `real64.bin` (67 MiB cada una, 268 MiB en total), con
+cambios pequeños y distintos por versión. `zpaq-std v2.7.0` archivó el
+directorio; OSREP deduplicó la concatenación (`versions.bin`).
+
+| flujo | archivo | tiempo |
+|---|---:|---:|
+| zpaq-std `-m1` | 42.516.733 | 0,89 s |
+| zpaq-std `-m5` | 36.018.487 | 215 s |
+| OSREP `-m1` (dedup stored) | 75.792.589 | 2,25 s |
+| OSREP `-m2` (dedup stored) | 76.319.202 | 2,08 s |
+| OSREP `-dup -m5` | 41.355.999 | 3,80 s |
+| OSREP `-dup -m5`, después zpaq-std `-m1` | 41.177.567 | +0,60 s |
+
+Lectura: OSREP `-m1`/`-m2` encuentran los duplicados y el cuerpo único queda
+en ~76 MB; el LZ de `-dup -m5` baja el archivo a 41,36 MB. Contra zpaq `-m1`
+(42,52 MB, 0,89 s), OSREP + zpaq `-m1` es un poco más chico (41,18 MB) pero
+más lento. Contra zpaq `-m5` (36,02 MB), OSREP queda 14 % más grande, pero
+tarda ~50× menos. No es una comparación de compresores equivalentes: OSREP
+es el preprocesador; la comparación limpia con el deduplicador de zpaq
+requiere el mismo backend y el mismo nivel, que es el siguiente paso.

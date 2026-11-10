@@ -29,21 +29,25 @@ scripts, but the default and only writer is v6.
 
 ## Methods
 
+- `-m1`: fixed-window content-defined deduplication (48-byte rolling hash);
+  the unique chunks are stored, not LZ-parsed.
+- `-m2`: order-1 content-defined deduplication (the zpaq CDC parameters:
+  4 KiB minimum, ~64 KiB average, 520 KiB maximum); the unique chunks are
+  stored.
 - `-m3`: greedy hash-chain match finder.
 - `-m4`: the same finder with one-byte lazy matching.
 - `-m5`: lazy matching and a deeper chain (twice the `-a` depth, capped at
-  256). The v6 match stream is free, so the three methods write the same
+  256). The v6 match stream is free, so the LZ methods write the same
   format; only the parse changes.
 
-`-dup` deduplicates the input before encoding: an order-1 content-defined
-chunker (the zpaq parameters: 4 KiB minimum, ~64 KiB average, 520 KiB
-maximum), exact duplicate chunks removed, and the `DUPR` meta records the
-chunk list. The body is compressed with the selected `-m*`; `-d` restores the
-original automatically. `-i` prints both `original_size` (the deduplicated
-body) and `restored_size` (the input).
+`-m1` and `-m2` write a `DUPR` meta (exact duplicate chunks removed) and store
+the unique body; `-m3`..`-m5` write the LZ stream. `-dup` is a pre-pass that
+deduplicates before any `-m*`; with `-m3`..`-m5` it combines CDC and LZ. `-d`
+restores the original automatically, and `-i` prints `original_size` (the
+deduplicated body) and `restored_size` (the input).
 
-`-m0` (in-memory) and `-m1`/`-m2` (CDC) are phase 2; until then they exit 2
-with a clear "not implemented yet" message.
+`-m0` (in-memory) is phase 2; until then it exits 2 with a clear "not
+implemented yet" message.
 
 ## Threads
 

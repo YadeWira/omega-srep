@@ -12,11 +12,11 @@ preprocessing, decompression, verification and inspection.
 
 - **Status: phase 1b (0.0.2).** The v6 reader and the MVP `-m3` preprocessor are
   implemented in `src/pascal/`: container, CRC-32C, VHASH-128 block digest,
-  `-d`, `--verify`, `-i`, `-dup` write/read/restore, a hash-chain match
-  finder with `-m3`/`-m4`/`-m5` (greedy, lazy and deeper), and parallel
-  block encoding (`-tN`, automatic up to 8 threads) whose output is
-  byte-identical to the single-thread one. `-dup` uses an order-1 CDC
-  (4 KiB min, ~64 KiB average, 520 KiB max) and the `DUPR` meta.
+  `-d`, `--verify`, `-i`, `-dup` write/read/restore, dedup-only `-m1`
+  (fixed-window CDC) and `-m2` (order-1 CDC), a hash-chain match finder with
+  `-m3`/`-m4`/`-m5` (greedy, lazy and deeper), and parallel block encoding
+  (`-tN`, automatic up to 8 threads) whose output is byte-identical to the
+  single-thread one.
   The tests cover the ten compatibility fixtures in `tests/fixtures/v6/`, the
   encoder round-trip/determinism, `-hash-`, and new golden archives in
   `tests/fixtures/v6-new/`. Every 0.0.x release is a pre-release; 1.0.0 is

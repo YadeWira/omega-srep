@@ -304,7 +304,7 @@ La librería no reimplementa el formato: envuelve el mismo `EncodeToStream` y
 - `src/lib/osrep_lib.pas`: `library` FPC con `exports`, `IsMultiThread` y
   `threadvar` para el error; ninguna excepción cruza la ABI.
 - `src/lib/build.sh` y `src/lib/test_lib.c`; `tests/lib.sh` compila la
-  librería, corre 70 checks propios, el corpus, 4 hilos, y compara el `.osr`
+  librería, corre 73 checks propios, el corpus, 4 hilos, y compara el `.osr`
   con el del CLI (default y `--seed=7`), además de leer los fixtures v6 y
   `text-dup-m3.osr` desde la librería.
 - `src/lib/osrep7z.c`: el plugin de 7-Zip en el mismo `.so`, método `OSREP`
