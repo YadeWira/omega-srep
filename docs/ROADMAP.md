@@ -83,9 +83,11 @@ reemplace) y se repiten en cada release.
 - `-m4`/`-m5`: implementados (lazy y cadena más profunda); el ratio y el
   tiempo están en `docs/benchmarks.md`.
 - Benchmarks contra SREP/Omega SREP: línea base hecha en `docs/benchmarks.md`.
-- Checkpoint `0.0.3`: release/pre-release con `-m1..-m5`, `-t` y `-dup`.
+- Checkpoints: `0.0.3` (`-m1..-m5`, `-t`, `-dup`) y `0.0.4` (CDC, match
+  finder y CRC nativos; hash16 para `-m4/-m5`).
 - Codificación paralela de bloques (`-tN`): hecha; el `.osr` no cambia.
-- C/asm: CDC, match finder y CRC-32C nativos, verificados contra Pascal; el
-  resto (AES/hashes, SIMD) sigue pendiente.
+- C/asm: CDC, match finder y CRC-32C nativos, verificados contra Pascal;
+  hash de 16 bytes para `-m4/-m5` con `-l >= 16`. El resto (AES/hashes,
+  SIMD) sigue pendiente.
 - Dedup por contenido para zpaq: diseñado en `docs/zpaq-dedup-study.md`,
   no implementado.

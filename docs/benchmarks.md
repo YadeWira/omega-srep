@@ -6,7 +6,7 @@ Nada de esto es una promesa: son los números de hoy y el punto de partida.
 ## Máquina y binarios
 
 - CPU: Intel Xeon E5-2697A v4 @ 2.60 GHz, x86-64 (64 hilos visibles).
-- OSREP 0.0.3, compilado con FPC 3.2.2 `-O2` (sin C/asm todavía), con
+- OSREP 0.0.4, compilado con FPC 3.2.2 `-O2` (sin C/asm todavía), con
   codificación paralela de bloques (`-tN`, default automático hasta 8).
 - SREP 3.92 beta (2013-07-23), binario `srep64` de
   `repo-extras/srep392.zip`. No hay binario de 3.93a en el árbol; 3.92 es
@@ -150,9 +150,19 @@ Los archivos son byte-idénticos; `tests/native_cdc.sh` es la compuerta. El
 | `-m4` | 1,43 s | 1,13 s | 38.353.352 |
 | `-m5` | 1,53 s | 1,14 s | 38.083.480 |
 
+Para `-m4`/`-m5` con `-l >= 8` el match finder usa un hash de 8 bytes, y con
+`-l >= 16` uno de 16 (nunca `-m3`, que conserva el fixture `-m3 -l64`):
+
+| flujo | antes (hash4, Pascal) | ahora (hash16, C) |
+|---|---:|---:|
+| `-m4 -l64 -c64` | 51.249.808 / 1,02 s | 51.084.790 / 0,83 s |
+| `-m5 -l64 -c64` | 51.155.786 / 1,42 s | 51.039.922 / 0,83 s |
+| `-m5 -l64 -c64 -a32` | 51.082.852 / 1,75 s | 51.005.877 / 0,93 s |
+
 `tests/native_match.sh` es la compuerta (byte a byte, también con
 `-l64 -c64 -a32` y entrada vacía). El default `-m5` sigue ~1,8× más lento
-que Omega `-m4` (0,64 s), pero con 15 puntos menos de ratio.
+que Omega `-m4` (0,64 s), pero con 15 puntos menos de ratio. A igual
+`-l64 -c64`, Omega `-m4` todavía gana por ~1,2 MB (49,8 vs 51,0 MB) y ~0,2 s.
 
 ## CRC-32C nativo
 
