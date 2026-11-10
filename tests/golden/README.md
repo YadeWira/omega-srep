@@ -37,7 +37,9 @@ y `tests/rust_cli_conformance.sh`.
 ## Reglas
 
 * **`make.sh` no graba nada si un caso falla.** El manifiesto se escribe en
-  un temporal y se mueve al final.
+  un temporal y se mueve al final. La única excepción es el aviso de un `-l`
+  que no es potencia de dos: los oráculos y el port lo imprimen y salen con 1,
+  así que el caso se graba con ese exit code (el archivo se escribe igual).
 * **Un manifiesto que cambia es un cambio de formato.** Al re-grabar, revisar
   el diff: cada línea distinta es un archivo distinto. Si el cambio no es
   deliberado, es un bug.
@@ -50,8 +52,8 @@ y `tests/rust_cli_conformance.sh`.
 
 ## Estado
 
-- **v4/v5** (`manifest.tsv`): 39 casos grabados contra los dos oráculos.
-- **v6** (`manifest-v6.tsv`): 24 casos grabados solo con el port, con
+- **v4/v5** (`manifest.tsv`): 43 casos grabados contra los dos oráculos.
+- **v6** (`manifest-v6.tsv`): 25 casos grabados solo con el port, con
   `OSR6`, `--verify` y la ida y vuelta comprobadas antes de grabar.
 - **CLI** (`cli/`): 25 transcripciones (stdout, stderr y exit code) de
   `--help`, `--version`, `-i`, `--verify` y `-d` de archivos sanos y dañados

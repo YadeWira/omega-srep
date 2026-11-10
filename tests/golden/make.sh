@@ -8,7 +8,9 @@
 #   * for --format=v4, the C++ 1.0.7 and the Rust write the same bytes (twice
 #     each run, so a racing case is refused rather than pinned);
 #   * for --format=v5, the Rust writes it (the C++ cannot);
-#   * the port writes the same bytes and the same exit code as the reference;
+#   * the port writes the same bytes and the same exit code as the reference
+#     (exit 1 is allowed only for the non-power-of-two -l warning, which the
+#     references print and the ports reproduce);
 #   * every archive decodes back to the input, with the port's decoder and
 #     with the reference's.
 # A case where the reference is wrong (the C++ drops the ODUP trailer with a
@@ -48,6 +50,14 @@ OUT="$TMP/manifest.tsv"
 n=0
 
 # run BIN OUT ARGS...: ARGS go before OUT (compression and `-d` both take the
+# ok_rc RC: 0, or the warning the references and the port share for a -l that
+# is not a power of two ("may be corrupt", exit 1). It reads $TMP/stderr from
+# the run being checked.
+ok_rc() {
+    [ "$1" -eq 0 ] && return 0
+    [ "$1" -eq 1 ] && grep -q 'Warning: -l parameter should be power of 2' "$TMP/stderr"
+}
+
 # output last); sets rc; does not abort.
 run() {
     local bin=$1 out=$2
@@ -75,7 +85,7 @@ while IFS= read -r line; do
     # shellcheck disable=SC2086
     run "$PORT" "$TMP/port.osr" $args --seed=7 "$D/$input"
     prc=$rc
-    [ "$prc" -eq 0 ] || fail "port: '$line' exited $prc: $(tail -1 "$TMP/stderr")"
+    ok_rc "$prc" || fail "port: '$line' exited $prc: $(tail -1 "$TMP/stderr")"
     psum=$(sha256sum < "$TMP/port.osr" | cut -d' ' -f1)
 
     if [ "$fmt" = v4 ]; then
@@ -83,10 +93,10 @@ while IFS= read -r line; do
         # shellcheck disable=SC2086
         run "$CXX_BIN/osrep" "$TMP/cxx.osr" -t1 $cargs --seed=7 "$D/$input"
         crc=$rc
-        [ "$crc" -eq 0 ] || fail "C++: '$line' exited $crc: $(tail -1 "$TMP/stderr")"
+        ok_rc "$crc" || fail "C++: '$line' exited $crc: $(tail -1 "$TMP/stderr")"
         # shellcheck disable=SC2086
         run "$CXX_BIN/osrep" "$TMP/cxx2.osr" -t1 $cargs --seed=7 "$D/$input"
-        [ "$rc" -eq 0 ] || fail "C++ (second run): '$line' exited $rc"
+        ok_rc "$rc" || fail "C++ (second run): '$line' exited $rc"
         cmp -s "$TMP/cxx.osr" "$TMP/cxx2.osr" \
             || fail "C++: '$line' is not stable between two runs (races? see docs/pascal-port.md)"
         csum=$(sha256sum < "$TMP/cxx.osr" | cut -d' ' -f1)
@@ -106,10 +116,10 @@ while IFS= read -r line; do
     # shellcheck disable=SC2086
     run "$RUST" "$TMP/rust.osr" $args --seed=7 "$D/$input"
     rrc=$rc
-    [ "$rrc" -eq 0 ] || fail "Rust: '$line' exited $rrc: $(tail -1 "$TMP/stderr")"
+    ok_rc "$rrc" || fail "Rust: '$line' exited $rrc: $(tail -1 "$TMP/stderr")"
     # shellcheck disable=SC2086
     run "$RUST" "$TMP/rust2.osr" $args --seed=7 "$D/$input"
-    [ "$rc" -eq 0 ] || fail "Rust (second run): '$line' exited $rc"
+    ok_rc "$rc" || fail "Rust (second run): '$line' exited $rc"
     cmp -s "$TMP/rust.osr" "$TMP/rust2.osr" || fail "Rust: '$line' is not stable between two runs"
     rsum=$(sha256sum < "$TMP/rust.osr" | cut -d' ' -f1)
     [ "$rsum" = "$psum" ] || fail "port != Rust on '$line' ($psum vs $rsum)"

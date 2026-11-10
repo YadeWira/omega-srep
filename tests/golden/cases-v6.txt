@@ -25,6 +25,7 @@ text.bin      -m3 --format=v6 -c512 -l1024
 text.bin      -m4 --format=v6 -l256 -c128
 mixed.bin     -m4 --format=v6 -b1mb
 text.bin      -m5 --format=v6 -l1000 -ia-
+a33929.bin    -m3 --format=v6 -l130 -b261b
 text.bin      -dup -m3 --format=v6
 mixed.bin     -dup -m5 --format=v6 --chunk-hash=gear
 zruns.bin     -dup -m3 --format=v6 --chunk-avg=2048

@@ -27,4 +27,10 @@ while len(out) < 240000:
     out += bytes(r.randint(1000, 5000))
 open(os.path.join(d, "zruns.bin"), "wb").write(out)
 open(os.path.join(d, "empty.bin"), "wb").write(b"")
+# One byte repeated, in sizes that make -m3's blocks a non-whole number of
+# chunks: the scan of block k reads the first chunk of block k+1, which only
+# HashTable::prepare_ahead writes (tests/rust_cli_conformance.sh pins the same
+# pair for the C++ race).
+open(os.path.join(d, "a33929.bin"), "wb").write(b"A" * 33929)
+open(os.path.join(d, "a200k.bin"), "wb").write(b"A" * 200000)
 PY
