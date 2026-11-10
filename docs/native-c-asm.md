@@ -127,7 +127,10 @@ Notas:
 0. **Scaffolding (hecho el 2026-11-10):** POC de enlace en los cinco targets.
    El primer componente real es el **CDC** (`src/c/osrep_cdc.c`), enlazado en
    el CLI y la librería; `-dOSREP_NO_NATIVE` conserva la referencia Pascal y
-   `tests/native_cdc.sh` compara los dos builds byte a byte.
+   `tests/native_cdc.sh` compara los dos builds byte a byte. El match finder
+   y el CRC también son nativos. `scripts/build_windows.sh` y
+   `tests/windows_cross.sh` compilan win32/win64 con mingw y hacen round-trip
+   bajo wine.
 1. **CRC-32C por hardware** (SSE4.2 en x86; fallback bitwise): hecho.
    Aceptación: mismos CRC en toda la matriz; `--verify` de 0,116 s a 0,029 s
    en `real64.osr`.

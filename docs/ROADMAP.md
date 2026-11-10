@@ -88,7 +88,7 @@ reemplace) y se repiten en cada release.
   finder y CRC nativos; hash16 para `-m4/-m5`).
 - Codificación paralela de bloques (`-tN`): hecha; el `.osr` no cambia.
 - C/asm: CDC, match finder y CRC-32C nativos, verificados contra Pascal;
-  hash de 16 bytes para `-m4/-m5` con `-l >= 16`. El resto (AES/hashes,
-  SIMD) sigue pendiente.
+  hash de 16 bytes para `-m4/-m5` con `-l >= 16`. Windows x86/x64 cruza y
+  pasa round-trip bajo wine; Linux i386/ARM64 y macOS ARM64 pendientes.
 - Dedup por contenido para zpaq: diseñado en `docs/zpaq-dedup-study.md`,
   no implementado.
