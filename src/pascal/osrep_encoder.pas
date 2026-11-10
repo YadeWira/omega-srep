@@ -252,6 +252,22 @@ begin
   Literals := Buf.Finish;
 end;
 
+function MatchLength(const Data: TBytes; A, B, MaxLen: SizeInt): SizeInt;
+var
+  I: SizeInt;
+begin
+  I := 0;
+  while I + SizeOf(QWord) <= MaxLen do
+  begin
+    if PInt64(@Data[A + I])^ <> PInt64(@Data[B + I])^ then
+      Break;
+    Inc(I, SizeOf(QWord));
+  end;
+  while (I < MaxLen) and (Data[A + I] = Data[B + I]) do
+    Inc(I);
+  Result := I;
+end;
+
 procedure EncodeBlock(const Data: TBytes; const Opt: TEncoderOptions;
   out Records, Literals, Digest: TBytes);
 var
@@ -313,10 +329,7 @@ begin
         Depth := SizeInt(Opt.ChainDepth);
         while (Cand >= 0) and (Depth > 0) do
         begin
-          L := 0;
-          while (L < MaxLen) and
-                (Data[SizeInt(Cand) + L] = Data[Pos + L]) do
-            Inc(L);
+          L := MatchLength(Data, SizeInt(Cand), Pos, MaxLen);
           if L > BestLen then
           begin
             BestLen := L;
