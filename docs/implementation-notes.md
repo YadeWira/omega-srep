@@ -63,6 +63,11 @@ El `skip` observado en los fixtures siempre es múltiplo de 512 (el `-c512`
 del match finder de SREP); no se exige esa alineación al leer, pero se
 documenta porque explica los valores. `max_match` no se usa para decodificar.
 
+La documentación pública de SREP (la página archivada de freearc.org) describe
+Future-LZ como "matches are stored at the match source rather than destination
+position" y "matches are sorted by their source address". Eso coincide con lo
+que muestran los fixtures. No se leyó código legacy para llegar a esto.
+
 Esta semántica también explica la identidad que cumplen todos los fixtures:
 
 ```

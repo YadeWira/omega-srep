@@ -241,6 +241,11 @@ var
 begin
   if QWord(BH.OrigSize) > QWord(High(SizeInt)) then
     DataError('block original size does not fit in memory');
+  { The digest is present (hash_id=4/hash_size=16 in the fixtures) but its
+    algorithm and key/nonce derivation are not in the specification.  The
+    on-disk block_crc already covers the digest bytes, so --verify checks
+    everything the spec pins.  Reconstruction digest verification is pending
+    a spec clarification; see docs/implementation-notes.md §7.3. }
   HashSize := FHeader.HashSize;
   if QWord(HashSize) + QWord(BH.StatSize) + QWord(BH.LiteralBytes) <>
      QWord(Length(Payload)) then
