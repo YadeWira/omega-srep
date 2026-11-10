@@ -58,8 +58,9 @@ reemplace) y se repiten en cada release.
 
 ## Orden de trabajo
 
-1. **Línea base**: medir OSREP 0.0.2 `-m3` contra SREP 3.93a y Omega SREP
-   3.0.0 en el corpus y en un archivo real (por ejemplo `real64.bin`).
+1. **Línea base** (hecha): medir OSREP 0.0.2 `-m3` contra SREP 3.92 y Omega
+   SREP 3.0.0 en el corpus y en `real64.bin`. Números en
+   `docs/benchmarks.md`.
 2. **Cerrar el encoder**: métodos y opciones que falten, con la meta de
    igualar o superar el ratio de SREP sin perder más tiempo del aceptable.
 3. **`-dup` de escritura** y el motor de dedup por contenido.
@@ -75,6 +76,7 @@ reemplace) y se repiten en cada release.
 - `libosrep` L0/L1 parcial y plugin de 7-Zip: congelados, no se amplían.
 - `-dup` de escritura: no implementado.
 - `-m4`/`-m5`: no implementados (exit 2).
-- Benchmarks contra SREP/Omega SREP: pendientes de la línea base.
+- Benchmarks contra SREP/Omega SREP: línea base hecha en `docs/benchmarks.md`.
+- Codificación paralela de bloques (`-tN`): hecha; el `.osr` no cambia.
 - Dedup por contenido para zpaq: diseñado en `docs/zpaq-dedup-study.md`,
   no implementado.

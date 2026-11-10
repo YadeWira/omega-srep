@@ -36,6 +36,12 @@ scripts, but the default and only writer is v6.
 `-m0` (in-memory), `-m1`/`-m2` (CDC), `-m4`/`-m5` and `-dup` are phase 2;
 until then they exit 2 with a clear "not implemented yet" message.
 
+## Threads
+
+`-tN` sets the encoder's worker threads: `0` = automatic (up to 8), `1` =
+one thread, up to 64. Blocks are encoded independently and written in order,
+so the `.osr` is byte-identical for every `N`; only the time changes.
+
 ## Options kept from the old contract
 
 `-lN`, `-cN`, `-bN`, `-aN[/M]`, `-ia-`/`-ia+`, `-hash=NAME`, `-tN`, `-vN`,

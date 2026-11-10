@@ -14,7 +14,8 @@ aparecieron. Nada de esto se dedujo del código legacy: sale de `spec/`,
 - `src/pascal/osrep_vhash.pas`: VHASH-128 sin nonce (digest de bloque).
 - `src/pascal/osrep_decoder.pas`: lector v6, Future-LZ multi-bloque, meta
   `DUPR` y post-paso de `-dup`.
-- `src/pascal/osrep_encoder.pas`: encoder `-m3` con hash chain propio.
+- `src/pascal/osrep_encoder.pas`: encoder `-m3` con hash chain propio y
+  codificación paralela de bloques (`-tN`; el `.osr` no depende de N).
 - `tests/v6_read.sh`: aceptación del lector.
 - `tests/v6_encode.sh`: aceptación del encoder y de `-dup`.
 
@@ -312,6 +313,12 @@ La librería no reimplementa el formato: envuelve el mismo `EncodeToStream` y
   Error". El plugin lee el bloque entero en memoria (el reader v6 necesita
   el footer) y llama a `osrep_compress`/`osrep_decompress`; zpaq-std no
   entra todavía.
+
+La codificación paralela reparte los bloques independientes entre hilos y
+los escribe en orden; el CRC, el digest y el archivo final son los mismos
+que con un hilo. `-t1` sirve para medir el costo real del encoder y `-t0`
+(o el default) usa hasta 8 hilos; `/proc/cpuinfo` da el número real de CPUs,
+porque `TThread.ProcessorCount` de FPC 3.2.2 devuelve 1 en esta máquina.
 
 `seed = 0` en `osrep_options` significa el default determinista del CLI
 (`SeedFromNumber(0)`), no una semilla aleatoria. `max_output` se comprueba
