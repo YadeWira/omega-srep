@@ -54,8 +54,9 @@ type
     procedure RestoreDup(const Body: TBytes; out Output: TBytes);
     procedure ParseBlockRecords(const BH: TBlockHeader; const Payload: TBytes;
       BlockStart: QWord);
+    function DecodeAllBytes: TBytes;
     procedure DecodeAll(OutStream: TStream);
-    procedure IterateBlocks(Decode: Boolean; OutStream: TStream);
+    function IterateBlocks(Decode: Boolean; OutStream: TStream): TBytes;
   public
     constructor Create(const AFileName: string);
     constructor CreateFromStream(AStream: TStream; AOwnsStream: Boolean = False);
@@ -142,6 +143,17 @@ begin
     Inc(Shift, 7);
   end;
   Result := False;
+end;
+
+procedure MarkCovered(var Bits: TBytes; Index: QWord); inline;
+begin
+  Bits[SizeInt(Index shr 3)] :=
+    Bits[SizeInt(Index shr 3)] or Byte(1 shl (Index and 7));
+end;
+
+function IsCovered(const Bits: TBytes; Index: QWord): Boolean; inline;
+begin
+  Result := (Bits[SizeInt(Index shr 3)] and Byte(1 shl (Index and 7))) <> 0;
 end;
 
 constructor TArchiveReader.Create(const AFileName: string);
@@ -527,9 +539,9 @@ begin
   FBlocks[High(FBlocks)] := B;
 end;
 
-procedure TArchiveReader.DecodeAll(OutStream: TStream);
+function TArchiveReader.DecodeAllBytes: TBytes;
 var
-  OutBuf, Covered: TBytes;
+  Covered: TBytes;
   TotalOut: QWord;
   I, J, LitPos: SizeInt;
   P: QWord;
@@ -541,8 +553,9 @@ begin
     raise EOsrepError.Create(6, 'original size exceeds max_output');
   if TotalOut > QWord(High(SizeInt)) then
     DataError('original size does not fit in memory');
-  SetLength(OutBuf, SizeInt(TotalOut));
-  SetLength(Covered, SizeInt(TotalOut));
+  Result := nil;
+  SetLength(Result, SizeInt(TotalOut));
+  SetLength(Covered, (SizeInt(TotalOut) + 7) div 8);
 
   FMatches.Sort(@CompareMatches);
 
@@ -553,7 +566,7 @@ begin
     if M^.Dst + M^.Len > TotalOut then
       DataError('match destination is outside the original data');
     for J := 0 to SizeInt(M^.Len) - 1 do
-      Covered[SizeInt(M^.Dst) + J] := 1;
+      MarkCovered(Covered, M^.Dst + QWord(J));
   end;
 
   { Each block's literals fill only the still-free positions of that block. }
@@ -568,11 +581,11 @@ begin
     P := B.StartPos;
     while P < B.StartPos + QWord(B.OrigSize) do
     begin
-      if Covered[SizeInt(P)] = 0 then
+      if not IsCovered(Covered, P) then
       begin
         if LitPos >= B.LitOffset + B.LitLen then
           DataError('not enough literal bytes for a block hole');
-        OutBuf[SizeInt(P)] := FAllLiterals[LitPos];
+        Result[SizeInt(P)] := FAllLiterals[LitPos];
         Inc(LitPos);
       end;
       Inc(P);
@@ -589,7 +602,7 @@ begin
   begin
     M := PMatch(FMatches[I]);
     for J := 0 to SizeInt(M^.Len) - 1 do
-      OutBuf[SizeInt(M^.Dst) + J] := OutBuf[SizeInt(M^.Src) + J];
+      Result[SizeInt(M^.Dst) + J] := Result[SizeInt(M^.Src) + J];
   end;
 
   { Per-block digest: only after the whole output has been reconstructed. }
@@ -601,17 +614,25 @@ begin
       if FHeader.HashId <> OsrepHashIdVhash then
         DataError(Format('block %d: digest hash id %d is not implemented',
           [I + 1, FHeader.HashId]));
-      if not VerifyBlockDigest(FHeader.HashId, FSeed, OutBuf, B.StartPos,
+      if not VerifyBlockDigest(FHeader.HashId, FSeed, Result, B.StartPos,
         B.OrigSize, B.Digest) then
         DataError(Format('block %d: digest mismatch', [I + 1]));
     end;
   end;
 
-  if Length(OutBuf) > 0 then
-    OutStream.WriteBuffer(OutBuf[0], Length(OutBuf));
 end;
 
-procedure TArchiveReader.IterateBlocks(Decode: Boolean; OutStream: TStream);
+procedure TArchiveReader.DecodeAll(OutStream: TStream);
+var
+  Data: TBytes;
+begin
+  Data := DecodeAllBytes;
+  if Length(Data) > 0 then
+    OutStream.WriteBuffer(Data[0], Length(Data));
+end;
+
+function TArchiveReader.IterateBlocks(Decode: Boolean;
+  OutStream: TStream): TBytes;
 var
   I: LongWord;
   Buf: TBytes;
@@ -696,7 +717,12 @@ begin
       DataError('blocks CRC mismatch');
 
     if Decode then
-      DecodeAll(OutStream);
+    begin
+      if OutStream = nil then
+        Result := DecodeAllBytes
+      else
+        DecodeAll(OutStream);
+    end;
   finally
     if FMatches <> nil then
     begin
@@ -763,22 +789,25 @@ end;
 
 procedure TArchiveReader.DecodeToBytes(out Data: TBytes);
 var
-  M: TMemoryStream;
+  BodyStream: TMemoryStream;
+  Body: TBytes;
 begin
-  M := TMemoryStream.Create;
-  try
-    DecodeToStream(M);
-    if M.Size > QWord(High(SizeInt)) then
-      raise EOsrepError.Create(4, 'original size does not fit in memory');
-    SetLength(Data, SizeInt(M.Size));
-    if M.Size > 0 then
-    begin
-      M.Position := 0;
-      M.ReadBuffer(Data[0], SizeInt(M.Size));
-    end;
-  finally
-    M.Free;
+  LoadHeaderFooter;
+  if (FHeader.Flags and 1) = 0 then
+  begin
+    Data := IterateBlocks(True, nil);
+    Exit;
   end;
+  BodyStream := TMemoryStream.Create;
+  try
+    IterateBlocks(True, BodyStream);
+    SetLength(Body, SizeInt(BodyStream.Size));
+    if Length(Body) > 0 then
+      Move(BodyStream.Memory^, Body[0], Length(Body));
+  finally
+    BodyStream.Free;
+  end;
+  RestoreDup(Body, Data);
 end;
 
 end.
