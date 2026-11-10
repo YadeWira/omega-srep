@@ -11,6 +11,13 @@ differential tests.
 | `cxx/` | the original **C++**, frozen at **1.0.7** (the 1.0.x releases). Writes the v4 container only. |
 | `rust/` | the **Rust** port, the released binary from 2.0.0 to 2.1.2. Byte-identical to the C++ in every mode, and writes v5 by default. |
 
+Bulat's original `to-do.txt` (his SREP 3.94 / 4.0 / 4.1 plans) and an English
+translation sit in `cxx/Compression/SREP/`, next to the sources they describe.
+They are upstream history: the roadmap was never implemented in 1.0.7, and it
+is not a contract for anything here. The original file is byte-identical to
+`src/to-do.txt` in the archived SREP 3.93a source, and keeps its CP1251
+encoding; the translation is line for line.
+
 ## Why they stay
 
 There are two of them, and they agree with each other. A mismatch against a
