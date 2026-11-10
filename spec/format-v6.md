@@ -244,6 +244,52 @@ El cuerpo de los chunks únicos es el cuerpo ya decodificado del archivo
 menos sus últimos 4 bytes. El CRC del meta se valida en `--verify`; la tabla de
 chunks se usa para reconstruir la entrada original en `-d`.
 
+### 2.10. Obligaciones del encoder
+
+El match finder es libre: el formato no exige un stream de matches concreto,
+solo que el archivo sea válido y decodifique a la entrada. Un encoder mínimo
+puede empezar con un solo método (`-m3`) y un hash chain simple.
+
+Para escribir un v6 válido:
+
+1. **Bloques.** Partir la entrada en bloques (`-b`, default 8 MiB). Para el
+   bloque `k`, `block_start` es la suma de los `origsize` anteriores y
+   `origsize` es su longitud.
+2. **Digest.** Calcular el digest del bloque según §2.6 sobre los `origsize`
+   bytes del bloque (VHASH-128 para `hash_id=4`; sin digest si
+   `hash_size=0`). El seed va en el header del archivo.
+3. **Matches.** Cada match tiene `source` absoluto, `destination = source +
+   distance` y `length`. `skip` es la diferencia entre el `source` del match y
+   el del anterior, con el anterior inicializado en `block_start` (el primer
+   `skip` es `source - block_start`). Los records se emiten **en orden de
+   source**, no de destination.
+   Un encoder simple puede restringir los matches al bloque actual
+   (`source >= block_start`, `destination + length <= block_start + origsize`);
+   el formato permite cruzar bloques, pero no es obligatorio.
+4. **Literales.** Los bytes del bloque que no cubre ningún match van al stream
+   de literales en el orden en que el decoder los consume: los huecos entre
+   destinations, en orden de destination, y la cola después del último match.
+   `literal_bytes` es su cuenta.
+5. **Cobertura.** El decoder reconstruye exactamente `origsize` bytes por
+   bloque. Un encoder que mantiene los matches dentro del bloque cumple
+   `sum(length) + literal_bytes = origsize` en cada bloque; si permite cruzar
+   bloques, la identidad vale para el archivo completo.
+6. **Header del bloque.** `literal_bytes`, `origsize`, `statsize` (bytes de
+   records) y `block_crc` sobre `digest || records || literales` tal como se
+   escriben.
+7. **Footer y header del archivo.** `block_count`, `stat_size`, tamaños,
+   `original_size`, `blocks_crc` y los CRC de header/footer.
+8. **`-dup`.** El cuerpo se comprime igual, con `flags.bit0`, la meta `DUPR`
+   de §2.8 entre el último bloque y el footer, y el digest sobre el cuerpo
+   deduplicado. La reconstrucción de la entrada original es el post-paso de
+   `-dup`.
+9. **Determinismo.** Mismo input, mismas opciones y mismo seed ⇒ mismo
+   archivo. El seed de `--seed=N` tiene que ser determinista; el match finder
+   también (sin orden dependiente de la dirección de memoria).
+
+No hay obligación de reproducir los bytes de SREP ni los de Omega SREP 3.0.0.
+Lo único que se conserva es el formato v6.
+
 ### 2.9. Lo que no cambia
 
 
