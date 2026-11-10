@@ -18,6 +18,13 @@ what happened in 2.0.0.
   clean worktree with `oracles/` removed; `full` adds the differential suites,
   which build the C++ and the Rust. Logs go to `OSREP_GATES_LOGS` and the exit
   code is non-zero if any gate failed.
+- **Mutation audit (`tests/mutations/`)**: 15 mutations of the encoder,
+  decoder and container (the 2.3.0 scan list, BASE_LEN, shifted blocks,
+  read-ahead, sort, `-ia-`, `-a`, v6 CRCs and varints), each a patch applied
+  to a copy of HEAD and run through `tests/gates.sh core`. Thirteen are
+  caught; two are documented as equivalent with the measurement (`-m5` with
+  the plain scan, and the 32/64 scan variants). The survivors became four new
+  golden cases.
 - **v6, opt-in with `--format=v6`**: the v5 container plus integrity — a
   16-byte block header with a CRC-32C over the block payload as stored
   (uncompressed blocks included), and a 36-byte footer with `blocks_crc`, the

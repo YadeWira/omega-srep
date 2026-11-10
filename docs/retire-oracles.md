@@ -97,7 +97,7 @@ errores de la CLI sin abrir un binario de `oracles/`.
 **Implementado el 2026-11-10:** `tests/gates.sh core` corre solo el núcleo
 (golden, v6 y su self-test); `full` agrega las diferenciales. Probado en un
 worktree con `oracles/` borrado y un build limpio: **core pasa entero**
-(golden 65, v6 42, frame 78). `harness_selftest` quedó del lado diferencial
+(golden 69, v6 42, frame 78). `harness_selftest` quedó del lado diferencial
 porque compila el harness Rust.
 
 **Aceptación:** en un clon sin `oracles/`, `g++` ni `cargo`, el núcleo pasa
@@ -105,20 +105,43 @@ entero y ninguna suite se saltea en silencio (las diferenciales dicen por qué).
 
 ### Fase D — Auditoría de mutaciones (la prueba)
 
-Antes de borrar nada, inyectar a mano una lista de errores conocidos y
-comprobar que el núcleo los ve:
+**Implementado el 2026-11-10.** `tests/mutations/` tiene 15 mutaciones; cada
+una es un `.py` que parchea una copia de HEAD, `run.sh` la compila con FPC y
+corre `tests/gates.sh core`. CAUGHT si el núcleo falla; SURVIVED si pasa.
+Resultado: **13 cazadas, 0 supervivientes, 2 equivalentes** documentadas.
 
-- las mutaciones del escaneo que ya sobrevivían (R11, R15, R18, R19, R20, P04);
-- los defectos que los oráculos encontraron en su momento (BASE_LEN, bloques
-  corridos, read-ahead, orden de `std::sort`, `-ia-`, `-a`);
-- 5–10 mutaciones nuevas al azar en el encoder/decoder (p. ej. cambiar un
-  límite, un redondeo, un chequeo de digest).
+| # | defecto | lo caza |
+|---|---------|---------|
+| 02 | `-ia-` ignorado (R19) | golden v4, 4 casos |
+| 03 | `-a0` leído como "no dado" | `text.bin -m3 -l17 -a0` |
+| 04 | v6 sin CRC de bloque | golden/CLI v6 |
+| 05 | semilla de CRC-32C distinta | golden/CLI v6 |
+| 06 | varint de 6 bits | golden/CLI v6 |
+| 07 | segundo pase sin `SortBySrc` | golden v4 |
+| 08 | sin read-ahead del digest | `a33929 -m3 -l130 -b261b` v6 |
+| 09 | cap 16→8 (R11) | `text.bin -m3 -l100 -a16` |
+| 10 | umbral de la quick path 2L→3L (R18) | el mismo caso de `a33929` |
+| 11 | cola del escaneo sin marcar (R15) | golden `-m3`/`-m4` |
+| 13 | `BASE_LEN` de cabecera +1 | la ida y vuelta de cualquier v4 |
+| 14 | bloques corridos (`HtChunkPos`) | `text.bin -m3 -b1000001b` v6 |
+| 15 | decodificador: último run de literales | ida y vuelta v4/v5/v6 |
 
-Cada mutación que **no** falle en el núcleo se convierte en un caso nuevo de la
-golden (o en una compuerta). La auditoría se repite hasta que todas mueran.
+Las dos equivalentes viven en `tests/mutations/equivalent/` con la medición:
+**01** (`-m5` con escaneo plano: el C++ y el Rust también dan lo mismo con
+`-a0`) y **12** (variantes 32/64: ningún input medido las distingue de 16 ni
+de 0, así que R20 sigue sin caso). **P04** no se pudo reconstruir: la lista de
+la revisión 2.3.0 se borró y no quedó el parche; la 15 cubre la clase
+"decodificador".
 
-**Aceptación:** 100 % de las mutaciones de la lista fallan en el núcleo, y la
-lista queda versionada como `tests/mutations/` (el parche de cada una).
+De acá salieron cuatro casos nuevos: `-l17 -a0` y `-l100 -a16` (v4),
+`a33929 -l130 -b261b` y `-b1000001b` (v6). Un `-l` que no es potencia de dos
+avisa y sale con 1 con el archivo ya escrito; `make.sh`/`make-v6.sh` aceptan
+ese exit code (y solo ese, contra el texto del aviso) y el manifiesto lo
+guarda.
+
+**Aceptación:** 100 % de las mutaciones de la lista fallan en el núcleo (o
+quedan documentadas como equivalentes con la medición), y la lista queda
+versionada como `tests/mutations/` (el parche de cada una).
 
 ### Fase E — Archivar y sacar
 
