@@ -39,6 +39,8 @@ jobs:
           mkdir -p pascal/bin/units-macos
           fpc -Mobjfpc -O2 -Xs -Fupascal/src -FUpascal/bin/units-macos \
               -opascal/bin/osrep-macos-aarch64 pascal/osrep.lpr
+          fpc -Mobjfpc -O2 -Xs -Fupascal/src -FUpascal/bin/units-macos \
+              -opascal/bin/hashtool pascal/hashtool.lpr
           file pascal/bin/osrep-macos-aarch64
           ./pascal/bin/osrep-macos-aarch64 --version
 
