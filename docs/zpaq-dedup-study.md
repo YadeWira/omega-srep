@@ -1,8 +1,9 @@
 # OSREP como motor de deduplicación de zpaq-std — estudio
 
-**Estado: Fase 0 hecha (2026-11-10); sin integración todavía.** El CDC
-orden-1 ya coincide con los cortes de zpaq-std en los corpus de prueba
-(`tools/zpaq-vectors/`); faltan SHA-1, `hits`/`o1` y la API. Este documento
+**Estado: Fases 0 y 1 (fragmenter) hechas (2026-11-10); sin integración
+todavía.** El CDC orden-1, SHA-1, `hits` y `o1` coinciden con zpaq-std en los
+corpus de prueba (`docs/zpaq-fragment-api.md`); falta enchufarlo en `add()` y
+la prueba de archivo byte a byte. Este documento
 lee el motor de deduplicación de **zpaq-std** y de **zpaqfranz** (del que
 zpaq-std es un fork) y decide cómo encajaría **OSREP** como su motor de
 deduplicación.
@@ -282,15 +283,17 @@ archivador no se toca.
   predictor para el análisis de tipo de dato) y la definición de la API
   `osrep_fragment_*`.
 
-### Fase 1 — Modo exacto (2–3 semanas)
+### Fase 1 — Modo exacto (fragmenter hecho; falta el enganche)
 
-- Implementar el CDC de orden 1 + SHA-1 en C (o Pascal primero, C después)
-  con la misma semántica; comparar contra los vectores de Fase 0.
-- Enchufar en `fragment_buffer`/`add2` y en el lazo de `add()`.
-- Tests: los fragmentos y SHA-1 son idénticos; el archivo ZPAQ resultante es
-  byte a byte el mismo que el de zpaq-std actual (con el mismo `--seed`/orden
-  de archivos, si aplica).
-- Caída: si el modo exacto no da idéntico, no se integra todavía.
+- **Hecho:** `src/c/osrep_fragment.c` + `osrep_sha1.c` reproducen offset,
+  tamaño, `hits`, SHA-1 y `o1` de los vectores de zpaq-std, en `-fragment
+  0/3/6/9` y en los dos corpus multi-versión (1775 + 503 fragmentos).
+  Documentado en `docs/zpaq-fragment-api.md`; tests `sha1.sh` y
+  `zpaq_fragments_exact.sh`.
+- **Pendiente:** enchufar la API en `fragment_buffer`/`add2` y en el lazo de
+  `add()`, y probar que el archivo ZPAQ es byte a byte idéntico al de
+  zpaq-std actual (mismo input, orden y `--seed`).
+- Caída: si el archivo no da idéntico, no se integra todavía.
 
 ### Fase 2 — Modo OSREP (2–3 semanas)
 

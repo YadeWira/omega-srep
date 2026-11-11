@@ -30,6 +30,10 @@ jobs:
         run: bash tests/decode_blockwise.sh
       - name: zpaq CDC vectors
         run: bash tests/zpaq_cdc_vectors.sh
+      - name: SHA-1 and exact fragments
+        run: |
+          bash tests/sha1.sh
+          bash tests/zpaq_fragments_exact.sh
       - name: Build the release binary
         run: |
           mkdir -p build/macos/obj build/macos/units
