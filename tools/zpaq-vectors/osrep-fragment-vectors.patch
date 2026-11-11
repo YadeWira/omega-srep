@@ -1,0 +1,69 @@
+--- a/zpaq-std.cpp
++++ b/zpaq-std.cpp
+@@ -180206,8 +180206,16 @@
+ 	io_argc= (int)o_argv.size();
+ 	io_argv= &o_argv[0];
+ }
++static void osrep_dump_fragments(const char* path, unsigned fragment);
++
+ int zpaq_main_internal(int argc, const char **argv)
+ {
++    if (const char* vpath = getenv("OSREP_FRAG_VECTORS")) {
++        unsigned frag = 6;
++        if (const char* fn = getenv("OSREP_FRAG_N")) frag = (unsigned)atoi(fn);
++        osrep_dump_fragments(vpath, frag);
++        return 0;
++    }
+     g_argc = argc; /// 65.15a: -lowram runs itself again with them (on *nix; Windows: GetCommandLineW)
+     g_argv = argv;
+ 	atexit(franztime_report);	/// -franztime (checks the flag itself)
+@@ -250324,6 +250332,49 @@
+ 	}
+ }
+ 
++/* OSREP Phase 0: dump the exact fragments of a file as TSV.
++   OSREP_FRAG_VECTORS=file OSREP_FRAG_N=6 zpaq-std
++   Columns: offset, size, hits, sha1(hex), o1(hex). */
++static void osrep_dump_fragments(const char* path, unsigned fragment) {
++	if (fragment > 12) {
++		fprintf(stderr, "OSREP_FRAG_N must be 0..12\n");
++		return;
++	}
++	FILE* f = fopen(path, "rb");
++	if (!f) {
++		fprintf(stderr, "cannot open %s\n", path);
++		return;
++	}
++	fseeko(f, 0, SEEK_END);
++	off_t sz = ftello(f);
++	fseeko(f, 0, SEEK_SET);
++	std::vector<unsigned char> data;
++	if (sz > 0) {
++		data.resize((size_t)sz);
++		if (fread(&data[0], 1, (size_t)sz, f) != (size_t)sz) {
++			fclose(f);
++			fprintf(stderr, "short read on %s\n", path);
++			return;
++		}
++	}
++	fclose(f);
++	unsigned MAX_FRAGMENT = 8128u << fragment;
++	unsigned MIN_FRAGMENT = 64u << fragment;
++	unsigned h_threshold = (fragment <= 22) ? (1u << (22 - fragment)) : 0;
++	bool check_boundary = (fragment <= 22);
++	std::vector<FrontFrag> out;
++	fragment_buffer(data.empty() ? NULL : &data[0], data.size(), MAX_FRAGMENT,
++	                MIN_FRAGMENT, h_threshold, check_boundary, out);
++	printf("offset\tsize\thits\tsha1\to1\n");
++	for (size_t i = 0; i < out.size(); ++i) {
++		printf("%zu\t%u\t%u\t", out[i].off, out[i].size, out[i].hits);
++		for (int j = 0; j < 20; ++j) printf("%02x", (unsigned char)out[i].sha1[j]);
++		printf("\t");
++		for (int j = 0; j < 256; ++j) printf("%02x", out[i].o1[j]);
++		printf("\n");
++	}
++}
++
+ 
+ 
+ 

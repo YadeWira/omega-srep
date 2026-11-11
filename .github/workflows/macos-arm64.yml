@@ -28,6 +28,8 @@ jobs:
         run: bash tests/memory_budget.sh
       - name: Block-wise decoder
         run: bash tests/decode_blockwise.sh
+      - name: zpaq CDC vectors
+        run: bash tests/zpaq_cdc_vectors.sh
       - name: Build the release binary
         run: |
           mkdir -p build/macos/obj build/macos/units

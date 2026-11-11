@@ -1,6 +1,8 @@
 # OSREP como motor de deduplicación de zpaq-std — estudio
 
-**Estado: estudio, 2026-11-10.** No hay integración todavía. Este documento
+**Estado: Fase 0 hecha (2026-11-10); sin integración todavía.** El CDC
+orden-1 ya coincide con los cortes de zpaq-std en los corpus de prueba
+(`tools/zpaq-vectors/`); faltan SHA-1, `hits`/`o1` y la API. Este documento
 lee el motor de deduplicación de **zpaq-std** y de **zpaqfranz** (del que
 zpaq-std es un fork) y decide cómo encajaría **OSREP** como su motor de
 deduplicación.
@@ -266,14 +268,19 @@ archivador no se toca.
 
 ## 6. Plan por fases
 
-### Fase 0 — Referencia de comportamiento (1 semana)
+### Fase 0 — Referencia de comportamiento (hecha, 2026-11-10)
 
-- Extraer el fragmentador de zpaq-std (`fragment_buffer` y el lazo de
-  `add()`) a una función de prueba, o instrumentarlo, y generar vectores:
-  buffer → lista de `(sha1, size, hits, o1)`.
-- Correr zpaq-std actual sobre un corpus multi-versión y guardar los vectores
-  (fragmentos, tamaños, SHA-1, tabla de dedup).
-- Definir la API `osrep_fragment_*` y los parámetros.
+- Vectores generados con el `fragment_buffer()` real de zpaq-std (commit
+  `b8ad717`) mediante `tools/zpaq-vectors/osrep-fragment-vectors.patch`:
+  `offset, size, hits, sha1, o1` por fragmento, con `-fragment 6`.
+- `tests/zpaq_cdc_vectors.sh` compara los cortes de `osrep_cdc_find` con los
+  vectores: **idénticos** en `text`, `mixed`, `zeros`, `random` y `tiny`.
+- Corpus multi-versión: `versions.tar` (125 MB, 4 snapshots de zpaq-std) da
+  1775 fragmentos y `pja.tar` (33 MB) 503; los cortes también coinciden
+  (`tools/zpaq-vectors/vectors/`).
+- Pendiente de la fase: SHA-1 (OSREP no lo tiene), `hits` y `o1` (estado del
+  predictor para el análisis de tipo de dato) y la definición de la API
+  `osrep_fragment_*`.
 
 ### Fase 1 — Modo exacto (2–3 semanas)
 

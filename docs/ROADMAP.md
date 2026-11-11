@@ -65,8 +65,10 @@ reemplace) y se repiten en cada release.
    igualar o superar el ratio de SREP sin perder más tiempo del aceptable.
 3. **Dedup por contenido**: `-m1`/`-m2` hechos. Con el mismo backend en un
    corpus real, `-m1` + zpaq da 12,23 MB contra 15,29 MB de zpaq solo;
-   `-m2` empata y `-dup -m5` empeora. Falta decidir el fragmentador que
-   usará zpaq y coordinarlo con su agente.
+   `-m2` empata y `-dup -m5` empeora. Fase 0 del fragmentador hecha: los
+   cortes de OSREP coinciden con zpaq-std en 5 archivos y en los corpus
+   multi-versión (1775 + 503 fragmentos). Faltan SHA-1, `hits`/`o1` y la API
+   `osrep_fragment_*` antes de coordinar.
 4. **Benchmarks de dedup** contra zpaq-std/zpaqfranz (mismo corpus
    multi-versión; tamaño y tiempos).
 5. **C/asm y memoria**: C/asm hechos; `-mem` en 0.0.12, decoder por bloques
