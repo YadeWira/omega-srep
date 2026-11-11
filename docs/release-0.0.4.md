@@ -11,7 +11,7 @@ siendo una pre-release; el núcleo de formato y la CLI son los mismos.
 - **Match finder nativo** (`src/c/osrep_match.c`): hash chain, lazy y
   profundidad de `-m3`/`-m4`/`-m5`. `tests/native_match.sh` compara contra
   `-dOSREP_NO_NATIVE`.
-- **CRC-32C nativo** (`src/c/osrep_crc.c`): SSE4.2 con fallback bitwise;
+- **CRC-32C nativo** (`src/c/osrep_crc_native.c`): SSE4.2 con fallback bitwise;
   mismos parámetros v6 (init 0, sin xorout).
 - **Hash de 16 bytes** para `-m4`/`-m5` con `-l >= 16` (8 bytes para
   `-l >= 8`); `-m3` conserva su hash de 4 bytes y sus fixtures.

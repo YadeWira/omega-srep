@@ -26,7 +26,7 @@ bash "$ROOT/tests/gen_corpus.sh" "$CORPUS" >"$TMP/corpus.log" 2>&1 || {
 : > "$TMP/empty.bin"
 
 echo "== native build =="
-for f in osrep_cdc osrep_match osrep_crc; do
+for f in osrep_cdc osrep_match osrep_crc_native; do
   $CC -O2 -fPIC -fno-builtin -fno-stack-protector \
     -c "$ROOT/src/c/$f.c" -o "$NAT/$f.o" || fail "cc $f"
 done

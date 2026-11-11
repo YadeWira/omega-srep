@@ -22,7 +22,7 @@ function Crc32C(const Buf: TBytes; Offset, Len: SizeInt): LongWord; overload;
 implementation
 
 {$ifndef OSREP_NO_NATIVE}
-{$L osrep_crc.o}
+{$L osrep_crc_native.o}
 function OsrepCrc32c(Crc: LongWord; Data: Pointer; Len: SizeUInt): LongWord;
   cdecl; external name 'osrep_crc32c';
 {$endif}

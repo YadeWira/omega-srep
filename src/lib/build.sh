@@ -40,7 +40,7 @@ CFLAGS="-O2 -fwrapv -ffp-contract=off -fno-stack-protector -fno-builtin"
 $CC $CFLAGS $CPIC -c "$HERE/osrep7z.c" -o "$OUT/c/osrep7z.o"
 $CC $CFLAGS $CPIC -c "$SRC/c/osrep_cdc.c" -o "$OUT/c/osrep_cdc.o"
 $CC $CFLAGS $CPIC -c "$SRC/c/osrep_match.c" -o "$OUT/c/osrep_match.o"
-$CC $CFLAGS $CPIC -c "$SRC/c/osrep_crc.c" -o "$OUT/c/osrep_crc.o"
+$CC $CFLAGS $CPIC -c "$SRC/c/osrep_crc_native.c" -o "$OUT/c/osrep_crc_native.o"
 # MSYS would rewrite FreePascal's -Fu paths; no conversion for its arguments
 # shellcheck disable=SC2086
 MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' $FPC -O2 -Sh $PIC $LDN \

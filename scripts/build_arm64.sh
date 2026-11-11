@@ -18,7 +18,7 @@ PREFIX=$(cd "$(dirname "$FPC_AARCH64")/../../.." && pwd)
 GCCLIB=$(dirname "$($CC_AARCH64 -print-file-name=libgcc.a)")
 LIBC=${AARCH64_LIBC:-/usr/aarch64-linux-gnu/lib}
 
-for f in osrep_cdc osrep_match osrep_crc osrep_csu_stub; do
+for f in osrep_cdc osrep_match osrep_crc_native osrep_csu_stub; do
   $CC_AARCH64 -O3 -fno-builtin -fno-stack-protector \
     -c "$ROOT/src/c/$f.c" -o "$OUT/obj/$f.o"
 done

@@ -335,7 +335,7 @@ contra `-dOSREP_NO_NATIVE`. En `real64.bin`: `-m3` 1,33→1,03 s, `-m4`
 para no cambiar el fixture `-m3 -l64`). `-m5 -l64 -c64` queda en
 51,04 MB / 0,83 s.
 
-El CRC-32C nativo (`src/c/osrep_crc.c`) usa la instrucción `crc32` con
+El CRC-32C nativo (`src/c/osrep_crc_native.c`) usa la instrucción `crc32` con
 SSE4.2 y un fallback bitwise; conserva init 0 y sin xorout. El build Pascal
 con tabla sigue siendo la referencia. `--verify` de `real64.osr` baja de
 0,116 s a 0,029 s.

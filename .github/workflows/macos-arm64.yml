@@ -27,7 +27,7 @@ jobs:
       - name: Build the release binary
         run: |
           mkdir -p build/macos/obj build/macos/units
-          for f in osrep_cdc osrep_match osrep_crc; do
+          for f in osrep_cdc osrep_match osrep_crc_native; do
             cc -O3 -fPIC -fno-builtin -fno-stack-protector \
               -c "src/c/$f.c" -o "build/macos/obj/$f.o"
           done

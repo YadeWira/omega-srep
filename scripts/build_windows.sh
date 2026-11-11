@@ -18,7 +18,7 @@ CC32=${CC32:-i686-w64-mingw32-gcc}
 build() {
   label=$1 fpcbin=$2 cc=$3
   mkdir -p "$OUT/$label/obj" "$OUT/$label/units"
-  for f in osrep_cdc osrep_match osrep_crc; do
+  for f in osrep_cdc osrep_match osrep_crc_native; do
     $cc -O3 -fno-builtin -fno-stack-protector \
       -c "$ROOT/src/c/$f.c" -o "$OUT/$label/obj/$f.o"
   done
