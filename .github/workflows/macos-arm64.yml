@@ -24,6 +24,8 @@ jobs:
         run: |
           bash tests/v6_read.sh
           bash tests/v6_encode.sh
+      - name: Memory budget
+        run: bash tests/memory_budget.sh
       - name: Build the release binary
         run: |
           mkdir -p build/macos/obj build/macos/units
