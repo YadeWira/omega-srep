@@ -171,7 +171,11 @@ while IFS=$'\t' read -r sha id input args; do
   case "$id" in \#*) continue ;; esac
   archive="$ROOT/tests/fixtures/v6-new/$id.osr"
   [ -f "$archive" ] || fail "missing fixture $id"
-  actual="$(sha256sum "$archive" | cut -d' ' -f1)"
+  if command -v sha256sum >/dev/null 2>&1; then
+    actual="$(sha256sum "$archive" | cut -d' ' -f1)"
+  else
+    actual="$(shasum -a 256 "$archive" | cut -d' ' -f1)"
+  fi
   [ "$actual" = "$sha" ] || fail "sha256 mismatch for $id"
   "$BIN" --verify "$archive" || fail "--verify $id"
   "$BIN" -d "$archive" "$TMP/new-$id.out" || fail "-d $id"

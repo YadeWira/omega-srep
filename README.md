@@ -29,9 +29,10 @@ preprocessing, decompression, verification and inspection.
 - **Format:** v6 only (`OSR6`). OSREP does **not** read or write the SREP
   v1-v5 formats, and there is no compatibility goal with upstream SREP.
 - **License:** MIT, from the first commit of this branch (`LICENSE`).
-- **Platforms:** Linux x86_64 (tested); Windows x86/x64 cross-built, tested
-  under Wine and on Windows 10 + Windows 7 SP1; Linux i386/ARM64 and macOS
-  ARM64 are planned.
+- **Platforms:** Linux x86_64 (tested) and ARM64 (cross-built, qemu
+  round-trip); Windows x86/x64 cross-built, tested under Wine and on
+  Windows 10 + Windows 7 SP1; macOS ARM64 runs in GitHub Actions; Linux
+  i386 is planned.
 - **Languages:** Free Pascal for the format, container, CLI, library and
   orchestration; C for the 7-Zip plugin, the CDC chunk scan, the match
   finder and CRC-32C; more C/asm hot paths (SIMD, hashes, prefetch/CPUID)

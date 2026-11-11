@@ -1,0 +1,42 @@
+name: macOS arm64
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [osrep]
+
+jobs:
+  macos-arm64:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Free Pascal
+        run: brew install fpc
+      - name: Toolchain
+        run: |
+          fpc -iV
+          cc --version | head -1
+      - name: Native CDC and match finder vs Pascal
+        run: |
+          bash tests/native_cdc.sh
+          bash tests/native_match.sh
+      - name: v6 reader and writer
+        run: |
+          bash tests/v6_read.sh
+          bash tests/v6_encode.sh
+      - name: Build the release binary
+        run: |
+          mkdir -p build/macos/obj build/macos/units
+          for f in osrep_cdc osrep_match osrep_crc; do
+            cc -O3 -fPIC -fno-builtin -fno-stack-protector \
+              -c "src/c/$f.c" -o "build/macos/obj/$f.o"
+          done
+          fpc -Mobjfpc -O2 -Sh -Xs -Fu src/pascal \
+            -Fo build/macos/obj -FU build/macos/units -FE build/macos \
+            -o build/macos/osrep src/pascal/osrep.lpr
+          build/macos/osrep --version
+          file build/macos/osrep
+      - uses: actions/upload-artifact@v4
+        with:
+          name: osrep-macos-arm64
+          path: build/macos/osrep
