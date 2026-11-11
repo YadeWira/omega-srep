@@ -159,6 +159,14 @@ Para `-m4`/`-m5` con `-l >= 8` el match finder usa un hash de 8 bytes, y con
 | `-m5 -l64 -c64` | 51.155.786 / 1,42 s | 51.001.239 / 0,93 s |
 | `-m5 -l64 -c64 -a32` | 51.082.852 / 1,75 s | 50.983.721 / ~1,0 s |
 
+`-c` no significa lo mismo en los tres: en SREP/Omega es **L**, el largo de
+chunk del diccionario (`-c; 0 = derivado de MinMatch` en el código legacy),
+mientras que en OSREP es el **stride de inserción** de la cadena. Por eso
+`-l64 -c64` no es una comparación equivalente. El punto comparable con Omega
+`-l64 -c64` es OSREP `-l64 -c8 -a32`: 49.811.892 contra 49.814.847 (OSREP
+gana por ~3 KB), a ~1,1 s contra 0,60 s de Omega. A igual tiempo, el default
+`-m5` de OSREP gana por ~15 puntos de ratio.
+
 `tests/native_match.sh` es la compuerta (byte a byte, también con
 `-l64 -c64 -a32` y entrada vacía). Para `-l >= 32` el hash es de 32 bytes.
 

@@ -101,6 +101,7 @@ reemplace) y se repiten en cada release.
   pasa round-trip bajo wine, Windows 10 y Windows 7 SP1; Linux x86 se cruza
   y pasa nativo; Linux ARM64 se cruza y pasa qemu; macOS ARM64 en GitHub
   Actions. Con `-l64 -c8 -a32` el ratio empata/gana a Omega `-m4`, pero el
-  tiempo sigue por detrás; a `-c64` Omega gana ambos.
+  tiempo sigue por detrás; `-c64` no es comparable porque en SREP/Omega `-c`
+  es el largo de chunk L, no un stride.
 - Dedup por contenido para zpaq: diseñado en `docs/zpaq-dedup-study.md`,
   no implementado.

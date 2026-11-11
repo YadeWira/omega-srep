@@ -37,9 +37,13 @@ Lectura:
 - **Ratio default**: OSREP gana por 15 puntos (38,1 MB vs 56,6–58,3 MB).
 - **A igual `-l64 -c8`**: OSREP 49.811.892 vs Omega 49.814.847; gana por
   ~3 KB, pero tarda ~1,9×.
-- **A igual `-l64 -c64`**: Omega gana ratio y tiempo (49,8 MB/0,60 s vs
-  51,0 MB/0,92 s). El `-c` de SREP/Omega no tiene exactamente la misma
-  semántica que el de OSREP.
+- **A igual `-l64 -c64`**: numéricamente Omega gana ratio y tiempo (49,8 MB/
+  0,60 s vs 51,0 MB/0,92 s), pero el flag no significa lo mismo: en
+  SREP/Omega `-c` es **L**, el largo de chunk del diccionario; en OSREP es el
+  **stride de inserción**. El punto comparable es `-l64 -c8 -a32`:
+  49.811.892 vs 49.814.847, OSREP gana por ~3 KB a ~1,1 s contra 0,60 s.
+- **A igual tiempo no hay comparación**: el default `-m5` de OSREP (38,08 MB)
+  está 15 puntos por delante de los defaults de SREP/Omega (56,6–58,3 MB).
 - En `text.bin`, SREP `-m4/-m5` da 189 bytes y OSREP 203; en `mixed.bin`
   todos rondan 2.097.3xx bytes. El default de OSREP no siempre gana en
   archivos pequeños.
@@ -142,8 +146,9 @@ zpaq) no está implementada: la coordinación es externa.
 2. ~~**Decoder por bloques y streaming**~~ (0.0.13/0.0.14): 210 MB → 42 MB;
    el `-dup` pasó de 3,2 GB/11,9 s a 42 MB/1,16 s; los archivos con matches
    que cruzan bloques usan el streaming (5 MB en el sintético de 64 MiB).
-3. **Velocidad del match finder**: C/asm y menos copias; el ratio a `-c8`
-   ya empata, falta el tiempo.
+3. **Velocidad del match finder**: con `-c8` el ratio ya empata/gana a
+   Omega; falta bajar el tiempo (1,1 s vs 0,60 s). El `-c` no es comparable
+   1:1: Omega usa `-c` como largo de chunk, OSREP como stride.
 4. **Paridad de CLI** que no toque formato: `-bar`, `-delete`, `-v`.
 5. **zpaq-std**: coordinar el fragmentador (lo lleva Wira).
 
