@@ -23,6 +23,9 @@ type
     Method: LongInt;
     UseHash: Boolean;
     Threads: LongInt;
+    { 0 = no limit; otherwise a soft cap in bytes. The encoder lowers the
+      block size (and, if needed, the thread count) to stay under it. }
+    MemLimit: QWord;
     Seed: TBytes;
   end;
 
@@ -146,7 +149,48 @@ begin
   Result.Method := 3;
   Result.UseHash := True;
   Result.Threads := 0; { auto: up to 8 }
+  Result.MemLimit := 0;
   Result.Seed := SeedFromNumber(0);
+end;
+
+const
+  { The encoder's fixed footprint (binary, RTL, streams) and a safety margin
+    over the measured peak RSS. }
+  OsrepEncoderBaseBytes = QWord(8) * 1024 * 1024;
+  OsrepMinBlockSize = QWord(64) * 1024;
+
+function EncoderHeadBytes(BlockSize: QWord): QWord;
+var
+  Bits: Integer;
+  Needed: QWord;
+begin
+  Bits := 12;
+  Needed := BlockSize div 4 + 1;
+  while (QWord(1) shl Bits) < Needed do
+    Inc(Bits);
+  if Bits > 22 then
+    Bits := 22;
+  Result := (QWord(1) shl Bits) * 4;
+end;
+
+function EncoderThreadBytes(BlockSize: QWord): QWord;
+begin
+  { data (1x) + Prev (4x) + matches (3x) + records/literals buffers (1x),
+    plus the hash head table }
+  Result := BlockSize * 9 + EncoderHeadBytes(BlockSize);
+end;
+
+function EstimateEncoderBytes(BlockSize: QWord; Threads: SizeInt): QWord;
+begin
+  Result := OsrepEncoderBaseBytes +
+    QWord(Threads) * EncoderThreadBytes(BlockSize);
+end;
+
+function HighestPowerOfTwo(N: QWord): QWord;
+begin
+  Result := 1;
+  while (Result <= N div 2) do
+    Result := Result * 2;
 end;
 
 function Hash4(const Data: TBytes; P: SizeInt): LongWord; inline;
@@ -625,11 +669,13 @@ var
   BlockIndex: QWord;
   HashId, HashSize: Byte;
   StatSize: QWord;
-  ThreadCount, BatchCount, J: SizeInt;
+  ThreadCount, BudgetThreads, BatchCount, J: SizeInt;
   MetaOffset: QWord;
   ErrMsg: string;
   Jobs: array of TEncodeJob;
   Workers: array of TEncodeThread;
+  BSize: QWord;
+  JobOpt: TEncoderOptions;
 begin
   if Opt.BlockSize = 0 then
     raise EOsrepError.Create(2, 'block size must be positive');
@@ -650,11 +696,48 @@ begin
     HashSize := 0;
   end;
 
+  ThreadCount := Opt.Threads;
+  if ThreadCount <= 0 then
+  begin
+    ThreadCount := OsrepCpuCount;
+    if ThreadCount > 8 then
+      ThreadCount := 8;
+  end;
+  if ThreadCount < 1 then
+    ThreadCount := 1;
+  if ThreadCount > 64 then
+    ThreadCount := 64;
+
+  { With an explicit -mem, pick the block size from the budget so the choice
+    does not depend on the machine: when -t is auto, size for the maximum
+    automatic count (8), then cap the actual threads. }
+  BSize := Opt.BlockSize;
+  { The budget models the LZ tables (Prev, matches, head); the stored/dedup
+    methods allocate none of them, and dedup buffers the whole input anyway. }
+  if (Opt.MemLimit > 0) and (Opt.Method >= 3) then
+  begin
+    { Size the block for the maximum automatic thread count (8) so the
+      archive does not depend on -t or on the machine; -t then only caps the
+      workers that actually run. }
+    BSize := HighestPowerOfTwo(Opt.BlockSize);
+    while (BSize > OsrepMinBlockSize) and
+          (EstimateEncoderBytes(BSize, 8) > Opt.MemLimit) do
+      BSize := BSize div 2;
+    if EstimateEncoderBytes(BSize, 1) > Opt.MemLimit then
+      raise EOsrepError.Create(2, 'memory budget is too small');
+    BudgetThreads := SizeInt((Opt.MemLimit - OsrepEncoderBaseBytes) div
+      EncoderThreadBytes(BSize));
+    if BudgetThreads < 1 then
+      BudgetThreads := 1;
+    if ThreadCount > BudgetThreads then
+      ThreadCount := BudgetThreads;
+  end;
+
   InSize := QWord(InStream.Size);
   if InSize = 0 then
     BlockCountQ := 0
   else
-    BlockCountQ := (InSize + Opt.BlockSize - 1) div Opt.BlockSize;
+    BlockCountQ := (InSize + BSize - 1) div BSize;
   if BlockCountQ > QWord(High(LongWord)) then
     raise EOsrepError.Create(2, 'too many blocks');
 
@@ -667,7 +750,7 @@ begin
     Hdr[5] := 0;
   Hdr[6] := HashId;
   Hdr[7] := HashSize;
-  PutU32LE(Hdr, 8, LongWord(Opt.BlockSize));
+  PutU32LE(Hdr, 8, LongWord(BSize));
   PutU32LE(Hdr, 12, LongWord(BlockCountQ));
   PutU64LE(Hdr, 16, InSize);
   PutU32LE(Hdr, 24, Crc32C(Hdr, 0, 24));
@@ -679,21 +762,12 @@ begin
   StatSize := 0;
   BlockStartQ := 0;
   BlockIndex := 0;
-  ThreadCount := Opt.Threads;
-  if ThreadCount <= 0 then
-  begin
-    ThreadCount := OsrepCpuCount;
-    if ThreadCount > 8 then
-      ThreadCount := 8;
-  end;
-  if ThreadCount < 1 then
-    ThreadCount := 1;
-  if ThreadCount > 64 then
-    ThreadCount := 64;
   { a single block has nothing to overlap, and tiny inputs are not worth a
     thread creation }
-  if (BlockCountQ <= 1) or (InSize < Opt.BlockSize) then
+  if (BlockCountQ <= 1) or (InSize < BSize) then
     ThreadCount := 1;
+  JobOpt := Opt;
+  JobOpt.BlockSize := BSize;
   while BlockIndex < BlockCountQ do
   begin
     BatchCount := ThreadCount;
@@ -703,7 +777,7 @@ begin
     SetLength(Workers, BatchCount);
     for J := 0 to BatchCount - 1 do
     begin
-      BlockLenQ := Opt.BlockSize;
+      BlockLenQ := BSize;
       if BlockStartQ + BlockLenQ > InSize then
         BlockLenQ := InSize - BlockStartQ;
       SetLength(Data, SizeInt(BlockLenQ));
@@ -712,7 +786,7 @@ begin
       Jobs[J] := TEncodeJob.Create;
       Jobs[J].Data := Data;
       Data := nil;
-      Jobs[J].Opt := Opt;
+      Jobs[J].Opt := JobOpt;
       Workers[J] := nil;
       if ThreadCount > 1 then
       begin

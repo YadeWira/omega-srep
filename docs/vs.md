@@ -54,6 +54,8 @@ Lectura:
 | OSREP `-m5 -t4` | 329 MB |
 | OSREP `-m5 -t1` | 84 MB |
 | OSREP `-m5 -b1mb` auto (8 hilos) | 86 MB |
+| OSREP `-m5 -mem128` (0.0.12) | **84 MB** |
+| OSREP `-m5 -mem192` (0.0.12) | 164 MB |
 | SREP `-m5` | 38 MB |
 | Omega `-m5` | 22 MB |
 | OSREP `-d` (decode) | **210 MB** |
@@ -86,7 +88,7 @@ zpaq) no está implementada: la coordinación es externa.
 
 ## Matriz de funciones
 
-| | SREP 3.92 | Omega 3.0.0 | OSREP 0.0.11 |
+| | SREP 3.92 | Omega 3.0.0 | OSREP 0.0.12 |
 |---|---|---|---|
 | Rol | preprocesador LZ77 | preprocesador + v6 | preprocesador + dedup |
 | Formatos | v4/v5 propios | v4/v5/v6, lee v1–v6 | **solo v6** |
@@ -94,6 +96,7 @@ zpaq) no está implementada: la coordinación es externa.
 | Dedup | m1/m2 | `-dup` (ODUP/v6) | `-m1`/`-m2`/`-dup` (DUPR) |
 | Integridad | checksums por bloque | CRC + v6 | **CRC-32C + VHASH-128 + `--verify`** |
 | Hilos | limitado | limitado | `-tN`, bloques en paralelo |
+| Presupuesto de memoria | no | no | `-memN` |
 | stdin/stdout | sí | sí | sí |
 | Diccionario > RAM | **sí** | sí | no (bloques de 8 MiB) |
 | Plataformas | Linux/Win antiguos | Linux/Win7/32-bit/macOS | Linux x64/x86/ARM64, Win x64/x86, macOS ARM64 |
@@ -130,9 +133,9 @@ zpaq) no está implementada: la coordinación es externa.
 
 ## Qué haría después
 
-1. **Presupuesto de memoria** (alto impacto, bajo riesgo): `-mem` o un
-   auto que elija `-b`/`-t` para no pasar de ~128–192 MB. El dato de
-   `-b1mb` (86 MB, 38,6 MB, 1,28 s) ya muestra que es viable.
+1. ~~**Presupuesto de memoria**~~ (hecho en 0.0.12): `-mem128` deja 84 MB y
+   38,62 MB de salida en 1,40 s (+1,4 % de ratio); `-mem192`, 164 MB y
+   +0,7 %. El bloque depende solo de `-mem`, no de `-t`.
 2. **Decoder por bloques / archivo temporal**: bajar los 210 MB de decode y
    acercarlo a SREP/Omega; es el cambio más grande que queda en el núcleo.
 3. **Velocidad del match finder**: C/asm y menos copias; el ratio a `-c8`

@@ -195,7 +195,8 @@ y los CRC.
 
 - `--version` → `OSREP 0.0.2 (2026-11-10)`.
 - `osrep -m3 [opciones] <input> [<output>]`: comprime; salida por defecto
-  `<input>.osr`. Opciones: `-b`, `-l`, `-c`, `-a`, `--seed`, `-hash-`.
+  `<input>.osr`. Opciones: `-b`, `-l`, `-c`, `-a`, `-t`, `-mem`, `--seed`,
+  `-hash-`.
 - `-d <archive> [<output>]`: salida derivada (`x.osr` → `x`; si no termina en
   `.osr`, `x` → `x.out`). `-` como salida escribe a stdout. Con `-dup`, la
   salida es la entrada original restaurada.
@@ -206,6 +207,7 @@ y los CRC.
 ```
 OSREP v6
 blocks=1
+max_match=8388608
 original_size=4194304
 stat_size=7
 meta_size=0
@@ -214,6 +216,28 @@ hash_size=16
 ```
 
 - Exit codes: 0 OK, 2 cmdline, 3 I/O, 4 datos dañados.
+- `max_match` es el campo 8 del header; OSREP escribe ahí el tamaño de bloque.
+  Los fixtures de Omega SREP traen `8388584`, así que `-i` usa el nombre real
+  del campo y no promete que sea el bloque en archivos ajenos.
+
+### 5.1. Presupuesto de memoria (`-mem`)
+
+El costo por hilo/bloque del encoder LZ es:
+
+```
+9 * bloque                 (datos, Prev 4x, matches 3x, buffers)
++ head                     (4 * 2^bits, bits = ceil(log2(bloque/4 + 1)), tope 22)
++ 8 MiB de base del proceso
+```
+
+`-memN` (sin sufijo = MB) toma el mayor bloque potencia de dos que quepa con
+8 hilos, y después limita los hilos que realmente corren. Elegir el bloque
+para 8 y no para `-t` es lo que conserva la garantía de que `-t` no cambia el
+archivo. Solo aplica a `-m3..-m5`: `-m0..-m2` no reservan Prev/Head, y `-dup`
+o stdin ya bufferizan la entrada completa.
+
+Medido en `real64.bin` con `-m5`: `-mem128` → bloque 1 MiB, 38.619.776,
+1,40 s, 84 MB de RSS; `-mem192` → 2 MiB, 38.336.931, 1,17 s, 164 MB.
 
 ## 6. Pruebas
 

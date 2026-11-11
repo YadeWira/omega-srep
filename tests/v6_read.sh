@@ -36,7 +36,7 @@ BIN="$BUILD/osrep"
 [ -x "$BIN" ] || fail "binary was not produced"
 
 echo "== version =="
-[ "$("$BIN" --version)" = "OSREP 0.0.11 (2026-11-10)" ] || fail "--version text"
+[ "$("$BIN" --version)" = "OSREP 0.0.12 (2026-11-10)" ] || fail "--version text"
 
 echo "== fixtures: -d round-trip =="
 if ! bash "$ROOT/tests/golden/inputs.sh" "$IN" >"$TMP/inputs.log" 2>&1; then
@@ -143,6 +143,7 @@ echo "== info output is stable =="
 INFO="$("$BIN" -i "$ROOT/tests/fixtures/v6/text-m3.osr")"
 EXPECTED="OSREP v6
 blocks=1
+max_match=8388584
 original_size=4194304
 stat_size=7
 meta_size=0

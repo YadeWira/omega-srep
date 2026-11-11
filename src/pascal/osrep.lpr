@@ -43,6 +43,7 @@ begin
   WriteLn('  -cN      hash insertion stride (default 1)');
   WriteLn('  -aN[/M]  hash chain depth (default 16)');
   WriteLn('  -tN      encoder threads (default auto, up to 8)');
+  WriteLn('  -memN    encoder memory budget, N is MB (or use kb/mb/gb)');
   WriteLn('  --seed=N deterministic VHASH seed');
   WriteLn('  -hash-   no per-block digest');
   WriteLn('  -dup     deduplicate before encoding');
@@ -262,6 +263,7 @@ begin
   end;
   WriteLn('OSREP v6');
   WriteLn('blocks=', Info.BlockCount);
+  WriteLn('max_match=', Info.MaxMatch);
   WriteLn('original_size=', Info.OriginalSize);
   if (Info.Flags and 1) <> 0 then
     WriteLn('restored_size=', Info.OutputSize);
@@ -419,6 +421,19 @@ begin
         if N > 64 then
           N := 64;
         EncOptions.Threads := LongInt(N);
+        EncOptionsUsed := True;
+      end
+      else if Copy(A, 1, 4) = '-mem' then
+      begin
+        Rest := Copy(A, 5, MaxInt);
+        if (Rest <> '') and (Rest[1] = '=') then
+          Delete(Rest, 1, 1);
+        if (Rest = '') or not ParseSize(Rest, N) or (N = 0) then
+          CmdError('invalid -mem budget: ' + A);
+        { a bare number is megabytes: -mem128 = 128 MB, -mem2gb = 2 GB. }
+        if (Rest[Length(Rest)] >= '0') and (Rest[Length(Rest)] <= '9') then
+          N := N * 1024 * 1024;
+        EncOptions.MemLimit := N;
         EncOptionsUsed := True;
       end
       else if Copy(A, 1, 2) = '-b' then

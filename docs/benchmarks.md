@@ -6,7 +6,7 @@ Nada de esto es una promesa: son los números de hoy y el punto de partida.
 ## Máquina y binarios
 
 - CPU: Intel Xeon E5-2697A v4 @ 2.60 GHz, x86-64 (64 hilos visibles).
-- OSREP 0.0.11, compilado con FPC 3.2.2 `-O2` (sin C/asm todavía), con
+- OSREP 0.0.12, compilado con FPC 3.2.2 `-O2` y el CDC/match/CRC nativos, con
   codificación paralela de bloques (`-tN`, default automático hasta 8).
 - SREP 3.92 beta (2013-07-23), binario `srep64` de
   `repo-extras/srep392.zip`. No hay binario de 3.93a en el árbol; 3.92 es
@@ -244,3 +244,29 @@ la comparación de longitud de match. En `real64.bin` no mejoró: `-m3`
 ~1,12→1,14 s y `-m5` ~1,21→1,24 s (medianas de 3 corridas). La mayoría de
 los candidatos fallan en los primeros 8 bytes, así que el costo de la ruta
 AVX2 no se compensa. Se revirtió; queda la comparación de 8 bytes.
+
+
+## Presupuesto de memoria (`-mem`)
+
+`real64.bin`, `-m5`, Linux x86_64. `-mem` elige el bloque para 8 hilos, así
+que el archivo no depende de `-t`. RSS pico con `wait4`.
+
+| ajustes | bloque | salida | ratio | tiempo | RSS |
+|---|---:|---:|---:|---:|---:|
+| default | 8 MiB | 38.083.480 | 56,75 % | 1,14 s | 656 MB |
+| `-mem512` | 4 MiB | 38.057.780 | 56,71 % | 1,15 s | 329 MB |
+| `-mem192` | 2 MiB | 38.336.931 | 57,13 % | 1,17 s | 164 MB |
+| `-mem128` | 1 MiB | 38.619.776 | 57,55 % | 1,40 s | 84 MB |
+| `-mem64` | 512 KiB | 39.102.508 | 58,27 % | 1,81 s | 45 MB |
+| `-mem24` | 256 KiB | 40.960.436 | 61,05 % | 6,58 s | 22 MB |
+| `-mem128 -t1` | 1 MiB | 38.619.776 | 57,55 % | 4,04 s | 15 MB |
+
+Lectura:
+
+- **128 MB** es el punto dulce: 84 MB reales y +1,4 % de ratio (+0,54 MB).
+- **192–256 MB** dan 164 MB reales y +0,7 % (+0,25 MB).
+- 64 MB y menos empiezan a costar ratio y tiempo; 24 MB solo para máquinas
+  muy chicas.
+- `-t1` con `-mem128` da el mismo archivo (1 MiB de bloque) y baja a 15 MB,
+  a cambio de 4 s.
+- El decoder no cambia: sigue reconstruyendo toda la salida (210 MB).

@@ -54,6 +54,21 @@ deduplicated body) and `restored_size` (the input).
 one thread, up to 64. Blocks are encoded independently and written in order,
 so the `.osr` is byte-identical for every `N`; only the time changes.
 
+## Memory budget
+
+`-memN` caps the encoder's memory. A bare number is megabytes (`-mem128`);
+`kb`/`mb`/`gb` suffixes are accepted (`-mem192mb`). The encoder lowers the
+block size (and, if needed, the worker count) to stay under the cap, so a
+budgeted archive is valid but has more, smaller blocks.
+
+The block size is chosen for the automatic maximum of 8 workers and does not
+depend on `-t`, so `-mem` keeps the byte-identical-for-every-`N` guarantee.
+
+The budget models the LZ tables (`-m3`..`-m5`). `-m0`..`-m2` store the body
+and allocate none of them, and `-dup`/stdin still buffer the whole input,
+which `-mem` does not bound. A budget too small for one 64 KiB block is a
+command line error (2).
+
 ## Options kept from the old contract
 
 `-lN`, `-cN`, `-bN`, `-aN[/M]`, `-ia-`/`-ia+`, `-hash=NAME`, `-tN`, `-vN`,
@@ -70,6 +85,7 @@ must not silently ignore it.
 ```
 OSREP v6
 blocks=N
+max_match=N
 original_size=N
 restored_size=N
 stat_size=N
@@ -94,5 +110,5 @@ output. This is the phase-1 contract; the new golden fixes it.
 `--version` prints `OSREP <version> (<date>)`. The OSREP line starts at
 `0.0.1`; phase 0 is `OSREP 0.0.1 (2026-11-10)`, the v6 MVP was `0.0.2`,
 `0.0.3` was the m1-m5/dup/threads checkpoint, `0.0.4` added the native CDC,
-match finder and CRC-32C, `0.0.5` tuned `-m1` to 8 KiB chunks, `0.0.6` added stdin and stored `-m0`, `0.0.7` shipped Windows x86/x64, `0.0.8` fixed Windows stdin/stdout, `0.0.9` added Linux ARM64 and macOS ARM64, `0.0.10` added Linux x86, `0.0.11` adds the 32-byte hash for large `-l`, and
-the first stable release is `1.0.0`. Every 0.0.x release is a pre-release.
+match finder and CRC-32C, `0.0.5` tuned `-m1` to 8 KiB chunks, `0.0.6` added stdin and stored `-m0`, `0.0.7` shipped Windows x86/x64, `0.0.8` fixed Windows stdin/stdout, `0.0.9` added Linux ARM64 and macOS ARM64, `0.0.10` added Linux x86, `0.0.11` added the 32-byte hash for large `-l`,
+`0.0.12` adds the `-mem` budget, and the first stable release is `1.0.0`. Every 0.0.x release is a pre-release.

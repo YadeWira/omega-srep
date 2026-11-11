@@ -743,6 +743,7 @@ procedure TArchiveReader.ReadInfo(out Info: TArchiveInfo);
 begin
   LoadHeaderFooter;
   Info.BlockCount := FHeader.BlockCount;
+  Info.MaxMatch := FHeader.MaxMatch;
   Info.OriginalSize := FHeader.OriginalSize;
   if (FHeader.Flags and 1) <> 0 then
     Info.OutputSize := DupOutputSize
