@@ -31,8 +31,7 @@ preprocessing, decompression, verification and inspection.
 - **License:** MIT, from the first commit of this branch (`LICENSE`).
 - **Platforms:** Linux x86_64 (tested) and ARM64 (cross-built, qemu
   round-trip); Windows x86/x64 cross-built, tested under Wine and on
-  Windows 10 + Windows 7 SP1; macOS ARM64 runs in GitHub Actions; Linux
-  i386 is planned.
+  Windows 10 + Windows 7 SP1; macOS ARM64 runs in GitHub Actions.
 - **Languages:** Free Pascal for the format, container, CLI, library and
   orchestration; C for the 7-Zip plugin, the CDC chunk scan, the match
   finder and CRC-32C; more C/asm hot paths (SIMD, hashes, prefetch/CPUID)

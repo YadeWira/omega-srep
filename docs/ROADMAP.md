@@ -90,6 +90,7 @@ reemplace) y se repiten en cada release.
 - C/asm: CDC, match finder y CRC-32C nativos, verificados contra Pascal;
   hash de 16 bytes para `-m4/-m5` con `-l >= 16`. Windows x86/x64 cruza y
   pasa round-trip bajo wine, Windows 10 y Windows 7 SP1; Linux ARM64 se
-  cruza y pasa qemu; macOS ARM64 en GitHub Actions; Linux i386 pendiente.
+  cruza y pasa qemu; macOS ARM64 en GitHub Actions. Linux i386 no es un
+  objetivo.
 - Dedup por contenido para zpaq: diseñado en `docs/zpaq-dedup-study.md`,
   no implementado.

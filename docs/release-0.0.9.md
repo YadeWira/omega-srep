@@ -38,8 +38,9 @@ x86/x64 y macOS ARM64 con el mismo CLI y los mismos tests. Pre-release.
 
 ## Limitaciones
 
-- Linux i386 no está en este release.
-- Windows 8/11 no se probaron específicamente (sí 7 SP1 y 10).
+- Linux i386 no es un objetivo.
+- Windows 10 y 7 SP1 probados; no hay VM de Windows 8 en este entorno, y
+  Windows 11 no se probó específicamente.
 - Ratio a igual `-l64 -c64` por detrás de Omega `-m4`.
 - AES/SIMD restante.
 - Integración con zpaq-std (fragmentador) pendiente de coordinar.
