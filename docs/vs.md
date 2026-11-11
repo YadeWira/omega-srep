@@ -59,8 +59,9 @@ Lectura:
 | SREP `-m5` | 38 MB |
 | Omega `-m5` | 22 MB |
 | OSREP `-d` 0.0.12 (global) | 210 MB |
-| OSREP `-d` 0.0.13 (por bloques) | **42 MB** |
-| OSREP `-d` de `-dup -m5` 0.0.13 | 106 MB |
+| OSREP `-d` 0.0.14 (por bloques) | **42 MB** |
+| OSREP `-d` de `-dup -m5` 0.0.14 | 42 MB |
+| OSREP `-d` cross-block 0.0.14 (sintético) | 5 MB |
 | SREP `-d` | 20 MB |
 | Omega `-d` | 28 MB |
 
@@ -90,7 +91,7 @@ zpaq) no está implementada: la coordinación es externa.
 
 ## Matriz de funciones
 
-| | SREP 3.92 | Omega 3.0.0 | OSREP 0.0.12 |
+| | SREP 3.92 | Omega 3.0.0 | OSREP 0.0.14 |
 |---|---|---|---|
 | Rol | preprocesador LZ77 | preprocesador + v6 | preprocesador + dedup |
 | Formatos | v4/v5 propios | v4/v5/v6, lee v1–v6 | **solo v6** |
@@ -138,9 +139,9 @@ zpaq) no está implementada: la coordinación es externa.
 1. ~~**Presupuesto de memoria**~~ (hecho en 0.0.12): `-mem128` deja 84 MB y
    38,62 MB de salida en 1,40 s (+1,4 % de ratio); `-mem192`, 164 MB y
    +0,7 %. El bloque depende solo de `-mem`, no de `-t`.
-2. ~~**Decoder por bloques**~~ (hecho en 0.0.13): 210 MB → 42 MB y 1,45 s →
-   1,10 s; el `-dup` pasó de 3,2 GB/11,9 s a 106 MB/1,10 s. Queda el fallback
-   global para archivos legacy con matches que cruzan bloques.
+2. ~~**Decoder por bloques y streaming**~~ (0.0.13/0.0.14): 210 MB → 42 MB;
+   el `-dup` pasó de 3,2 GB/11,9 s a 42 MB/1,16 s; los archivos con matches
+   que cruzan bloques usan el streaming (5 MB en el sintético de 64 MiB).
 3. **Velocidad del match finder**: C/asm y menos copias; el ratio a `-c8`
    ya empata, falta el tiempo.
 4. **Paridad de CLI** que no toque formato: `-bar`, `-delete`, `-v`.

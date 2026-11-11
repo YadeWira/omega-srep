@@ -6,7 +6,7 @@ Nada de esto es una promesa: son los números de hoy y el punto de partida.
 ## Máquina y binarios
 
 - CPU: Intel Xeon E5-2697A v4 @ 2.60 GHz, x86-64 (64 hilos visibles).
-- OSREP 0.0.12, compilado con FPC 3.2.2 `-O2` y el CDC/match/CRC nativos, con
+- OSREP 0.0.14, compilado con FPC 3.2.2 `-O2` y el CDC/match/CRC nativos, con
   codificación paralela de bloques (`-tN`, default automático hasta 8).
 - SREP 3.92 beta (2013-07-23), binario `srep64` de
   `repo-extras/srep392.zip`. No hay binario de 3.93a en el árbol; 3.92 es
@@ -134,7 +134,7 @@ referencia:
 | modo | Pascal | C |
 |---|---:|---:|
 | `-m1` | 1,17 s | 0,83 s |
-| `-m2` | 1,33 s | 1,07 s |
+| `-m2` | 1,33 s | 1,10 s |
 | `-dup` (incluye LZ) | 2,42 s | 2,37 s |
 
 Los archivos son byte-idénticos; `tests/native_cdc.sh` es la compuerta. El
@@ -147,7 +147,7 @@ Los archivos son byte-idénticos; `tests/native_cdc.sh` es la compuerta. El
 | modo | Pascal | C | salida |
 |---|---:|---:|---:|
 | `-m3` | 1,33 s | 1,03 s | 39.551.315 |
-| `-m4` | 1,43 s | 1,13 s | 38.353.352 |
+| `-m4` | 1,43 s | 1,16 s | 38.353.352 |
 | `-m5` | 1,53 s | 1,14 s | 38.083.480 |
 
 Para `-m4`/`-m5` con `-l >= 8` el match finder usa un hash de 8 bytes, y con
@@ -280,13 +280,19 @@ RSS pico con `wait4`.
 | versión | flujo | salida | tiempo | RSS |
 |---|---|---|---:|---:|---:|
 | 0.0.12 | `-d` (global) | 67.108.864 | 1,45 s | 210 MB |
-| 0.0.13 | `-d` por bloques | 67.108.864 | 1,10 s | **42 MB** |
+| 0.0.13 | `-d` por bloques | 67.108.864 | 1,10 s | 42 MB |
+| **0.0.14** | `-d` por bloques | 67.108.864 | 1,10 s | **42 MB** |
 | 0.0.12 | `-d` de `-dup -m5` | 67.108.864 | 11,9 s | 3.225 MB |
-| 0.0.13 | `-d` de `-dup -m5` | 67.108.864 | 1,10 s | **106 MB** |
+| 0.0.13 | `-d` de `-dup -m5` | 67.108.864 | 1,10 s | 106 MB |
+| **0.0.14** | `-d` de `-dup -m5` (body en archivo temporal) | 67.108.864 | 1,16 s | **42 MB** |
+| 0.0.12 | `-d` cross-block sintético 64 MiB | 67.108.864 | 0,41 s | 74 MB |
+| **0.0.14** | `-d` cross-block sintético 64 MiB | 67.108.864 | **0,09 s** | **5 MB** |
 
 - El decoder por bloques aplica cuando todos los matches caen dentro de su
-  bloque (lo que escribe OSREP). Un archivo legacy con matches que cruzan
-  bloques (`tests/fixtures/v6/text-b1mb-m3.osr`) usa el camino global.
+  bloque (lo que escribe OSREP). Si alguno cruza, el decoder streaming
+  produce la salida en orden de posición con una ventana deslizante; el
+  fixture `text-b1mb-m3.osr` y el sintético `tests/gen_crossblock.py` lo
+  cubren.
 - El `-dup` ahora referencia los chunks únicos del body por offset, preasigna
   la salida y la escribe en streaming; antes copiaba cada chunk y crecía el
   buffer de salida de a un chunk (O(n²)).

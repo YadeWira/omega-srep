@@ -349,12 +349,12 @@ el mismo resultado que la de Pascal; `tests/native_cdc.sh` compila los dos
 builds y compara `-m1`, `-m2` y `-dup` byte a byte. `-m1` usa un promedio de
 8 KiB (ventana fija); en el tar multi-versión de zpaq eso baja el pipeline
 de 12,23 MB a 8,87 MB. En `twice64.bin` baja el
-scan de ~1,17 s a ~0,83 s (`-m1`) y de ~1,33 s a ~1,07 s (`-m2`).
+scan de ~1,17 s a ~0,83 s (`-m1`) y de ~1,33 s a ~1,10 s (`-m2`).
 
 El match finder de `-m3/-m4/-m5` está en `src/c/osrep_match.c`, con el mismo
 hash chain, lazy y profundidad; `tests/native_match.sh` compara los `.osr`
 contra `-dOSREP_NO_NATIVE`. En `real64.bin`: `-m3` 1,33→1,03 s, `-m4`
-1,43→1,13 s, `-m5` 1,53→1,14 s, con los mismos bytes. Para `-m4`/`-m5` con
+1,43→1,16 s, `-m5` 1,53→1,14 s, con los mismos bytes. Para `-m4`/`-m5` con
 `-l >= 8` usa un hash de 8 bytes; con `-l >= 16`, uno de 16 (en `-m3` no,
 para no cambiar el fixture `-m3 -l64`). `-m5 -l64 -c64` queda en
 51,00 MB / 0,93 s; con `-c8 -a32`, 49,81 MB / 1,14 s.
@@ -378,33 +378,33 @@ contra el `origsize` del header antes de reservar la salida y, en un archivo
 restaurados.
 
 
-## 7. Decoder por bloques
+## 7. Decoder: por bloques, streaming y `-dup`
 
-El decoder tiene dos caminos:
+`ScanBlockLocality` lee headers y records una vez y elige el camino:
 
-1. **Por bloques** (0.0.13): un primer pase lee headers y records de cada
-   bloque y comprueba que todos los matches cumplen
-   `block_start <= src` y `dst + len <= block_end`; también valida los
-   varints, los límites y el tamaño de payload. Si se cumple, un segundo
-   pase decodifica cada bloque en su propio buffer: marca los destinos de los
-   matches, rellena los huecos con los literales del bloque, ordena los
-   matches por destino (estable, por `Seq`) y copia (byte a byte solo cuando
-   `distance < length`, `Move` si no se solapan). Verifica el digest del
-   bloque y escribe.
-2. **Global** (heredado): si algún match cruza el borde de su bloque, se usa
-   el camino anterior (`IterateBlocks` + `DecodeAllBytes`), que mantiene la
-   cola global de matches y todo el output. Es el caso de archivos Omega
-   legacy como `text-b1mb-m3.osr`.
+1. **Por bloques** (0.0.13): todos los matches cumplen
+   `src >= block_start` y `dst + len <= block_end`. Se decodifica cada bloque
+   en su buffer: marca destinos, rellena huecos con los literales del bloque,
+   ordena los matches por destino (estable, por `Seq`) y copia (`Move` si no
+   se solapan; byte a byte cuando `distance < length`). Verifica el digest y
+   escribe. Memoria: payload + salida del bloque + matches locales.
+2. **Streaming Future-LZ** (0.0.14): si algún match cruza el borde, la salida
+   se produce en orden de posición con una cola de matches pendientes
+   ordenada por destino y una ventana deslizante que conserva solo los bytes
+   que esos matches todavía necesitan (`CompactWindow` recorta desde el
+   mínimo `src`). Los literales y los matches se copian por tramos; solo el
+   solapamiento usa byte a byte. Digest y escritura por bloque. La memoria es
+   O(distancia + bloque), no O(archivo): 5 MB / 0,09 s en el sintético de
+   64 MiB con matches encadenados (`tests/gen_crossblock.py`), contra
+   74 MB / 0,41 s del decoder global anterior.
 
-Memoria del camino por bloques: payload del bloque (records + literales),
-output del bloque y los matches locales; en `real64.bin` son ~42 MB de RSS
-contra 210 MB del global.
+`-dup` se decodifica en dos etapas: el body (por bloques o streaming) y el
+meta `DUPR`. Si `original_size > 32 MiB`, el body va a un archivo temporal
+(`GetTempFileName`) y `RestoreDupFileToStream` lee los chunks por offset.
+`RestoreDupCore` guarda los chunks únicos como offsets al body (sin
+copiarlos), preasigna la salida o la escribe en streaming, y valida tamaños;
+eso elimina el O(n²) y el pico de 3,2 GB anterior. En `real64.bin`:
+42 MB / 1,16 s.
 
-`-dup` se decodifica en dos etapas: el body por bloques y después el meta
-`DUPR`. `RestoreDup`/`RestoreDupToStream` guardan los chunks únicos como
-offsets al body (sin copiarlos), preasignan la salida o la escriben en
-streaming, y validan tamaños; eso elimina el O(n²) y el pico de 3,2 GB del
-camino anterior.
-
-`DecodeToBytes` usa el camino por bloques cuando puede: el buffer de salida
-es el resultado, sin la copia global de literales/matches.
+`DecodeToBytes` usa los mismos caminos: el buffer de salida es el resultado,
+sin la copia global de literales y matches.

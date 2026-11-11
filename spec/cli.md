@@ -111,5 +111,5 @@ output. This is the phase-1 contract; the new golden fixes it.
 `0.0.1`; phase 0 is `OSREP 0.0.1 (2026-11-10)`, the v6 MVP was `0.0.2`,
 `0.0.3` was the m1-m5/dup/threads checkpoint, `0.0.4` added the native CDC,
 match finder and CRC-32C, `0.0.5` tuned `-m1` to 8 KiB chunks, `0.0.6` added stdin and stored `-m0`, `0.0.7` shipped Windows x86/x64, `0.0.8` fixed Windows stdin/stdout, `0.0.9` added Linux ARM64 and macOS ARM64, `0.0.10` added Linux x86, `0.0.11` added the 32-byte hash for large `-l`,
-`0.0.12` added the `-mem` budget, `0.0.13` the block-wise decoder, and the
-first stable release is `1.0.0`. Every 0.0.x release is a pre-release.
+`0.0.12` added the `-mem` budget, `0.0.13` the block-wise decoder, `0.0.14` the streaming decoder and the
+temporary-file `-dup` restore, and the first stable release is `1.0.0`. Every 0.0.x release is a pre-release.

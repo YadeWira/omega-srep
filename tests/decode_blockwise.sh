@@ -53,6 +53,14 @@ echo "== global fallback: legacy archive with cross-block matches =="
   fail "decode cross-block fixture"
 cmp "$TMP/legacy.out" "$CORPUS/text.bin" || fail "cross-block round-trip"
 
+echo "== streaming: synthetic cross-block chain =="
+python3 "$ROOT/tests/gen_crossblock.py" "$TMP/cross.osr" "$TMP/cross.expected" 16
+"$BIN" --verify "$TMP/cross.osr" || fail "verify cross-block chain"
+"$BIN" -d "$TMP/cross.osr" "$TMP/cross.out" || fail "decode cross-block chain"
+cmp "$TMP/cross.out" "$TMP/cross.expected" || fail "cross-block chain round-trip"
+"$BIN" -d "$TMP/cross.osr" - | cmp - "$TMP/cross.expected" || \
+  fail "cross-block chain to stdout"
+
 echo "== DUPR restore: unique chunks and references =="
 "$BIN" -m1 "$CORPUS/zeros.bin" "$TMP/dup-zeros.osr" || fail "-m1 zeros"
 "$BIN" -d "$TMP/dup-zeros.osr" "$TMP/dup-zeros.out" || fail "-m1 zeros decode"

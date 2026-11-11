@@ -10,7 +10,7 @@ it is licensed MIT, and its own format is **v6**: blocks with CRC-32C and a
 VHASH-128 digest, a footer that chains the block CRCs, and a CLI for
 preprocessing, decompression, verification and inspection.
 
-- **Status: 0.0.13 checkpoint (pre-release).** The v6 reader and writer are
+- **Status: 0.0.14 checkpoint (pre-release).** The v6 reader and writer are
   implemented in `src/pascal/`: container, CRC-32C, VHASH-128 block digest,
   `-d`, `--verify`, `-i`, `-dup` write/read/restore, `-m0` stored, dedup-only
   `-m1` (fixed-window CDC) and `-m2` (order-1 CDC), a hash-chain match finder
@@ -19,16 +19,17 @@ preprocessing, decompression, verification and inspection.
   (`-tN`, automatic up to 8 threads) whose output is byte-identical to the
   single-thread one, and a memory budget (`-mem128`) that lowers the block
   size to keep the LZ tables under a cap. Decoding is block-wise when every
-  match stays inside its block (what this encoder writes), with the global
-  Future-LZ path as a fallback for legacy cross-block archives.
+  match stays inside its block, and a windowed Future-LZ streaming decoder
+  covers cross-block archives; `-dup` bodies above 32 MiB are restored from a
+  temporary file instead of RAM.
   The tests cover the ten compatibility fixtures in `tests/fixtures/v6/`, the
   encoder round-trip/determinism, `-hash-`, `-dup`, the new golden archives in
   `tests/fixtures/v6-new/`, the native CDC and match finder against the
   Pascal reference, and the library (73 checks, 103 with the corpus).
   Every 0.0.x release is a pre-release; 1.0.0 is the first stable release.
   Implementation notes and the open limitations are in
-  `docs/implementation-notes.md`; the 0.0.13 notes are in
-  `docs/release-0.0.13.md`.
+  `docs/implementation-notes.md`; the 0.0.14 notes are in
+  `docs/release-0.0.14.md`.
 - **Format:** v6 only (`OSR6`). OSREP does **not** read or write the SREP
   v1-v5 formats, and there is no compatibility goal with upstream SREP.
 - **License:** MIT, from the first commit of this branch (`LICENSE`).
