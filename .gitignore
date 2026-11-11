@@ -21,3 +21,4 @@ tests/fuzz-artifacts/
 # Agent/session state
 .commandcode/
 credenciales.md
+handoff.md
