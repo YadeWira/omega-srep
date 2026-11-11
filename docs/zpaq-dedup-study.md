@@ -1,9 +1,9 @@
 # OSREP como motor de deduplicación de zpaq-std — estudio
 
-**Estado: Fases 0 y 1 (fragmenter) hechas (2026-11-10); sin integración
-todavía.** El CDC orden-1, SHA-1, `hits` y `o1` coinciden con zpaq-std en los
-corpus de prueba (`docs/zpaq-fragment-api.md`); falta enchufarlo en `add()` y
-la prueba de archivo byte a byte. Este documento
+**Estado: Fases 0 y 1 hechas (2026-11-10).** El CDC orden-1, SHA-1, `hits`,
+`o1` y el enganche en `add()` reproducen zpaq-std; los archivos ZPAQ son byte
+a byte idénticos al baseline (`docs/zpaq-fragment-api.md`). Falta el modo
+OSREP y el empaquetado. Este documento
 lee el motor de deduplicación de **zpaq-std** y de **zpaqfranz** (del que
 zpaq-std es un fork) y decide cómo encajaría **OSREP** como su motor de
 deduplicación.
@@ -283,17 +283,17 @@ archivador no se toca.
   predictor para el análisis de tipo de dato) y la definición de la API
   `osrep_fragment_*`.
 
-### Fase 1 — Modo exacto (fragmenter hecho; falta el enganche)
+### Fase 1 — Modo exacto (hecha)
 
-- **Hecho:** `src/c/osrep_fragment.c` + `osrep_sha1.c` reproducen offset,
-  tamaño, `hits`, SHA-1 y `o1` de los vectores de zpaq-std, en `-fragment
-  0/3/6/9` y en los dos corpus multi-versión (1775 + 503 fragmentos).
-  Documentado en `docs/zpaq-fragment-api.md`; tests `sha1.sh` y
-  `zpaq_fragments_exact.sh`.
-- **Pendiente:** enchufar la API en `fragment_buffer`/`add2` y en el lazo de
-  `add()`, y probar que el archivo ZPAQ es byte a byte idéntico al de
-  zpaq-std actual (mismo input, orden y `--seed`).
-- Caída: si el archivo no da idéntico, no se integra todavía.
+- `src/c/osrep_fragment.c` + `osrep_sha1.c` reproducen offset, tamaño,
+  `hits`, SHA-1 y `o1` de los vectores de zpaq-std, en `-fragment 0/3/6/9` y
+  en los dos corpus multi-versión (1775 + 503 fragmentos).
+- El lazo de `add()`/`add2()` ya usa la API
+  (`tools/zpaq-vectors/osrep-fragment-integration.patch`).
+- Archivos ZPAQ byte a byte idénticos al baseline del mismo commit:
+  `-m0/-m1/-m5` sobre el corpus y `-m1` sobre un tar de 125 MB.
+- Tests: `sha1.sh`, `zpaq_fragments_exact.sh`, `integration-test.sh`.
+- Siguiente: API de streaming y modo OSREP (Fase 2).
 
 ### Fase 2 — Modo OSREP (2–3 semanas)
 

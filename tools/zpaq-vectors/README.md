@@ -51,3 +51,38 @@ Full vectors for the two dedup corpora are in `vectors/`:
 `vectors/CORPORA.sha256` has the full tar hashes. These are reference data for
 the SHA-1/o1 work; the automated test uses only the generated `tests/corpus`
 files.
+
+
+## Integration into `add()` (Phase 1)
+
+`osrep-fragment-integration.patch` replaces the inline fragmentation loop of
+`Jidac::add()`/`add2()` with the OSREP API:
+
+- `osrep_frag_state_reset()` per fragment;
+- `osrep_frag_state_push()` per byte for the rolling hash and the order-1
+  state;
+- `osrep_sha1()` over the fragment buffer;
+- `hits` and `o1` copied back for zpaq's data-type analysis.
+
+Apply it **after** `osrep-fragment-vectors.patch` and build with the two OSREP
+objects:
+
+```sh
+cc -O2 -std=c99 -I/path/omega-srep/src/c -c /path/omega-srep/src/c/osrep_sha1.c
+cc -O2 -std=c99 -I/path/omega-srep/src/c -c /path/omega-srep/src/c/osrep_fragment.c
+make CPPFLAGS=-I/path/omega-srep/src/c \
+     LDLIBS="-lm $PWD/osrep_sha1.o $PWD/osrep_fragment.o"
+```
+
+`integration-test.sh BASELINE INTEGRATED DATA` compares both binaries with
+`-touch`/`-timestamp` fixed.
+
+Results (2026-11-10, same zpaq-std commit `b8ad717`, v2.7.2):
+
+| input | methods | archive |
+|---|---|---|
+| `tests/corpus` (7 files, 10,7 MB) | `-m0`, `-m1`, `-m5` | byte-identical |
+| `versions.tar` (125 MB, one file) | `-m1` | byte-identical (15.293.533 bytes) |
+
+Times on the 125 MB file: baseline ~0.78 s, integrated ~0.76 s. The exact
+fragmenter is a drop-in for the main loop, not just for the helper.

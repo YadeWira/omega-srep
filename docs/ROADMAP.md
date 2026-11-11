@@ -68,8 +68,9 @@ reemplace) y se repiten en cada release.
    `-m2` empata y `-dup -m5` empeora. Fase 0 del fragmentador hecha: los
    cortes de OSREP coinciden con zpaq-std en 5 archivos y en los corpus
    multi-versión (1775 + 503 fragmentos). `sha1`, `hits`, `o1` y la API
-   `osrep_fragment_*` ya están y reproducen los vectores; falta enchufarla en
-   `add()` y el archivo ZPAQ byte a byte.
+   `osrep_fragment_*` están, el lazo de `add()` ya la usa y los archivos ZPAQ
+   son byte a byte idénticos al baseline (corpus y tar de 125 MB). Falta el
+   modo OSREP y el empaquetado.
 4. **Benchmarks de dedup** contra zpaq-std/zpaqfranz (mismo corpus
    multi-versión; tamaño y tiempos).
 5. **C/asm y memoria**: C/asm hechos; `-mem` en 0.0.12, decoder por bloques

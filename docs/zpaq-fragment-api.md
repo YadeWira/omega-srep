@@ -1,9 +1,8 @@
 # OSREP fragmenter API (Phase 1)
 
-**Estado: API y modo exacto hechos (2026-11-10).** `osrep_fragment_buffer()`
-reproduce el fragmentador de zpaq-std columna por columna: `offset`, `size`,
-`hits`, SHA-1 y `o1`. Falta enchufarlo en el lazo `add()` de zpaq-std y la
-prueba de archivo ZPAQ byte a byte.
+**Estado: Phase 1 completa (2026-11-10).** `osrep_fragment_buffer()` reproduce
+el fragmentador de zpaq-std columna por columna y el lazo real de `add()` ya
+usa la API. Los archivos ZPAQ son byte a byte idénticos al baseline.
 
 ## Header
 
@@ -58,16 +57,25 @@ void osrep_sha1(const uint8_t *data, size_t len, uint8_t out[20]);
   zpaq-std y los vectores fijan el comportamiento mejor que una segunda
   implementación.
 
-## Pendiente para cerrar Phase 1
+## Integración en `add()` (hecha)
 
-1. Enchufar `osrep_fragment_buffer()` en `fragment_buffer`/`add2()` y en el
-   lazo de `add()` de zpaq-std (hoy el lazo inline sigue siendo el original).
-2. Probar que un archivo ZPAQ creado con el zpaq-std parcheado es **byte a
-   byte idéntico** al del zpaq-std sin parchear, con el mismo input, orden y
-   `--seed`.
-3. API de streaming para archivos que no entran en RAM (el buffer API es
-   whole-file); el integrador puede leer por bloques, pero conviene exponer
-   un contexto incremental.
+`tools/zpaq-vectors/osrep-fragment-integration.patch` cambia el lazo inline:
+estado incremental por fragmento (`osrep_frag_state_push`), SHA-1 de OSREP y
+copia de `hits`/`o1` para el data-type analysis. `integration-test.sh`
+compara el binario baseline y el integrado con `-touch`/`-timestamp` fijos:
+
+| input | métodos | resultado |
+|---|---|---|
+| `tests/corpus` (7 archivos, 10,7 MB) | `-m0`, `-m1`, `-m5` | byte-idéntico |
+| `versions.tar` (125 MB) | `-m1` | byte-idéntico (15.293.533 bytes) |
+
+## Pendiente
+
+1. API de streaming para archivos que no entran en RAM: el estado incremental
+   ya existe (`osrep_frag_state_*`), falta el contexto que emita fragmentos
+   con su buffer para el caller.
+2. Modo OSREP (gear/FNV) y benchmarks multi-versión.
+3. Empaquetado y coordinación con zpaq-std.
 
 ## Reproducir
 

@@ -18,6 +18,11 @@ $CC -O2 -std=c99 -I"$ROOT/src/c" \
   "$ROOT/src/c/osrep_sha1.c" "$ROOT/src/c/osrep_fragment.c" \
   "$ROOT/tools/zpaq-vectors/fragment_dump.c" -o "$TMP/fragment_dump" || \
   fail "cc fragment_dump"
+$CC -O2 -std=c99 -I"$ROOT/src/c" \
+  "$ROOT/src/c/osrep_sha1.c" "$ROOT/src/c/osrep_fragment.c" \
+  "$ROOT/tests/fragment_state_check.c" -o "$TMP/fragment_state_check" || \
+  fail "cc fragment_state_check"
+"$TMP/fragment_state_check" || fail "incremental state"
 
 echo "== corpus =="
 bash "$ROOT/tests/gen_corpus.sh" "$TMP/corpus" >"$TMP/corpus.log" 2>&1 || {

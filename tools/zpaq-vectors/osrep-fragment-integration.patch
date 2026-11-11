@@ -1,0 +1,303 @@
+--- a/zpaq-std.cpp
++++ b/zpaq-std.cpp
+@@ -180206,6 +180206,8 @@
+ 	io_argc= (int)o_argv.size();
+ 	io_argv= &o_argv[0];
+ }
++#include "osrep_fragment.h"
++
+ static void osrep_dump_fragments(const char* path, unsigned fragment);
+ 
+ int zpaq_main_internal(int argc, const char **argv)
+@@ -252798,12 +252800,16 @@
+ 			unsigned	  htptr			= 0;   // fragment index
+ 			char		  sha1result[20]= {0}; // fragment hash
+ 			unsigned char o1[256]		= {0}; // order 1 context -> predicted byte
++			osrep_frag_params osrep_fp;
++			osrep_frag_state osrep_fs;
++			osrep_fp.mode= 0;
++			osrep_fp.min= MIN_FRAGMENT;
++			osrep_fp.max= MAX_FRAGMENT;
++			osrep_fp.threshold= h_threshold;
++			osrep_frag_state_reset(&osrep_fs, &osrep_fp);
+ 
+ 			if (fi < vf.size())
+ 			{
+-				int			  c1= 0; // previous byte
+-				unsigned	  h = 0; // rolling hash for finding fragment boundaries
+-				libzpaq::SHA1 sha1;
+ 				/// c:\nz\dd if="\\\\.\\c:" bs=1048576 count=100000000000 |c:\zpaqfranz\zpaqfranz a j:\image\prova cimage.img -stdin
+ 
+ 				// OPTIMIZED LOOP
+@@ -253087,105 +253093,15 @@
+ 
+ 					bool fragment_found= false;
+ 
+-					// Unroll manuale per migliori performance
+-					while (p + 4 <= stop)
++					while (p < stop)
+ 					{
+-						unsigned char uc0= p[0];
+-						unsigned char uc1= p[1];
+-						unsigned char uc2= p[2];
+-						unsigned char uc3= p[3];
+-
+-						// Processa byte 0
+-						unsigned char pred0= o1[c1];
+-						h				   = (h + uc0 + 1) * ((uc0 == pred0) ? HASH_MULT_HIT : HASH_MULT_MISS);
+-						hits+= (uc0 == pred0);
+-						o1[c1]		 = uc0;
+-						c1			 = uc0;
+-						fragbuf[sz++]= uc0;
+-
+-						// Check boundary dopo primo byte
+-						if (check_boundary && h < h_threshold && sz >= MIN_FRAGMENT)
+-						{
+-							p+= 1;
+-							fragment_found= true;
+-							break;
+-						}
+-
+-						// Processa byte 1
+-						unsigned char pred1= o1[c1];
+-						h				   = (h + uc1 + 1) * ((uc1 == pred1) ? HASH_MULT_HIT : HASH_MULT_MISS);
+-						hits+= (uc1 == pred1);
+-						o1[c1]		 = uc1;
+-						c1			 = uc1;
+-						fragbuf[sz++]= uc1;
+-
+-						if (check_boundary && h < h_threshold && sz >= MIN_FRAGMENT)
+-						{
+-							p+= 2;
+-							fragment_found= true;
+-							break;
+-						}
+-
+-						// Processa byte 2
+-						unsigned char pred2= o1[c1];
+-						h				   = (h + uc2 + 1) * ((uc2 == pred2) ? HASH_MULT_HIT : HASH_MULT_MISS);
+-						hits+= (uc2 == pred2);
+-						o1[c1]		 = uc2;
+-						c1			 = uc2;
+-						fragbuf[sz++]= uc2;
+-
+-						if (check_boundary && h < h_threshold && sz >= MIN_FRAGMENT)
+-						{
+-							p+= 3;
+-							fragment_found= true;
+-							break;
+-						}
+-
+-						// Processa byte 3
+-						unsigned char pred3= o1[c1];
+-						h				   = (h + uc3 + 1) * ((uc3 == pred3) ? HASH_MULT_HIT : HASH_MULT_MISS);
+-						hits+= (uc3 == pred3);
+-						o1[c1]		 = uc3;
+-						c1			 = uc3;
+-						fragbuf[sz++]= uc3;
+-
+-						if (check_boundary && h < h_threshold && sz >= MIN_FRAGMENT)
++						unsigned char uc= *p++;
++						fragbuf[sz++]= uc;
++						if (osrep_frag_state_push(&osrep_fs, uc))
+ 						{
+-							p+= 4;
+ 							fragment_found= true;
+ 							break;
+ 						}
+-
+-						p+= 4;
+-					}
+-
+-					// Process remaining bytes (< 4)
+-					if (!fragment_found)
+-					{
+-						while (p < stop)
+-						{
+-							unsigned char uc= *p++;
+-
+-							unsigned char pred= o1[c1];
+-							if (uc == pred)
+-							{
+-								h= (h + uc + 1) * HASH_MULT_HIT;
+-								++hits;
+-							}
+-							else
+-							{
+-								h= (h + uc + 1) * HASH_MULT_MISS;
+-							}
+-							o1[c1]		 = uc;
+-							c1			 = uc;
+-							fragbuf[sz++]= uc;
+-
+-							if (check_boundary && h < h_threshold && sz >= MIN_FRAGMENT)
+-							{
+-								fragment_found= true;
+-								break;
+-							}
+-						}
+ 					}
+ 
+ 					bufptr= (int)(p - (unsigned char *)buf);
+@@ -253199,11 +253115,10 @@
+ 
+ 				if (sz == 0 && fj > 0)
+ 					break; /// fix alla versione d
+-				// SHA1 update in blocco - gia' ottimizzato zpaqfranz
+-				sha1.write(&fragbuf[0], sz);
+-
+-				assert((uint64_t)sz == sha1.usize());
+-				memcpy(sha1result, sha1.result(), 20);
++				osrep_sha1((const uint8_t *)&fragbuf[0], (size_t)sz,
++						   (uint8_t *)sha1result);
++				hits= osrep_fs.hits;
++				memcpy(o1, osrep_fs.o1, 256);
+ 				htptr= htinv.find(sha1result);
+ 				imgdash.frammento(sz, htptr == 0);
+ 			}
+@@ -256042,12 +255957,16 @@
+ 			unsigned	  htptr			= 0;   // fragment index
+ 			char		  sha1result[20]= {0}; // fragment hash
+ 			unsigned char o1[256]		= {0}; // order 1 context -> predicted byte
++			osrep_frag_params osrep_fp;
++			osrep_frag_state osrep_fs;
++			osrep_fp.mode= 0;
++			osrep_fp.min= MIN_FRAGMENT;
++			osrep_fp.max= MAX_FRAGMENT;
++			osrep_fp.threshold= h_threshold;
++			osrep_frag_state_reset(&osrep_fs, &osrep_fp);
+ 
+ 			if (fi < vf.size())
+ 			{
+-				int			  c1= 0; // previous byte
+-				unsigned	  h = 0; // rolling hash for finding fragment boundaries
+-				libzpaq::SHA1 sha1;
+ 				/// c:\nz\dd if="\\\\.\\c:" bs=1048576 count=100000000000 |c:\zpaqfranz\zpaqfranz a j:\image\prova cimage.img -stdin
+ 
+ 				// OPTIMIZED LOOP
+@@ -256333,105 +256252,15 @@
+ 
+ 					bool fragment_found= false;
+ 
+-					// Unroll manuale per migliori performance
+-					while (p + 4 <= stop)
++					while (p < stop)
+ 					{
+-						unsigned char uc0= p[0];
+-						unsigned char uc1= p[1];
+-						unsigned char uc2= p[2];
+-						unsigned char uc3= p[3];
+-
+-						// Processa byte 0
+-						unsigned char pred0= o1[c1];
+-						h				   = (h + uc0 + 1) * ((uc0 == pred0) ? HASH_MULT_HIT : HASH_MULT_MISS);
+-						hits+= (uc0 == pred0);
+-						o1[c1]		 = uc0;
+-						c1			 = uc0;
+-						fragbuf[sz++]= uc0;
+-
+-						// Check boundary dopo primo byte
+-						if (check_boundary && h < h_threshold && sz >= MIN_FRAGMENT)
+-						{
+-							p+= 1;
+-							fragment_found= true;
+-							break;
+-						}
+-
+-						// Processa byte 1
+-						unsigned char pred1= o1[c1];
+-						h				   = (h + uc1 + 1) * ((uc1 == pred1) ? HASH_MULT_HIT : HASH_MULT_MISS);
+-						hits+= (uc1 == pred1);
+-						o1[c1]		 = uc1;
+-						c1			 = uc1;
+-						fragbuf[sz++]= uc1;
+-
+-						if (check_boundary && h < h_threshold && sz >= MIN_FRAGMENT)
+-						{
+-							p+= 2;
+-							fragment_found= true;
+-							break;
+-						}
+-
+-						// Processa byte 2
+-						unsigned char pred2= o1[c1];
+-						h				   = (h + uc2 + 1) * ((uc2 == pred2) ? HASH_MULT_HIT : HASH_MULT_MISS);
+-						hits+= (uc2 == pred2);
+-						o1[c1]		 = uc2;
+-						c1			 = uc2;
+-						fragbuf[sz++]= uc2;
+-
+-						if (check_boundary && h < h_threshold && sz >= MIN_FRAGMENT)
++						unsigned char uc= *p++;
++						fragbuf[sz++]= uc;
++						if (osrep_frag_state_push(&osrep_fs, uc))
+ 						{
+-							p+= 3;
+ 							fragment_found= true;
+ 							break;
+ 						}
+-
+-						// Processa byte 3
+-						unsigned char pred3= o1[c1];
+-						h				   = (h + uc3 + 1) * ((uc3 == pred3) ? HASH_MULT_HIT : HASH_MULT_MISS);
+-						hits+= (uc3 == pred3);
+-						o1[c1]		 = uc3;
+-						c1			 = uc3;
+-						fragbuf[sz++]= uc3;
+-
+-						if (check_boundary && h < h_threshold && sz >= MIN_FRAGMENT)
+-						{
+-							p+= 4;
+-							fragment_found= true;
+-							break;
+-						}
+-
+-						p+= 4;
+-					}
+-
+-					// Process remaining bytes (< 4)
+-					if (!fragment_found)
+-					{
+-						while (p < stop)
+-						{
+-							unsigned char uc= *p++;
+-
+-							unsigned char pred= o1[c1];
+-							if (uc == pred)
+-							{
+-								h= (h + uc + 1) * HASH_MULT_HIT;
+-								++hits;
+-							}
+-							else
+-							{
+-								h= (h + uc + 1) * HASH_MULT_MISS;
+-							}
+-							o1[c1]		 = uc;
+-							c1			 = uc;
+-							fragbuf[sz++]= uc;
+-
+-							if (check_boundary && h < h_threshold && sz >= MIN_FRAGMENT)
+-							{
+-								fragment_found= true;
+-								break;
+-							}
+-						}
+ 					}
+ 
+ 					bufptr= (int)(p - (unsigned char *)buf);
+@@ -256445,11 +256274,10 @@
+ 
+ 				if (sz == 0 && fj > 0)
+ 					break; /// fix alla versione d
+-				// SHA1 update in blocco - gia' ottimizzato zpaqfranz
+-				sha1.write(&fragbuf[0], sz);
+-
+-				assert((uint64_t)sz == sha1.usize());
+-				memcpy(sha1result, sha1.result(), 20);
++				osrep_sha1((const uint8_t *)&fragbuf[0], (size_t)sz,
++						   (uint8_t *)sha1result);
++				hits= osrep_fs.hits;
++				memcpy(o1, osrep_fs.o1, 256);
+ 				htptr= htinv.find(sha1result);
+ 				if (sa_force)
+ 					htptr= 0; /// -sa: the file goes whole into its block

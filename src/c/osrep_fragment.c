@@ -31,6 +31,28 @@ int osrep_frag_params_zpaq(osrep_frag_params *params, unsigned fragment,
   return OSREP_FRAG_OK;
 }
 
+void osrep_frag_state_reset(osrep_frag_state *state,
+                            const osrep_frag_params *params) {
+  memset(state, 0, sizeof *state);
+  state->min = params->min;
+  state->max = params->max;
+  state->threshold = params->threshold;
+}
+
+int osrep_frag_state_push(osrep_frag_state *state, uint8_t c) {
+  uint8_t pred = state->o1[state->c1];
+  state->h = (state->h + (uint32_t)c + 1u) *
+             ((c == pred) ? HASH_MULT_HIT : HASH_MULT_MISS);
+  state->hits += (c == pred);
+  state->o1[state->c1] = c;
+  state->c1 = c;
+  ++state->size;
+  if (state->threshold != 0 && state->h < state->threshold &&
+      state->size >= state->min)
+    return 1;
+  return 0;
+}
+
 int osrep_fragment_buffer(const uint8_t *buf, size_t len,
                           const osrep_frag_params *params, osrep_frag **out,
                           size_t *out_n) {

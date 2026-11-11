@@ -34,6 +34,24 @@ typedef struct {
   uint32_t threshold;  /* cut when h < threshold; 0 disables content cuts */
 } osrep_frag_params;
 
+/* Incremental state for callers that read a file in blocks. Reset it at the
+   start of every fragment; push one byte and it returns 1 when the fragment
+   must end after that byte (the max-size cut stays with the caller). */
+typedef struct {
+  uint32_t h;
+  uint32_t hits;
+  uint32_t min;
+  uint32_t max;
+  uint32_t threshold;
+  uint32_t size;
+  uint8_t c1;
+  uint8_t o1[256];
+} osrep_frag_state;
+
+void osrep_frag_state_reset(osrep_frag_state *state,
+                            const osrep_frag_params *params);
+int osrep_frag_state_push(osrep_frag_state *state, uint8_t c);
+
 /* Fill params with zpaq-std's -fragment N mapping. block_size is zpaq's
    block size (0 = 64 MiB), used to clamp max the same way zpaq does. */
 int osrep_frag_params_zpaq(osrep_frag_params *params, unsigned fragment,
