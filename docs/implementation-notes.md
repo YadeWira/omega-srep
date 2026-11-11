@@ -376,3 +376,35 @@ contra el `origsize` del header antes de reservar la salida y, en un archivo
 `-dup`, también contra el tamaño final al reconstruirlo: el `origsize` del
 `-dup` es el cuerpo deduplicado (101907 en `text-dup-m3.osr`), no los 4 MiB
 restaurados.
+
+
+## 7. Decoder por bloques
+
+El decoder tiene dos caminos:
+
+1. **Por bloques** (0.0.13): un primer pase lee headers y records de cada
+   bloque y comprueba que todos los matches cumplen
+   `block_start <= src` y `dst + len <= block_end`; también valida los
+   varints, los límites y el tamaño de payload. Si se cumple, un segundo
+   pase decodifica cada bloque en su propio buffer: marca los destinos de los
+   matches, rellena los huecos con los literales del bloque, ordena los
+   matches por destino (estable, por `Seq`) y copia (byte a byte solo cuando
+   `distance < length`, `Move` si no se solapan). Verifica el digest del
+   bloque y escribe.
+2. **Global** (heredado): si algún match cruza el borde de su bloque, se usa
+   el camino anterior (`IterateBlocks` + `DecodeAllBytes`), que mantiene la
+   cola global de matches y todo el output. Es el caso de archivos Omega
+   legacy como `text-b1mb-m3.osr`.
+
+Memoria del camino por bloques: payload del bloque (records + literales),
+output del bloque y los matches locales; en `real64.bin` son ~42 MB de RSS
+contra 210 MB del global.
+
+`-dup` se decodifica en dos etapas: el body por bloques y después el meta
+`DUPR`. `RestoreDup`/`RestoreDupToStream` guardan los chunks únicos como
+offsets al body (sin copiarlos), preasignan la salida o la escriben en
+streaming, y validan tamaños; eso elimina el O(n²) y el pico de 3,2 GB del
+camino anterior.
+
+`DecodeToBytes` usa el camino por bloques cuando puede: el buffer de salida
+es el resultado, sin la copia global de literales/matches.

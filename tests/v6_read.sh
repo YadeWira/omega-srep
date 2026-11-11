@@ -36,7 +36,7 @@ BIN="$BUILD/osrep"
 [ -x "$BIN" ] || fail "binary was not produced"
 
 echo "== version =="
-[ "$("$BIN" --version)" = "OSREP 0.0.12 (2026-11-10)" ] || fail "--version text"
+[ "$("$BIN" --version)" = "OSREP 0.0.13 (2026-11-10)" ] || fail "--version text"
 
 echo "== fixtures: -d round-trip =="
 if ! bash "$ROOT/tests/golden/inputs.sh" "$IN" >"$TMP/inputs.log" 2>&1; then

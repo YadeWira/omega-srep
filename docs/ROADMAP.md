@@ -69,8 +69,9 @@ reemplace) y se repiten en cada release.
    usará zpaq y coordinarlo con su agente.
 4. **Benchmarks de dedup** contra zpaq-std/zpaqfranz (mismo corpus
    multi-versión; tamaño y tiempos).
-5. **C/asm y memoria**: C/asm hechos; `-mem` (presupuesto) hecho en 0.0.12;
-   falta el decoder por bloques para bajar los 210 MB de decode.
+5. **C/asm y memoria**: C/asm hechos; `-mem` (presupuesto) en 0.0.12 y el
+   decoder por bloques en 0.0.13 (210 MB → 42 MB). Falta bajar el pico del
+   `-dup` cuando el body no entra cómodo en RAM.
 6. **Release 0.0.x** con los números y las limitaciones.
 7. **Recién entonces**: librería, 7-Zip, PJA y zpaq-std, cuando Wira lo pida.
 
@@ -90,6 +91,9 @@ reemplace) y se repiten en cada release.
 - Codificación paralela de bloques (`-tN`): hecha; el `.osr` no cambia.
 - Presupuesto de memoria (`-memN`): hecho en 0.0.12; el bloque se elige
   para 8 hilos y no depende de `-t`. `-mem128` da 84 MB y +1,4 % de ratio.
+- Decoder por bloques: hecho en 0.0.13; `-d` de `real64.bin` baja de 210 MB
+  a 42 MB y de 1,45 s a 1,10 s. El `-dup` baja de 3,2 GB/11,9 s a 106 MB/
+  1,10 s. Los archivos con matches que cruzan bloques usan el camino global.
 - C/asm: CDC, match finder y CRC-32C nativos, verificados contra Pascal;
   hash de 32 bytes para `-m4/-m5` con `-l >= 32`. Windows x86/x64 cruza y
   pasa round-trip bajo wine, Windows 10 y Windows 7 SP1; Linux x86 se cruza

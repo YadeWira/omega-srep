@@ -58,7 +58,9 @@ Lectura:
 | OSREP `-m5 -mem192` (0.0.12) | 164 MB |
 | SREP `-m5` | 38 MB |
 | Omega `-m5` | 22 MB |
-| OSREP `-d` (decode) | **210 MB** |
+| OSREP `-d` 0.0.12 (global) | 210 MB |
+| OSREP `-d` 0.0.13 (por bloques) | **42 MB** |
+| OSREP `-d` de `-dup -m5` 0.0.13 | 106 MB |
 | SREP `-d` | 20 MB |
 | Omega `-d` | 28 MB |
 
@@ -67,8 +69,8 @@ El costo de OSREP viene de tres cosas:
 1. cada hilo mantiene `Prev` (4 bytes por byte del bloque) y el bloque de
    datos; con 8 MiB × 8 hilos son cientos de MB;
 2. los buffers de entrada/salida se copian varias veces;
-3. el decoder actual reconstruye **toda** la salida en memoria
-   (`DecodeAll` + `Covered`) antes de escribirla.
+3. el decoder 0.0.12 reconstruía **toda** la salida en memoria
+   (`DecodeAll` + `Covered`); 0.0.13 decodifica por bloques.
 
 `-b1mb` con 8 hilos baja a 86 MB y mantiene ~38,6 MB de salida, a 1,28 s:
 es un buen punto de partida para un modo con presupuesto de memoria.
@@ -136,8 +138,9 @@ zpaq) no está implementada: la coordinación es externa.
 1. ~~**Presupuesto de memoria**~~ (hecho en 0.0.12): `-mem128` deja 84 MB y
    38,62 MB de salida en 1,40 s (+1,4 % de ratio); `-mem192`, 164 MB y
    +0,7 %. El bloque depende solo de `-mem`, no de `-t`.
-2. **Decoder por bloques / archivo temporal**: bajar los 210 MB de decode y
-   acercarlo a SREP/Omega; es el cambio más grande que queda en el núcleo.
+2. ~~**Decoder por bloques**~~ (hecho en 0.0.13): 210 MB → 42 MB y 1,45 s →
+   1,10 s; el `-dup` pasó de 3,2 GB/11,9 s a 106 MB/1,10 s. Queda el fallback
+   global para archivos legacy con matches que cruzan bloques.
 3. **Velocidad del match finder**: C/asm y menos copias; el ratio a `-c8`
    ya empata, falta el tiempo.
 4. **Paridad de CLI** que no toque formato: `-bar`, `-delete`, `-v`.

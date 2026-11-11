@@ -26,6 +26,8 @@ jobs:
           bash tests/v6_encode.sh
       - name: Memory budget
         run: bash tests/memory_budget.sh
+      - name: Block-wise decoder
+        run: bash tests/decode_blockwise.sh
       - name: Build the release binary
         run: |
           mkdir -p build/macos/obj build/macos/units

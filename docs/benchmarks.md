@@ -270,3 +270,24 @@ Lectura:
 - `-t1` con `-mem128` da el mismo archivo (1 MiB de bloque) y baja a 15 MB,
   a cambio de 4 s.
 - El decoder no cambia: sigue reconstruyendo toda la salida (210 MB).
+
+
+## Decode: memoria y tiempo
+
+`real64.bin`, 64 MiB, archivo `-m5` (8 bloques de 8 MiB), Linux x86_64.
+RSS pico con `wait4`.
+
+| versión | flujo | salida | tiempo | RSS |
+|---|---|---|---:|---:|---:|
+| 0.0.12 | `-d` (global) | 67.108.864 | 1,45 s | 210 MB |
+| 0.0.13 | `-d` por bloques | 67.108.864 | 1,10 s | **42 MB** |
+| 0.0.12 | `-d` de `-dup -m5` | 67.108.864 | 11,9 s | 3.225 MB |
+| 0.0.13 | `-d` de `-dup -m5` | 67.108.864 | 1,10 s | **106 MB** |
+
+- El decoder por bloques aplica cuando todos los matches caen dentro de su
+  bloque (lo que escribe OSREP). Un archivo legacy con matches que cruzan
+  bloques (`tests/fixtures/v6/text-b1mb-m3.osr`) usa el camino global.
+- El `-dup` ahora referencia los chunks únicos del body por offset, preasigna
+  la salida y la escribe en streaming; antes copiaba cada chunk y crecía el
+  buffer de salida de a un chunk (O(n²)).
+- `--verify` no cambia: solo valida CRC y contenedor.
