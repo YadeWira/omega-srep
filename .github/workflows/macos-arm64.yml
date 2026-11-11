@@ -31,9 +31,9 @@ jobs:
             cc -O3 -fPIC -fno-builtin -fno-stack-protector \
               -c "src/c/$f.c" -o "build/macos/obj/$f.o"
           done
-          fpc -Mobjfpc -O2 -Sh -Xs -Fu src/pascal \
-            -Fo build/macos/obj -FU build/macos/units -FE build/macos \
-            -o build/macos/osrep src/pascal/osrep.lpr
+          fpc -Mobjfpc -O2 -Sh -Xs -Fu./src/pascal \
+            -Fo./build/macos/obj -FU./build/macos/units -FE./build/macos \
+            -o./build/macos/osrep ./src/pascal/osrep.lpr
           build/macos/osrep --version
           file build/macos/osrep
       - uses: actions/upload-artifact@v4
