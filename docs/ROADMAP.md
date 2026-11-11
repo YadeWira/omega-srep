@@ -88,9 +88,10 @@ reemplace) y se repiten en cada release.
   finder y CRC nativos; hash16 para `-m4/-m5`).
 - Codificación paralela de bloques (`-tN`): hecha; el `.osr` no cambia.
 - C/asm: CDC, match finder y CRC-32C nativos, verificados contra Pascal;
-  hash de 16 bytes para `-m4/-m5` con `-l >= 16`. Windows x86/x64 cruza y
+  hash de 32 bytes para `-m4/-m5` con `-l >= 32`. Windows x86/x64 cruza y
   pasa round-trip bajo wine, Windows 10 y Windows 7 SP1; Linux x86 se cruza
   y pasa nativo; Linux ARM64 se cruza y pasa qemu; macOS ARM64 en GitHub
-  Actions.
+  Actions. Con `-l64 -c8 -a32` el ratio empata/gana a Omega `-m4`, pero el
+  tiempo sigue por detrás; a `-c64` Omega gana ambos.
 - Dedup por contenido para zpaq: diseñado en `docs/zpaq-dedup-study.md`,
   no implementado.

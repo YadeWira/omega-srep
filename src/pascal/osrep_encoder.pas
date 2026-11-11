@@ -332,6 +332,15 @@ begin
   Result := H;
 end;
 
+function Hash32(const Data: TBytes; P: SizeInt): LongWord; inline;
+var
+  H: LongWord;
+begin
+  H := Hash16(Data, P) xor (Hash16(Data, P + 16) * LongWord($9E3779B1));
+  H := H xor (H shr 15);
+  Result := H;
+end;
+
 procedure EncodeBlock(const Data: TBytes; const Opt: TEncoderOptions;
   out Records, Literals, Digest: TBytes);
 var
@@ -352,11 +361,18 @@ var
   procedure InsertPos(P: SizeInt); inline;
   var
     HH: LongWord;
-    UseHash16, UseHash8: Boolean;
+    UseHash32, UseHash16, UseHash8: Boolean;
   begin
-    UseHash16 := (Opt.Method >= 4) and (Opt.MinMatch >= 16);
-    UseHash8 := (Opt.Method >= 4) and (Opt.MinMatch >= 8) and not UseHash16;
-    if UseHash16 then
+    UseHash32 := (Opt.Method >= 4) and (Opt.MinMatch >= 32);
+    UseHash16 := (Opt.Method >= 4) and (Opt.MinMatch >= 16) and not UseHash32;
+    UseHash8 := (Opt.Method >= 4) and (Opt.MinMatch >= 8) and
+      not UseHash16 and not UseHash32;
+    if UseHash32 then
+    begin
+      if P + 32 > N then
+        Exit;
+    end
+    else if UseHash16 then
     begin
       if P + 16 > N then
         Exit;
@@ -370,7 +386,9 @@ var
       Exit;
     if (Opt.Stride > 1) and ((P mod SizeInt(Opt.Stride)) <> 0) then
       Exit;
-    if UseHash16 then
+    if UseHash32 then
+      HH := Hash32(Data, P) and HashMask
+    else if UseHash16 then
       HH := Hash16(Data, P) and HashMask
     else if UseHash8 then
       HH := Hash8(Data, P) and HashMask
@@ -389,7 +407,13 @@ var
     BLen := 0;
     BSrc := -1;
     MaxLenC := N - P;
-    if (Opt.Method >= 4) and (Opt.MinMatch >= 16) then
+    if (Opt.Method >= 4) and (Opt.MinMatch >= 32) then
+    begin
+      if MaxLenC < 32 then
+        Exit;
+      HH := Hash32(Data, P) and HashMask;
+    end
+    else if (Opt.Method >= 4) and (Opt.MinMatch >= 16) then
     begin
       if MaxLenC < 16 then
         Exit;
