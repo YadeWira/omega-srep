@@ -64,6 +64,11 @@ files.
 - `osrep_sha1()` over the fragment buffer;
 - `hits` and `o1` copied back for zpaq's data-type analysis.
 
+The real turbo path is `add2_scan()` (modern `add()` is a wrapper for
+`add2()`); the two plain loops are the ANCIENT path but are patched too. The
+exact-mode archives stay byte-identical; OSREP mode is selected with
+`OSREP_FRAG_MODE=osrep` and `OSREP_FRAG_AVG=bytes` (default 8192).
+
 Apply it **after** `osrep-fragment-vectors.patch` and build with the two OSREP
 objects:
 
@@ -86,3 +91,12 @@ Results (2026-11-10, same zpaq-std commit `b8ad717`, v2.7.2):
 
 Times on the 125 MB file: baseline ~0.78 s, integrated ~0.76 s. The exact
 fragmenter is a drop-in for the main loop, not just for the helper.
+
+OSREP mode (`OSREP_FRAG_MODE=osrep`):
+
+```sh
+OSREP_FRAG_MODE=osrep OSREP_FRAG_AVG=1024 zpaq-std a out.zpaq versions.tar -m1
+```
+
+Results in `docs/zpaq-osrep-mode.md` and `bench-osrep-mode.tsv`:
+`-m1` 37–45 % smaller, `-m5` up to 17.7 % smaller on the 125 MB corpus.

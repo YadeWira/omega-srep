@@ -1,8 +1,10 @@
 # OSREP fragmenter API (Phase 1)
 
-**Estado: Phase 1 completa (2026-11-10).** `osrep_fragment_buffer()` reproduce
-el fragmentador de zpaq-std columna por columna y el lazo real de `add()` ya
-usa la API. Los archivos ZPAQ son byte a byte idénticos al baseline.
+**Estado: Fases 1 y 2 completas (2026-11-10).** El modo exacto reproduce el
+fragmentador de zpaq-std columna por columna y el lazo real de `add2_scan` ya
+usa la API; los archivos ZPAQ son byte a byte idénticos al baseline. El modo
+OSREP (FNV de 48 bytes) está implementado y medido: ver
+[`zpaq-osrep-mode.md`](zpaq-osrep-mode.md).
 
 ## Header
 
@@ -26,6 +28,8 @@ typedef struct {
 
 int osrep_frag_params_zpaq(osrep_frag_params *p, unsigned fragment,
                            uint32_t block_size);
+int osrep_frag_params_osrep(osrep_frag_params *p, unsigned fragment,
+                            uint32_t block_size);
 int osrep_fragment_buffer(const uint8_t *buf, size_t len,
                           const osrep_frag_params *p,
                           osrep_frag **out, size_t *out_n);
@@ -39,7 +43,10 @@ void osrep_sha1(const uint8_t *data, size_t len, uint8_t out[20]);
 - `osrep_fragment_buffer()` es pura y thread-safe: no hay estado global; el
   que llama decide el orden y el dedup. Devuelve un array `malloc`eado que se
   libera con `osrep_frag_free()`.
-- `mode = OSREP_FRAG_MODE_OSREP` (gear/FNV) devuelve `ENOTSUP` por ahora.
+- `mode = OSREP_FRAG_MODE_OSREP` usa el CDC de ventana fija de 48 bytes con
+  FNV (el de `-m1`); `avg` fija el promedio. `osrep_frag_params_osrep()` mapea
+  `-fragment N` a `avg = 64 KiB << (N-9)` con tope 1 KiB–1 MiB: N=6 → 8 KiB,
+  N=3 → 1 KiB.
 - Errores: `0` OK, `1` parámetros, `2` memoria, `3` modo no soportado.
 
 ## Validación
@@ -69,12 +76,20 @@ compara el binario baseline y el integrado con `-touch`/`-timestamp` fijos:
 | `tests/corpus` (7 archivos, 10,7 MB) | `-m0`, `-m1`, `-m5` | byte-idéntico |
 | `versions.tar` (125 MB) | `-m1` | byte-idéntico (15.293.533 bytes) |
 
+## Modo OSREP y benchmarks
+
+`docs/zpaq-osrep-mode.md` tiene la tabla completa. Resumen:
+
+- `-m1`: 37–45 % menos archivo, igual o más rápido y 30–35 % menos RSS.
+- `-m5`: −17,7 % en el corpus grande; en PJA +3,3 % de tamaño pero 1,7× más
+  rápido y 32 % menos RSS.
+- Todos los archivos se extraen con el zpaq-std baseline byte a byte.
+
 ## Pendiente
 
-1. API de streaming para archivos que no entran en RAM: el estado incremental
-   ya existe (`osrep_frag_state_*`), falta el contexto que emita fragmentos
-   con su buffer para el caller.
-2. Modo OSREP (gear/FNV) y benchmarks multi-versión.
+1. Parche limpio de entrega: mapear `-fragment` en el CLI de zpaq-std (hoy el
+   prototipo usa `OSREP_FRAG_AVG`) y quitar el modo de volcado de vectores.
+2. Benchmarks con zpaqfranz y un corpus de backup más grande.
 3. Empaquetado y coordinación con zpaq-std.
 
 ## Reproducir

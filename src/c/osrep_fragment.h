@@ -31,21 +31,29 @@ typedef struct {
   uint32_t mode;       /* OSREP_FRAG_MODE_* */
   uint32_t min;        /* minimum fragment size */
   uint32_t max;        /* maximum fragment size */
-  uint32_t threshold;  /* cut when h < threshold; 0 disables content cuts */
+  uint32_t threshold;  /* zpaq mode: cut when h < threshold */
+  uint32_t avg;        /* OSREP mode: target average fragment size */
 } osrep_frag_params;
 
 /* Incremental state for callers that read a file in blocks. Reset it at the
    start of every fragment; push one byte and it returns 1 when the fragment
    must end after that byte (the max-size cut stays with the caller). */
 typedef struct {
+  uint32_t mode;
   uint32_t h;
   uint32_t hits;
   uint32_t min;
   uint32_t max;
   uint32_t threshold;
+  uint32_t avg;
   uint32_t size;
   uint8_t c1;
   uint8_t o1[256];
+  uint64_t h64;
+  uint64_t pow;
+  uint8_t win[48];
+  uint32_t winpos;
+  uint32_t winlen;
 } osrep_frag_state;
 
 void osrep_frag_state_reset(osrep_frag_state *state,
@@ -56,6 +64,11 @@ int osrep_frag_state_push(osrep_frag_state *state, uint8_t c);
    block size (0 = 64 MiB), used to clamp max the same way zpaq does. */
 int osrep_frag_params_zpaq(osrep_frag_params *params, unsigned fragment,
                            uint32_t block_size);
+/* OSREP mode: 48-byte FNV rolling hash. The average is derived from the
+   zpaq fragment level (N=6 -> 64 KiB, lower N -> smaller); min/max follow
+   the zpaq mapping. */
+int osrep_frag_params_osrep(osrep_frag_params *params, unsigned fragment,
+                            uint32_t block_size);
 
 /* Fragment a whole buffer. On success *out is a malloc'ed array of *out_n
    entries; free it with osrep_frag_free(). The function keeps no state and

@@ -34,6 +34,7 @@ jobs:
         run: |
           bash tests/sha1.sh
           bash tests/zpaq_fragments_exact.sh
+          bash tests/osrep_cdc_mode.sh
       - name: Build the release binary
         run: |
           mkdir -p build/macos/obj build/macos/units

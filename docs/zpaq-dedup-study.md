@@ -1,9 +1,9 @@
 # OSREP como motor de deduplicación de zpaq-std — estudio
 
-**Estado: Fases 0 y 1 hechas (2026-11-10).** El CDC orden-1, SHA-1, `hits`,
-`o1` y el enganche en `add()` reproducen zpaq-std; los archivos ZPAQ son byte
-a byte idénticos al baseline (`docs/zpaq-fragment-api.md`). Falta el modo
-OSREP y el empaquetado. Este documento
+**Estado: Fases 0, 1 y 2 hechas (2026-11-10).** El modo exacto reproduce
+zpaq-std byte a byte; el modo OSREP ya está integrado y medido: 37–45 % menos
+en `-m1` y hasta 17,7 % en `-m5` (`docs/zpaq-osrep-mode.md`). Falta el parche
+limpio, zpaqfranz y el empaquetado. Este documento
 lee el motor de deduplicación de **zpaq-std** y de **zpaqfranz** (del que
 zpaq-std es un fork) y decide cómo encajaría **OSREP** como su motor de
 deduplicación.
@@ -295,15 +295,18 @@ archivador no se toca.
 - Tests: `sha1.sh`, `zpaq_fragments_exact.sh`, `integration-test.sh`.
 - Siguiente: API de streaming y modo OSREP (Fase 2).
 
-### Fase 2 — Modo OSREP (2–3 semanas)
+### Fase 2 — Modo OSREP (hecha)
 
-- Agregar el CDC de OSREP (gear/FNV) como modo; mapear `-fragment` al
-  promedio; documentar que cambia el stream pero no el formato.
-- Benchmarks: ratio de dedup, tamaño del archivo, tiempo de compresión,
-  tiempo de extracción, RSS; corpus multi-versión (árbol de fuentes, snapshots
-  de un backup real).
-- Validación: los archivos nuevos se leen con zpaq-std y zpaqfranz; los
-  viejos se siguen leyendo; `-verify`/extracción OK.
+- CDC de ventana fija de 48 bytes con FNV, estado incremental y mapeo de
+  `-fragment` (`avg = 64 KiB << (N-9)`, N=6 → 8 KiB). El formato ZPAQ no
+  cambia.
+- Benchmarks en `docs/zpaq-osrep-mode.md`: `-m1` 37–45 % menos archivo,
+  igual o más rápido, 30–35 % menos RSS; `-m5` −17,7 % en el corpus grande y,
+  en PJA, +3,3 % de tamaño pero 1,7× más rápido.
+- Los cuatro archivos de prueba se extraen con el zpaq-std baseline y
+  coinciden byte a byte.
+- Pendiente menor: mapear `-fragment` en el CLI (el prototipo usa
+  `OSREP_FRAG_AVG`) y probar zpaqfranz.
 
 ### Fase 3 — Producto (1–2 semanas)
 

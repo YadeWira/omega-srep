@@ -9,16 +9,29 @@
  static void osrep_dump_fragments(const char* path, unsigned fragment);
  
  int zpaq_main_internal(int argc, const char **argv)
-@@ -252798,12 +252800,16 @@
+@@ -252707,6 +252709,11 @@
+ 	const bool	   check_boundary= (fragment <= 22);
+ 	const unsigned HASH_MULT_HIT = 314159265u;
+ 	const unsigned HASH_MULT_MISS= 271828182u;
++	const char* osrep_mode_env= getenv("OSREP_FRAG_MODE");
++	const bool osrep_frag_mode= osrep_mode_env && (strcmp(osrep_mode_env, "osrep") == 0 || strcmp(osrep_mode_env, "1") == 0);
++	uint32_t osrep_frag_avg= 8192;
++	if (const char* avg_env= getenv("OSREP_FRAG_AVG"))
++		osrep_frag_avg= (uint32_t)strtoul(avg_env, NULL, 10);
+ 
+ 	for (unsigned fi= 0; fi <= vf.size(); ++fi)
+ 	{
+@@ -252798,12 +252805,17 @@
  			unsigned	  htptr			= 0;   // fragment index
  			char		  sha1result[20]= {0}; // fragment hash
  			unsigned char o1[256]		= {0}; // order 1 context -> predicted byte
 +			osrep_frag_params osrep_fp;
 +			osrep_frag_state osrep_fs;
-+			osrep_fp.mode= 0;
++			osrep_fp.mode= osrep_frag_mode ? 1u : 0u;
 +			osrep_fp.min= MIN_FRAGMENT;
 +			osrep_fp.max= MAX_FRAGMENT;
 +			osrep_fp.threshold= h_threshold;
++			osrep_fp.avg= osrep_frag_avg;
 +			osrep_frag_state_reset(&osrep_fs, &osrep_fp);
  
  			if (fi < vf.size())
@@ -29,7 +42,7 @@
  				/// c:\nz\dd if="\\\\.\\c:" bs=1048576 count=100000000000 |c:\zpaqfranz\zpaqfranz a j:\image\prova cimage.img -stdin
  
  				// OPTIMIZED LOOP
-@@ -253087,105 +253093,15 @@
+@@ -253087,105 +253099,15 @@
  
  					bool fragment_found= false;
  
@@ -139,7 +152,7 @@
  					}
  
  					bufptr= (int)(p - (unsigned char *)buf);
-@@ -253199,11 +253115,10 @@
+@@ -253199,11 +253121,10 @@
  
  				if (sz == 0 && fj > 0)
  					break; /// fix alla versione d
@@ -155,16 +168,102 @@
  				htptr= htinv.find(sha1result);
  				imgdash.frammento(sz, htptr == 0);
  			}
-@@ -256042,12 +255957,16 @@
+@@ -254134,35 +254055,35 @@
+ /// o1 table, and the SHA-1 of every fragment while it is still in the cache
+ void add2_scan(s_add2scan *i_scan)
+ {
+-	const unsigned		 HASH_MULT_HIT = 314159265u;
+-	const unsigned		 HASH_MULT_MISS= 271828182u;
+ 	const unsigned char *base		   = i_scan->base;
+ 	const int64_t		 fine		   = i_scan->fine;
+-	const unsigned		 soglia		   = i_scan->h_threshold;
+ 	const int64_t		 minf		   = i_scan->minf;
+ 	const int64_t		 maxf		   = i_scan->maxf;
++	const char* osrep_mode_env= getenv("OSREP_FRAG_MODE");
++	const bool osrep_frag_mode= osrep_mode_env && (strcmp(osrep_mode_env, "osrep") == 0 || strcmp(osrep_mode_env, "1") == 0);
++	uint32_t osrep_frag_avg= 8192;
++	if (const char* avg_env= getenv("OSREP_FRAG_AVG"))
++		osrep_frag_avg= (uint32_t)strtoul(avg_env, NULL, 10);
++	osrep_frag_params fp;
++	fp.mode= osrep_frag_mode ? 1u : 0u;
++	fp.min= (uint32_t)minf;
++	fp.max= (uint32_t)maxf;
++	fp.threshold= i_scan->h_threshold;
++	fp.avg= osrep_frag_avg;
++	osrep_frag_state st;
+ 	int64_t				 pos		   = i_scan->from;
+ 	int64_t				 inizio		   = pos;
+ 	int					 passati	   = 0;
+-	unsigned			 h			   = 0;
+-	unsigned			 hits		   = 0;
+-	unsigned			 c1			   = 0;
+-	unsigned char		 o1[256];
+-	memset(o1, 0, sizeof(o1));
+ 	bool finito= false;
++	osrep_frag_state_reset(&st, &fp);
+ 	while (!finito)
+ 	{
+ 		bool taglio= false;
+ 		while (pos < fine)
+ 		{
+ 			const unsigned uc = base[pos++];
+-			const unsigned hit= (uc == o1[c1]);
+-			h= (h + uc + 1) * (hit ? HASH_MULT_HIT : HASH_MULT_MISS); /// no jump here: data is random
+-			hits+= hit;
+-			o1[c1]			= (unsigned char)uc;
+-			c1				= uc;
+ 			const int64_t sz= pos - inizio;
+-			if ((h < soglia && sz >= minf) || (sz >= maxf))
++			if (osrep_frag_state_push(&st, (uint8_t)uc) || sz >= maxf)
+ 			{
+ 				taglio= true;
+ 				break;
+@@ -254173,17 +254094,13 @@
+ 		s_add2frag uno;
+ 		uno.start= inizio;
+ 		uno.len	 = pos - inizio;
+-		uno.hits = hits;
+-		memcpy(uno.o1, o1, sizeof(o1));
+-		libzpaq::SHA1 sha1;
+-		sha1.write((const char *)base + inizio, uno.len);
+-		memcpy(uno.sha1, sha1.result(), 20);
++		uno.hits = st.hits;
++		memcpy(uno.o1, st.o1, sizeof(uno.o1));
++		osrep_sha1((const uint8_t *)base + inizio, (size_t)uno.len,
++				   (uint8_t *)uno.sha1);
+ 		i_scan->out->push_back(uno);
+ 		inizio= pos;
+-		h	  = 0;
+-		hits  = 0;
+-		c1	  = 0;
+-		memset(o1, 0, sizeof(o1));
++		osrep_frag_state_reset(&st, &fp);
+ 		if (!taglio)
+ 			finito= true;
+ 		else if ((i_scan->after >= 0) && (pos >= i_scan->after))
+@@ -255170,6 +255087,11 @@
+ 	const bool	   check_boundary= (fragment <= 22);
+ 	const unsigned HASH_MULT_HIT = 314159265u;
+ 	const unsigned HASH_MULT_MISS= 271828182u;
++	const char* osrep_mode_env= getenv("OSREP_FRAG_MODE");
++	const bool osrep_frag_mode= osrep_mode_env && (strcmp(osrep_mode_env, "osrep") == 0 || strcmp(osrep_mode_env, "1") == 0);
++	uint32_t osrep_frag_avg= 8192;
++	if (const char* avg_env= getenv("OSREP_FRAG_AVG"))
++		osrep_frag_avg= (uint32_t)strtoul(avg_env, NULL, 10);
+ 
+ 	/// -turbo (add2): two batches of a plain file (one is read while the other
+ 	/// is worked), each one after room for the fragment that is still open at
+@@ -256042,12 +255964,17 @@
  			unsigned	  htptr			= 0;   // fragment index
  			char		  sha1result[20]= {0}; // fragment hash
  			unsigned char o1[256]		= {0}; // order 1 context -> predicted byte
 +			osrep_frag_params osrep_fp;
 +			osrep_frag_state osrep_fs;
-+			osrep_fp.mode= 0;
++			osrep_fp.mode= osrep_frag_mode ? 1u : 0u;
 +			osrep_fp.min= MIN_FRAGMENT;
 +			osrep_fp.max= MAX_FRAGMENT;
 +			osrep_fp.threshold= h_threshold;
++			osrep_fp.avg= osrep_frag_avg;
 +			osrep_frag_state_reset(&osrep_fs, &osrep_fp);
  
  			if (fi < vf.size())
@@ -175,7 +274,7 @@
  				/// c:\nz\dd if="\\\\.\\c:" bs=1048576 count=100000000000 |c:\zpaqfranz\zpaqfranz a j:\image\prova cimage.img -stdin
  
  				// OPTIMIZED LOOP
-@@ -256333,105 +256252,15 @@
+@@ -256333,105 +256260,15 @@
  
  					bool fragment_found= false;
  
@@ -228,14 +327,11 @@
 -						fragbuf[sz++]= uc2;
 -
 -						if (check_boundary && h < h_threshold && sz >= MIN_FRAGMENT)
-+						unsigned char uc= *p++;
-+						fragbuf[sz++]= uc;
-+						if (osrep_frag_state_push(&osrep_fs, uc))
- 						{
+-						{
 -							p+= 3;
- 							fragment_found= true;
- 							break;
- 						}
+-							fragment_found= true;
+-							break;
+-						}
 -
 -						// Processa byte 3
 -						unsigned char pred3= o1[c1];
@@ -246,11 +342,14 @@
 -						fragbuf[sz++]= uc3;
 -
 -						if (check_boundary && h < h_threshold && sz >= MIN_FRAGMENT)
--						{
++						unsigned char uc= *p++;
++						fragbuf[sz++]= uc;
++						if (osrep_frag_state_push(&osrep_fs, uc))
+ 						{
 -							p+= 4;
--							fragment_found= true;
--							break;
--						}
+ 							fragment_found= true;
+ 							break;
+ 						}
 -
 -						p+= 4;
 -					}
@@ -285,7 +384,7 @@
  					}
  
  					bufptr= (int)(p - (unsigned char *)buf);
-@@ -256445,11 +256274,10 @@
+@@ -256445,11 +256282,10 @@
  
  				if (sz == 0 && fj > 0)
  					break; /// fix alla versione d

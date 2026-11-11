@@ -67,10 +67,11 @@ reemplace) y se repiten en cada release.
    corpus real, `-m1` + zpaq da 12,23 MB contra 15,29 MB de zpaq solo;
    `-m2` empata y `-dup -m5` empeora. Fase 0 del fragmentador hecha: los
    cortes de OSREP coinciden con zpaq-std en 5 archivos y en los corpus
-   multi-versión (1775 + 503 fragmentos). `sha1`, `hits`, `o1` y la API
-   `osrep_fragment_*` están, el lazo de `add()` ya la usa y los archivos ZPAQ
-   son byte a byte idénticos al baseline (corpus y tar de 125 MB). Falta el
-   modo OSREP y el empaquetado.
+   multi-versión (1775 + 503 fragmentos). El modo exacto usa la API en
+   `add2_scan` y da archivos byte a byte idénticos al baseline; el modo
+   OSREP da 37–45 % menos en `-m1` y hasta 17,7 % en `-m5`
+   (`docs/zpaq-osrep-mode.md`). Falta el parche limpio, zpaqfranz y el
+   empaquetado.
 4. **Benchmarks de dedup** contra zpaq-std/zpaqfranz (mismo corpus
    multi-versión; tamaño y tiempos).
 5. **C/asm y memoria**: C/asm hechos; `-mem` en 0.0.12, decoder por bloques
