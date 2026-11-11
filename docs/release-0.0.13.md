@@ -41,6 +41,8 @@ en el caso normal, y muy por debajo del `-dup` anterior.
   `lib.sh` (73/103), `windows_cross.sh`, `arm64_cross.sh`,
   `linux_x86_cross.sh` y el workflow de macOS (que ahora corre también el
   test nuevo).
+- Windows 10 real: x64 crea y decodifica 25 bloques, x86 decodifica el
+  archivo del x64 y `-dup -m5` vuelve byte a byte.
 
 ## Limitaciones
 
