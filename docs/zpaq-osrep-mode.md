@@ -56,6 +56,61 @@ Tamaños con `-m1` y el switch: `versions.tar` 9.028.353 (N=6), 8.450.469
 chico que en el prototipo (8,37 MB) porque ahora `-fragment 3` también baja el
 mínimo y el máximo de zpaq, no solo el promedio.
 
+## Comparación justa: a igual tamaño de fragmento (2026-11-11)
+
+Las tablas más abajo comparan OSREP a 1–8 KiB contra zpaq a 64 KiB, así que
+mezclan dos efectos. `-fragment N` no significa lo mismo en los dos: el
+cortador de zpaq promedia 2^N KiB y el mapeo de `-osrep`, 2^(N-3) KiB. Con
+`tools/zpaq-vectors/bench_fair.py --osrep-shift 3` se comparan los dos al
+**mismo promedio** (zpaq `-fragment N` contra `-osrep -fragment N+3`), con el
+switch `-osrep` y el baseline 2.7.2 del mismo commit; una corrida, y el
+baseline extrae los 32 archivos idénticos a la entrada.
+
+Tamaño del archivo (bytes) y diferencia de `-osrep`:
+
+| corpus | `-m` | 64 KiB zpaq / osrep | 8 KiB | 4 KiB | 1 KiB |
+|---|---|---|---|---|---|
+| versions.tar | `-m1` | 15.293.575 / 15.570.270 (+1,8 %) | 9.835.635 / 9.028.353 (−8,2 %) | 8.754.145 / 8.450.469 (−3,5 %) | 8.460.664 / **7.723.228** (−8,7 %) |
+| versions.tar | `-m5` | 4.548.941 / 4.599.056 (+1,1 %) | 3.749.060 / **3.744.504** (−0,1 %) | 3.868.320 / 3.829.169 (−1,0 %) | 4.489.893 / 4.275.325 (−4,8 %) |
+| pja.tar | `-m1` | 2.817.689 / 2.873.103 (+2,0 %) | 1.767.855 / **1.762.633** (−0,3 %) | 1.795.605 / 1.784.370 (−0,6 %) | 1.942.765 / 1.892.508 (−2,6 %) |
+| pja.tar | `-m5` | **971.248** / 972.735 (+0,2 %) | 1.006.299 / 1.003.143 (−0,3 %) | 1.034.092 / 1.024.389 (−0,9 %) | 1.178.787 / 1.127.372 (−4,4 %) |
+
+Tiempo y RSS: iguales a 64 y 8 KiB (`versions.tar -m5`: 194/185 s y 163/155 s).
+A 1 KiB `-osrep` es más rápido y usa menos memoria (`versions.tar -m5`: 93 s y
+702 MB contra 109 s y 1.032 MB), en parte porque su mínimo es 512 bytes y el
+de zpaq a `-fragment 0`, 64.
+
+**Lectura.**
+
+- Casi toda la ganancia de las tablas de abajo viene del fragmento más chico,
+  no del CDC: zpaq con `-fragment 3` ya logra casi lo mismo que `-osrep` a 8 KiB.
+- El CDC de OSREP suma 0,1–8,7 % a 8 KiB o menos y pierde 0,2–2 % a 64 KiB.
+  Lo mejor que da es con `-m1` y fragmentos chicos (versions.tar, 1 KiB:
+  −8,7 %, y es el mejor archivo `-m1` de toda la tabla).
+
+**Por qué `-m5` pierde en PJA (punto 5).** Con `fragment_dump` sobre los dos tar:
+
+| pja.tar | fragmentos | únicos | bytes únicos |
+|---|---:|---:|---:|
+| zpaq 64 KiB | 503 | 292 | 21.436.720 |
+| osrep 8 KiB | 3.132 | 1.301 | 12.614.882 |
+| osrep 1 KiB | 22.391 | 5.457 | 7.433.748 |
+
+Fragmentar más chico saca 9–14 MB de datos repetidos, pero con `-m5` el
+archivo crece: el compresor ya aprovechaba esa repetición, y cada fragmento
+cuesta en el índice (≈24 bytes por fragmento único en los bloques `h`, SHA-1 y
+tamaño, que no comprimen, más ≈4 por referencia en los `i`). A 8 KiB eso son
+≈44 KB contra ≈9 KB a 64 KiB: +35 KB, y el archivo creció 32 KB. En
+versions.tar la dedup sí gana (−804 KB a 8 KiB con +138 KB de índice).
+
+**Qué promedio conviene.**
+
+- `-m1`/`-m2` (compresores rápidos, sin contexto largo): fragmentos chicos,
+  1–4 KiB.
+- `-m5`: 8 KiB con muchas versiones parecidas; con pocas repeticiones entre
+  versiones, 64 KiB (el default de zpaq).
+- Un default único razonable: 8 KiB.
+
 ## Metodología
 
 - zpaq-std baseline: mismo commit `b8ad717` (v2.7.2), sin cambios.
