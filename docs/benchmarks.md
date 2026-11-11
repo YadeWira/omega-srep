@@ -6,7 +6,7 @@ Nada de esto es una promesa: son los números de hoy y el punto de partida.
 ## Máquina y binarios
 
 - CPU: Intel Xeon E5-2697A v4 @ 2.60 GHz, x86-64 (64 hilos visibles).
-- OSREP 0.0.9, compilado con FPC 3.2.2 `-O2` (sin C/asm todavía), con
+- OSREP 0.0.10, compilado con FPC 3.2.2 `-O2` (sin C/asm todavía), con
   codificación paralela de bloques (`-tN`, default automático hasta 8).
 - SREP 3.92 beta (2013-07-23), binario `srep64` de
   `repo-extras/srep392.zip`. No hay binario de 3.93a en el árbol; 3.92 es
