@@ -1,0 +1,724 @@
+From d53ca1f857228f1cefa2ca7e58f89b2f39912bab Mon Sep 17 00:00:00 2001
+From: osrep <osrep@local>
+Date: Wed, 11 Nov 2026 16:20:33 -0500
+Subject: [PATCH] add -osrep: content-defined fragments by OSREP (EXPERIMENTAL)
+
+---
+ Makefile                           |  11 +-
+ compressors/osrep/LICENSE          |  21 ++++
+ compressors/osrep/osrep_fragment.c | 179 +++++++++++++++++++++++++++++
+ compressors/osrep/osrep_fragment.h |  90 +++++++++++++++
+ compressors/osrep/osrep_sha1.c     |  89 ++++++++++++++
+ zpaq-std.cpp                       | 136 +++++++++++++++++++++-
+ 6 files changed, 523 insertions(+), 3 deletions(-)
+ create mode 100644 compressors/osrep/LICENSE
+ create mode 100644 compressors/osrep/osrep_fragment.c
+ create mode 100644 compressors/osrep/osrep_fragment.h
+ create mode 100644 compressors/osrep/osrep_sha1.c
+
+diff --git a/Makefile b/Makefile
+index c35c600..461eb3b 100644
+--- a/Makefile
++++ b/Makefile
+@@ -91,6 +91,8 @@ SOURCE  := zpaq-std.cpp
+ LZ5SRC  := compressors/lz5/lz5.c compressors/lz5/lz5hc.c
+ LZ4SRC  := compressors/lz4/lz4.c compressors/lz4/lz4hc.c
+ LZ6SRC  := compressors/lz6/lz6.c compressors/lz6/lz6hc.c
++# OSREP's fragmenter (-osrep, MIT): plain C99, linked into the program
++OSREPSRC := compressors/osrep/osrep_fragment.c compressors/osrep/osrep_sha1.c
+ # LZMA SDK (-ma:lzma): single-threaded match finder, see compressors/lzmasdk/LEEME.md
+ LZMASRC := compressors/lzmasdk/LzmaLib.c compressors/lzmasdk/LzmaEnc.c compressors/lzmasdk/LzmaDec.c compressors/lzmasdk/LzFind.c compressors/lzmasdk/LzFindOpt.c compressors/lzmasdk/Alloc.c compressors/lzmasdk/CpuArch.c
+ ZSTDSRC := compressors/zstd/zstd.c
+@@ -197,6 +199,7 @@ endif
+ # not deterministic. Measured cost: none (slightly faster).
+ LZ5INC  := -Icompressors/lz5 -DLZ5_RESET_MEM
+ LZ6INC  := -Icompressors/lz6
++OSREPINC := -Icompressors/osrep
+ LZMAINC := -Icompressors/lzmasdk -DZ7_ST
+ LIZINC  := -Icompressors/lizard -Icompressors/lizard/entropy -DLIZARD_RESET_MEM
+ BZIP2INC := -Icompressors/bzip2
+@@ -374,6 +377,7 @@ BZ2NGBUNDLE := compressors/bz2ng/bz2ng-bundle.o
+ LZ5OBJ := $(LZ5SRC:.c=.o)
+ LZ4OBJ := $(LZ4SRC:.c=.o)
+ LZ6OBJ := $(LZ6SRC:.c=.o)
++OSREPOBJ := $(OSREPSRC:.c=.o)
+ LZMAOBJ := $(LZMASRC:.c=.o)
+ LIZOBJ := $(LIZSRC:.c=.o)
+ BZIP2OBJ := $(BZIP2SRC:.c=.o)
+@@ -482,9 +486,9 @@ ifdef PLUGINS
+ endif
+ # Everything the program links. make plugins leaves out CORE_DROP: the adapters
+ # and the libraries that went into plugins.
+-LINKOBJS = $(DIVSUFOBJ) $(SOURCE) $(FL2OBJ) $(UFL2BUNDLE) $(BZ2NGBUNDLE) $(PLUGOBJ) $(LZ4OBJ) $(LZ5OBJ) $(LZ6OBJ) $(LZMAOBJ) $(LIZOBJ) $(BZIP2OBJ) $(BZIP3OBJ) $(BROTLIOBJ) $(SNAPPYOBJ) $(LIBDEFLATEOBJ) $(LZLIBOBJ) $(HSOBJ) $(LZFSEOBJ) $(BSCOBJ) $(KANZIOBJ) $(LZHAMOBJ) $(PPMDOBJ) $(ZXCOBJ) $(WINRES)
++LINKOBJS = $(DIVSUFOBJ) $(SOURCE) $(FL2OBJ) $(UFL2BUNDLE) $(BZ2NGBUNDLE) $(PLUGOBJ) $(LZ4OBJ) $(LZ5OBJ) $(LZ6OBJ) $(OSREPOBJ) $(LZMAOBJ) $(LIZOBJ) $(BZIP2OBJ) $(BZIP3OBJ) $(BROTLIOBJ) $(SNAPPYOBJ) $(LIBDEFLATEOBJ) $(LZLIBOBJ) $(HSOBJ) $(LZFSEOBJ) $(BSCOBJ) $(KANZIOBJ) $(LZHAMOBJ) $(PPMDOBJ) $(ZXCOBJ) $(WINRES)
+ $(PROG): $(filter-out $(CORE_DROP),$(LINKOBJS))
+-	$(CXX) $(ZPAQ_CPPFLAGS) $(ZPAQ_CXXFLAGS) $(ZSTDINC) $(HSINC) $(LZFSEINC) $(BSCINC) $(LZHAMINC) $(BROTLIINC) $(PPMDINC) $(LDFLAGS) $(filter-out $(CORE_DROP),$(LINKOBJS)) $(ZPAQ_WIN_LIBS) $(LDLIBS) -o $@
++	$(CXX) $(ZPAQ_CPPFLAGS) $(ZPAQ_CXXFLAGS) $(ZSTDINC) $(HSINC) $(LZFSEINC) $(BSCINC) $(LZHAMINC) $(BROTLIINC) $(PPMDINC) $(OSREPINC) $(LDFLAGS) $(filter-out $(CORE_DROP),$(LINKOBJS)) $(ZPAQ_WIN_LIBS) $(LDLIBS) -o $@
+ 	$(ZPAQ_POSTLINK)
+ 
+ # RT_MANIFEST resource (Windows/MinGW only) for visual-styled common controls.
+@@ -628,6 +632,9 @@ compressors/lz5/%.o: compressors/lz5/%.c
+ compressors/lz6/%.o: compressors/lz6/%.c
+ 	$(CC) $(ZPAQ_CFLAGS) $(LZ6INC) -c $< -o $@
+ 
++compressors/osrep/%.o: compressors/osrep/%.c
++	$(CC) $(ZPAQ_CFLAGS) -std=c99 $(OSREPINC) -c $< -o $@
++
+ compressors/lzmasdk/%.o: compressors/lzmasdk/%.c
+ 	$(CC) $(ZPAQ_CFLAGS) $(LZMAINC) -c $< -o $@
+ 
+diff --git a/compressors/osrep/LICENSE b/compressors/osrep/LICENSE
+new file mode 100644
+index 0000000..1951d1e
+--- /dev/null
++++ b/compressors/osrep/LICENSE
+@@ -0,0 +1,21 @@
++MIT License
++
++Copyright (c) 2026 Yade E. Bravo
++
++Permission is hereby granted, free of charge, to any person obtaining a copy
++of this software and associated documentation files (the "Software"), to deal
++in the Software without restriction, including without limitation the rights
++to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
++copies of the Software, and to permit persons to whom the Software is
++furnished to do so, subject to the following conditions:
++
++The above copyright notice and this permission notice shall be included in all
++copies or substantial portions of the Software.
++
++THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
++OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
++SOFTWARE.
+diff --git a/compressors/osrep/osrep_fragment.c b/compressors/osrep/osrep_fragment.c
+new file mode 100644
+index 0000000..e5768b7
+--- /dev/null
++++ b/compressors/osrep/osrep_fragment.c
+@@ -0,0 +1,179 @@
++/* OSREP fragmenter API: zpaq-std's order-1 CDC (exact mode) and OSREP's
++   48-byte FNV rolling CDC, with SHA-1 and the order-1 state zpaq's data-type
++   analysis consumes.
++
++   Pure functions, no globals, thread-safe. The exact-mode loop is the same as
++   zpaq-std's fragment_buffer(); tests/fixtures/zpaq-fragments pin it. */
++#include "osrep_fragment.h"
++
++#include <stdlib.h>
++#include <string.h>
++
++#define HASH_MULT_HIT UINT32_C(314159265)
++#define HASH_MULT_MISS UINT32_C(271828182)
++#define FNV_PRIME UINT64_C(0x100000001B3)
++#define OSREP_WINDOW 48
++#define ZPAQ_DEFAULT_BLOCK (UINT32_C(64) * 1024 * 1024)
++
++int osrep_frag_params_zpaq(osrep_frag_params *params, unsigned fragment,
++                           uint32_t block_size) {
++  uint64_t max64, min64;
++  if (params == NULL || fragment > 22) return OSREP_FRAG_EINVAL;
++  if (block_size == 0) block_size = ZPAQ_DEFAULT_BLOCK;
++  if (block_size <= 12) return OSREP_FRAG_EINVAL;
++  max64 = (uint64_t)8128u << fragment;
++  if (fragment > 19 || max64 > (uint64_t)block_size - 12)
++    max64 = (uint64_t)block_size - 12;
++  min64 = (uint64_t)64u << fragment;
++  if (min64 > max64) min64 = max64;
++  params->mode = OSREP_FRAG_MODE_ZPAQ;
++  params->min = (uint32_t)min64;
++  params->max = (uint32_t)max64;
++  params->threshold = (fragment <= 22) ? (UINT32_C(1) << (22 - fragment)) : 0;
++  params->avg = 0;
++  return OSREP_FRAG_OK;
++}
++
++int osrep_frag_params_osrep(osrep_frag_params *params, unsigned fragment,
++                            uint32_t block_size) {
++  uint64_t avg;
++  if (osrep_frag_params_zpaq(params, fragment, block_size) != OSREP_FRAG_OK)
++    return OSREP_FRAG_EINVAL;
++  /* Default N=6 maps to the 8 KiB OSREP average that benchmarked well for
++     -m5; smaller N gives smaller fragments (N=3 -> 1 KiB). */
++  avg = UINT64_C(65536);
++  if (fragment > 9)
++    avg <<= (fragment - 9);
++  else if (fragment < 9)
++    avg >>= (9 - fragment);
++  if (avg < 1024) avg = 1024;
++  if (avg > (UINT64_C(1) << 20)) avg = UINT64_C(1) << 20;
++  params->mode = OSREP_FRAG_MODE_OSREP;
++  params->avg = (uint32_t)avg;
++  return OSREP_FRAG_OK;
++}
++
++void osrep_frag_state_reset(osrep_frag_state *state,
++                            const osrep_frag_params *params) {
++  memset(state, 0, sizeof *state);
++  state->mode = params->mode;
++  state->min = params->min;
++  state->max = params->max;
++  state->threshold = params->threshold;
++  state->avg = params->avg;
++  if (params->mode == OSREP_FRAG_MODE_OSREP) {
++    uint64_t p = 1;
++    int i;
++    for (i = 0; i < OSREP_WINDOW; i++) p *= FNV_PRIME;
++    state->pow = p;
++  }
++}
++
++int osrep_frag_state_push(osrep_frag_state *state, uint8_t c) {
++  uint8_t pred = state->o1[state->c1];
++  state->hits += (c == pred);
++  state->o1[state->c1] = c;
++  state->c1 = c;
++  ++state->size;
++
++  if (state->mode == OSREP_FRAG_MODE_OSREP) {
++    state->h64 = state->h64 * FNV_PRIME + c;
++    if (state->winlen >= OSREP_WINDOW)
++      state->h64 -= (uint64_t)state->win[state->winpos] * state->pow;
++    state->win[state->winpos] = c;
++    state->winpos = (state->winpos + 1) % OSREP_WINDOW;
++    if (state->winlen < OSREP_WINDOW) ++state->winlen;
++    if (state->size >= state->min && state->avg != 0 &&
++        (state->h64 < UINT64_MAX / state->avg || state->size >= state->max))
++      return 1;
++    return 0;
++  }
++
++  state->h = (state->h + (uint32_t)c + 1u) *
++             ((c == pred) ? HASH_MULT_HIT : HASH_MULT_MISS);
++  if (state->threshold != 0 && state->h < state->threshold &&
++      state->size >= state->min)
++    return 1;
++  return 0;
++}
++
++static int append_fragment(osrep_frag **arr, size_t *cap, size_t *count,
++                           const uint8_t *buf, size_t start, size_t len,
++                           uint32_t hits, const uint8_t o1[256]) {
++  osrep_frag *f;
++  if (*count == *cap) {
++    size_t newcap = *cap * 2;
++    osrep_frag *grown;
++    if (newcap <= *cap || newcap > SIZE_MAX / sizeof(**arr))
++      return OSREP_FRAG_ENOMEM;
++    grown = (osrep_frag *)realloc(*arr, newcap * sizeof(**arr));
++    if (grown == NULL) return OSREP_FRAG_ENOMEM;
++    *arr = grown;
++    *cap = newcap;
++  }
++  f = &(*arr)[*count];
++  f->off = (uint64_t)start;
++  f->size = (uint32_t)len;
++  f->hits = hits;
++  memcpy(f->o1, o1, 256);
++  osrep_sha1(buf + start, len, f->sha1);
++  ++*count;
++  return OSREP_FRAG_OK;
++}
++
++int osrep_fragment_buffer(const uint8_t *buf, size_t len,
++                          const osrep_frag_params *params, osrep_frag **out,
++                          size_t *out_n) {
++  osrep_frag *arr;
++  osrep_frag_state st;
++  size_t cap, count = 0, start = 0, i;
++  int rc;
++
++  if (out == NULL || out_n == NULL || params == NULL) return OSREP_FRAG_EINVAL;
++  *out = NULL;
++  *out_n = 0;
++  if (buf == NULL && len != 0) return OSREP_FRAG_EINVAL;
++  if (params->mode != OSREP_FRAG_MODE_ZPAQ &&
++      params->mode != OSREP_FRAG_MODE_OSREP)
++    return OSREP_FRAG_ENOTSUP;
++  if (params->min == 0 || params->max == 0) return OSREP_FRAG_EINVAL;
++  if (params->mode == OSREP_FRAG_MODE_OSREP && params->avg == 0)
++    return OSREP_FRAG_EINVAL;
++  if (len == 0) return OSREP_FRAG_OK;
++
++  cap = len / (size_t)params->min + 2;
++  if (cap > 1024) cap = 1024;
++  if (cap < 8) cap = 8;
++  if (cap > SIZE_MAX / sizeof(*arr)) return OSREP_FRAG_ENOMEM;
++  arr = (osrep_frag *)malloc(cap * sizeof(*arr));
++  if (arr == NULL) return OSREP_FRAG_ENOMEM;
++
++  osrep_frag_state_reset(&st, params);
++  for (i = 0; i < len; i++) {
++    int cut = osrep_frag_state_push(&st, buf[i]);
++    if (cut || st.size >= params->max) {
++      rc = append_fragment(&arr, &cap, &count, buf, start, st.size, st.hits,
++                           st.o1);
++      if (rc != OSREP_FRAG_OK) {
++        free(arr);
++        return rc;
++      }
++      start = i + 1;
++      osrep_frag_state_reset(&st, params);
++    }
++  }
++  if (st.size != 0) {
++    rc = append_fragment(&arr, &cap, &count, buf, start, st.size, st.hits,
++                         st.o1);
++    if (rc != OSREP_FRAG_OK) {
++      free(arr);
++      return rc;
++    }
++  }
++
++  *out = arr;
++  *out_n = count;
++  return OSREP_FRAG_OK;
++}
++
++void osrep_frag_free(osrep_frag *p) { free(p); }
+diff --git a/compressors/osrep/osrep_fragment.h b/compressors/osrep/osrep_fragment.h
+new file mode 100644
+index 0000000..ea0f783
+--- /dev/null
++++ b/compressors/osrep/osrep_fragment.h
+@@ -0,0 +1,90 @@
++#ifndef OSREP_FRAGMENT_H
++#define OSREP_FRAGMENT_H
++
++#include <stddef.h>
++#include <stdint.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++/* Mode 0 reproduces zpaq-std's order-1 fragmenter byte for byte. Mode 1 is
++   OSREP's content-defined fragmenter: a 48-byte FNV rolling hash that cuts
++   at the target average, between the same minimum and maximum. */
++#define OSREP_FRAG_MODE_ZPAQ 0u
++#define OSREP_FRAG_MODE_OSREP 1u
++
++#define OSREP_FRAG_OK 0
++#define OSREP_FRAG_EINVAL 1
++#define OSREP_FRAG_ENOMEM 2
++#define OSREP_FRAG_ENOTSUP 3
++
++/* What zpaq-std needs for its fragment table and data-type analysis. */
++typedef struct {
++  uint64_t off;      /* byte offset in the input buffer */
++  uint32_t size;     /* fragment length */
++  uint8_t sha1[20];  /* SHA-1 of the fragment */
++  uint32_t hits;     /* order-1 prediction hits inside the fragment */
++  uint8_t o1[256];   /* order-1 table at the end of the fragment */
++} osrep_frag;
++
++typedef struct {
++  uint32_t mode;       /* OSREP_FRAG_MODE_* */
++  uint32_t min;        /* minimum fragment size */
++  uint32_t max;        /* maximum fragment size */
++  uint32_t threshold;  /* zpaq mode: cut when h < threshold */
++  uint32_t avg;        /* OSREP mode: target average fragment size */
++} osrep_frag_params;
++
++/* Incremental state for callers that read a file in blocks. Reset it at the
++   start of every fragment; push one byte and it returns 1 when the fragment
++   must end after that byte (the max-size cut stays with the caller). */
++typedef struct {
++  uint32_t mode;
++  uint32_t h;
++  uint32_t hits;
++  uint32_t min;
++  uint32_t max;
++  uint32_t threshold;
++  uint32_t avg;
++  uint32_t size;
++  uint8_t c1;
++  uint8_t o1[256];
++  uint64_t h64;
++  uint64_t pow;
++  uint8_t win[48];
++  uint32_t winpos;
++  uint32_t winlen;
++} osrep_frag_state;
++
++void osrep_frag_state_reset(osrep_frag_state *state,
++                            const osrep_frag_params *params);
++int osrep_frag_state_push(osrep_frag_state *state, uint8_t c);
++
++/* Fill params with zpaq-std's -fragment N mapping. block_size is zpaq's
++   block size (0 = 64 MiB), used to clamp max the same way zpaq does. */
++int osrep_frag_params_zpaq(osrep_frag_params *params, unsigned fragment,
++                           uint32_t block_size);
++/* OSREP mode: 48-byte FNV rolling hash. The average is derived from the
++   zpaq fragment level (N=6 -> 64 KiB, lower N -> smaller); min/max follow
++   the zpaq mapping. */
++int osrep_frag_params_osrep(osrep_frag_params *params, unsigned fragment,
++                            uint32_t block_size);
++
++/* Fragment a whole buffer. On success *out is a malloc'ed array of *out_n
++   entries; free it with osrep_frag_free(). The function keeps no state and
++   is safe to call from several threads. */
++int osrep_fragment_buffer(const uint8_t *buf, size_t len,
++                          const osrep_frag_params *params, osrep_frag **out,
++                          size_t *out_n);
++
++void osrep_frag_free(osrep_frag *p);
++
++/* SHA-1 (FIPS 180-4) of a memory buffer. */
++void osrep_sha1(const uint8_t *data, size_t len, uint8_t out[20]);
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif
+diff --git a/compressors/osrep/osrep_sha1.c b/compressors/osrep/osrep_sha1.c
+new file mode 100644
+index 0000000..08ecee2
+--- /dev/null
++++ b/compressors/osrep/osrep_sha1.c
+@@ -0,0 +1,89 @@
++/* SHA-1 for the zpaq-std fragmenter integration.
++
++   Scalar portable implementation (FIPS 180-4). A SHA-NI path can be added
++   later without changing this API; the host used for the current benchmarks
++   has no SHA-NI. */
++#include <stddef.h>
++#include <stdint.h>
++
++static uint32_t rol(uint32_t x, unsigned n) {
++  return (x << n) | (x >> (32 - n));
++}
++
++static void sha1_block(uint32_t h[5], const uint8_t *p) {
++  uint32_t w[80], a, b, c, d, e, t;
++  int i;
++  for (i = 0; i < 16; i++)
++    w[i] = ((uint32_t)p[i * 4] << 24) | ((uint32_t)p[i * 4 + 1] << 16) |
++           ((uint32_t)p[i * 4 + 2] << 8) | (uint32_t)p[i * 4 + 3];
++  for (i = 16; i < 80; i++)
++    w[i] = rol(w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16], 1);
++  a = h[0];
++  b = h[1];
++  c = h[2];
++  d = h[3];
++  e = h[4];
++  for (i = 0; i < 80; i++) {
++    uint32_t f, k;
++    if (i < 20) {
++      f = (b & c) | ((~b) & d);
++      k = UINT32_C(0x5A827999);
++    } else if (i < 40) {
++      f = b ^ c ^ d;
++      k = UINT32_C(0x6ED9EBA1);
++    } else if (i < 60) {
++      f = (b & c) | (b & d) | (c & d);
++      k = UINT32_C(0x8F1BBCDC);
++    } else {
++      f = b ^ c ^ d;
++      k = UINT32_C(0xCA62C1D6);
++    }
++    t = rol(a, 5) + f + e + k + w[i];
++    e = d;
++    d = c;
++    c = rol(b, 30);
++    b = a;
++    a = t;
++  }
++  h[0] += a;
++  h[1] += b;
++  h[2] += c;
++  h[3] += d;
++  h[4] += e;
++}
++
++void osrep_sha1(const uint8_t *data, size_t len, uint8_t out[20]) {
++  uint32_t h[5] = {UINT32_C(0x67452301), UINT32_C(0xEFCDAB89),
++                   UINT32_C(0x98BADCFE), UINT32_C(0x10325476),
++                   UINT32_C(0xC3D2E1F0)};
++  uint8_t tail[128];
++  size_t full = len / 64;
++  size_t rem = len % 64;
++  size_t i;
++  uint64_t bits = (uint64_t)len * 8;
++  for (i = 0; i < full; i++)
++    sha1_block(h, data + i * 64);
++  /* Padding: data, 0x80, zeros, then the 64-bit big-endian bit length. */
++  for (i = 0; i < 128; i++)
++    tail[i] = 0;
++  if (rem > 0)
++    for (i = 0; i < rem; i++)
++      tail[i] = data[full * 64 + i];
++  tail[rem] = 0x80;
++  if (rem < 56) {
++    for (i = 0; i < 8; i++)
++      tail[56 + i] = (uint8_t)(bits >> (56 - 8 * i));
++    sha1_block(h, tail);
++  } else {
++    for (i = 0; i < 8; i++)
++      tail[120 + i] = (uint8_t)(bits >> (56 - 8 * i));
++    sha1_block(h, tail);
++    sha1_block(h, tail + 64);
++  }
++  for (i = 0; i < 5; i++) {
++    out[i * 4] = (uint8_t)(h[i] >> 24);
++    out[i * 4 + 1] = (uint8_t)(h[i] >> 16);
++    out[i * 4 + 2] = (uint8_t)(h[i] >> 8);
++    out[i * 4 + 3] = (uint8_t)h[i];
++  }
++}
+diff --git a/zpaq-std.cpp b/zpaq-std.cpp
+index 89596d9..09fcdf9 100644
+--- a/zpaq-std.cpp
++++ b/zpaq-std.cpp
+@@ -88170,6 +88170,7 @@ struct franz_posix; /// -tar: see "-tar (*nix)"
+ struct franz_tar;
+ bool flagtest;
+ bool flagtouch;
++bool flagosrep; /// -osrep: add cuts fragments with OSREP's fragmenter (EXPERIMENTAL)
+ bool flagutc;
+ bool flagdate;
+ bool flagutf;
+@@ -159815,6 +159816,7 @@ void programflags_riempi(bool *i_flagtest)
+ 	g_programflags.add(&flagnumeric,		"-numeric",				"x -tar: owners by uid/gid only, not by name",			"");
+ 	g_programflags.add(&flagtmp,			"-tmp",					"Use .tmp instead of .zpaq during backup",			"");
+ 	g_programflags.add(i_flagtest,			"-test",				"Only do test",										"");
++	g_programflags.add(&flagosrep,			"-osrep",				"EXPERIMENTAL a: content-defined fragments by OSREP (-fragment N: average 64 KiB<<(N-9), N=6 8 KiB)",	"");
+ 	g_programflags.add(&flagtouch,			"-touch",				"Re-hash files without a usable hash (7.15 to zpaqfranz)",		"");
+ 	g_programflags.add(&flagutc,			"-utc",					"Use UTC time",										"");
+ 	g_programflags.add(&flagdate,			"-date",				"Show/save creation date (if possible)",			"");
+@@ -180206,6 +180208,17 @@ static void lingua_scegli(int &io_argc, const char **&io_argv, vector<const char
+ 	io_argc= (int)o_argv.size();
+ 	io_argv= &o_argv[0];
+ }
++/// -osrep: content-defined fragments by OSREP's fragmenter (compressors/osrep,
++/// MIT). The average fragment comes from -fragment N: 64 KiB << (N-9), from
++/// 1 KiB to 1 MiB, so the default N=6 is 8 KiB and N=3 is 1 KiB
++#include "osrep_fragment.h"
++static uint32_t osrep_avg_for(int i_fragment)
++{
++	osrep_frag_params p;
++	if ((i_fragment >= 0) && (osrep_frag_params_osrep(&p, (unsigned)i_fragment, 0) == OSREP_FRAG_OK))
++		return p.avg;
++	return (i_fragment < 9) ? 1024u : (1u << 20);
++}
+ int zpaq_main_internal(int argc, const char **argv)
+ {
+     g_argc = argc; /// 65.15a: -lowram runs itself again with them (on *nix; Windows: GetCommandLineW)
+@@ -252656,6 +252669,15 @@ int Jidac::add()
+ 	const bool	   check_boundary= (fragment <= 22);
+ 	const unsigned HASH_MULT_HIT = 314159265u;
+ 	const unsigned HASH_MULT_MISS= 271828182u;
++	/// -osrep: OSREP's 48-byte FNV fragmenter between MIN_FRAGMENT and
++	/// MAX_FRAGMENT, its average from -fragment. Without -osrep nothing changes
++	const bool		  osrep_on= flagosrep;
++	osrep_frag_params osrep_fp;
++	memset(&osrep_fp, 0, sizeof(osrep_fp));
++	osrep_fp.mode= OSREP_FRAG_MODE_OSREP;
++	osrep_fp.min = MIN_FRAGMENT;
++	osrep_fp.max = MAX_FRAGMENT;
++	osrep_fp.avg = osrep_avg_for(fragment);
+ 
+ 	for (unsigned fi= 0; fi <= vf.size(); ++fi)
+ 	{
+@@ -252747,6 +252769,9 @@ int Jidac::add()
+ 			unsigned	  htptr			= 0;   // fragment index
+ 			char		  sha1result[20]= {0}; // fragment hash
+ 			unsigned char o1[256]		= {0}; // order 1 context -> predicted byte
++			osrep_frag_state osrep_fs; /// -osrep: its own hash, hits and o1
++			if (osrep_on)
++				osrep_frag_state_reset(&osrep_fs, &osrep_fp);
+ 
+ 			if (fi < vf.size())
+ 			{
+@@ -253036,6 +253061,22 @@ int Jidac::add()
+ 
+ 					bool fragment_found= false;
+ 
++					/// -osrep: one byte at a time through OSREP's state. Without a cut p
++					/// ends at stop, so the remainder loop below has nothing left to do
++					if (osrep_on)
++					{
++						while (p < stop)
++						{
++							const unsigned char uc= *p++;
++							fragbuf[sz++]		  = uc;
++							if (osrep_frag_state_push(&osrep_fs, uc))
++							{
++								fragment_found= true;
++								break;
++							}
++						}
++					}
++					else
+ 					// Unroll manuale per migliori performance
+ 					while (p + 4 <= stop)
+ 					{
+@@ -253148,6 +253189,11 @@ int Jidac::add()
+ 
+ 				if (sz == 0 && fj > 0)
+ 					break; /// fix alla versione d
++				if (osrep_on) /// hits and o1 for the data type analysis below
++				{
++					hits= osrep_fs.hits;
++					memcpy(o1, osrep_fs.o1, sizeof(o1));
++				}
+ 				// SHA1 update in blocco - gia' ottimizzato zpaqfranz
+ 				sha1.write(&fragbuf[0], sz);
+ 
+@@ -254078,11 +254124,63 @@ struct s_add2scan
+ 	int64_t					 maxf;
+ 	std::vector<s_add2frag> *out;
+ 	int64_t					 open; // out: where the open fragment begins
+-};
++	const osrep_frag_params *osrep; // -osrep: OSREP's fragmenter; NULL = zpaq's
++};
++/// -osrep: add2_scan() with OSREP's fragmenter. The same cuts as the plain
++/// loop, because the state starts fresh at every cut there too
++static void add2_scan_osrep(s_add2scan *i_scan)
++{
++	const unsigned char *base  = i_scan->base;
++	const int64_t		 fine  = i_scan->fine;
++	const int64_t		 maxf  = i_scan->maxf;
++	int64_t				 pos   = i_scan->from;
++	int64_t				 inizio= pos;
++	int					 passati= 0;
++	osrep_frag_state	 st;
++	osrep_frag_state_reset(&st, i_scan->osrep);
++	bool finito= false;
++	while (!finito)
++	{
++		bool taglio= false;
++		while (pos < fine)
++		{
++			const unsigned char uc= base[pos++];
++			if (osrep_frag_state_push(&st, uc) || (pos - inizio >= maxf))
++			{
++				taglio= true;
++				break;
++			}
++		}
++		if ((!taglio) && ((!i_scan->chiudi) || (pos == inizio)))
++			break;
++		s_add2frag uno;
++		uno.start= inizio;
++		uno.len	 = pos - inizio;
++		uno.hits = st.hits;
++		memcpy(uno.o1, st.o1, sizeof(uno.o1));
++		libzpaq::SHA1 sha1;
++		sha1.write((const char *)base + inizio, uno.len);
++		memcpy(uno.sha1, sha1.result(), 20);
++		i_scan->out->push_back(uno);
++		inizio= pos;
++		osrep_frag_state_reset(&st, i_scan->osrep);
++		if (!taglio)
++			finito= true;
++		else if ((i_scan->after >= 0) && (pos >= i_scan->after))
++			if (++passati >= i_scan->dopo)
++				finito= true;
++	}
++	i_scan->open= inizio;
++}
+ /// the fragmenter of add(): the same hash, the same cuts, the same hits and
+ /// o1 table, and the SHA-1 of every fragment while it is still in the cache
+ void add2_scan(s_add2scan *i_scan)
+ {
++	if (i_scan->osrep != NULL)
++	{
++		add2_scan_osrep(i_scan);
++		return;
++	}
+ 	const unsigned		 HASH_MULT_HIT = 314159265u;
+ 	const unsigned		 HASH_MULT_MISS= 271828182u;
+ 	const unsigned char *base		   = i_scan->base;
+@@ -255119,6 +255217,15 @@ int Jidac::add2()
+ 	const bool	   check_boundary= (fragment <= 22);
+ 	const unsigned HASH_MULT_HIT = 314159265u;
+ 	const unsigned HASH_MULT_MISS= 271828182u;
++	/// -osrep: OSREP's 48-byte FNV fragmenter between MIN_FRAGMENT and
++	/// MAX_FRAGMENT, its average from -fragment. Without -osrep nothing changes
++	const bool		  osrep_on= flagosrep;
++	osrep_frag_params osrep_fp;
++	memset(&osrep_fp, 0, sizeof(osrep_fp));
++	osrep_fp.mode= OSREP_FRAG_MODE_OSREP;
++	osrep_fp.min = MIN_FRAGMENT;
++	osrep_fp.max = MAX_FRAGMENT;
++	osrep_fp.avg = osrep_avg_for(fragment);
+ 
+ 	/// -turbo (add2): two batches of a plain file (one is read while the other
+ 	/// is worked), each one after room for the fragment that is still open at
+@@ -255825,6 +255932,7 @@ int Jidac::add2()
+ 					scan[k].dopo		= 3;
+ 					scan[k].chiudi		= false;
+ 					scan[k].h_threshold = h_threshold;
++					scan[k].osrep		= osrep_on ? &osrep_fp : NULL;
+ 					scan[k].minf		= MIN_FRAGMENT;
+ 					scan[k].maxf		= MAX_FRAGMENT;
+ 					scan[k].out			= &turbolists[k];
+@@ -255865,6 +255973,7 @@ int Jidac::add2()
+ 						uno.dopo	   = 1;
+ 						uno.chiudi	   = false;
+ 						uno.h_threshold= h_threshold;
++						uno.osrep		 = osrep_on ? &osrep_fp : NULL;
+ 						uno.minf	   = MIN_FRAGMENT;
+ 						uno.maxf	   = MAX_FRAGMENT;
+ 						uno.out		   = &turboextra;
+@@ -255919,6 +256028,7 @@ int Jidac::add2()
+ 						coda.dopo		= 0;
+ 						coda.chiudi		= true;
+ 						coda.h_threshold= h_threshold;
++						coda.osrep		  = osrep_on ? &osrep_fp : NULL;
+ 						coda.minf		= MIN_FRAGMENT;
+ 						coda.maxf		= MAX_FRAGMENT;
+ 						coda.out		= &turboextra;
+@@ -255991,6 +256101,9 @@ int Jidac::add2()
+ 			unsigned	  htptr			= 0;   // fragment index
+ 			char		  sha1result[20]= {0}; // fragment hash
+ 			unsigned char o1[256]		= {0}; // order 1 context -> predicted byte
++			osrep_frag_state osrep_fs; /// -osrep: its own hash, hits and o1
++			if (osrep_on)
++				osrep_frag_state_reset(&osrep_fs, &osrep_fp);
+ 
+ 			if (fi < vf.size())
+ 			{
+@@ -256282,6 +256395,22 @@ int Jidac::add2()
+ 
+ 					bool fragment_found= false;
+ 
++					/// -osrep: one byte at a time through OSREP's state. Without a cut p
++					/// ends at stop, so the remainder loop below has nothing left to do
++					if (osrep_on)
++					{
++						while (p < stop)
++						{
++							const unsigned char uc= *p++;
++							fragbuf[sz++]		  = uc;
++							if (osrep_frag_state_push(&osrep_fs, uc))
++							{
++								fragment_found= true;
++								break;
++							}
++						}
++					}
++					else
+ 					// Unroll manuale per migliori performance
+ 					while (p + 4 <= stop)
+ 					{
+@@ -256394,6 +256523,11 @@ int Jidac::add2()
+ 
+ 				if (sz == 0 && fj > 0)
+ 					break; /// fix alla versione d
++				if (osrep_on) /// hits and o1 for the data type analysis below
++				{
++					hits= osrep_fs.hits;
++					memcpy(o1, osrep_fs.o1, sizeof(o1));
++				}
+ 				// SHA1 update in blocco - gia' ottimizzato zpaqfranz
+ 				sha1.write(&fragbuf[0], sz);
+ 
+-- 
+2.47.3
+

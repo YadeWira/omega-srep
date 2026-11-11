@@ -8,8 +8,9 @@
 extern "C" {
 #endif
 
-/* Mode 0 reproduces zpaq-std's order-1 fragmenter byte for byte. Mode 1
-   (OSREP's gear/FNV CDC) is reserved and not implemented yet. */
+/* Mode 0 reproduces zpaq-std's order-1 fragmenter byte for byte. Mode 1 is
+   OSREP's content-defined fragmenter: a 48-byte FNV rolling hash that cuts
+   at the target average, between the same minimum and maximum. */
 #define OSREP_FRAG_MODE_ZPAQ 0u
 #define OSREP_FRAG_MODE_OSREP 1u
 

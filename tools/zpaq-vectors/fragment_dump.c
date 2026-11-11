@@ -1,7 +1,11 @@
 /* Dump the OSREP fragmenter output as TSV, matching the zpaq-std Phase 0
    vectors: offset size hits sha1(hex) o1(hex).
 
-   usage: fragment_dump FILE [FRAGMENT] [BLOCK_SIZE] */
+   usage: fragment_dump FILE [FRAGMENT] [BLOCK_SIZE] [zpaq|osrep]
+
+   The last argument picks the mode: zpaq-std's exact fragmenter (default)
+   or OSREP's 48-byte FNV fragmenter with the -fragment N average. */
+#include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -19,12 +23,22 @@ int main(int argc, char **argv) {
   size_t n = 0, i;
   int rc;
 
-  if (argc < 2 || argc > 4) {
-    fprintf(stderr, "usage: %s FILE [FRAGMENT] [BLOCK_SIZE]\n", argv[0]);
+  int osrep_mode = 0;
+
+  if (argc < 2 || argc > 5) {
+    fprintf(stderr, "usage: %s FILE [FRAGMENT] [BLOCK_SIZE] [zpaq|osrep]\n", argv[0]);
     return 2;
   }
   if (argc >= 3) fragment = (unsigned)strtoul(argv[2], NULL, 10);
   if (argc >= 4) block_size = strtoul(argv[3], NULL, 10);
+  if (argc >= 5) {
+    if (strcmp(argv[4], "osrep") == 0)
+      osrep_mode = 1;
+    else if (strcmp(argv[4], "zpaq") != 0) {
+      fprintf(stderr, "mode must be zpaq or osrep\n");
+      return 2;
+    }
+  }
   f = fopen(argv[1], "rb");
   if (!f) {
     fprintf(stderr, "cannot open %s\n", argv[1]);
@@ -41,7 +55,8 @@ int main(int argc, char **argv) {
   }
   fclose(f);
 
-  rc = osrep_frag_params_zpaq(&params, fragment, (uint32_t)block_size);
+  rc = osrep_mode ? osrep_frag_params_osrep(&params, fragment, (uint32_t)block_size)
+                  : osrep_frag_params_zpaq(&params, fragment, (uint32_t)block_size);
   if (rc != OSREP_FRAG_OK) {
     fprintf(stderr, "bad params (rc=%d)\n", rc);
     return 3;

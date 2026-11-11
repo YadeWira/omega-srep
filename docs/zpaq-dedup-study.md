@@ -289,10 +289,11 @@ archivador no se toca.
   `hits`, SHA-1 y `o1` de los vectores de zpaq-std, en `-fragment 0/3/6/9` y
   en los dos corpus multi-versión (1775 + 503 fragmentos).
 - El lazo de `add()`/`add2()` ya usa la API
-  (`tools/zpaq-vectors/osrep-fragment-integration.patch`).
+  (el prototipo; hoy el switch `-osrep`,
+  `tools/zpaq-vectors/osrep-fragmenter-zpaq-std-2.7.2.patch`).
 - Archivos ZPAQ byte a byte idénticos al baseline del mismo commit:
   `-m0/-m1/-m5` sobre el corpus y `-m1` sobre un tar de 125 MB.
-- Tests: `sha1.sh`, `zpaq_fragments_exact.sh`, `integration-test.sh`.
+- Tests: `sha1.sh`, `zpaq_fragments_exact.sh`, `osrep-switch-test.sh`.
 - Siguiente: API de streaming y modo OSREP (Fase 2).
 
 ### Fase 2 — Modo OSREP (hecha)
@@ -305,8 +306,9 @@ archivador no se toca.
   en PJA, +3,3 % de tamaño pero 1,7× más rápido.
 - Los cuatro archivos de prueba se extraen con el zpaq-std baseline y
   coinciden byte a byte.
-- Pendiente menor: mapear `-fragment` en el CLI (el prototipo usa
-  `OSREP_FRAG_AVG`) y probar zpaqfranz.
+- Parche de entrega hecho: switch `-osrep` (EXPERIMENTAL), `-fragment N` da
+  el promedio, mismos archivos con cualquier cantidad de hilos y en x64, x86 y
+  arm64. Falta probar zpaqfranz.
 
 ### Fase 3 — Producto (1–2 semanas)
 

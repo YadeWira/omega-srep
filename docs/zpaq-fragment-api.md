@@ -66,10 +66,11 @@ void osrep_sha1(const uint8_t *data, size_t len, uint8_t out[20]);
 
 ## Integración en `add()` (hecha)
 
-`tools/zpaq-vectors/osrep-fragment-integration.patch` cambia el lazo inline:
-estado incremental por fragmento (`osrep_frag_state_push`), SHA-1 de OSREP y
-copia de `hits`/`o1` para el data-type analysis. `integration-test.sh`
-compara el binario baseline y el integrado con `-touch`/`-timestamp` fijos:
+El prototipo (ya reemplazado por el switch `-osrep`, ver
+`docs/zpaq-osrep-mode.md`) cambiaba el lazo inline: estado incremental por
+fragmento (`osrep_frag_state_push`), SHA-1 de OSREP y copia de `hits`/`o1`
+para el data-type analysis. Con `-touch`/`-timestamp` fijos, el baseline y el
+integrado daban (hoy lo comprueba `tools/zpaq-vectors/osrep-switch-test.sh`):
 
 | input | métodos | resultado |
 |---|---|---|
@@ -87,8 +88,8 @@ compara el binario baseline y el integrado con `-touch`/`-timestamp` fijos:
 
 ## Pendiente
 
-1. Parche limpio de entrega: mapear `-fragment` en el CLI de zpaq-std (hoy el
-   prototipo usa `OSREP_FRAG_AVG`) y quitar el modo de volcado de vectores.
+1. ~~Parche limpio de entrega~~: hecho, switch `-osrep`
+   (`tools/zpaq-vectors/osrep-fragmenter-zpaq-std-2.7.2.patch`).
 2. Benchmarks con zpaqfranz y un corpus de backup más grande.
 3. Empaquetado y coordinación con zpaq-std.
 

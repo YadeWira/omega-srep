@@ -70,7 +70,8 @@ reemplace) y se repiten en cada release.
    multi-versión (1775 + 503 fragmentos). El modo exacto usa la API en
    `add2_scan` y da archivos byte a byte idénticos al baseline; el modo
    OSREP da 37–45 % menos en `-m1` y hasta 17,7 % en `-m5`
-   (`docs/zpaq-osrep-mode.md`). Falta el parche limpio, zpaqfranz y el
+   (`docs/zpaq-osrep-mode.md`). El parche de entrega está hecho (switch `-osrep`,
+   EXPERIMENTAL, `-fragment N` da el promedio). Falta zpaqfranz y el
    empaquetado.
 4. **Benchmarks de dedup** contra zpaq-std/zpaqfranz (mismo corpus
    multi-versión; tamaño y tiempos).
