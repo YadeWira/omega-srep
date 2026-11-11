@@ -43,6 +43,8 @@ plataformas que 0.0.13. Pre-release.
 - `v6_read`, `v6_encode`, `native_cdc`, `native_match`, `memory_budget`,
   `lib.sh` (73/103), `windows_cross.sh`, `arm64_cross.sh`,
   `linux_x86_cross.sh` y el workflow de macOS.
+- Windows 10 real (x64 y x86): decodifica el sintético cross-block y el
+  `-dup -m5` de 64 MiB (body por archivo temporal), byte a byte.
 
 ## Limitaciones
 
