@@ -281,6 +281,10 @@ void osrep_frag_state_reset(osrep_frag_state *state,
    p & 511; every rule reads only positions this fragment has written. */
 #define ZIP_LOCAL UINT32_C(0x504B0304)
 #define ZIP_CENTRAL UINT32_C(0x504B0102)
+/* A signature cut needs this much in the fragment first: without it an
+   archive of tiny members (or data full of "PK\3\4") gives fragments of a
+   few bytes, each paying ~28 bytes of zpaq index. */
+#define ZIP_SIG_MIN 512u
 
 /* A ustar header ends at the last byte pushed: the magic at offset 257 and
    a checksum that matches (unsigned sum, the field read as spaces). */
@@ -321,12 +325,13 @@ static int format_cut(osrep_frag_state *s, uint8_t c) {
     const uint8_t *r = s->ring;
     /* after a local header signature: the fragment before ends with the
        same four bytes whatever member comes next */
-    if (s->last4 == ZIP_LOCAL && s->size >= 4) return 1;
+    if (s->last4 == ZIP_LOCAL && s->size >= ZIP_SIG_MIN) return 1;
     /* the same after the first central directory signature: not when this
        fragment began with the rest of a central directory entry */
     if (s->size == 42)
       s->zcd = r[3] == 0 && r[2] <= 63 && r[7] == 0 && zip_method(r[6]);
-    if (s->last4 == ZIP_CENTRAL && s->size >= 4 && !s->zcd) return 1;
+    if (s->last4 == ZIP_CENTRAL && s->size >= ZIP_SIG_MIN && !s->zcd)
+      return 1;
     if (f & OSREP_FRAG_F_ZIP_AFTER) {
       /* this fragment may be the rest of a local header (it began just
          after a signature): the fixed part checks, then name and extra */

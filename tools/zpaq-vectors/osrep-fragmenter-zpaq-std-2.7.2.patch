@@ -1,4 +1,4 @@
-From 71e2690ea2381243274589bcd5cbb99b0be9b8a8 Mon Sep 17 00:00:00 2001
+From bea509482907f3ad22acbc11cc5d707fe94f10aa Mon Sep 17 00:00:00 2001
 From: osrep <osrep@local>
 Date: Wed, 11 Nov 2026 16:20:33 -0500
 Subject: [PATCH] add -osrep: content-defined fragments by OSREP (EXPERIMENTAL)
@@ -17,11 +17,11 @@ bytes since the last cut.
 ---
  Makefile                           |  11 +-
  compressors/osrep/LICENSE          |  21 ++
- compressors/osrep/osrep_fragment.c | 561 +++++++++++++++++++++++++++++
+ compressors/osrep/osrep_fragment.c | 566 +++++++++++++++++++++++++++++
  compressors/osrep/osrep_fragment.h | 154 ++++++++
  compressors/osrep/osrep_sha1.c     |  89 +++++
- zpaq-std.cpp                       | 140 ++++++-
- 6 files changed, 972 insertions(+), 4 deletions(-)
+ zpaq-std.cpp                       | 149 +++++++-
+ 6 files changed, 986 insertions(+), 4 deletions(-)
  create mode 100644 compressors/osrep/LICENSE
  create mode 100644 compressors/osrep/osrep_fragment.c
  create mode 100644 compressors/osrep/osrep_fragment.h
@@ -107,10 +107,10 @@ index 0000000..1951d1e
 +SOFTWARE.
 diff --git a/compressors/osrep/osrep_fragment.c b/compressors/osrep/osrep_fragment.c
 new file mode 100644
-index 0000000..169af7e
+index 0000000..f4e4aa0
 --- /dev/null
 +++ b/compressors/osrep/osrep_fragment.c
-@@ -0,0 +1,561 @@
+@@ -0,0 +1,566 @@
 +/* OSREP fragmenter API: zpaq-std's order-1 CDC (exact mode), OSREP's
 +   48-byte FNV rolling CDC and the gear CDC that -osrep uses (with its
 +   format-aware cuts after tar and zip headers, and FastCDC normalized
@@ -394,6 +394,10 @@ index 0000000..169af7e
 +   p & 511; every rule reads only positions this fragment has written. */
 +#define ZIP_LOCAL UINT32_C(0x504B0304)
 +#define ZIP_CENTRAL UINT32_C(0x504B0102)
++/* A signature cut needs this much in the fragment first: without it an
++   archive of tiny members (or data full of "PK\3\4") gives fragments of a
++   few bytes, each paying ~28 bytes of zpaq index. */
++#define ZIP_SIG_MIN 512u
 +
 +/* A ustar header ends at the last byte pushed: the magic at offset 257 and
 +   a checksum that matches (unsigned sum, the field read as spaces). */
@@ -434,12 +438,13 @@ index 0000000..169af7e
 +    const uint8_t *r = s->ring;
 +    /* after a local header signature: the fragment before ends with the
 +       same four bytes whatever member comes next */
-+    if (s->last4 == ZIP_LOCAL && s->size >= 4) return 1;
++    if (s->last4 == ZIP_LOCAL && s->size >= ZIP_SIG_MIN) return 1;
 +    /* the same after the first central directory signature: not when this
 +       fragment began with the rest of a central directory entry */
 +    if (s->size == 42)
 +      s->zcd = r[3] == 0 && r[2] <= 63 && r[7] == 0 && zip_method(r[6]);
-+    if (s->last4 == ZIP_CENTRAL && s->size >= 4 && !s->zcd) return 1;
++    if (s->last4 == ZIP_CENTRAL && s->size >= ZIP_SIG_MIN && !s->zcd)
++      return 1;
 +    if (f & OSREP_FRAG_F_ZIP_AFTER) {
 +      /* this fragment may be the rest of a local header (it began just
 +         after a signature): the fixed part checks, then name and extra */
@@ -928,7 +933,7 @@ index 0000000..08ecee2
 +  }
 +}
 diff --git a/zpaq-std.cpp b/zpaq-std.cpp
-index 89596d9..8c4d0e1 100644
+index 89596d9..e709417 100644
 --- a/zpaq-std.cpp
 +++ b/zpaq-std.cpp
 @@ -88170,6 +88170,8 @@ struct franz_posix; /// -tar: see "-tar (*nix)"
@@ -953,7 +958,7 @@ index 89596d9..8c4d0e1 100644
  		else if (cli_getint		(opt,"-bandwidth",	false,	"",								argc,argv,&i,0,					&g_sftp_bandwidth));
  		else if (cli_getint		(opt,"-all",		false,	"",								argc,argv,&i,4,					&all));
 -		else if (cli_getint		(opt,"-fragment",	false,	"",								argc,argv,&i,fragment,			&fragment));
-+		else if (cli_getint		(opt,"-fragment",	false,	"",								argc,argv,&i,fragment,			&fragment)) g_fragmentgiven= true;
++		else if (cli_getint		(opt,"-fragment",	false,	"",								argc,argv,&i,fragment,			&fragment)) g_fragmentgiven= !stringcomparei(argv[i],"-fragment"); /// only when a number was read
  		else if (cli_getuint	(opt,"-filelength",	false,	"",								argc,argv,&i,filelength,		&filelength));
  		else if (cli_getuint	(opt,"-dirlength",	false,	"",								argc,argv,&i,dirlength,			&dirlength));
  		else if (cli_getuint	(opt,"-n",			false,	"",								argc,argv,&i,menoenne,			&menoenne));
@@ -978,16 +983,25 @@ index 89596d9..8c4d0e1 100644
  int zpaq_main_internal(int argc, const char **argv)
  {
      g_argc = argc; /// 65.15a: -lowram runs itself again with them (on *nix; Windows: GetCommandLineW)
-@@ -243625,6 +243642,8 @@ int Jidac::testparametriadd()
+@@ -243625,6 +243642,17 @@ int Jidac::testparametriadd()
  	}
  
  
 +	if (flagosrep && (!g_fragmentgiven)) /// -osrep: 8 KiB unless -fragment says otherwise
 +		fragment= 3;
++	if (flagosrep) /// before any thread starts: error() from there would hang add()
++	{
++		osrep_frag_params chk;
++		if ((fragment < 0) || (osrep_frag_params_osrep(&chk, (unsigned)fragment, 0) != OSREP_FRAG_OK))
++		{
++			myprintf("-osrep: -fragment must be 0..21\n");
++			return 2;
++		}
++	}
  	if (flagstdin)
  		if (fragment != 6)
  		{
-@@ -252656,6 +252675,13 @@ int Jidac::add()
+@@ -252656,6 +252684,13 @@ int Jidac::add()
  	const bool	   check_boundary= (fragment <= 22);
  	const unsigned HASH_MULT_HIT = 314159265u;
  	const unsigned HASH_MULT_MISS= 271828182u;
@@ -1001,7 +1015,7 @@ index 89596d9..8c4d0e1 100644
  
  	for (unsigned fi= 0; fi <= vf.size(); ++fi)
  	{
-@@ -252747,6 +252773,9 @@ int Jidac::add()
+@@ -252747,6 +252782,9 @@ int Jidac::add()
  			unsigned	  htptr			= 0;   // fragment index
  			char		  sha1result[20]= {0}; // fragment hash
  			unsigned char o1[256]		= {0}; // order 1 context -> predicted byte
@@ -1011,7 +1025,7 @@ index 89596d9..8c4d0e1 100644
  
  			if (fi < vf.size())
  			{
-@@ -253036,6 +253065,22 @@ int Jidac::add()
+@@ -253036,6 +253074,22 @@ int Jidac::add()
  
  					bool fragment_found= false;
  
@@ -1034,7 +1048,7 @@ index 89596d9..8c4d0e1 100644
  					// Unroll manuale per migliori performance
  					while (p + 4 <= stop)
  					{
-@@ -253148,6 +253193,11 @@ int Jidac::add()
+@@ -253148,6 +253202,11 @@ int Jidac::add()
  
  				if (sz == 0 && fj > 0)
  					break; /// fix alla versione d
@@ -1046,7 +1060,7 @@ index 89596d9..8c4d0e1 100644
  				// SHA1 update in blocco - gia' ottimizzato zpaqfranz
  				sha1.write(&fragbuf[0], sz);
  
-@@ -254078,11 +254128,63 @@ struct s_add2scan
+@@ -254078,11 +254137,63 @@ struct s_add2scan
  	int64_t					 maxf;
  	std::vector<s_add2frag> *out;
  	int64_t					 open; // out: where the open fragment begins
@@ -1111,7 +1125,7 @@ index 89596d9..8c4d0e1 100644
  	const unsigned		 HASH_MULT_HIT = 314159265u;
  	const unsigned		 HASH_MULT_MISS= 271828182u;
  	const unsigned char *base		   = i_scan->base;
-@@ -255119,6 +255221,13 @@ int Jidac::add2()
+@@ -255119,6 +255230,13 @@ int Jidac::add2()
  	const bool	   check_boundary= (fragment <= 22);
  	const unsigned HASH_MULT_HIT = 314159265u;
  	const unsigned HASH_MULT_MISS= 271828182u;
@@ -1125,7 +1139,7 @@ index 89596d9..8c4d0e1 100644
  
  	/// -turbo (add2): two batches of a plain file (one is read while the other
  	/// is worked), each one after room for the fragment that is still open at
-@@ -255825,6 +255934,7 @@ int Jidac::add2()
+@@ -255825,6 +255943,7 @@ int Jidac::add2()
  					scan[k].dopo		= 3;
  					scan[k].chiudi		= false;
  					scan[k].h_threshold = h_threshold;
@@ -1133,7 +1147,7 @@ index 89596d9..8c4d0e1 100644
  					scan[k].minf		= MIN_FRAGMENT;
  					scan[k].maxf		= MAX_FRAGMENT;
  					scan[k].out			= &turbolists[k];
-@@ -255865,6 +255975,7 @@ int Jidac::add2()
+@@ -255865,6 +255984,7 @@ int Jidac::add2()
  						uno.dopo	   = 1;
  						uno.chiudi	   = false;
  						uno.h_threshold= h_threshold;
@@ -1141,7 +1155,7 @@ index 89596d9..8c4d0e1 100644
  						uno.minf	   = MIN_FRAGMENT;
  						uno.maxf	   = MAX_FRAGMENT;
  						uno.out		   = &turboextra;
-@@ -255919,6 +256030,7 @@ int Jidac::add2()
+@@ -255919,6 +256039,7 @@ int Jidac::add2()
  						coda.dopo		= 0;
  						coda.chiudi		= true;
  						coda.h_threshold= h_threshold;
@@ -1149,7 +1163,7 @@ index 89596d9..8c4d0e1 100644
  						coda.minf		= MIN_FRAGMENT;
  						coda.maxf		= MAX_FRAGMENT;
  						coda.out		= &turboextra;
-@@ -255991,6 +256103,9 @@ int Jidac::add2()
+@@ -255991,6 +256112,9 @@ int Jidac::add2()
  			unsigned	  htptr			= 0;   // fragment index
  			char		  sha1result[20]= {0}; // fragment hash
  			unsigned char o1[256]		= {0}; // order 1 context -> predicted byte
@@ -1159,7 +1173,7 @@ index 89596d9..8c4d0e1 100644
  
  			if (fi < vf.size())
  			{
-@@ -256282,6 +256397,22 @@ int Jidac::add2()
+@@ -256282,6 +256406,22 @@ int Jidac::add2()
  
  					bool fragment_found= false;
  
@@ -1182,7 +1196,7 @@ index 89596d9..8c4d0e1 100644
  					// Unroll manuale per migliori performance
  					while (p + 4 <= stop)
  					{
-@@ -256394,6 +256525,11 @@ int Jidac::add2()
+@@ -256394,6 +256534,11 @@ int Jidac::add2()
  
  				if (sz == 0 && fj > 0)
  					break; /// fix alla versione d

@@ -308,6 +308,51 @@ int main(int argc, char **argv) {
     }
     if (argc > 1) return 0;
   }
+  /* zip signature cuts wait for ZIP_SIG_MIN bytes: 4000 tiny members (a
+     40-byte local header and 10 bytes of data each) must not give tiny
+     fragments */
+  {
+    static uint8_t zb[4000 * 50];
+    osrep_frag *arr = NULL;
+    size_t n = 0, k;
+    for (k = 0; k < 4000; k++) {
+      uint8_t *e = zb + k * 50;
+      memset(e, 0, 50);
+      e[0] = 0x50; e[1] = 0x4B; e[2] = 3; e[3] = 4; e[4] = 20;
+      e[26] = 10; /* name length */
+      memcpy(e + 30, "member.txt", 10);
+      e[40] = (uint8_t)k; e[41] = (uint8_t)(k >> 8);
+    }
+    if (osrep_frag_params_osrep(&p, 3, 0) != OSREP_FRAG_OK) return 2;
+    if (osrep_fragment_buffer(zb, sizeof zb, &p, &arr, &n) != OSREP_FRAG_OK)
+      return 2;
+    osrep_frag_free(arr);
+    if (n > sizeof zb / 256) {
+      fprintf(stderr, "zip: %zu fragments for %zu bytes of tiny members\n", n,
+              sizeof zb);
+      return 1;
+    }
+  }
+  /* the block-size clamp: the average stops at max/2 (and min at avg/2)
+     once 2^N KiB does not fit the block */
+  if (osrep_frag_params_osrep(&p, 13, (UINT32_C(1) << 24) - 4096) !=
+          OSREP_FRAG_OK ||
+      p.max != (UINT32_C(1) << 24) - 4108 || p.avg != p.max / 2 ||
+      p.min != p.avg / 2) {
+    fprintf(stderr, "clamp: N=13, 16 MiB block: min %u avg %u max %u\n",
+            (unsigned)p.min, (unsigned)p.avg, (unsigned)p.max);
+    return 1;
+  }
+  if (osrep_frag_params_osrep(&p, 21, 0) != OSREP_FRAG_OK ||
+      p.avg != p.max / 2 || p.min != p.avg / 2) {
+    fprintf(stderr, "clamp: N=21, default block: min %u avg %u max %u\n",
+            (unsigned)p.min, (unsigned)p.avg, (unsigned)p.max);
+    return 1;
+  }
+  if (osrep_frag_params_osrep(&p, 22, 0) == OSREP_FRAG_OK) {
+    fprintf(stderr, "N=22 must be rejected\n");
+    return 1;
+  }
   printf("fragmenter: incremental state and scan match the buffer API (zpaq, "
          "FNV, gear, -osrep format cuts); cuts pinned\n");
   return 0;

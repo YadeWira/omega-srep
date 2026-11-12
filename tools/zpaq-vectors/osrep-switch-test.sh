@@ -38,4 +38,8 @@ for data in "$SMALL" "$V" "$P"; do defsha=""; for frag in "" "-fragment 0" "-fra
   if [ -d "$data" ]; then src="$data"; else src=$(dirname "$data"); fi
   if diff -rq "$data" "$T/x$data" >/dev/null 2>&1; then ok "C baseline extracts $(basename $data) -osrep $frag"; else bad "C extract $(basename $data) $frag"; fi
 done; done
+# -osrep with a -fragment it rejects must exit with an error, not hang
+rm -f "$T/bad.zpaq"
+timeout 60 "$NEW" a "$T/bad.zpaq" "$P" -m1 -osrep -fragment 22 >/dev/null 2>&1; rc=$?
+if [ "$rc" -ne 0 ] && [ "$rc" -ne 124 ]; then ok "-osrep -fragment 22 refused (exit $rc)"; else bad "-osrep -fragment 22 exit $rc (124 = hung)"; fi
 echo "fails=$fails"; [ "$fails" -eq 0 ]

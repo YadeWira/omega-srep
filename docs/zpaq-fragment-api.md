@@ -37,14 +37,26 @@ if (osrep_frag_state_push(&st, c)) { /* cerrar el fragmento */ }
   64 MiB), un umbral `t_small = t_large = ((UINT64_MAX / A) >> 16) * 131040`
   y `flags = OSREP_FRAG_F_FORMAT`. N válido: 0..21. zpaq-std usa N=3 cuando
   no se da `-fragment` con `-osrep`.
+  - **Dónde deja de valer 2^N KiB:** cuando A no entra en el bloque, el
+    promedio queda en `max/2` y el mínimo en `max/4`. Pasa desde N=13 con
+    `-m1` (bloques de 16 MiB) y desde N=15 con `-m5` (64 MiB); de ahí para
+    arriba todos los N dan el mismo archivo. `tests/fragment_state_check.c`
+    lo fija (N=13 con un bloque de 16 MiB y N=21 con el de 64 MiB).
+  - Un `-fragment` fuera de 0..21 con `-osrep` es un error (código 2) antes
+    de que arranque ningún hilo.
 - Hash gear: `h = (h << 1) + G[c]`, `G` = splitmix64 con semilla
   `0x4F5352455047454E` y `G[0] = 0`. El hash empieza 64 bytes antes de `min`;
   corta cuando `size >= min && h < t`, o en `max`.
 - `OSREP_FRAG_F_FORMAT` = `TAR_AFTER | ZIP_AFTER | ZIP_SIG` (42): cortes
   forzados después de una cabecera ustar/gnu/pax con checksum válido, después
   de la firma `PK\3\4`, después del resto de la cabecera local de zip y
-  después de la primera `PK\1\2`. Ignoran el mínimo, nunca hacen retroceder
-  un corte y deciden solo con los bytes del fragmento actual.
+  después de la primera `PK\1\2`. Nunca hacen retroceder un corte y deciden
+  solo con los bytes del fragmento actual. Los cortes en las firmas de zip
+  esperan a que el fragmento tenga 512 bytes (`ZIP_SIG_MIN`): un zip de
+  miembros diminutos (o datos llenos de `PK\3\4`) no da fragmentos de pocos
+  bytes, cada uno con ~28 bytes de índice. El corte de tar sigue sin mínimo:
+  un tar de miles de archivos vacíos cuesta ~38 bytes de índice por entrada
+  (4.096 cabeceras: 155.899 bytes contra 48.882 de zpaq).
 - El estado depende solo de los bytes desde el último corte (o el inicio del
   archivo). Por eso el lazo simple de `add2()`, los workers de `add2_scan`
   (que reinician el estado en cada corte y en sus inicios adivinados) y
