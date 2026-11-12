@@ -1,0 +1,17 @@
+corpus	method	config	N	archive	add_s	rss_mb	extract
+versions	-m1	zpaq	1	8442829	0.85	361	ok
+versions	-m1	zpaq	4	11849529	0.85	470	ok
+versions	-m1	zpaq	5	13564875	0.91	476	ok
+versions	-m1	zpaq	7	18249942	1.37	494	ok
+pja	-m1	zpaq	1	1846977	0.62	221	ok
+pja	-m1	zpaq	4	1749738	0.54	219	ok
+pja	-m1	zpaq	5	2431644	0.55	240	ok
+pja	-m1	zpaq	7	3086445	0.56	295	ok
+src-omega	-m1	zpaq	1	3707467	2.26	30	ok
+src-omega	-m1	zpaq	4	4488108	2.20	30	ok
+src-omega	-m1	zpaq	5	4970376	2.31	30	ok
+src-omega	-m1	zpaq	7	5149729	2.32	30	ok
+bin-releases	-m1	zpaq	1	48871380	7.87	220	ok
+bin-releases	-m1	zpaq	4	52768846	8.19	218	ok
+bin-releases	-m1	zpaq	5	54446830	7.99	218	ok
+bin-releases	-m1	zpaq	7	59520136	8.80	223	ok

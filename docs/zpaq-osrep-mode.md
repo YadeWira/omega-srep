@@ -29,7 +29,9 @@ prototipo con variables de entorno. Sobre zpaq-std 2.7.2 (`b8ad717`):
 - **`-fragment N`** conserva su sentido: `MIN_FRAGMENT`/`MAX_FRAGMENT` salen
   de N como siempre, y el promedio de OSREP es `64 KiB << (N-9)`, de 1 KiB a
   1 MiB (`osrep_frag_params_osrep()`). N=6, el default de zpaq, da 8 KiB;
-  N=5, 4 KiB; N=3, 1 KiB.
+  N=5, 4 KiB; N=3, 1 KiB. (El experimento
+  `docs/experiments/frag-normalized.md` cambia esto: promedio 2^N KiB con el
+  fragmentador gear, N=3 por defecto con `-osrep`; falta llevarlo al parche.)
 - El SHA-1 de los fragmentos sigue siendo el de libzpaq. De OSREP solo entran
   `osrep_frag_state_reset()`/`osrep_frag_state_push()`, que llevan también
   `hits` y `o1` para el análisis de tipo de datos.
