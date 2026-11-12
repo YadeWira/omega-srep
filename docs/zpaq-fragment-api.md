@@ -139,27 +139,37 @@ integrado daban (hoy lo comprueba `tools/zpaq-vectors/osrep-switch-test.sh`):
 | `tests/corpus` (7 archivos, 10,7 MB) | `-m0`, `-m1`, `-m5` | byte-idéntico |
 | `versions.tar` (125 MB) | `-m1` | byte-idéntico (15.293.533 bytes) |
 
-## Modo OSREP y benchmarks
+## `-osrep` y benchmarks
 
-`docs/zpaq-osrep-mode.md` tiene la tabla completa. Resumen:
+`docs/zpaq-osrep-mode.md` tiene la tabla completa (2026-11-12). Resumen:
 
-- `-m1`: 37–45 % menos archivo, igual o más rápido y 30–35 % menos RSS.
-- `-m5`: −17,7 % en el corpus grande; en PJA +3,3 % de tamaño pero 1,7× más
-  rápido y 32 % menos RSS.
+- Contra el default de zpaq (N=6), `-osrep` (N=3) da −49 % en versions.tar
+  y −37 % en PJA con `-m1`, −11 a −17 % en las carpetas con versiones, y
+  +0,2–0,4 % en datos sin redundancia. Con `-m5` gana en versions.tar
+  (−15 %) y pierde en PJA (+5 %).
+- Al mismo N, gana con `-m1` en tars y binarios, empata en datos ya
+  comprimidos y pierde en árboles de archivos chicos (src-omega N≥3) y con
+  `-m5` en tars con N≤3 (1–3,5 %).
 - Todos los archivos se extraen con el zpaq-std baseline byte a byte.
 
 ## Pendiente
 
 1. ~~Parche limpio de entrega~~: hecho, switch `-osrep`
    (`tools/zpaq-vectors/osrep-fragmenter-zpaq-std-2.7.2.patch`).
-2. Benchmarks con zpaqfranz y un corpus de backup más grande.
-3. Empaquetado y coordinación con zpaq-std.
+2. ~~Mapeo 2^N KiB, N=3 por defecto, gear y cortes de formato~~: hecho
+   (2026-11-12).
+3. Lo abierto (regla tar con `-m5`, mínimo en árboles de archivos chicos,
+   lazo por bloques): ver "Pendiente" en `docs/zpaq-osrep-mode.md`.
+4. Benchmarks con zpaqfranz y un corpus de backup más grande.
+5. Empaquetado y coordinación con zpaq-std.
 
 ## Reproducir
 
 ```sh
 bash tests/sha1.sh
-bash tests/zpaq_fragments_exact.sh
+bash tests/zpaq_fragments_exact.sh   # también corre fragment_state_check
+bash tests/fragment_format.sh
+bash tests/osrep_cdc_mode.sh
 # vectores nuevos (requiere el patch de tools/zpaq-vectors):
 #   OSREP_FRAG_VECTORS=file OSREP_FRAG_N=6 ./zpaq-std > file.tsv
 ```

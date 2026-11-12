@@ -12,6 +12,13 @@ version back.
         --workdir DIR --method=-m1 --method=-m5 \
         --corpus src-zpaqstd=/path/versions_dir --corpus mixed=/path/folder:single
 
+The staging folder path matters: zpaq-std stores and orders the files by the
+path it is given, and on folders of many small files (src-omega) the archive
+size moves with the path, up to 7 % for -osrep -m1 between workdirs of
+different lengths (0.15 % on bin-releases, nothing on mixed and photos).
+Compare configurations of one run (same workdir), not runs of different
+workdirs.
+
 A configuration is `zpaq:N` (the baseline at -fragment N) or `osrep:N` (the
 patched binary with -osrep -fragment N); --configs takes a comma list. N "d"
 leaves -fragment out (zpaq's default N=6, -osrep's N=3). --extra passes more

@@ -1,0 +1,25 @@
+# a -m1 -threads 4, three runs (run in column 1)
+1	versions.tar	-m1	zpaq	3	9835635	0.89	408	ok
+1	versions.tar	-m1	osrep	3	7787367	0.97	318	ok
+1	versions.tar	-m1	zpaq	d	15293575	1.04	485	ok
+1	versions.tar	-m1	osrep	d	7787367	0.88	326	ok
+1	src-omega	40	-m1	zpaq:3	3919624	2.20	31
+1	src-omega	40	-m1	osrep:3	4487884	2.67	30
+1	bin-releases	39	-m1	zpaq:3	50981146	7.46	218
+1	bin-releases	39	-m1	osrep:3	49973938	8.88	218
+2	versions.tar	-m1	zpaq	3	9835635	0.81	398	ok
+2	versions.tar	-m1	osrep	3	7787367	1.08	319	ok
+2	versions.tar	-m1	zpaq	d	15293575	1.01	485	ok
+2	versions.tar	-m1	osrep	d	7787367	1.00	326	ok
+2	src-omega	40	-m1	zpaq:3	3919624	2.25	30
+2	src-omega	40	-m1	osrep:3	4487884	2.50	30
+2	bin-releases	39	-m1	zpaq:3	50981146	7.44	218
+2	bin-releases	39	-m1	osrep:3	49973938	8.61	218
+3	versions.tar	-m1	zpaq	3	9835635	0.89	408	ok
+3	versions.tar	-m1	osrep	3	7787367	0.93	328	ok
+3	versions.tar	-m1	zpaq	d	15293575	0.99	482	ok
+3	versions.tar	-m1	osrep	d	7787367	0.91	329	ok
+3	src-omega	40	-m1	zpaq:3	3919624	2.25	30
+3	src-omega	40	-m1	osrep:3	4487884	2.60	30
+3	bin-releases	39	-m1	zpaq:3	50981146	7.75	218
+3	bin-releases	39	-m1	osrep:3	49973938	8.45	219

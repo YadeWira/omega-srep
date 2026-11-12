@@ -84,16 +84,17 @@ make -j8
 ```
 
 `osrep-switch-test.sh BASELINE PATCHED versions.tar pja.tar` checks it
-(2026-11-11, all passed):
+(2026-11-12, all passed):
 
 - without `-osrep`, `-m0`/`-m1`/`-m5`, with and without `-noturbo`, on
   `tests/corpus` and `versions.tar`: byte-identical to the baseline;
-- with `-osrep` and `-fragment` 6, 3 and 5 on the three corpora: the same
-  archive with the default threads, `-t1`, `-t8` and `-noturbo`;
+- with `-osrep`, without `-fragment` and with 0, 3 and 6, on the three
+  corpora: the same archive with the default threads, `-t1`, `-t8` and
+  `-noturbo`; without `-fragment` it is the archive of `-fragment 3`;
 - the baseline extracts every `-osrep` archive to the original bytes.
 
 `fragment_dump FILE N 0 zpaq|osrep` gives the same cuts, `hits`, SHA-1 and
-`o1` on x64, x86 (`-m32`) and arm64 for N=3/5/6 on both tars.
+`o1` on x64, x86 (`-m32`) and arm64 for N=0/3/6 on both tars.
 
 Sizes and times: `docs/zpaq-osrep-mode.md`.
 
