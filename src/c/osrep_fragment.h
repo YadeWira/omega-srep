@@ -9,10 +9,15 @@ extern "C" {
 #endif
 
 /* Mode 0 reproduces zpaq-std's order-1 fragmenter byte for byte. Mode 1 is
-   OSREP's content-defined fragmenter: a 48-byte FNV rolling hash that cuts
-   at the target average, between the same minimum and maximum. */
+   OSREP's first content-defined fragmenter: a 48-byte FNV rolling hash that
+   cuts at the target average, between the same minimum and maximum (the -m1
+   CDC). Mode 2 is the one -osrep uses: a 64-byte gear hash with cut-point
+   skipping; it can also do FastCDC normalized chunking (a stricter cut
+   condition before the normal size, a looser one after), which -osrep does
+   not use (docs/experiments/frag-normalized.md). */
 #define OSREP_FRAG_MODE_ZPAQ 0u
 #define OSREP_FRAG_MODE_OSREP 1u
+#define OSREP_FRAG_MODE_GEAR 2u
 
 #define OSREP_FRAG_OK 0
 #define OSREP_FRAG_EINVAL 1
@@ -33,12 +38,18 @@ typedef struct {
   uint32_t min;        /* minimum fragment size */
   uint32_t max;        /* maximum fragment size */
   uint32_t threshold;  /* zpaq mode: cut when h < threshold */
-  uint32_t avg;        /* OSREP mode: target average fragment size */
+  uint32_t avg;        /* OSREP and gear modes: target average size */
+  /* Gear mode: cut when h < t_small at sizes [min, norm), when h < t_large
+     at sizes [norm, max), and at max. osrep_frag_params_osrep() fills them. */
+  uint32_t norm;
+  uint64_t t_small;
+  uint64_t t_large;
 } osrep_frag_params;
 
 /* Incremental state for callers that read a file in blocks. Reset it at the
    start of every fragment; push one byte and it returns 1 when the fragment
-   must end after that byte (the max-size cut stays with the caller). */
+   must end after that byte. In zpaq mode the max-size cut stays with the
+   caller; the OSREP and gear modes also return 1 at max. */
 typedef struct {
   uint32_t mode;
   uint32_t h;
@@ -55,21 +66,44 @@ typedef struct {
   uint8_t win[48];
   uint32_t winpos;
   uint32_t winlen;
+  uint32_t norm;
+  uint64_t t_small;
+  uint64_t t_large;
 } osrep_frag_state;
 
 void osrep_frag_state_reset(osrep_frag_state *state,
                             const osrep_frag_params *params);
 int osrep_frag_state_push(osrep_frag_state *state, uint8_t c);
+/* The same as pushing buf[0..len) one byte at a time, but stops after the
+   byte that ends the fragment (content cut, or max in the OSREP and gear
+   modes). Returns the number of bytes consumed and sets *cut to 1 when the
+   fragment ended there. The fast path for the gear mode. */
+size_t osrep_frag_state_scan(osrep_frag_state *state, const uint8_t *buf,
+                             size_t len, int *cut);
 
 /* Fill params with zpaq-std's -fragment N mapping. block_size is zpaq's
    block size (0 = 64 MiB), used to clamp max the same way zpaq does. */
 int osrep_frag_params_zpaq(osrep_frag_params *params, unsigned fragment,
                            uint32_t block_size);
-/* OSREP mode: 48-byte FNV rolling hash. The average is derived from the
-   zpaq fragment level (N=6 -> 64 KiB, lower N -> smaller); min/max follow
-   the zpaq mapping. */
+/* -osrep: the gear fragmenter with -fragment N meaning what it means in
+   zpaq, an average of 2^N KiB (N=3 8 KiB, N=6 64 KiB): min A/2, max
+   8128 << N (zpaq's, clamped to the block), one threshold calibrated so
+   that random data averages A. N <= 21. zpaq-std's -osrep uses N=3 when
+   -fragment is not given. */
 int osrep_frag_params_osrep(osrep_frag_params *params, unsigned fragment,
                             uint32_t block_size);
+/* The gear fragmenter with an explicit policy, for experiments and tests:
+   average A = 2^N KiB, min A >> min_shift (1..4), normalized chunking level
+   0..3 (0 = one threshold; L > 0 cuts with T >> L below A and T << L from A
+   on), max 8128 << N as in zpaq. osrep_frag_params_osrep() is this with
+   min_shift 1 and level 0. */
+int osrep_frag_params_gear(osrep_frag_params *params, unsigned fragment,
+                           uint32_t block_size, unsigned min_shift,
+                           unsigned level);
+/* The first OSREP mode (48-byte FNV) with its old mapping: average
+   64 KiB << (N-9), 1 KiB to 1 MiB, zpaq's min and max. */
+int osrep_frag_params_fnv(osrep_frag_params *params, unsigned fragment,
+                          uint32_t block_size);
 
 /* Fragment a whole buffer. On success *out is a malloc'ed array of *out_n
    entries; free it with osrep_frag_free(). The function keeps no state and

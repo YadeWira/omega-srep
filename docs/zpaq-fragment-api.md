@@ -44,9 +44,16 @@ void osrep_sha1(const uint8_t *data, size_t len, uint8_t out[20]);
   que llama decide el orden y el dedup. Devuelve un array `malloc`eado que se
   libera con `osrep_frag_free()`.
 - `mode = OSREP_FRAG_MODE_OSREP` usa el CDC de ventana fija de 48 bytes con
-  FNV (el de `-m1`); `avg` fija el promedio. `osrep_frag_params_osrep()` mapea
+  FNV (el de `-m1`); `avg` fija el promedio. `osrep_frag_params_fnv()` mapea
   `-fragment N` a `avg = 64 KiB << (N-9)` con tope 1 KiB–1 MiB: N=6 → 8 KiB,
   N=3 → 1 KiB.
+- `mode = OSREP_FRAG_MODE_GEAR` es el de `-osrep` desde el experimento
+  `docs/experiments/frag-normalized.md`: gear de 64 bytes, `-fragment N` =
+  promedio 2^N KiB como en zpaq, mínimo A/2, máximo `8128 << N`, un umbral
+  (`osrep_frag_params_osrep()`). `osrep_frag_params_gear()` deja elegir otro
+  mínimo y el nivel de chunking normalizado, para experimentos.
+  `osrep_frag_state_scan()` es la versión por bloques de
+  `osrep_frag_state_push()`, con los mismos cortes.
 - Errores: `0` OK, `1` parámetros, `2` memoria, `3` modo no soportado.
 
 ## Validación
