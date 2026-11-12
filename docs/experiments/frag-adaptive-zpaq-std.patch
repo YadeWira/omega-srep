@@ -1,0 +1,229 @@
+diff --git a/zpaq-std.cpp b/zpaq-std.cpp
+index 09fcdf9..0ab61f2 100644
+--- a/zpaq-std.cpp
++++ b/zpaq-std.cpp
+@@ -88171,6 +88171,8 @@ struct franz_tar;
+ bool flagtest;
+ bool flagtouch;
+ bool flagosrep; /// -osrep: add cuts fragments with OSREP's fragmenter (EXPERIMENTAL)
++bool flagosrepauto; /// -osrepauto: with -osrep, the average of each file from its first 64 KiB (EXPERIMENTAL)
++bool g_fragmentgiven= false; /// -fragment on the command line (-osrep: N=3 without it)
+ bool flagutc;
+ bool flagdate;
+ bool flagutf;
+@@ -159816,7 +159818,8 @@ void programflags_riempi(bool *i_flagtest)
+ 	g_programflags.add(&flagnumeric,		"-numeric",				"x -tar: owners by uid/gid only, not by name",			"");
+ 	g_programflags.add(&flagtmp,			"-tmp",					"Use .tmp instead of .zpaq during backup",			"");
+ 	g_programflags.add(i_flagtest,			"-test",				"Only do test",										"");
+-	g_programflags.add(&flagosrep,			"-osrep",				"EXPERIMENTAL a: content-defined fragments by OSREP (-fragment N: average 64 KiB<<(N-9), N=6 8 KiB)",	"");
++	g_programflags.add(&flagosrep,			"-osrep",				"EXPERIMENTAL a: content-defined fragments by OSREP (-fragment N: average 2^N KiB, default N=3 8 KiB)",	"");
++	g_programflags.add(&flagosrepauto,		"-osrepauto",			"EXPERIMENTAL a: with -osrep, already compressed files (JPEG, ZIP, ...) at -fragment N+3",	"");
+ 	g_programflags.add(&flagtouch,			"-touch",				"Re-hash files without a usable hash (7.15 to zpaqfranz)",		"");
+ 	g_programflags.add(&flagutc,			"-utc",					"Use UTC time",										"");
+ 	g_programflags.add(&flagdate,			"-date",				"Show/save creation date (if possible)",			"");
+@@ -161119,7 +161122,7 @@ int Jidac::loadparameters(int argc, const char** argv)
+ 		else if (cli_getint		(opt,"-P",			false,	"-P",							argc,argv,&i,4,					&g_mysql_port));
+ 		else if (cli_getint		(opt,"-bandwidth",	false,	"",								argc,argv,&i,0,					&g_sftp_bandwidth));
+ 		else if (cli_getint		(opt,"-all",		false,	"",								argc,argv,&i,4,					&all));
+-		else if (cli_getint		(opt,"-fragment",	false,	"",								argc,argv,&i,fragment,			&fragment));
++		else if (cli_getint		(opt,"-fragment",	false,	"",								argc,argv,&i,fragment,			&fragment)) g_fragmentgiven= true;
+ 		else if (cli_getuint	(opt,"-filelength",	false,	"",								argc,argv,&i,filelength,		&filelength));
+ 		else if (cli_getuint	(opt,"-dirlength",	false,	"",								argc,argv,&i,dirlength,			&dirlength));
+ 		else if (cli_getuint	(opt,"-n",			false,	"",								argc,argv,&i,menoenne,			&menoenne));
+@@ -180209,8 +180212,8 @@ static void lingua_scegli(int &io_argc, const char **&io_argv, vector<const char
+ 	io_argv= &o_argv[0];
+ }
+ /// -osrep: content-defined fragments by OSREP's fragmenter (compressors/osrep,
+-/// MIT). The average fragment comes from -fragment N: 64 KiB << (N-9), from
+-/// 1 KiB to 1 MiB, so the default N=6 is 8 KiB and N=3 is 1 KiB
++/// MIT). The average fragment comes from -fragment N: 2^N KiB, as zpaq's own
++/// fragmenter; -osrep without -fragment uses N=3 (8 KiB)
+ #include "osrep_fragment.h"
+ static uint32_t osrep_avg_for(int i_fragment)
+ {
+@@ -254629,6 +254632,8 @@ int Jidac::add2()
+ 	if (method[0] == 's' && index)
+ 		error("cannot index in streaming mode");
+ 
++	if (flagosrep && (!g_fragmentgiven)) /// -osrep: 8 KiB unless -fragment says otherwise
++		fragment= 3;
+ 	if (fragment < 0)
+ 		fragment= 0;
+ 	const int log_blocksize= 20 + atoi(method.c_str() + 1);
+@@ -254641,6 +254646,19 @@ int Jidac::add2()
+ 	const unsigned MIN_FRAGMENT= fragment > 25 || (64u << fragment) > MAX_FRAGMENT
+ 									 ? MAX_FRAGMENT
+ 									 : 64u << fragment;
++	/// -osrepauto: a file of packed data gets -fragment N+raise, so the buffers
++	/// take the largest maximum it can have
++	const bool osrep_auto= flagosrep && flagosrepauto;
++	unsigned   osrep_raise= OSREP_FRAG_AUTO_RAISE;
++	if (osrep_auto && (getenv("OSREP_AUTO_RAISE") != NULL)) /// prototype only: the experiments
++		osrep_raise= (unsigned)atoi(getenv("OSREP_AUTO_RAISE"));
++	unsigned FRAGBUF_SIZE= MAX_FRAGMENT;
++	if (osrep_auto)
++	{
++		const uint32_t m= osrep_frag_auto_max((unsigned)fragment, blocksize, osrep_raise);
++		if (m > FRAGBUF_SIZE)
++			FRAGBUF_SIZE= m;
++	}
+ 
+ 	for (unsigned i= 0; i < block.size(); ++i)
+ 	{
+@@ -255050,7 +255068,7 @@ int Jidac::add2()
+ 	unsigned			 exe			 = 0;		 // number of fragments containing x86 (exe, dll)
+ 	const int			 ON				 = 4;		 // number of order-1 tables to save
+ 	unsigned char		 o1prev[ON * 256]= {0};		 // last ON order 1 predictions
+-	libzpaq::Array<char> fragbuf(MAX_FRAGMENT);
++	libzpaq::Array<char> fragbuf(FRAGBUF_SIZE);
+ 	vector<unsigned>	 blocklist; // list of starting fragments
+ 	/// int64_t	crckanz=0;
+ 	// For each file to be added
+@@ -255061,6 +255079,10 @@ int Jidac::add2()
+ 
+ 	if (flagstdin) // larger buffer not good
+ 		g_ioBUFSIZE= 4096;
++	/// -osrepauto: the first read of a file is its whole sample, min(size, 64 KiB),
++	/// whatever -buffer or stdin say: the same decision as -turbo's first batch
++	if (osrep_auto && (g_ioBUFSIZE < (int)OSREP_FRAG_SAMPLE_MAX))
++		g_ioBUFSIZE= (int)OSREP_FRAG_SAMPLE_MAX;
+ 
+ #ifdef _WIN32
+ 	/// 65.9o: ac -all: images of both kinds in one run, and the one of the used clusters has the biggest reads
+@@ -255226,12 +255248,26 @@ int Jidac::add2()
+ 	osrep_fp.min = MIN_FRAGMENT;
+ 	osrep_fp.max = MAX_FRAGMENT;
+ 	osrep_fp.avg = osrep_avg_for(fragment);
++	osrep_frag_params osrep_file_fp= osrep_fp; /// -osrepauto: the parameters of this file
++	/// -osrepauto: from the first min(size, 64 KiB) bytes of the file, the same
++	/// in the plain loop and in -turbo (images keep -fragment N)
++	auto osrep_per_file= [&](const unsigned char *i_data, int64_t i_len)
++	{
++		osrep_file_fp= osrep_fp;
++		if (!osrep_auto)
++			return;
++		const size_t quanti= (size_t)((i_len < (int64_t)OSREP_FRAG_SAMPLE_MAX) ? i_len : (int64_t)OSREP_FRAG_SAMPLE_MAX);
++		if (osrep_frag_params_auto_raise(&osrep_file_fp, (unsigned)fragment, blocksize, i_data, quanti, osrep_raise) != OSREP_FRAG_OK)
++			osrep_file_fp= osrep_fp;
++		if (flagverbose && (osrep_file_fp.avg != osrep_fp.avg))
++			myprintf("65397: -osrepauto: packed data, average %s\n", migliaia(osrep_file_fp.avg));
++	};
+ 
+ 	/// -turbo (add2): two batches of a plain file (one is read while the other
+ 	/// is worked), each one after room for the fragment that is still open at
+ 	/// the end of the previous batch (less than MAX_FRAGMENT)
+ 	const int64_t		 TURBOCHUNK= (int64_t)64 << 20;
+-	const int64_t		 TURBOROOM = (int64_t)MAX_FRAGMENT + 64;
++	const int64_t		 TURBOROOM = (int64_t)FRAGBUF_SIZE + 64;
+ 	std::vector<char>	 turbobuf[2]; /// allocated at the first big file only
+ 	std::vector<s_add2frag> turbofrags;
+ 	turbofrags.reserve(4096);
+@@ -255873,6 +255909,7 @@ int Jidac::add2()
+ 			const int64_t imginizio= mtime();
+ 			ThreadID	  tidlettura;
+ 			bool		  leggendo= false;
++			bool		  osrep_primo= true; /// -osrepauto: the first batch has the start of the file
+ 			/// the first one: nothing to do meanwhile
+ 			if (turboimg)
+ 				add2_imgthread(&imglettura[0]);
+@@ -255912,6 +255949,15 @@ int Jidac::add2()
+ 				}
+ 				const unsigned char *base= (const unsigned char *)&turbobuf[qui][0] + TURBOROOM - carry;
+ 				const int64_t		 fine= carry + letti;
++				if (osrep_on && osrep_primo)
++				{
++					if (turboimg)
++						osrep_file_fp= osrep_fp;
++					else
++						osrep_per_file(base, fine);
++				}
++				osrep_primo= false;
++				const int64_t osrep_maxf= osrep_on ? (int64_t)osrep_file_fp.max : (int64_t)MAX_FRAGMENT;
+ 				/// the pieces: at least 1 MB each
+ 				int pezzi= (int)(fine >> 20);
+ 				if (pezzi > turbothreads)
+@@ -255932,9 +255978,9 @@ int Jidac::add2()
+ 					scan[k].dopo		= 3;
+ 					scan[k].chiudi		= false;
+ 					scan[k].h_threshold = h_threshold;
+-					scan[k].osrep		= osrep_on ? &osrep_fp : NULL;
++					scan[k].osrep		= osrep_on ? &osrep_file_fp : NULL;
+ 					scan[k].minf		= MIN_FRAGMENT;
+-					scan[k].maxf		= MAX_FRAGMENT;
++					scan[k].maxf		= osrep_maxf;
+ 					scan[k].out			= &turbolists[k];
+ 					scan[k].open		= 0;
+ 				}
+@@ -255973,9 +256019,9 @@ int Jidac::add2()
+ 						uno.dopo	   = 1;
+ 						uno.chiudi	   = false;
+ 						uno.h_threshold= h_threshold;
+-						uno.osrep		 = osrep_on ? &osrep_fp : NULL;
++						uno.osrep		 = osrep_on ? &osrep_file_fp : NULL;
+ 						uno.minf	   = MIN_FRAGMENT;
+-						uno.maxf	   = MAX_FRAGMENT;
++						uno.maxf	   = osrep_maxf;
+ 						uno.out		   = &turboextra;
+ 						uno.open	   = e;
+ 						add2_scan(&uno);
+@@ -256028,9 +256074,9 @@ int Jidac::add2()
+ 						coda.dopo		= 0;
+ 						coda.chiudi		= true;
+ 						coda.h_threshold= h_threshold;
+-						coda.osrep		  = osrep_on ? &osrep_fp : NULL;
++						coda.osrep		  = osrep_on ? &osrep_file_fp : NULL;
+ 						coda.minf		= MIN_FRAGMENT;
+-						coda.maxf		= MAX_FRAGMENT;
++						coda.maxf		= osrep_maxf;
+ 						coda.out		= &turboextra;
+ 						coda.open		= e;
+ 						add2_scan(&coda);
+@@ -256103,7 +256149,11 @@ int Jidac::add2()
+ 			unsigned char o1[256]		= {0}; // order 1 context -> predicted byte
+ 			osrep_frag_state osrep_fs; /// -osrep: its own hash, hits and o1
+ 			if (osrep_on)
+-				osrep_frag_state_reset(&osrep_fs, &osrep_fp);
++			{
++				if (fj == 0)
++					osrep_file_fp= osrep_fp;
++				osrep_frag_state_reset(&osrep_fs, &osrep_file_fp);
++			}
+ 
+ 			if (fi < vf.size())
+ 			{
+@@ -256330,6 +256380,12 @@ int Jidac::add2()
+ 						break;
+ 					}
+ 
++					/// -osrepauto: the first read of the file (1 MB, all of it if smaller)
++					if (osrep_auto && (fj == 0) && (sz == 0) && (bufptr == 0) && (buflen > 0) && (!flagimage))
++					{
++						osrep_per_file((const unsigned char *)buf, buflen);
++						osrep_frag_state_reset(&osrep_fs, &osrep_file_fp);
++					}
+ 					if (bufptr == 0)
+ 						if (buflen > 0)
+ 						{
+@@ -256385,7 +256441,7 @@ int Jidac::add2()
+ 					unsigned char *end= (unsigned char *)buf + buflen;
+ 
+ 					// Calcolo chunk sicuro - ottimizzato
+-					int remaining= (int)(MAX_FRAGMENT - sz);
++					int remaining= (int)((osrep_on ? osrep_file_fp.max : MAX_FRAGMENT) - sz);
+ 					if (remaining <= 0)
+ 						break;
+ 
+@@ -256514,11 +256570,11 @@ int Jidac::add2()
+ 
+ 					bufptr= (int)(p - (unsigned char *)buf);
+ 
+-					if (fragment_found || sz >= MAX_FRAGMENT)
++					if (fragment_found || sz >= (osrep_on ? osrep_file_fp.max : MAX_FRAGMENT))
+ 						break;
+ 				}
+ 
+-				assert(sz <= MAX_FRAGMENT);
++				assert(sz <= FRAGBUF_SIZE);
+ 				total_done+= sz;
+ 
+ 				if (sz == 0 && fj > 0)

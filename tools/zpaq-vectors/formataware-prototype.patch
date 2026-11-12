@@ -1,0 +1,66 @@
+diff --git a/zpaq-std.cpp b/zpaq-std.cpp
+index 09fcdf9..6ffffaf 100644
+--- a/zpaq-std.cpp
++++ b/zpaq-std.cpp
+@@ -254145,8 +254145,11 @@ static void add2_scan_osrep(s_add2scan *i_scan)
+ 		while (pos < fine)
+ 		{
+ 			const unsigned char uc= base[pos++];
+-			if (osrep_frag_state_push(&st, uc) || (pos - inizio >= maxf))
++			const int r= osrep_frag_state_push(&st, uc);
++			if (r || (pos - inizio >= maxf))
+ 			{
++				if (r == OSREP_FRAG_CUT_BACK) /// the cut is st.back bytes earlier
++					pos-= st.back;
+ 				taglio= true;
+ 				break;
+ 			}
+@@ -255226,6 +255229,8 @@ int Jidac::add2()
+ 	osrep_fp.min = MIN_FRAGMENT;
+ 	osrep_fp.max = MAX_FRAGMENT;
+ 	osrep_fp.avg = osrep_avg_for(fragment);
++	if (getenv("OSREP_FRAG_FLAGS") != NULL) /// EXPERIMENT 3 prototype: format-aware cuts
++		osrep_fp.flags= (uint32_t)strtoul(getenv("OSREP_FRAG_FLAGS"), NULL, 0);
+ 
+ 	/// -turbo (add2): two batches of a plain file (one is read while the other
+ 	/// is worked), each one after room for the fragment that is still open at
+@@ -255787,6 +255792,8 @@ int Jidac::add2()
+ 			}
+ 
+ 		};
++		unsigned char osrep_carry[OSREP_FRAG_FORMAT_MIN]; /// -osrep format-aware: bytes given back by a cut
++		unsigned	  osrep_carry_n= 0;
+ 		if (turbo)
+ 		{
+ 			int64_t		  carry= 0; // the open fragment, from its start (a cut), just before the new data
+@@ -256110,6 +256117,13 @@ int Jidac::add2()
+ 				int			  c1= 0; // previous byte
+ 				unsigned	  h = 0; // rolling hash for finding fragment boundaries
+ 				libzpaq::SHA1 sha1;
++				if (osrep_on) /// the bytes a CUT_BACK gave back begin this fragment (never a cut: min >= 512)
++					for (unsigned k= 0; k < osrep_carry_n; k++)
++					{
++						fragbuf[sz++]= osrep_carry[k];
++						(void)osrep_frag_state_push(&osrep_fs, osrep_carry[k]);
++					}
++				osrep_carry_n= 0;
+ 				/// c:\nz\dd if="\\\\.\\c:" bs=1048576 count=100000000000 |c:\zpaqfranz\zpaqfranz a j:\image\prova cimage.img -stdin
+ 
+ 				// OPTIMIZED LOOP
+@@ -256403,8 +256417,15 @@ int Jidac::add2()
+ 						{
+ 							const unsigned char uc= *p++;
+ 							fragbuf[sz++]		  = uc;
+-							if (osrep_frag_state_push(&osrep_fs, uc))
++							const int r= osrep_frag_state_push(&osrep_fs, uc);
++							if (r)
+ 							{
++								if (r == OSREP_FRAG_CUT_BACK)
++								{
++									sz-= osrep_fs.back;
++									memcpy(osrep_carry, &fragbuf[sz], osrep_fs.back);
++									osrep_carry_n= osrep_fs.back;
++								}
+ 								fragment_found= true;
+ 								break;
+ 							}

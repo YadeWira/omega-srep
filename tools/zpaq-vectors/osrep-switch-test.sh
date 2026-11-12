@@ -1,7 +1,8 @@
 #!/bin/bash
 # Clean -osrep patch: (A) without -osrep archives byte-identical to baseline;
 # (B) -osrep archives identical across -t1/-t8/default/-noturbo; (C) baseline
-# extracts every -osrep archive to the original bytes.
+# extracts every -osrep archive to the original bytes; (D) -osrep without
+# -fragment is -osrep -fragment 3.
 set -u
 # usage: osrep-switch-test.sh BASELINE_ZPAQ PATCHED_ZPAQ VERSIONS_TAR PJA_TAR
 [ "$#" -eq 4 ] || { echo "usage: $0 BASELINE PATCHED VERSIONS_TAR PJA_TAR" >&2; exit 2; }
@@ -19,7 +20,7 @@ for data in "$SMALL" "$V"; do for m in -m0 -m1 -m5; do for extra in "" -noturbo;
   if cmp -s $T/b.zpaq $T/n.zpaq; then ok "A identical $(basename $data) $m $extra ($(stat -c%s $T/n.zpaq))"; else bad "A differ $(basename $data) $m $extra"; fi
 done; done; done
 # B + C
-for data in "$SMALL" "$V" "$P"; do for frag in "" "-fragment 3" "-fragment 5"; do
+for data in "$SMALL" "$V" "$P"; do defsha=""; for frag in "" "-fragment 0" "-fragment 3" "-fragment 6"; do
   ref=""
   for th in "" "-t1" "-t8" "-noturbo"; do
     arc $NEW $T/o.zpaq "$data" -m1 -osrep $frag $th
@@ -28,6 +29,10 @@ for data in "$SMALL" "$V" "$P"; do for frag in "" "-fragment 3" "-fragment 5"; d
     elif [ "$s" = "$ref" ]; then :; else bad "B $(basename $data) $frag $th differs from default threads"; fi
   done
   ok "B $(basename $data) -osrep $frag: same archive with default/-t1/-t8/-noturbo ($sz bytes)"
+  [ -z "$frag" ] && defsha=$ref
+  if [ "$frag" = "-fragment 3" ]; then
+    if [ "$ref" = "$defsha" ]; then ok "D $(basename $data): -osrep without -fragment is -fragment 3"; else bad "D $(basename $data): default -osrep differs from -fragment 3"; fi
+  fi
   rm -rf $T/x; mkdir -p $T/x
   $BASE x $T/ref.zpaq -to $T/x >/dev/null 2>&1
   if [ -d "$data" ]; then src="$data"; else src=$(dirname "$data"); fi

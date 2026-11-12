@@ -59,12 +59,15 @@ files.
 on its own (the vectors patch is not needed) and replaces the earlier
 prototype that read `OSREP_FRAG_MODE`/`OSREP_FRAG_AVG` from the environment.
 
-- `a ... -osrep` (EXPERIMENTAL) cuts fragments with OSREP's 48-byte FNV
-  fragmenter. Without it zpaq-std's code is unchanged: the unrolled loop,
-  `add2_scan()` and the SHA-1 stay as they were.
-- `-fragment N` keeps its meaning for `MIN_FRAGMENT`/`MAX_FRAGMENT`; the OSREP
-  average is `64 KiB << (N-9)`, 1 KiB to 1 MiB (N=6 8 KiB, N=5 4 KiB, N=3
-  1 KiB).
+- `a ... -osrep` (EXPERIMENTAL) cuts fragments with OSREP's fragmenter:
+  a gear CDC (64-byte window), min A/2, zpaq's max, one threshold, plus cuts
+  after tar headers and zip local headers (`OSREP_FRAG_F_FORMAT`). Without it
+  zpaq-std's code is unchanged: the unrolled loop, `add2_scan()` and the
+  SHA-1 stay as they were.
+- `-fragment N` means what it means for zpaq: an average of 2^N KiB, with
+  `MAX_FRAGMENT` as maximum (`osrep_frag_params_osrep(&p, N, blocksize)`).
+  `-osrep` without `-fragment` uses N=3 (8 KiB); zpaq's own default stays 6.
+  N must be 0..21. With `-stdin` zpaq forces N=6, for `-osrep` too.
 - Both fragmenting paths take the switch: the plain loop of `add2()` (used
   with `-noturbo`, streams and images, and in the ANCIENT `add()`) and
   `add2_scan()` (the `-turbo` workers). The OSREP state starts fresh at every
@@ -77,7 +80,7 @@ prototype that read `OSREP_FRAG_MODE`/`OSREP_FRAG_AVG` from the environment.
 cp -a /path/to/zpaq-std /tmp/zpaq-osrep && cd /tmp/zpaq-osrep
 git apply /path/omega-srep/tools/zpaq-vectors/osrep-fragmenter-zpaq-std-2.7.2.patch
 make -j8
-./zpaq-std a out.zpaq versions.tar -m1 -osrep -fragment 5
+./zpaq-std a out.zpaq versions.tar -m1 -osrep
 ```
 
 `osrep-switch-test.sh BASELINE PATCHED versions.tar pja.tar` checks it
@@ -93,3 +96,20 @@ make -j8
 `o1` on x64, x86 (`-m32`) and arm64 for N=3/5/6 on both tars.
 
 Sizes and times: `docs/zpaq-osrep-mode.md`.
+
+## Fragmenter analysis without zpaq
+
+`frag_stats MODE N FLAGS < list` cuts every listed file, dedups the
+fragments by SHA-1 and prints fragments, unique bytes, mean size, an index
+estimate (24 bytes per unique fragment + 4 per reference) and the cut + SHA-1
+time. `osrep 3 42` is what `-osrep -fragment 3` cuts; `osrep 3 0` the plain
+gear CDC. `frag_sim` and `frag_speed` (experiment 2) compare cut policies
+and speeds; `bench_formataware.py` and `formataware-prototype.patch` are the
+experiment 3 prototype (FNV mode, `OSREP_FRAG_FLAGS`), kept with its results.
+Reports: `docs/experiments/frag-normalized.md`, `frag-formataware.md`,
+`frag-adaptive.md`.
+
+`bench_fair.py` (tars) and `bench_versions.py` (folders of versions) build
+the final table of `docs/zpaq-osrep-mode.md`: zpaq `-fragment N` against
+`-osrep -fragment N`, both averaging 2^N KiB; fragment `d` leaves `-fragment`
+out (zpaq N=6, `-osrep` N=3), `--extra` passes switches such as `-threads 4`.

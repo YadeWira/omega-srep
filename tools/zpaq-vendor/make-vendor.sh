@@ -18,7 +18,7 @@ fi
 COMMIT=$(git rev-parse HEAD)
 DESC=$(git describe --tags --always HEAD)
 NAME="osrep-fragment-${DESC}"
-STAGE="$(mktemp -d)"; trap 'rm -rf "$STAGE"' EXIT
+STAGE="$(mktemp -d "${TMPDIR:-/tmp}/osrep-vendor.XXXXXX")"; trap 'rm -rf "$STAGE"' EXIT
 mkdir -p "$STAGE/$NAME"
 cp src/c/osrep_fragment.c src/c/osrep_fragment.h src/c/osrep_sha1.c LICENSE "$STAGE/$NAME/"
 {
@@ -38,7 +38,9 @@ cp src/c/osrep_fragment.c src/c/osrep_fragment.h src/c/osrep_sha1.c LICENSE "$ST
   echo
   echo "What zpaq-std uses: \`osrep_frag_state_reset()\` and"
   echo "\`osrep_frag_state_push()\` (per byte, they keep the cut hash, \`hits\` and"
-  echo "\`o1\`), and \`osrep_frag_params_osrep()\` for the -fragment N average."
+  echo "\`o1\`), and \`osrep_frag_params_osrep(&p, N, blocksize)\`, which holds the whole"
+  echo "-osrep policy: gear CDC, average 2^N KiB, min A/2, zpaq's max, one"
+  echo "threshold and the cuts after tar and zip headers (docs/zpaq-fragment-api.md)."
   echo "\`osrep_sha1.c\` is here only because \`osrep_fragment_buffer()\` calls it."
   echo
   echo "## sha256"

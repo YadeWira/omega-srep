@@ -6,12 +6,15 @@ zpaq-std's own fragmenter (the baseline binary, or the patched one without
 measured apart from the gain of a smaller fragment.
 
     tools/zpaq-vectors/bench_fair.py --baseline BASE --patched PATCHED \
-        --input versions.tar --input pja.tar --method -m1 --method -m5 \
+        --input versions.tar --input pja.tar --method=-m1 --method=-m5 \
         --fragments 6,5,3 --workdir DIR
 
---osrep-shift K runs -osrep at -fragment N+K instead. zpaq's -fragment N
-averages 2^N KiB and -osrep's averages 2^(N-3) KiB, so K=3 compares the two
-fragmenters at the same average size.
+Both fragmenters average 2^N KiB at -fragment N (the mapping -osrep has
+since 2026-11-12), so the default --osrep-shift 0 compares them at the same
+average size. --osrep-shift K runs -osrep at -fragment N+K instead (K=3 was
+needed with the old -osrep mapping, 2^(N-3) KiB). A fragment "d" runs both
+without -fragment: zpaq's default N=6 against -osrep's N=3. --extra passes
+more switches to every add (e.g. --extra=-threads --extra=4).
 
 Prints one TSV line per case: archive size, wall time, peak RSS, and whether
 the baseline extracts the archive to the original bytes. One run each.
@@ -49,6 +52,7 @@ def main():
     ap.add_argument("--fragments", default="6,5,3")
     ap.add_argument("--workdir", required=True)
     ap.add_argument("--osrep-shift", type=int, default=0)
+    ap.add_argument("--extra", action="append", default=[])
     a = ap.parse_args()
     methods = a.method or ["-m1", "-m5"]
     os.makedirs(a.workdir, exist_ok=True)
@@ -58,15 +62,19 @@ def main():
     for inp in a.input:
         inp = os.path.abspath(inp)
         for m in methods:
-            for n in [int(x) for x in a.fragments.split(",")]:
+            for n in a.fragments.split(","):
                 for kind in ("zpaq", "osrep"):
                     binary = a.baseline if kind == "zpaq" else a.patched
                     extra = ["-osrep"] if kind == "osrep" else []
-                    nn = n + a.osrep_shift if kind == "osrep" else n
+                    if n == "d":
+                        nn, frag = "d", []
+                    else:
+                        nn = int(n) + a.osrep_shift if kind == "osrep" else int(n)
+                        frag = ["-fragment", str(nn)]
                     if os.path.exists(arc):
                         os.remove(arc)
-                    rc, wall, rss = run([binary, "a", arc, inp, m,
-                                         "-fragment", str(nn)] + extra + FIX)
+                    rc, wall, rss = run([binary, "a", arc, inp, m] + frag +
+                                        extra + a.extra + FIX)
                     if rc != 0:
                         print(f"{os.path.basename(inp)}\t{m}\t{kind}\t{nn}\t"
                               f"FAILED rc={rc}", flush=True)

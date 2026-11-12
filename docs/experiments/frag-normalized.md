@@ -1,5 +1,10 @@
 # Experimento 2: chunking normalizado (estilo FastCDC) para `-osrep`
 
+> **Integración (rama `frag-int`, 2026-11-12):** entregado tal cual (gear
+> 1:0, mínimo A/2, máximo de zpaq, un umbral), más los cortes de formato de
+> `frag-formataware.md`. Lo pendiente del lado de zpaq-std que este informe
+> lista está hecho en el parche `tools/zpaq-vectors/osrep-fragmenter-zpaq-std-2.7.2.patch`.
+
 Rama `frag-normalized`, 2026-11-11. Pregunta: con `-fragment N` =
 promedio 2^N KiB (lo decidido con zpaq-std), ¿qué fragmentador conviene a
 `-osrep`? Se probaron el hash, el umbral normalizado y la política de

@@ -24,6 +24,26 @@ extern "C" {
 #define OSREP_FRAG_ENOMEM 2
 #define OSREP_FRAG_ENOTSUP 3
 
+/* Format-aware cuts (gear mode only): forced cuts at archive structure
+   boundaries, decided only from the bytes of the current fragment, so the
+   state still starts fresh at every cut and add2_scan's resync holds. They
+   ignore the minimum and never move a cut back (no byte is given back).
+   TAR_AFTER: after a ustar/gnu/pax header with a valid checksum.
+   ZIP_SIG: after a zip local header signature ("PK\3\4") and after the
+     first central directory signature ("PK\1\2" ending a fragment that did
+     not begin inside the central directory).
+   ZIP_AFTER (with ZIP_SIG): also after the rest of a local header (26 bytes
+     plus name and extra), so a member's data starts its own fragment.
+   The values are those of docs/experiments/frag-formataware.md, where the
+   rules that give bytes back (TAR_BEFORE 1, ZIP_BEFORE 4) and the newline
+   rule (TEXT 16) were measured and left out. osrep_frag_params_osrep() sets
+   OSREP_FRAG_F_FORMAT. */
+#define OSREP_FRAG_F_TAR_AFTER 2u
+#define OSREP_FRAG_F_ZIP_AFTER 8u
+#define OSREP_FRAG_F_ZIP_SIG 32u
+#define OSREP_FRAG_F_FORMAT \
+  (OSREP_FRAG_F_TAR_AFTER | OSREP_FRAG_F_ZIP_AFTER | OSREP_FRAG_F_ZIP_SIG)
+
 /* What zpaq-std needs for its fragment table and data-type analysis. */
 typedef struct {
   uint64_t off;      /* byte offset in the input buffer */
@@ -44,12 +64,14 @@ typedef struct {
   uint32_t norm;
   uint64_t t_small;
   uint64_t t_large;
+  uint32_t flags;      /* gear mode: OSREP_FRAG_F_* (0 = plain CDC) */
 } osrep_frag_params;
 
 /* Incremental state for callers that read a file in blocks. Reset it at the
-   start of every fragment; push one byte and it returns 1 when the fragment
-   must end after that byte. In zpaq mode the max-size cut stays with the
-   caller; the OSREP and gear modes also return 1 at max. */
+   start of every file and after every cut; push one byte and it returns 1
+   when the fragment must end after that byte. In zpaq mode the max-size cut
+   stays with the caller; the OSREP and gear modes also return 1 at max. The
+   cuts depend only on the bytes since the last cut. */
 typedef struct {
   uint32_t mode;
   uint32_t h;
@@ -69,15 +91,21 @@ typedef struct {
   uint32_t norm;
   uint64_t t_small;
   uint64_t t_large;
+  uint32_t flags;     /* OSREP_FRAG_F_* */
+  uint32_t last4;     /* the last four bytes, big-endian */
+  uint32_t zend;      /* ZIP_AFTER: end of the local header at the start */
+  uint32_t zcd;       /* ZIP_SIG: this fragment began in the central dir */
+  uint8_t ring[512];  /* format rules: the last 512 bytes; not cleared */
 } osrep_frag_state;
 
 void osrep_frag_state_reset(osrep_frag_state *state,
                             const osrep_frag_params *params);
 int osrep_frag_state_push(osrep_frag_state *state, uint8_t c);
 /* The same as pushing buf[0..len) one byte at a time, but stops after the
-   byte that ends the fragment (content cut, or max in the OSREP and gear
-   modes). Returns the number of bytes consumed and sets *cut to 1 when the
-   fragment ended there. The fast path for the gear mode. */
+   byte that ends the fragment (content or format cut, or max in the OSREP
+   and gear modes). Returns the number of bytes consumed and sets *cut to 1
+   when the fragment ended there. The fast path for the gear mode without
+   flags; with flags it pushes byte by byte. */
 size_t osrep_frag_state_scan(osrep_frag_state *state, const uint8_t *buf,
                              size_t len, int *cut);
 
@@ -85,10 +113,12 @@ size_t osrep_frag_state_scan(osrep_frag_state *state, const uint8_t *buf,
    block size (0 = 64 MiB), used to clamp max the same way zpaq does. */
 int osrep_frag_params_zpaq(osrep_frag_params *params, unsigned fragment,
                            uint32_t block_size);
-/* -osrep: the gear fragmenter with -fragment N meaning what it means in
-   zpaq, an average of 2^N KiB (N=3 8 KiB, N=6 64 KiB): min A/2, max
-   8128 << N (zpaq's, clamped to the block), one threshold calibrated so
-   that random data averages A. N <= 21. zpaq-std's -osrep uses N=3 when
+/* -osrep, the whole policy (what zpaq-std calls; docs/zpaq-fragment-api.md):
+   the gear fragmenter with -fragment N meaning what it means in zpaq, an
+   average of 2^N KiB (N=3 8 KiB, N=6 64 KiB): min A/2, max 8128 << N
+   (zpaq's MAX_FRAGMENT: pass zpaq's block size to clamp it the same way),
+   one threshold calibrated so that random data averages A, and
+   flags = OSREP_FRAG_F_FORMAT. N <= 21. zpaq-std's -osrep uses N=3 when
    -fragment is not given. */
 int osrep_frag_params_osrep(osrep_frag_params *params, unsigned fragment,
                             uint32_t block_size);

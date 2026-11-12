@@ -1,0 +1,7 @@
+input	method	fragmenter	N	flags	archive	wall_s	rss_mb	extract	t1
+pja.tar	-m5	zpaq	3	-	1006299	41.36	445	ok	-
+pja.tar	-m5	osrep	3	0	1045784	21.50	323	ok	-
+pja.tar	-m5	osrep	3	3	1048021	24.86	322	ok	-
+pja.tar	-m5	zpaq	6	-	971248	64.48	652	ok	-
+pja.tar	-m5	osrep	6	0	987353	57.15	648	ok	-
+pja.tar	-m5	osrep	6	3	1019522	22.84	413	ok	-

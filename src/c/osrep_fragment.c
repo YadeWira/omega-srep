@@ -1,12 +1,14 @@
 /* OSREP fragmenter API: zpaq-std's order-1 CDC (exact mode), OSREP's
-   48-byte FNV rolling CDC and the gear CDC with normalized chunking that
-   -osrep uses, with SHA-1 and the order-1 state zpaq's data-type analysis
-   consumes.
+   48-byte FNV rolling CDC and the gear CDC that -osrep uses (with its
+   format-aware cuts after tar and zip headers, and FastCDC normalized
+   chunking for experiments), with SHA-1 and the order-1 state zpaq's
+   data-type analysis consumes.
 
    Pure functions, no globals, thread-safe. The exact-mode loop is the same as
    zpaq-std's fragment_buffer(); tests/fixtures/zpaq-fragments pin it. */
 #include "osrep_fragment.h"
 
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -26,6 +28,9 @@
    osrep_frag_params_gear() keeps the other policies for experiments. */
 #define OSREP_GEAR_MIN_SHIFT 1u
 #define OSREP_GEAR_LEVEL 0u
+/* and the format-aware cuts that docs/experiments/frag-formataware.md and
+   docs/zpaq-osrep-mode.md measured as a gain on tars and zips */
+#define OSREP_GEAR_FLAGS OSREP_FRAG_F_FORMAT
 
 /* Base threshold T = ((2^64 - 1) / A >> 16) * gear_k[s-1][L]: K / 2^16 is
    p * A, with p the cut probability per byte that makes the expected
@@ -194,6 +199,7 @@ int osrep_frag_params_zpaq(osrep_frag_params *params, unsigned fragment,
   params->avg = 0;
   params->norm = 0;
   params->t_small = params->t_large = 0;
+  params->flags = 0;
   return OSREP_FRAG_OK;
 }
 
@@ -223,8 +229,10 @@ int osrep_frag_params_gear(osrep_frag_params *params, unsigned fragment,
 
 int osrep_frag_params_osrep(osrep_frag_params *params, unsigned fragment,
                             uint32_t block_size) {
-  return osrep_frag_params_gear(params, fragment, block_size,
-                                OSREP_GEAR_MIN_SHIFT, OSREP_GEAR_LEVEL);
+  int rc = osrep_frag_params_gear(params, fragment, block_size,
+                                  OSREP_GEAR_MIN_SHIFT, OSREP_GEAR_LEVEL);
+  if (rc == OSREP_FRAG_OK) params->flags = OSREP_GEAR_FLAGS;
+  return rc;
 }
 
 int osrep_frag_params_fnv(osrep_frag_params *params, unsigned fragment,
@@ -250,8 +258,10 @@ int osrep_frag_params_fnv(osrep_frag_params *params, unsigned fragment,
 
 void osrep_frag_state_reset(osrep_frag_state *state,
                             const osrep_frag_params *params) {
-  memset(state, 0, sizeof *state);
+  /* ring[] is read only where this fragment has written it */
+  memset(state, 0, offsetof(osrep_frag_state, ring));
   state->mode = params->mode;
+  state->flags = (params->mode == OSREP_FRAG_MODE_GEAR) ? params->flags : 0;
   state->min = params->min;
   state->max = params->max;
   state->threshold = params->threshold;
@@ -267,6 +277,76 @@ void osrep_frag_state_reset(osrep_frag_state *state,
   }
 }
 
+/* Format-aware cuts. The ring holds the fragment's bytes at position
+   p & 511; every rule reads only positions this fragment has written. */
+#define ZIP_LOCAL UINT32_C(0x504B0304)
+#define ZIP_CENTRAL UINT32_C(0x504B0102)
+
+/* A ustar header ends at the last byte pushed: the magic at offset 257 and
+   a checksum that matches (unsigned sum, the field read as spaces). */
+static int tar_header_ends(const osrep_frag_state *s) {
+  const uint8_t *r = s->ring;
+  uint32_t j = s->size - 512u, k, sum = 0, want = 0;
+  uint8_t m5;
+  if (r[(j + 257u) & 511u] != 'u' || r[(j + 258u) & 511u] != 's' ||
+      r[(j + 259u) & 511u] != 't' || r[(j + 260u) & 511u] != 'a' ||
+      r[(j + 261u) & 511u] != 'r')
+    return 0;
+  m5 = r[(j + 262u) & 511u];
+  if (m5 != 0 && m5 != ' ') return 0;
+  for (k = 0; k < 8; k++) {
+    uint8_t d = r[(j + 148u + k) & 511u];
+    if (d >= '0' && d <= '7')
+      want = want * 8u + (uint32_t)(d - '0');
+    else if (d != ' ' && d != 0)
+      return 0;
+  }
+  for (k = 0; k < 512; k++)
+    sum += (k >= 148 && k < 156) ? (uint32_t)' ' : r[(j + k) & 511u];
+  return sum == want;
+}
+
+/* zip compression methods: stored, deflate, deflate64, bzip2, lzma, zstd,
+   mp3, xz, AES */
+static int zip_method(uint8_t m) {
+  return m == 0 || m == 8 || m == 9 || m == 12 || m == 14 || m == 93 ||
+         m == 94 || m == 95 || m == 98 || m == 99;
+}
+
+static int format_cut(osrep_frag_state *s, uint8_t c) {
+  const uint32_t f = s->flags;
+  s->ring[(s->size - 1u) & 511u] = c;
+  s->last4 = (s->last4 << 8) | c;
+  if (f & OSREP_FRAG_F_ZIP_SIG) {
+    const uint8_t *r = s->ring;
+    /* after a local header signature: the fragment before ends with the
+       same four bytes whatever member comes next */
+    if (s->last4 == ZIP_LOCAL && s->size >= 4) return 1;
+    /* the same after the first central directory signature: not when this
+       fragment began with the rest of a central directory entry */
+    if (s->size == 42)
+      s->zcd = r[3] == 0 && r[2] <= 63 && r[7] == 0 && zip_method(r[6]);
+    if (s->last4 == ZIP_CENTRAL && s->size >= 4 && !s->zcd) return 1;
+    if (f & OSREP_FRAG_F_ZIP_AFTER) {
+      /* this fragment may be the rest of a local header (it began just
+         after a signature): the fixed part checks, then name and extra */
+      if (s->size == 26) {
+        uint32_t n = (uint32_t)r[22] | ((uint32_t)r[23] << 8);
+        uint32_t m = (uint32_t)r[24] | ((uint32_t)r[25] << 8);
+        if (r[1] == 0 && r[0] <= 63 && r[5] == 0 && zip_method(r[4]) &&
+            n != 0 && n <= 4096 && m <= 4096)
+          s->zend = 26u + n + m;
+      }
+      if (s->zend != 0 && s->size == s->zend) return 1;
+    }
+  }
+  /* the last byte of a ustar/gnu/pax header is padding (0) */
+  if ((f & OSREP_FRAG_F_TAR_AFTER) && c == 0 && s->size >= 512 &&
+      tar_header_ends(s))
+    return 1;
+  return 0;
+}
+
 int osrep_frag_state_push(osrep_frag_state *state, uint8_t c) {
   uint8_t pred = state->o1[state->c1];
   state->hits += (c == pred);
@@ -275,6 +355,7 @@ int osrep_frag_state_push(osrep_frag_state *state, uint8_t c) {
   ++state->size;
 
   if (state->mode == OSREP_FRAG_MODE_GEAR) {
+    if (state->flags != 0 && format_cut(state, c)) return 1;
     /* The hash only sees the last 64 bytes, so starting it 64 bytes before
        min gives the same values as starting it at the cut. */
     if (state->size + GEAR_WINDOW > state->min) {
@@ -325,7 +406,7 @@ size_t osrep_frag_state_scan(osrep_frag_state *state, const uint8_t *buf,
   uint8_t c1, *o1;
 
   *cut = 0;
-  if (state->mode != OSREP_FRAG_MODE_GEAR) {
+  if (state->mode != OSREP_FRAG_MODE_GEAR || state->flags != 0) {
     while (i < len) {
       int r = osrep_frag_state_push(state, buf[i++]);
       if (r || state->size >= state->max) {
@@ -436,6 +517,9 @@ int osrep_fragment_buffer(const uint8_t *buf, size_t len,
     return OSREP_FRAG_ENOTSUP;
   if (params->min == 0 || params->max == 0) return OSREP_FRAG_EINVAL;
   if (params->mode != OSREP_FRAG_MODE_ZPAQ && params->avg == 0)
+    return OSREP_FRAG_EINVAL;
+  if ((params->flags & ~OSREP_FRAG_F_FORMAT) != 0 ||
+      (params->flags != 0 && params->mode != OSREP_FRAG_MODE_GEAR))
     return OSREP_FRAG_EINVAL;
   if (len == 0) return OSREP_FRAG_OK;
 

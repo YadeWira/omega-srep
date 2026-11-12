@@ -116,6 +116,60 @@ static int check_scan(const osrep_frag_params *p, const char *label,
   return 0;
 }
 
+/* Random data with ustar headers (valid checksums) and zip local headers
+   every few KiB, plus one central directory signature: what the -osrep
+   format-aware cuts look for. */
+static void put_octal(uint8_t *f, unsigned width, uint32_t v) {
+  unsigned k;
+  for (k = width - 1; k-- > 0;) {
+    f[k] = (uint8_t)('0' + (v & 7u));
+    v >>= 3;
+  }
+  f[width - 1] = 0;
+}
+
+static void make_format_buf(void) {
+  uint32_t x = 987654321u;
+  size_t i = 0, k;
+  unsigned m = 0;
+  for (k = 0; k < N; k++) {
+    x = x * 1664525u + 1013904223u;
+    buf[k] = (uint8_t)(x >> 24);
+  }
+  while (i + 4096 < N) {
+    uint8_t *h = buf + i;
+    x = x * 1664525u + 1013904223u;
+    if (m % 3 != 2) { /* ustar header */
+      uint32_t sum = 0;
+      memset(h, 0, 512);
+      h[0] = 'f';
+      h[1] = (uint8_t)('a' + m % 26);
+      put_octal(h + 100, 8, 0644);
+      put_octal(h + 108, 8, 0);
+      put_octal(h + 116, 8, 0);
+      put_octal(h + 124, 12, (x >> 12) % 20000u);
+      put_octal(h + 136, 12, 1700000000u);
+      h[156] = '0';
+      memcpy(h + 257, "ustar\0" "00", 8);
+      memset(h + 148, ' ', 8);
+      for (k = 0; k < 512; k++) sum += h[k];
+      put_octal(h + 148, 7, sum);
+      h[155] = ' ';
+      i += 512;
+    } else { /* zip local header: PK 3 4, version 20, deflate, name */
+      static const uint8_t lh[30] = {'P', 'K', 3, 4, 20, 0, 0, 0, 8, 0,
+                                     0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                                     0, 0, 0, 0, 0, 0, 9, 0, 0, 0};
+      memcpy(h, lh, 30);
+      memcpy(h + 30, "dir/a.txt", 9);
+      i += 39;
+    }
+    i += 600 + (x >> 8) % 7000u;
+    ++m;
+  }
+  memcpy(buf + N - 3000, "PK\1\2", 4);
+}
+
 /* FNV-1a over the fragment sizes: pins the gear cuts across platforms. */
 static uint64_t cut_sum(const osrep_frag_params *p, size_t *count) {
   osrep_frag *arr = NULL;
@@ -214,9 +268,47 @@ int main(int argc, char **argv) {
         return 1;
       }
     }
+  }
+  /* the format-aware cuts that -osrep uses (osrep_frag_params_osrep sets
+     OSREP_FRAG_F_FORMAT), on data that has the headers they look for */
+  make_format_buf();
+  {
+    static const struct {
+      unsigned n;
+      uint64_t sum;
+      size_t count;
+    } fpin[] = {
+#include "fragment_format_pins.inc"
+    };
+    for (i = 0; i < sizeof(fpin) / sizeof(fpin[0]); i++) {
+      size_t cnt = 0, cnt0 = 0;
+      uint64_t h;
+      if (osrep_frag_params_osrep(&p, fpin[i].n, 0) != OSREP_FRAG_OK ||
+          p.flags != OSREP_FRAG_F_FORMAT)
+        return 2;
+      if (check_mode(&p, "format") || check_scan(&p, "format", 77)) return 1;
+      h = cut_sum(&p, &cnt);
+      if (argc > 1 && strcmp(argv[1], "--print-pins") == 0) {
+        printf("format {%u, UINT64_C(0x%016llX), %zu},\n", fpin[i].n,
+               (unsigned long long)h, cnt);
+        continue;
+      }
+      if (h != fpin[i].sum || cnt != fpin[i].count) {
+        fprintf(stderr, "format N=%u: cuts changed (%zu fragments)\n",
+                fpin[i].n, cnt);
+        return 1;
+      }
+      /* the rules must have cut more than the plain gear CDC does */
+      p.flags = 0;
+      (void)cut_sum(&p, &cnt0);
+      if (cnt <= cnt0) {
+        fprintf(stderr, "format N=%u: no format cuts\n", fpin[i].n);
+        return 1;
+      }
+    }
     if (argc > 1) return 0;
   }
   printf("fragmenter: incremental state and scan match the buffer API (zpaq, "
-         "FNV, gear); gear cuts pinned\n");
+         "FNV, gear, -osrep format cuts); cuts pinned\n");
   return 0;
 }
