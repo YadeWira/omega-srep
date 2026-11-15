@@ -1,6 +1,8 @@
 # zpaq-std OSREP mode — benchmarks
 
-**Estado: `-osrep` integrado (2026-11-12, rama `frag-int`).** El fragmentador
+**Estado: `-osrep` integrado (2026-11-12, rama `frag-int`); portado a
+zpaq-std 2.11.0 y medido contra su deduplicador el 2026-11-15 (ver
+[zpaq-std 2.11.0](#zpaq-std-2110-2026-11-15)).** El fragmentador
 de zpaq-std puede usar el de OSREP en lugar del de orden 1. El formato ZPAQ no
 cambia: solo cambian los cortes y, por lo tanto, el tamaño del archivo. El
 zpaq-std sin modificar extrae todos los archivos `-osrep`.
@@ -28,6 +30,388 @@ zpaq-std sin modificar extrae todos los archivos `-osrep`.
   hilos.
 - Parche de referencia: `tools/zpaq-vectors/osrep-fragmenter-zpaq-std-2.7.2.patch`
   (`git format-patch` sobre `b8ad717`, zpaq-std 2.7.2).
+
+## zpaq-std 2.11.0 (2026-11-15)
+
+Medición interna para el scoreboard ([`scoreboard.md`](scoreboard.md#dedup-osrep-contra-el-deduplicador-de-zpaq-std)):
+no se publica nada. El parche `-osrep` se portó a zpaq-std 2.11.0 (`6b165e3`,
+que integra zpaqfranz 65.20) y se midió contra el deduplicador de zpaq en los
+corpus de antes y en tres corpus nuevos que apuntan a sus puntos débiles.
+
+### El parche
+
+`tools/zpaq-vectors/osrep-fragmenter-zpaq-std-2.11.0.patch` (`git
+format-patch` sobre `6b165e3`; aplica limpio con `git apply`):
+
+- Es el parche de 2.7.2 con dos cambios. El `Makefile` tuvo un conflicto:
+  2.10.0 agregó fuentes a `LZ6SRC`, y `OSREPSRC` va después. Los trozos de
+  `zpaq-std.cpp` entraron sin conflicto (desplazados): `-osrep`,
+  `g_fragmentgiven` (N=3 solo si `-fragment` no leyó un número), la
+  comprobación de N en `testparametriadd()` antes de cualquier hilo, el lazo
+  simple de `add()`/`add2()` y `add2_scan_osrep()` para los workers de
+  `-turbo`.
+- **Nuevo**: con `-sa`/`-sae`/`-sat`, la consulta "¿parte de este archivo ya
+  está en el archivo?" (`fragment_buffer()` en `add2()`) usaba los cortes de
+  zpaq aunque el archivo se fuera a cortar con `-osrep`. Ahora usa
+  `osrep_fragment_buffer()` con los mismos parámetros. No se probó con
+  códecs reales: `-sa` necesita los códecs externos (PJA/PPA), que no están en
+  este build.
+- 65.18/65.20 no cambiaron los lazos de corte. Lo que sí cambió es el lote de
+  `-turbo`: ya no es fijo de 64 MB, depende del tamaño de bloque y de los
+  hilos (`-turbochunk` lo fija). Como el estado de `-osrep` empieza de cero en
+  cada corte, el lote no cambia los cortes: `versions.tar -m1 -osrep` da el
+  mismo archivo con `-noturbo`, `-t8 -turbochunk 1`, `-t3 -turbochunk 1` y
+  `-t2 -turbochunk 7`.
+- `compressors/osrep/` es copia byte a byte de `src/c/osrep_fragment.c`,
+  `osrep_fragment.h`, `osrep_sha1.c` y `LICENSE` de `803de06`.
+
+`osrep-switch-test.sh` (baseline 2.11.0 contra el parcheado, `versions.tar`
+y `pja.tar`): **fails=0**. Sin `-osrep` el archivo es byte a byte el del
+baseline (`-m0`/`-m1`/`-m5`, con y sin `-noturbo`); con `-osrep` es el mismo
+con hilos por defecto, `-t1`, `-t8` y `-noturbo`; sin `-fragment` es N=3; el
+baseline extrae los 12 archivos; `-fragment 22` sale con error (exit 2).
+Los tamaños de los tars son los de 2.7.2 a menos de 10 bytes.
+
+### Cómo se midió
+
+- Binarios: baseline = zpaq-std 2.11.0 sin cambios; parcheado = el parche de
+  arriba. Mismo compilador y `make -j4`.
+- Tars (`versions.tar`, `pja.tar` y `zpaqstd-history.tar`, los 8 tags de
+  zpaq-std del scoreboard) con `bench_fair.py`; carpetas con
+  `bench_versions.py` (cada versión se copia sobre la misma carpeta y se
+  agrega al mismo archivo). Todo con `-threads 4` en `a`, `l` y `x`.
+- Configuraciones: zpaq `-fragment N` contra `-osrep -fragment N` con N=0, 3
+  y 6, y los defaults (zpaq N=6, `-osrep` N=3).
+- **Corpus nuevos** (`tools/zpaq-vectors/make_weakspots.py`, semilla fija,
+  archivos reales; la versión k tiene fecha 2024-k-01):
+  - `disk`: imagen de disco de 512 MiB: 4 MiB de metadatos (un registro de
+    256 B por archivo) y 2.373 archivos reales (mixed, photos v1, fuentes de
+    zpaq-std 2.7.2, binarios, silesia) en sectores de 4 KiB, el 20 % de los
+    de más de 32 KiB partidos en 2–4 extents intercalados, con huecos de
+    ceros. v2 cambia 350 cosas sueltas: 200 sectores enteros (datos nuevos),
+    8–64 bytes dentro de otros 100 y 50 registros de metadatos.
+  - `insert`: un árbol de 2.477 archivos (317 MB: mixed, photos v1, fuentes,
+    binarios) y el mismo árbol con un byte agregado al principio de cada
+    archivo.
+  - `db4k`, `db8k`, `db16k`: un archivo de 128 MiB en páginas de 4, 8 y 16
+    KiB (cabecera con número de página, LSN y CRC; registros de texto de
+    enwik8) en 4 versiones: cada una cambia un registro en el 2 % de las
+    páginas, intercambia de a pares el 0,5 % (cambia el número de página en la
+    cabecera, los registros no) y agrega un 1 % de páginas.
+- Una corrida por celda, con la máquina compartida: los tamaños son exactos;
+  los tiempos, indicativos. **Las 154 extracciones dieron los bytes
+  originales** (la última versión, en las carpetas). La primera corrida de
+  `disk` falló esa comprobación: v1 y v2 tenían el mismo tamaño y la misma
+  fecha, y zpaq no agregó v2. Desde entonces cada versión tiene su fecha y
+  `disk -m1` se repitió.
+- `-m5` en `disk`, `insert`, `db4k` y `db16k` no se corrió (2–4 h cada uno con
+  `x` incluido); `db8k -m5` solo en N=3 y los defaults. Para esos corpus la
+  deduplicación se ve sin compresor en `frag_stats` (más abajo).
+
+### Tamaño del archivo
+
+Cada celda: zpaq-std con `-fragment N` / con `-osrep -fragment N`, y la
+diferencia de `-osrep`. En negrita, cuando `-osrep` gana por más de 0,1 %.
+
+| corpus | `-m` | N=0 zpaq / osrep | N=3 | N=6 | default (zpaq 6 / osrep 3) | ok |
+|---|---|---|---|---|---|---|
+| versions.tar | `-m1` | 8.460.677 / **8.008.235** (−5,3 %) | 9.835.629 / **7.787.372** (−20,8 %) | 15.293.566 / **10.732.265** (−29,8 %) | 15.293.566 / **7.787.372** (−49,1 %) | sí |
+| pja.tar | `-m1` | 1.942.760 / 1.957.732 (+0,8 %) | 1.767.849 / 1.777.493 (+0,5 %) | 2.817.680 / **1.756.721** (−37,7 %) | 2.817.680 / **1.777.493** (−36,9 %) | sí |
+| zpaqstd-history.tar | `-m1` | 11.365.904 / **10.306.569** (−9,3 %) | 18.000.930 / **11.702.495** (−35,0 %) | 32.598.013 / **22.119.764** (−32,1 %) | 32.598.013 / **11.702.495** (−64,1 %) | sí |
+| versions.tar | `-m5` | 4.489.907 / 4.556.285 (+1,5 %) | 3.749.055 / 3.879.126 (+3,5 %) | 4.548.932 / **3.789.882** (−16,7 %) | 4.548.932 / **3.879.126** (−14,7 %) | sí |
+| pja.tar | `-m5` | 1.178.782 / 1.191.916 (+1,1 %) | 1.006.293 / 1.021.271 (+1,5 %) | 971.240 / 1.012.779 (+4,3 %) | 971.240 / 1.021.271 (+5,2 %) | sí |
+| zpaqstd-history.tar | `-m5` | 5.461.215 / 5.516.459 (+1,0 %) | 5.863.907 / **4.603.534** (−21,5 %) | 8.457.000 / **6.393.248** (−24,4 %) | 8.457.000 / **4.603.534** (−45,6 %) | sí |
+| src-zpaqstd | `-m1` | 11.191.182 / 11.226.058 (+0,3 %) | 10.346.266 / **9.819.016** (−5,1 %) | 13.000.404 / **12.708.901** (−2,2 %) | 13.000.404 / **9.819.016** (−24,5 %) | sí |
+| src-omega | `-m1` | 3.303.645 / **3.169.248** (−4,1 %) | 3.915.262 / 4.482.542 (+14,5 %) | 5.190.126 / 5.337.872 (+2,8 %) | 5.190.126 / **4.482.542** (−13,6 %) | sí |
+| bin-releases | `-m1` | 48.619.026 / **47.829.980** (−1,6 %) | 50.979.911 / **49.972.395** (−2,0 %) | 56.744.870 / **54.957.377** (−3,2 %) | 56.744.870 / **49.972.395** (−11,9 %) | sí |
+| mixed | `-m1` | 89.607.208 / 89.728.474 (+0,1 %) | 86.539.771 / 86.582.306 (+0,0 %) | 86.342.652 / 86.539.943 (+0,2 %) | 86.342.652 / 86.582.306 (+0,3 %) | sí |
+| disk | `-m1` | 255.158.963 / 255.759.306 (+0,2 %) | 246.148.799 / 249.118.252 (+1,2 %) | 263.568.325 / **258.594.356** (−1,9 %) | 263.568.325 / **249.118.252** (−5,5 %) | sí |
+| insert | `-m1` | 194.589.102 / 194.937.094 (+0,2 %) | 191.260.784 / 191.391.339 (+0,1 %) | 206.340.416 / **205.181.163** (−0,6 %) | 206.340.416 / **191.391.339** (−7,2 %) | sí |
+| db4k | `-m1` | 60.719.985 / **60.061.560** (−1,1 %) | 68.276.312 / **61.454.267** (−10,0 %) | 130.183.204 / **85.190.941** (−34,6 %) | 130.183.204 / **61.454.267** (−52,8 %) | sí |
+| db8k | `-m1` | 59.298.170 / **58.952.206** (−0,6 %) | 62.064.051 / **58.966.115** (−5,0 %) | 103.592.168 / **72.910.694** (−29,6 %) | 103.592.168 / **58.966.115** (−43,1 %) | sí |
+| db16k | `-m1` | 58.440.778 / 58.441.481 (+0,0 %) | 58.932.845 / **56.816.935** (−3,6 %) | 81.223.876 / **64.546.424** (−20,5 %) | 81.223.876 / **56.816.935** (−30,0 %) | sí |
+| db8k | `-m5` | — | 27.097.423 / **25.366.372** (−6,4 %) | — | 43.377.207 / **25.366.372** (−41,5 %) | sí |
+| photos | `-m1` | 100.499.687 / 100.742.329 (+0,2 %) | 98.214.736 / **98.043.349** (−0,2 %) | 97.870.612 / **97.667.353** (−0,2 %) | 97.870.612 / 98.043.349 (+0,2 %) | sí |
+| photos | `-m3` | 93.662.680 / 93.812.905 (+0,2 %) | 91.146.734 / 91.173.632 (+0,0 %) | 90.820.501 / 90.824.126 (+0,0 %) | 90.820.501 / 91.173.632 (+0,4 %) | sí |
+| src-zpaqstd | `-m5` | 7.589.258 / 7.692.838 (+1,4 %) | 6.101.510 / **5.858.076** (−4,0 %) | 7.438.882 / 7.473.612 (+0,5 %) | 7.438.882 / **5.858.076** (−21,3 %) | sí |
+| src-omega | `-m5` | 2.354.354 / **2.315.970** (−1,6 %) | 2.860.713 / 2.884.328 (+0,8 %) | 3.482.867 / 3.871.416 (+11,2 %) | 3.482.867 / **2.884.328** (−17,2 %) | sí |
+| bin-releases | `-m5` | 30.719.486 / **30.192.308** (−1,7 %) | 30.980.251 / **30.391.791** (−1,9 %) | 34.076.422 / **33.067.141** (−3,0 %) | 34.076.422 / **30.391.791** (−10,8 %) | sí |
+| mixed | `-m5` | 74.840.998 / 74.952.551 (+0,1 %) | 71.819.132 / 71.884.278 (+0,1 %) | 71.571.832 / 71.612.432 (+0,1 %) | 71.571.832 / 71.884.278 (+0,4 %) | sí |
+
+**El mejor N de cada uno** (lo que obtiene quien elige bien `-fragment`):
+
+| corpus | `-m` | zpaq, su mejor N | `-osrep`, su mejor N | diferencia |
+|---|---|---:|---:|---:|
+| versions.tar | `-m1` | 8.460.677 (N=0) | **7.787.372** (N=3) | −8,0 % |
+| pja.tar | `-m1` | 1.767.849 (N=3) | **1.756.721** (N=6) | −0,6 % |
+| zpaqstd-history.tar | `-m1` | 11.365.904 (N=0) | **10.306.569** (N=0) | −9,3 % |
+| versions.tar | `-m5` | 3.749.055 (N=3) | 3.789.882 (N=6) | +1,1 % |
+| pja.tar | `-m5` | 971.240 (N=6) | 1.012.779 (N=6) | +4,3 % |
+| zpaqstd-history.tar | `-m5` | 5.461.215 (N=0) | **4.603.534** (N=3) | −15,7 % |
+| src-zpaqstd | `-m1` | 10.346.266 (N=3) | **9.819.016** (N=3) | −5,1 % |
+| src-omega | `-m1` | 3.303.645 (N=0) | **3.169.248** (N=0) | −4,1 % |
+| bin-releases | `-m1` | 48.619.026 (N=0) | **47.829.980** (N=0) | −1,6 % |
+| mixed | `-m1` | 86.342.652 (N=6) | 86.539.943 (N=6) | +0,2 % |
+| disk | `-m1` | 246.148.799 (N=3) | 249.118.252 (N=3) | +1,2 % |
+| insert | `-m1` | 191.260.784 (N=3) | 191.391.339 (N=3) | +0,1 % |
+| db4k | `-m1` | 60.719.985 (N=0) | **60.061.560** (N=0) | −1,1 % |
+| db8k | `-m1` | 59.298.170 (N=0) | **58.952.206** (N=0) | −0,6 % |
+| db16k | `-m1` | 58.440.778 (N=0) | **56.816.935** (N=3) | −2,8 % |
+| db8k | `-m5` | 27.097.423 (N=3) | **25.366.372** (N=3) | −6,4 % |
+| photos | `-m1` | 97.870.612 (N=6) | **97.667.353** (N=6) | −0,2 % |
+| photos | `-m3` | 90.820.501 (N=6) | 90.824.126 (N=6) | +0,0 % |
+| src-zpaqstd | `-m5` | 6.101.510 (N=3) | **5.858.076** (N=3) | −4,0 % |
+| src-omega | `-m5` | 2.354.354 (N=0) | **2.315.970** (N=0) | −1,6 % |
+| bin-releases | `-m5` | 30.719.486 (N=0) | **30.192.308** (N=0) | −1,7 % |
+| mixed | `-m5` | 71.571.832 (N=6) | 71.612.432 (N=6) | +0,1 % |
+
+### Tiempo y memoria
+
+`a`: suma de todas las versiones (s) y RSS pico (MB). "Última versión": el
+`a` de la última versión sola, sobre el archivo con todas las anteriores
+(lo que cuesta agregar una versión más a un archivo grande). `x`: extraer la
+última versión con el zpaq-std sin parche (s y RSS pico; ahí pesa el índice).
+
+| corpus | `-m` | N | zpaq a s / MB | osrep a s / MB | zpaq última versión s / MB | osrep última versión s / MB | zpaq x s / MB | osrep x s / MB |
+|---|---|---|---|---|---|---|---|---|
+| versions.tar | `-m1` | 0 | 0,96 / 336 | 1,09 / 327 | 0,96 / 336 | 1,09 / 327 | 0,47 / 68 | 0,53 / 77 |
+| versions.tar | `-m1` | 3 | 0,84 / 390 | 0,97 / 307 | 0,84 / 390 | 0,97 / 307 | 0,32 / 98 | 0,32 / 77 |
+| versions.tar | `-m1` | 6 | 1,13 / 466 | 0,88 / 407 | 1,13 / 466 | 0,88 / 407 | 0,33 / 140 | 0,33 / 101 |
+| versions.tar | `-m1` | d | 1,09 / 463 | 0,93 / 308 | 1,09 / 463 | 0,93 / 308 | 0,32 / 140 | 0,35 / 77 |
+| pja.tar | `-m1` | 0 | 0,44 / 213 | 0,49 / 185 | 0,44 / 213 | 0,49 / 185 | 0,16 / 31 | 0,15 / 27 |
+| pja.tar | `-m1` | 3 | 0,43 / 200 | 0,41 / 199 | 0,43 / 200 | 0,41 / 199 | 0,17 / 36 | 0,15 / 30 |
+| pja.tar | `-m1` | 6 | 0,49 / 239 | 0,47 / 200 | 0,49 / 239 | 0,47 / 200 | 0,17 / 43 | 0,19 / 37 |
+| pja.tar | `-m1` | d | 0,56 / 239 | 0,42 / 200 | 0,56 / 239 | 0,42 / 200 | 0,17 / 42 | 0,17 / 30 |
+| zpaqstd-history.tar | `-m1` | 0 | 1,20 / 428 | 1,22 / 341 | 1,20 / 428 | 1,22 / 341 | 0,76 / 114 | 0,81 / 90 |
+| zpaqstd-history.tar | `-m1` | 3 | 1,25 / 494 | 1,25 / 416 | 1,25 / 494 | 1,25 / 416 | 0,50 / 141 | 0,46 / 118 |
+| zpaqstd-history.tar | `-m1` | 6 | 1,70 / 533 | 1,34 / 513 | 1,70 / 533 | 1,34 / 513 | 0,64 / 140 | 0,50 / 137 |
+| zpaqstd-history.tar | `-m1` | d | 1,63 / 534 | 1,20 / 390 | 1,63 / 534 | 1,20 / 390 | 0,69 / 139 | 0,48 / 110 |
+| versions.tar | `-m5` | 0 | 105,80 / 1035 | 84,16 / 724 | 105,80 / 1035 | 84,16 / 724 | 94,31 / 868 | 80,89 / 546 |
+| versions.tar | `-m5` | 3 | 136,90 / 1035 | 86,68 / 932 | 136,90 / 1035 | 86,68 / 932 | 137,17 / 897 | 97,20 / 793 |
+| versions.tar | `-m5` | 6 | 167,48 / 1291 | 126,11 / 967 | 167,48 / 1291 | 126,11 / 967 | 168,45 / 1105 | 128,18 / 837 |
+| versions.tar | `-m5` | d | 166,43 / 1291 | 82,35 / 938 | 166,43 / 1291 | 82,35 / 938 | 171,20 / 1108 | 85,64 / 798 |
+| pja.tar | `-m5` | 0 | 22,25 / 453 | 18,26 / 364 | 22,25 / 453 | 18,26 / 364 | 23,20 / 309 | 18,39 / 211 |
+| pja.tar | `-m5` | 3 | 35,49 / 445 | 23,29 / 439 | 35,49 / 445 | 23,29 / 439 | 35,35 / 316 | 22,78 / 308 |
+| pja.tar | `-m5` | 6 | 54,77 / 651 | 34,79 / 423 | 54,77 / 651 | 34,79 / 423 | 57,40 / 521 | 32,88 / 292 |
+| pja.tar | `-m5` | d | 54,66 / 651 | 24,99 / 438 | 54,66 / 651 | 24,99 / 438 | 54,83 / 522 | 24,52 / 308 |
+| zpaqstd-history.tar | `-m5` | 0 | 148,28 / 1080 | 112,45 / 1071 | 148,28 / 1080 | 112,45 / 1071 | 136,66 / 905 | 110,86 / 887 |
+| zpaqstd-history.tar | `-m5` | 3 | 170,99 / 1549 | 150,79 / 1060 | 170,99 / 1549 | 150,79 / 1060 | 175,08 / 1367 | 150,27 / 917 |
+| zpaqstd-history.tar | `-m5` | 6 | 173,96 / 2380 | 173,49 / 1911 | 173,96 / 2380 | 173,49 / 1911 | 180,70 / 2160 | 170,75 / 1755 |
+| zpaqstd-history.tar | `-m5` | d | 191,61 / 2384 | 167,64 / 1061 | 191,61 / 2384 | 167,64 / 1061 | 188,80 / 2152 | 164,40 / 917 |
+| src-zpaqstd | `-m1` | 0 | 5,73 / 295 | 7,34 / 294 | 0,40 / 142 | 0,48 / 142 | 0,43 / 62 | 0,44 / 64 |
+| src-zpaqstd | `-m1` | 3 | 5,41 / 263 | 6,85 / 263 | 0,34 / 131 | 0,43 / 132 | 0,35 / 51 | 0,37 / 49 |
+| src-zpaqstd | `-m1` | 6 | 5,64 / 264 | 7,37 / 264 | 0,33 / 132 | 0,43 / 132 | 0,34 / 67 | 0,35 / 60 |
+| src-zpaqstd | `-m1` | d | 5,64 / 264 | 6,81 / 264 | 0,33 / 132 | 0,42 / 131 | 0,34 / 67 | 0,34 / 56 |
+| src-omega | `-m1` | 0 | 2,18 / 30 | 2,38 / 30 | 0,09 / 18 | 0,11 / 18 | 0,11 / 20 | 0,15 / 20 |
+| src-omega | `-m1` | 3 | 2,21 / 30 | 2,48 / 30 | 0,10 / 17 | 0,10 / 17 | 0,10 / 20 | 0,12 / 20 |
+| src-omega | `-m1` | 6 | 2,20 / 30 | 2,70 / 30 | 0,10 / 18 | 0,10 / 18 | 0,09 / 18 | 0,09 / 18 |
+| src-omega | `-m1` | d | 2,20 / 30 | 2,47 / 30 | 0,10 / 18 | 0,11 / 18 | 0,09 / 18 | 0,11 / 20 |
+| bin-releases | `-m1` | 0 | 8,03 / 207 | 9,37 / 208 | 0,30 / 61 | 0,46 / 61 | 0,28 / 56 | 0,25 / 48 |
+| bin-releases | `-m1` | 3 | 7,27 / 200 | 8,49 / 200 | 0,28 / 54 | 0,37 / 55 | 0,15 / 35 | 0,15 / 37 |
+| bin-releases | `-m1` | 6 | 7,62 / 201 | 8,83 / 201 | 0,33 / 56 | 0,32 / 57 | 0,14 / 26 | 0,12 / 27 |
+| bin-releases | `-m1` | d | 7,62 / 201 | 7,96 / 200 | 0,33 / 56 | 0,33 / 57 | 0,14 / 26 | 0,15 / 37 |
+| mixed | `-m1` | 0 | 2,31 / 489 | 2,80 / 482 | 2,31 / 489 | 2,80 / 482 | 1,09 / 162 | 1,09 / 159 |
+| mixed | `-m1` | 3 | 1,98 / 441 | 2,64 / 435 | 1,98 / 441 | 2,64 / 435 | 1,02 / 139 | 0,92 / 137 |
+| mixed | `-m1` | 6 | 2,14 / 439 | 2,35 / 440 | 2,14 / 439 | 2,35 / 440 | 0,89 / 136 | 0,89 / 136 |
+| mixed | `-m1` | d | 2,14 / 439 | 2,41 / 438 | 2,14 / 439 | 2,41 / 438 | 0,89 / 136 | 1,00 / 137 |
+| disk | `-m1` | 0 | 7,24 / 769 | 7,67 / 739 | 1,60 / 326 | 2,11 / 264 | 2,73 / 202 | 2,80 / 211 |
+| disk | `-m1` | 3 | 6,66 / 597 | 7,51 / 612 | 1,40 / 175 | 2,07 / 227 | 2,41 / 144 | 2,39 / 149 |
+| disk | `-m1` | 6 | 6,76 / 580 | 7,38 / 587 | 1,61 / 372 | 2,06 / 248 | 2,59 / 140 | 2,44 / 138 |
+| disk | `-m1` | d | 6,76 / 580 | 8,09 / 612 | 1,61 / 372 | 2,71 / 226 | 2,59 / 140 | 2,42 / 148 |
+| insert | `-m1` | 0 | 5,71 / 636 | 7,51 / 623 | 1,95 / 176 | 3,17 / 178 | 1,91 / 177 | 1,97 / 180 |
+| insert | `-m1` | 3 | 4,95 / 602 | 6,60 / 606 | 1,78 / 217 | 2,89 / 217 | 1,89 / 143 | 1,80 / 142 |
+| insert | `-m1` | 6 | 4,91 / 596 | 6,66 / 596 | 1,79 / 303 | 3,22 / 279 | 2,10 / 140 | 1,98 / 140 |
+| insert | `-m1` | d | 4,91 / 596 | 6,61 / 606 | 1,79 / 303 | 2,94 / 214 | 2,10 / 140 | 1,89 / 142 |
+| db4k | `-m1` | 0 | 4,04 / 603 | 4,73 / 612 | 0,71 / 218 | 0,91 / 208 | 0,90 / 170 | 0,83 / 168 |
+| db4k | `-m1` | 3 | 4,95 / 558 | 4,69 / 570 | 0,98 / 214 | 0,98 / 210 | 0,92 / 141 | 0,83 / 142 |
+| db4k | `-m1` | 6 | 5,37 / 548 | 5,53 / 548 | 1,17 / 476 | 1,14 / 294 | 1,49 / 153 | 1,09 / 141 |
+| db4k | `-m1` | d | 5,37 / 548 | 4,89 / 569 | 1,17 / 476 | 0,99 / 210 | 1,49 / 153 | 0,84 / 143 |
+| db8k | `-m1` | 0 | 4,05 / 603 | 4,53 / 613 | 0,69 / 201 | 0,81 / 207 | 0,84 / 152 | 0,84 / 170 |
+| db8k | `-m1` | 3 | 4,27 / 558 | 4,24 / 560 | 0,79 / 206 | 0,75 / 172 | 0,78 / 142 | 0,75 / 142 |
+| db8k | `-m1` | 6 | 5,09 / 547 | 5,46 / 550 | 1,10 / 383 | 1,14 / 228 | 1,30 / 141 | 0,93 / 140 |
+| db8k | `-m1` | d | 5,09 / 547 | 4,45 / 559 | 1,10 / 383 | 0,77 / 172 | 1,30 / 141 | 0,76 / 142 |
+| db16k | `-m1` | 0 | 3,91 / 603 | 4,53 / 605 | 0,63 / 199 | 0,79 / 197 | 0,80 / 153 | 0,78 / 169 |
+| db16k | `-m1` | 3 | 3,76 / 558 | 4,11 / 560 | 0,61 / 172 | 0,71 / 168 | 0,73 / 142 | 0,73 / 141 |
+| db16k | `-m1` | 6 | 5,09 / 549 | 4,88 / 546 | 1,11 / 291 | 1,05 / 207 | 0,99 / 141 | 0,84 / 141 |
+| db16k | `-m1` | d | 5,09 / 549 | 4,16 / 559 | 1,11 / 291 | 0,76 / 168 | 0,99 / 141 | 0,75 / 142 |
+| db8k | `-m5` | 3 | 283,00 / 1876 | 243,84 / 1878 | 29,21 / 424 | 17,00 / 330 | 186,04 / 2054 | 193,93 / 1846 |
+| db8k | `-m5` | d | 580,72 / 1858 | 242,05 / 1881 | 126,48 / 962 | 17,53 / 330 | 263,51 / 3232 | 200,21 / 1853 |
+| photos | `-m1` | 0 | 2,16 / 560 | 2,17 / 520 | 0,51 / 216 | 0,54 / 216 | 0,86 / 140 | 0,79 / 140 |
+| photos | `-m1` | 3 | 1,36 / 502 | 1,81 / 489 | 0,31 / 143 | 0,33 / 143 | 0,79 / 131 | 0,74 / 122 |
+| photos | `-m1` | 6 | 1,49 / 497 | 1,85 / 499 | 0,34 / 144 | 0,35 / 144 | 0,70 / 132 | 0,70 / 127 |
+| photos | `-m1` | d | 1,49 / 497 | 1,79 / 440 | 0,34 / 144 | 0,34 / 143 | 0,70 / 132 | 0,74 / 130 |
+| photos | `-m3` | 0 | 46,11 / 860 | 45,81 / 861 | 4,06 / 226 | 4,29 / 227 | 23,23 / 285 | 22,75 / 290 |
+| photos | `-m3` | 3 | 39,49 / 855 | 44,57 / 849 | 4,12 / 217 | 4,17 / 217 | 23,58 / 278 | 22,96 / 278 |
+| photos | `-m3` | 6 | 40,56 / 856 | 40,17 / 857 | 4,14 / 219 | 4,19 / 217 | 22,87 / 282 | 23,26 / 278 |
+| photos | `-m3` | d | 40,56 / 856 | 42,76 / 853 | 4,14 / 219 | 4,00 / 219 | 22,87 / 282 | 22,51 / 282 |
+| src-zpaqstd | `-m5` | 0 | 85,31 / 672 | 84,57 / 674 | 0,59 / 239 | 0,65 / 240 | 68,06 / 763 | 67,10 / 763 |
+| src-zpaqstd | `-m5` | 3 | 96,32 / 664 | 102,93 / 664 | 0,78 / 229 | 0,79 / 229 | 69,75 / 773 | 70,22 / 769 |
+| src-zpaqstd | `-m5` | 6 | 126,96 / 668 | 136,12 / 667 | 1,06 / 230 | 1,91 / 231 | 71,98 / 925 | 74,25 / 864 |
+| src-zpaqstd | `-m5` | d | 126,96 / 668 | 93,47 / 664 | 1,06 / 230 | 0,81 / 230 | 71,98 / 925 | 70,90 / 767 |
+| src-omega | `-m5` | 0 | 20,46 / 144 | 20,47 / 144 | 0,71 / 100 | 0,71 / 100 | 8,51 / 392 | 8,60 / 307 |
+| src-omega | `-m5` | 3 | 28,08 / 144 | 30,33 / 143 | 1,53 / 99 | 1,52 / 99 | 7,93 / 309 | 9,82 / 306 |
+| src-omega | `-m5` | 6 | 36,33 / 145 | 39,48 / 144 | 2,26 / 101 | 2,52 / 99 | 8,27 / 226 | 8,10 / 229 |
+| src-omega | `-m5` | d | 36,33 / 145 | 28,81 / 144 | 2,26 / 101 | 1,41 / 99 | 8,27 / 226 | 8,02 / 307 |
+| bin-releases | `-m5` | 0 | 288,91 / 422 | 284,99 / 423 | 15,61 / 195 | 15,64 / 196 | 29,83 / 587 | 27,24 / 601 |
+| bin-releases | `-m5` | 3 | 333,60 / 416 | 329,51 / 416 | 16,60 / 193 | 16,58 / 193 | 16,10 / 604 | 16,52 / 426 |
+| bin-releases | `-m5` | 6 | 389,26 / 417 | 377,27 / 417 | 17,37 / 195 | 17,00 / 195 | 18,19 / 352 | 17,32 / 352 |
+| bin-releases | `-m5` | d | 389,26 / 417 | 323,89 / 416 | 17,37 / 195 | 17,40 / 193 | 18,19 / 352 | 15,81 / 435 |
+| mixed | `-m5` | 0 | 215,19 / 2143 | 215,41 / 2137 | 215,19 / 2143 | 215,41 / 2137 | 222,87 / 2027 | 212,25 / 2032 |
+| mixed | `-m5` | 3 | 225,39 / 2468 | 226,49 / 2449 | 225,39 / 2468 | 226,49 / 2449 | 223,44 / 2366 | 220,21 / 2354 |
+| mixed | `-m5` | 6 | 215,66 / 2473 | 217,10 / 2478 | 215,66 / 2473 | 217,10 / 2478 | 223,88 / 2372 | 214,92 / 2375 |
+| mixed | `-m5` | d | 215,66 / 2473 | 210,42 / 2458 | 215,66 / 2473 | 210,42 / 2458 | 223,88 / 2372 | 213,01 / 2373 |
+
+### Sin compresor: cuánto deduplica cada fragmentador
+
+`frag_stats` corta cada archivo como zpaq-std, deduplica por SHA-1 y da los
+bytes únicos y el fragmento medio. **"Mismo N" no es el mismo promedio**: el
+gear de `-osrep` corta en cuanto ve 64 ceros (`G[0] = 0`) y después de cada
+cabecera tar, así que en datos con relleno de ceros o tars su fragmento medio
+es menor que 2^N KiB, y a N=6 es la mitad o menos que el de zpaq:
+
+| entrada | N=3 zpaq / `-osrep` | N=6 zpaq / `-osrep` |
+|---|---:|---:|
+| versions.tar | 9,0 / 6,5 KiB | 71,8 / 22,8 KiB |
+| disk (v1+v2) | 8,9 / 6,7 KiB | 70,7 / 32,7 KiB |
+| insert (v1+v2) | 8,0 / 7,4 KiB | 46,3 / 39,0 KiB |
+| db4k (4 versiones) | 8,5 / 5,9 KiB | 71,2 / 34,3 KiB |
+| db8k | 8,4 / 7,2 KiB | 72,4 / 37,2 KiB |
+| db16k | 8,5 / 7,6 KiB | 69,8 / 41,3 KiB |
+
+En `disk`, lo que cuesta v2 (350 cambios sueltos) en bytes únicos y en el
+archivo `-m1`:
+
+| N | únicos v2 − v1, zpaq | únicos, `-osrep` | archivo `-m1` v2 − v1, zpaq | archivo, `-osrep` |
+|---|---:|---:|---:|---:|
+| 0 | 1.669.321 | 1.338.856 (−19,8 %) | 2.798.233 | 2.761.850 (−1,3 %) |
+| 3 | 6.569.274 | 13.987.098 (+112,9 %) | 3.844.783 | 6.522.266 (+69,6 %) |
+| 6 | 44.569.598 | 34.033.764 (−23,6 %) | 21.776.533 | 16.374.947 (−24,8 %) |
+
+**El mínimo.** `frag_stats gearS N 42` es el gear de `-osrep` con sus cortes
+de formato pero con mínimo A >> S (`gear1` es `-osrep`, mínimo A/2; zpaq-std
+usa `64 << N` = A/16). Bytes únicos + índice estimado (24 B por fragmento
+único + 4 B por referencia), diferencia contra zpaq al mismo N; en negrita el
+mejor mínimo:
+
+| entrada | N | zpaq (únicos + índice) | `-osrep` (A/2) | A/4 | A/8 | A/16 |
+|---|---|---:|---:|---:|---:|---:|
+| disk | 0 | 497.629.022 | −0,7 % | −1,0 % | **−1,2 %** | −0,8 % |
+| disk | 3 | 506.275.348 | +0,9 % | +0,1 % | −0,1 % | **−2,1 %** |
+| disk | 6 | 554.056.973 | −2,9 % | **−4,4 %** | −2,8 % | −3,0 % |
+| insert | 0 | 302.664.223 | −0,2 % | −0,5 % | **−0,7 %** | −0,6 % |
+| insert | 3 | 315.961.615 | +0,0 % | −0,5 % | −0,9 % | **−1,2 %** |
+| insert | 6 | 355.585.417 | +0,0 % | −0,8 % | −2,0 % | **−2,9 %** |
+| db4k | 0 | 152.679.983 | −1,6 % | −1,5 % | −1,6 % | **−1,7 %** |
+| db4k | 3 | 183.231.300 | −11,2 % | −12,7 % | **−12,9 %** | −12,8 % |
+| db4k | 6 | 350.049.950 | −34,4 % | −44,5 % | −49,6 % | **−51,7 %** |
+| db8k | 0 | 148.257.732 | **−0,9 %** | −0,7 % | −0,8 % | −0,8 % |
+| db8k | 3 | 163.954.117 | −5,5 % | **−5,8 %** | −5,8 % | −5,6 % |
+| db8k | 6 | 277.720.183 | −30,1 % | −36,7 % | −39,6 % | **−40,2 %** |
+| versions.tar | 0 | 36.920.148 | −10,9 % | −12,0 % | −15,6 % | **−15,6 %** |
+| versions.tar | 3 | 53.389.685 | −31,0 % | −33,4 % | **−34,1 %** | −30,5 % |
+| versions.tar | 6 | 75.492.086 | −25,0 % | −34,6 % | −39,8 % | **−42,7 %** |
+| zpaqstd-history.tar | 0 | 54.359.988 | −18,0 % | −19,4 % | −19,4 % | **−23,2 %** |
+| zpaqstd-history.tar | 3 | 96.472.501 | −38,1 % | −40,9 % | **−41,6 %** | −37,6 % |
+| zpaqstd-history.tar | 6 | 153.323.279 | −26,4 % | −36,6 % | −43,0 % | **−46,1 %** |
+| src-zpaqstd | 0 | 32.245.598 | **−0,9 %** | −0,7 % | −0,3 % | −0,1 % |
+| src-zpaqstd | 3 | 34.932.947 | **−4,7 %** | −2,9 % | −1,8 % | −1,5 % |
+| src-zpaqstd | 6 | 46.348.235 | **−1,2 %** | +1,3 % | +5,9 % | +4,0 % |
+| src-omega | 0 | 6.342.960 | **−6,5 %** | −4,8 % | −3,6 % | −2,4 % |
+| src-omega | 3 | 9.124.008 | +0,9 % | **+0,5 %** | +1,2 % | +2,3 % |
+| src-omega | 6 | 12.024.653 | +9,2 % | +8,0 % | +5,9 % | **+4,7 %** |
+
+### Velocidad del corte
+
+`frag_speed` (solo el corte, con `hits` y `o1`; sin SHA-1 ni E/S; mediana de
+3, MB/s): zpaq 293–319, `-osrep` 166–172 en `versions.tar` y en la imagen
+`disk` v1, con N=3 y N=6. `push` y `scan` dan lo mismo en `-osrep` porque los
+cortes de formato obligan a empujar byte a byte. Con SHA-1 (`frag_stats`,
+mediana de 3): `versions.tar` 1,25 s zpaq N=3 contra 1,59 s `-osrep` N=3
+(+27 %); `disk` v1 5,15 s contra 6,52 s (+27 %). En `a -m1` completo eso es
++10 a +35 % de tiempo (tabla de arriba); con `-m5` `-osrep` suele tardar menos
+porque comprime menos datos.
+
+### Lectura
+
+- **Default contra default** (quien solo agrega `-osrep`): gana donde hay
+  redundancia entre versiones: −12 a −64 % con `-m1` en los seis corpus con
+  versiones y −11 a −46 % con `-m5` en cinco de ellos; −5,5 % en `disk`,
+  −7,2 % en `insert` y −30 a −53 % en las bases de datos (`db8k -m5`:
+  −41,5 %). Pierde en PJA con `-m5` (+5,2 %) y por
+  poco en datos sin redundancia (mixed, photos: +0,2 a +0,4 %).
+- **Al mismo N**: de 64 celdas, `-osrep` gana 34, empata 7 (±0,1 %) y
+  pierde 23. Las derrotas grandes son PJA con `-m5` (+1,1 a +4,3 %),
+  `versions.tar -m5` en N=0/3 (+1,5/+3,5 %), `src-omega` en N=3/6 (`-m1`
+  +14,5/+2,8 %, `-m5` +0,8/+11,2 %) y `disk` N=3 (+1,2 %); el resto son
+  +0,1 a +0,8 % en N=0 o en datos sin redundancia.
+- **Cada uno con su mejor N**: `-osrep` gana en 15 de 22 casos (−0,2 a
+  −15,7 %); pierde en PJA `-m5` (+4,3 %), `disk` (+1,2 %),
+  `versions.tar -m5` (+1,1 %), mixed `-m1`/`-m5` (+0,2/+0,1 %) e `insert`
+  (+0,1 %), y empata en photos `-m3`. (`db8k -m5` compara solo N=3 y 6 de zpaq
+  con N=3 de `-osrep`.)
+- **2.11.0 no cambia nada respecto de 2.7.2**: en los tars los tamaños son los
+  de la tabla de 2.7.2 a menos de 10 bytes. En las carpetas, los números
+  cambian con la ruta de trabajo (ver la nota de `src-omega` en la tabla de
+  2.7.2): `src-omega -m1` N=3 pasó de +6,5 % a +14,5 % solo por eso.
+- **`disk`**, el punto débil que zpaq-std nombra, **no lo gana `-osrep` en
+  N=3**: v2 (350 cambios sueltos) cuesta 6,5 MB en el archivo con `-osrep`
+  contra 3,8 MB con zpaq N=3 (+70 %), y 14,0 contra 6,6 MB de bytes únicos.
+  Con N=0 empatan y con N=6 gana `-osrep` (v2 cuesta un 25 % menos), pero
+  porque su fragmento medio es la mitad del de zpaq. La causa es el **mínimo A/2**:
+  después de un cambio, el gear tiene un candidato de corte cada ~A/2 bytes y
+  no puede cortar antes de A/2, así que la cadena de cortes de v2 tarda
+  varios fragmentos en volver a caer en los de v1. zpaq en N=3 tiene mínimo
+  512 B (A/16) y se reengancha enseguida. Con los cortes de formato y mínimo
+  A/16, `frag_stats` da −2,1 % contra zpaq (hoy +0,9 %).
+- **Bases de datos**: gana mucho (N=6: −20 a −35 %) porque el gear corta en
+  el relleno de ceros al final de cada página (`G[0] = 0`): los fragmentos
+  quedan alineados a página y las páginas movidas se deduplican. Con páginas
+  llenas, sin ceros, esa ventaja no existiría (no se midió).
+- **`insert`** (un byte al principio de cada archivo): empate en N=3
+  (+0,1 %). Los dos pierden el primer fragmento de cada archivo; `-osrep` solo
+  gana por usar fragmentos más chicos en el default.
+- **`-m5` con todo el tar en un bloque** (PJA, `versions.tar`): ahí `-osrep`
+  deduplica bastante más (PJA N=6: 13,9 MB únicos contra 21,4 MB de zpaq) y aun
+  así el archivo sale más grande, porque el modelo de `-m5` ya encontraba esa
+  redundancia dentro del bloque. Lo que queda es el costo de tener 3× más
+  fragmentos: índice (≈25 KB de los 41 KB que pierde PJA N=6) y contexto
+  cortado para el compresor.
+- **Memoria**: al mismo N, el RSS de `x` es igual o menor con `-osrep`
+  salvo en algunas filas N=0 (hasta +13 %); default contra default sube en
+  `bin-releases` y `src-omega` con `-m5` (+24 % y +36 %, más fragmentos), y
+  es mucho menor donde zpaq usa
+  fragmentos grandes con `-m5` (historial default: 917 MB contra 2.152 MB;
+  `db8k` default: 1.853 MB contra 3.232 MB). Agregar una versión más al archivo de 16
+  versiones de `src-zpaqstd` cuesta lo mismo (229–240 MB los dos). La
+  excepción es `disk` N=3: 227 MB contra 175 MB (+30 %), por los 33 % más de
+  fragmentos. El RSS varía un ~5 % entre corridas.
+- **Tiempo**: con `-m1`, `a` tarda típicamente un 15–35 % más en carpetas
+  (corte 1,8× más lento; en algunos tars y bases de datos tarda menos); con
+  `-m5`, `-osrep` tarda lo mismo o menos (comprime menos datos): historial
+  default 168 s contra 192 s, PJA 25 s contra 55 s.
+
+Un mínimo más chico gana en `disk`, `insert`, las bases de datos y los tars,
+y pierde en `src-zpaqstd`. Parte de la ganancia es que corta más fino (en
+`disk` N=3 el fragmento medio baja de 6,9 a 3,2 KiB): hay que confirmarlo con
+archivos reales y `-m5` antes de cambiar `osrep_frag_params_osrep()`.
+
+Datos crudos: `tools/zpaq-vectors/bench-2110-tars.tsv` (`bench_fair.py`),
+`bench-2110-dirs.tsv` (`bench_versions.py`), `bench-2110-fragstats.tsv`
+(`frag_stats`: los corpus nuevos, la velocidad y el barrido del mínimo) y
+`bench-2110-fragspeed.tsv` (`frag_speed`).
+
+```sh
+T=tools/zpaq-vectors
+python3 $T/make_weakspots.py --out SYN --disk-src DIR ... --tree-src DIR ... \
+  --new-data game-assets.tar --text enwik8 --db-pages 4,8,16
+python3 $T/bench_fair.py --baseline BASE --patched NEW --input versions.tar \
+  --input pja.tar --input zpaqstd-history.tar --method=-m1 --fragments 0,3,6,d \
+  --workdir W --extra=-threads --extra=4 --xextra=-threads --xextra=4
+python3 $T/bench_versions.py --baseline BASE --patched NEW --workdir W \
+  --method=-m1 --configs zpaq:0,osrep:0,zpaq:3,osrep:3,zpaq:6,osrep:6,osrep:d \
+  --corpus disk=SYN/disk --corpus mixed=DIR:single \
+  --extra=-threads --extra=4 --xextra=-threads --xextra=4
+```
 
 ## Tabla final: zpaq contra `-osrep` al mismo N (2026-11-12)
 
@@ -285,6 +669,11 @@ zpaq-std todavía.
    zpaq-std llamándolo por bloques, recuperaría el 10–15 % de `-m1` en
    carpetas.
 4. Benchmarks con zpaqfranz y un corpus de backup más grande.
+5. **El mínimo A/2 contra cambios sueltos** (2.11.0): en una imagen de disco
+   `-osrep` N=3 pierde contra zpaq N=3 (+1,2 %; lo que cuesta v2, +70 %).
+   Con los cortes de formato y mínimo A/8–A/16, `frag_stats` gana en disco,
+   árboles, bases de datos y tars, y pierde en `src-zpaqstd`. Es lo primero a
+   medir con archivos reales (`-m1` y `-m5`), junto con el punto 2.
 
 ---
 

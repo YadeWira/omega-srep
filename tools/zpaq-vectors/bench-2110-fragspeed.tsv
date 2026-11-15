@@ -1,0 +1,12 @@
+versions.tar	3	mode	N	frags	push_MBps	scan_MBps
+versions.tar	3	zpaq	3	14110	293	307
+versions.tar	3	osrep	3	19654	172	172
+versions.tar	6	mode	N	frags	push_MBps	scan_MBps
+versions.tar	6	zpaq	6	1775	302	301
+versions.tar	6	osrep	6	5601	170	170
+disk.img	3	mode	N	frags	push_MBps	scan_MBps
+disk.img	3	zpaq	3	58684	318	319
+disk.img	3	osrep	3	77913	166	167
+disk.img	6	mode	N	frags	push_MBps	scan_MBps
+disk.img	6	zpaq	6	7416	319	321
+disk.img	6	osrep	6	16024	168	169

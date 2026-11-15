@@ -6,7 +6,9 @@ For every configuration the versions are copied, one after the other, into
 the same staging folder and added to one archive, as a backup of a folder
 that changes. Reports the archive size, the total add time and the peak RSS,
 the time of `l` and of `x` of the last version, and whether `x` gives the last
-version back.
+version back. The last two columns are the time and the peak RSS of the last
+`a` alone: adding one more version on top of the archive of all the others
+(the RAM of the index when the archive is already large).
 
     tools/zpaq-vectors/bench_versions.py --baseline BASE --patched PATCHED \
         --workdir DIR --method=-m1 --method=-m5 \
@@ -69,6 +71,8 @@ def main():
                     help="name=dir (versions in subdirs) or name=dir:single")
     ap.add_argument("--configs", default="zpaq:6,zpaq:3,osrep:6,osrep:3")
     ap.add_argument("--extra", action="append", default=[])
+    ap.add_argument("--xextra", action="append", default=[],
+                    help="switches for l and x (e.g. --xextra=-threads --xextra=4)")
     a = ap.parse_args()
     methods = a.method or ["-m1", "-m5"]
     wd = os.path.abspath(a.workdir)
@@ -77,7 +81,7 @@ def main():
     arc = os.path.join(wd, "a.zpaq")
     xdir = os.path.join(wd, "x")
     print("corpus\tversions\tmethod\tconfig\tarchive\tadd_s\trss_mb\tl_s\t"
-          "x_s\tx_rss_mb\textract", flush=True)
+          "x_s\tx_rss_mb\textract\tlast_add_s\tlast_add_rss_mb", flush=True)
     for spec in a.corpus:
         name, path = spec.split("=", 1)
         single = path.endswith(":single")
@@ -103,17 +107,18 @@ def main():
                                    + extra + a.extra + ["-timestamp", ts])
                     add_s += s
                     rss = max(rss, r)
+                    last_s, last_rss = s, r
                     ok_all = ok_all and rc == 0
                 size = os.path.getsize(arc) if os.path.exists(arc) else -1
-                _, l_s, _ = run([a.baseline, "l", arc])
+                _, l_s, _ = run([a.baseline, "l", arc] + a.xextra)
                 shutil.rmtree(xdir, ignore_errors=True)
-                xrc, x_s, x_rss = run([a.baseline, "x", arc, "-to", xdir])
+                xrc, x_s, x_rss = run([a.baseline, "x", arc, "-to", xdir] + a.xextra)
                 got = xdir + stage
                 ok = (ok_all and xrc == 0 and os.path.isdir(got)
                       and same_tree(versions[-1], got))
                 print(f"{name}\t{len(versions)}\t{m}\t{cfg}\t{size}\t"
                       f"{add_s:.2f}\t{rss}\t{l_s:.2f}\t{x_s:.2f}\t{x_rss}\t"
-                      f"{'ok' if ok else 'FAIL'}", flush=True)
+                      f"{'ok' if ok else 'FAIL'}\t{last_s:.2f}\t{last_rss}", flush=True)
     for p in (stage, xdir):
         shutil.rmtree(p, ignore_errors=True)
     if os.path.exists(arc):

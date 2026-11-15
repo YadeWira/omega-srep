@@ -21,6 +21,11 @@ primero.
   ganan más.
 - Gasta **21–37× la CPU** de SREP para codificar, decodifica **13–28× más
   lento** y usa **10–40× más RAM**.
+- **Como fragmentador dentro de zpaq-std 2.11.0** (`-osrep`), default
+  contra default gana en todo lo que tiene versiones (−11 a −64 %), también en
+  imagen de disco, árboles con un byte insertado y bases de datos; con el
+  mejor `-fragment` de cada uno gana 15 de 22 casos y pierde 6 (PJA `-m5`
+  +4,3 %, disco +1,2 %). Ver [Dedup](#dedup-osrep-contra-el-deduplicador-de-zpaq-std).
 - La brecha que más pesa es la **redundancia lejana**: el LZ de OSREP busca
   solo dentro de bloques de 8 MiB. El experimento de un bloque la cierra
   casi entera (el historial con `zpaq -m5` pasa de +35 % a +0,8 %), así que
@@ -399,6 +404,199 @@ la brecha 2 (menos registros) baja sola.
    empates y derrotas multi-versión en victorias, y si se hace como SREP
    resuelve de paso la 3 y buena parte de la 4.
 3. 5 y el dedup en streaming de la 4 después.
+
+## Dedup: `-osrep` contra el deduplicador de zpaq-std
+
+**Fecha: 2026-11-15.** El fragmentador de OSREP dentro de zpaq-std 2.11.0
+(`-osrep`, parche `tools/zpaq-vectors/osrep-fragmenter-zpaq-std-2.11.0.patch`)
+contra el fragmentador de orden 1 del mismo zpaq-std. Mismo formato, mismo
+compresor: solo cambian los cortes. Detalle, tablas completas, tiempos y
+memoria en [`zpaq-osrep-mode.md`](zpaq-osrep-mode.md#zpaq-std-2110-2026-11-15).
+
+**En pocas líneas:**
+
+- **Default contra default, `-osrep` gana en todo lo que tiene versiones**:
+  −12 a −64 % con `-m1`, −11 a −46 % con `-m5` (salvo PJA, +5,2 %), y en los
+  puntos débiles que zpaq-std nombra: imagen de disco −5,5 %, un byte
+  insertado al principio de cada archivo −7,2 %, bases de datos −30 a −53 %.
+  Sin redundancia pierde por poco (+0,2 a +0,4 %).
+- **Con el mejor `-fragment` de cada uno** gana 15 de 22 casos (−0,2 a
+  −15,7 %), empata 1 y pierde 6: PJA `-m5` +4,3 %, imagen de disco +1,2 %,
+  `versions.tar -m5` +1,1 %, mixed +0,1/+0,2 % e `insert` +0,1 %. Todavía no
+  se le puede decir "gana siempre".
+- La palanca más grande es el **mínimo A/2** del gear: con mínimo A/8–A/16 y
+  los mismos cortes de formato, `frag_stats` convierte la imagen de disco y el
+  byte insertado en victorias y agranda las de tars y bases de datos; empeora
+  los fuentes de zpaq-std. Falta medirlo con archivos reales.
+- **Memoria del índice**: el RSS de `x` y el de agregar una versión más es
+  igual o mucho menor donde hay muchos datos únicos (con `-m5`, −57 % en el historial y
+  −43 % en db8k), y mayor en árboles de muchas versiones chicas default
+  contra default (`x` +24 a +36 %) y en la imagen de disco en N=3 (+30 % al
+  agregar v2). Corta 1,8× más lento y `a -m1` tarda un 15–35 % más.
+- El parche se portó a zpaq-std 2.11.0 sin cambios de fondo y pasa
+  `osrep-switch-test.sh` (fails=0).
+
+### Default contra default
+
+Lo que obtiene quien solo agrega `-osrep` (N=3, 8 KiB) contra zpaq sin
+`-fragment` (N=6, 64 KiB). Tamaño del archivo; negativo = gana `-osrep`:
+
+| corpus | `-m1` zpaq / `-osrep` | | `-m5` zpaq / `-osrep` | |
+|---|---:|---:|---:|---:|
+| versions.tar | 15.293.566 / 7.787.372 | **−49,1 %** | 4.548.932 / 3.879.126 | **−14,7 %** |
+| pja.tar | 2.817.680 / 1.777.493 | **−36,9 %** | 971.240 / 1.021.271 | +5,2 % |
+| zpaqstd-history.tar | 32.598.013 / 11.702.495 | **−64,1 %** | 8.457.000 / 4.603.534 | **−45,6 %** |
+| src-zpaqstd | 13.000.404 / 9.819.016 | **−24,5 %** | 7.438.882 / 5.858.076 | **−21,3 %** |
+| src-omega | 5.190.126 / 4.482.542 | **−13,6 %** | 3.482.867 / 2.884.328 | **−17,2 %** |
+| bin-releases | 56.744.870 / 49.972.395 | **−11,9 %** | 34.076.422 / 30.391.791 | **−10,8 %** |
+| mixed | 86.342.652 / 86.582.306 | +0,3 % | 71.571.832 / 71.884.278 | +0,4 % |
+| photos | 97.870.612 / 98.043.349 | +0,2 % | 90.820.501 / 91.173.632 | +0,4 % (`-m3`) |
+| disk | 263.568.325 / 249.118.252 | **−5,5 %** | — | — |
+| insert | 206.340.416 / 191.391.339 | **−7,2 %** | — | — |
+| db4k | 130.183.204 / 61.454.267 | **−52,8 %** | — | — |
+| db8k | 103.592.168 / 58.966.115 | **−43,1 %** | 43.377.207 / 25.366.372 | **−41,5 %** |
+| db16k | 81.223.876 / 56.816.935 | **−30,0 %** | — | — |
+
+`disk`, `insert`, `db4k` y `db16k` no se corrieron con `-m5`.
+
+### Cada uno con su mejor `-fragment`
+
+La comparación más dura: el N que le conviene a zpaq contra el N que le
+conviene a `-osrep`, corpus por corpus.
+
+| corpus | `-m` | zpaq, su mejor N | `-osrep`, su mejor N | diferencia |
+|---|---|---:|---:|---:|
+| versions.tar | `-m1` | 8.460.677 (N=0) | **7.787.372** (N=3) | −8,0 % |
+| pja.tar | `-m1` | 1.767.849 (N=3) | **1.756.721** (N=6) | −0,6 % |
+| zpaqstd-history.tar | `-m1` | 11.365.904 (N=0) | **10.306.569** (N=0) | −9,3 % |
+| versions.tar | `-m5` | 3.749.055 (N=3) | 3.789.882 (N=6) | +1,1 % |
+| pja.tar | `-m5` | 971.240 (N=6) | 1.012.779 (N=6) | +4,3 % |
+| zpaqstd-history.tar | `-m5` | 5.461.215 (N=0) | **4.603.534** (N=3) | −15,7 % |
+| src-zpaqstd | `-m1` | 10.346.266 (N=3) | **9.819.016** (N=3) | −5,1 % |
+| src-omega | `-m1` | 3.303.645 (N=0) | **3.169.248** (N=0) | −4,1 % |
+| bin-releases | `-m1` | 48.619.026 (N=0) | **47.829.980** (N=0) | −1,6 % |
+| mixed | `-m1` | 86.342.652 (N=6) | 86.539.943 (N=6) | +0,2 % |
+| disk | `-m1` | 246.148.799 (N=3) | 249.118.252 (N=3) | +1,2 % |
+| insert | `-m1` | 191.260.784 (N=3) | 191.391.339 (N=3) | +0,1 % |
+| db4k | `-m1` | 60.719.985 (N=0) | **60.061.560** (N=0) | −1,1 % |
+| db8k | `-m1` | 59.298.170 (N=0) | **58.952.206** (N=0) | −0,6 % |
+| db16k | `-m1` | 58.440.778 (N=0) | **56.816.935** (N=3) | −2,8 % |
+| db8k | `-m5` | 27.097.423 (N=3) | **25.366.372** (N=3) | −6,4 % |
+| photos | `-m1` | 97.870.612 (N=6) | **97.667.353** (N=6) | −0,2 % |
+| photos | `-m3` | 90.820.501 (N=6) | 90.824.126 (N=6) | +0,0 % |
+| src-zpaqstd | `-m5` | 6.101.510 (N=3) | **5.858.076** (N=3) | −4,0 % |
+| src-omega | `-m5` | 2.354.354 (N=0) | **2.315.970** (N=0) | −1,6 % |
+| bin-releases | `-m5` | 30.719.486 (N=0) | **30.192.308** (N=0) | −1,7 % |
+| mixed | `-m5` | 71.571.832 (N=6) | 71.612.432 (N=6) | +0,1 % |
+
+### Memoria del índice
+
+RSS pico (MB) de `x` (extraer la última versión, con el zpaq-std sin parche)
+y de agregar la última versión sobre el archivo con todas las anteriores,
+`-threads 4`, defaults:
+
+| corpus | `-m` | `x` zpaq / `-osrep` | última versión zpaq / `-osrep` |
+|---|---|---:|---:|
+| zpaqstd-history.tar | `-m5` | 2.152 / 917 | (un solo `a`: 2.384 / 1.061) |
+| src-zpaqstd (16 versiones) | `-m5` | 925 / 767 | 230 / 230 |
+| bin-releases (39 versiones) | `-m5` | 352 / 435 | 195 / 193 |
+| src-omega (40 versiones) | `-m5` | 226 / 307 | 101 / 99 |
+| db8k (4 versiones) | `-m5` | 3.232 / 1.853 | 962 / 330 |
+| disk (2 versiones) | `-m1` | 140 / 148 | 372 / 226 |
+| disk, N=3 los dos | `-m1` | 144 / 149 | 175 / 227 |
+
+Con `-m5` el RSS lo domina el compresor; donde zpaq guarda fragmentos
+grandes y muchos datos únicos (historial, db8k) `-osrep` pide mucho menos.
+Pide más (+24 a +36 % en `x`) en los árboles de muchas versiones chicas
+(`bin-releases`, `src-omega`) default contra default, por tener 8× más
+fragmentos nominales (N=3 contra N=6), y en `disk` N=3 al agregar v2 (+30 %,
+33 % más fragmentos). Al mismo N, el RSS de `x` es igual o menor salvo en
+algunas filas N=0 (hasta +13 %). El RSS de `x` varía un ~5 % entre corridas
+(el mismo archivo, `osrep:3` y `osrep:d`, dio 426 y 435 MB).
+
+### Dónde pierde todavía, en orden
+
+Ordenadas por cuánto le falta a `-osrep` para ganarle a zpaq **con el mejor
+`-fragment` de cada uno**, que es la comparación que importa (el default ya
+gana casi siempre).
+
+#### 1. PJA y tars con `-m5`: deduplica más y el archivo sale más grande
+
+- PJA `-m5`: +4,3 % con el mejor N de cada uno (+5,2 % default contra
+  default); `versions.tar -m5`: +1,1 %, y +1,5/+3,5 % en N=0/3.
+- **Por qué**: con `-m5` todo el tar entra en un bloque y el modelo de contexto
+  ya encuentra la redundancia entre versiones. La deduplicación extra de
+  `-osrep` (PJA N=6: 13,9 MB únicos contra 21,4 MB) no le ahorra nada al
+  compresor y cuesta: 3× más fragmentos, que son ≈25 KB de índice de los 41 KB
+  que pierde PJA N=6, y fragmentos cortados donde el modelo tenía contexto.
+  Los cortes de formato y los cortes en 64 ceros hacen que "N=6" de `-osrep`
+  promedie 23 KiB en vez de 64–72 KiB.
+- **Qué probar**: quitar `OSREP_FRAG_F_TAR_AFTER` desde `-m3` (ya estaba
+  pendiente: cuesta 0,9–2,6 % con `-m5`) y calibrar N contra el fragmento
+  medio real, no el nominal.
+
+#### 2. Imagen de disco con cambios sueltos: el mínimo A/2 tarda en reengancharse
+
+- `disk -m1` N=3: +1,2 % el archivo; lo que cuesta v2 (350 cambios) es
+  6,5 MB contra 3,8 MB (+70 %). Es el caso que zpaq-std nombra como su punto
+  débil y `-osrep` no lo mejora en N=3.
+- **Por qué**: el gear tiene un candidato de corte cada ~A/2 bytes y no corta
+  antes de A/2 (4 KiB en N=3), así que después de un cambio la cadena de
+  cortes de v2 tarda varios fragmentos en volver a los de v1. zpaq en N=3
+  tiene mínimo 512 B y se reengancha enseguida.
+- **Qué probar**: el mínimo. Con los cortes de formato y mínimo A/16,
+  `frag_stats` da `disk` N=3 −2,1 % contra zpaq (hoy +0,9 %), `insert` −1,2 %
+  (hoy 0,0 %), los tars en N=6 −43/−46 % (hoy −25/−26 %) y las bases de datos
+  en N=6 −40/−52 % (hoy −30/−34 %); `src-zpaqstd` empeora (N=3 −1,5 % contra
+  −4,7 %; N=6 +4,0 % contra −1,2 %). Parte de la ganancia es que el
+  fragmento medio baja (disk N=3: 3,2 KiB contra 6,9 KiB), así que hay que
+  medirlo en archivos reales y con `-m5` antes de cambiarlo. Es la palanca más
+  grande que dejó esta medición.
+
+#### 3. Árboles de fuentes chicos a N fijo (`src-omega`)
+
+- N=3: `-m1` +14,5 %, `-m5` +0,8 %; N=6: `-m1` +2,8 %, `-m5` +11,2 %. Con su
+  mejor N (N=0) `-osrep` gana (−4,1 % / −1,6 %), y el default gana −14/−17 %.
+- **Por qué**: en N=6 el mínimo de 32 KiB es más que casi todos los
+  archivos, así que cada archivo cambiado es un fragmento entero (+9,2 % de
+  bytes únicos según `frag_stats`). En N=3 la deduplicación casi empata
+  (+0,9 %); el resto del +14,5 % de `-m1` es el orden de los bloques, que en
+  este corpus cambia con la ruta de trabajo (±7–15 %, medido con 2.7.2).
+- **Qué probar**: lo mismo que el punto 2 (con A/16 N=6 pasa a +4,7 %); no
+  alcanza: el hash de orden 1 de zpaq corta los archivos de texto chicos más
+  fino que el gear.
+
+#### 4. Velocidad del corte: 1,8× más lento
+
+- Corte solo: 166–172 MB/s contra 293–319 MB/s de zpaq. Con SHA-1, +27 %.
+  `a -m1` tarda típicamente un 15–35 % más en carpetas (con `-m5` tarda igual o
+  menos).
+- **Por qué**: zpaq-std empuja byte a byte (`osrep_frag_state_push`, una
+  llamada por byte) y los cortes de formato guardan cada byte en un anillo de
+  512; `osrep_frag_state_scan()` no tiene camino rápido con reglas.
+- **Qué probar**: las reglas de formato dentro de `osrep_frag_state_scan()` y
+  que zpaq-std lo llame por bloques.
+
+#### 5. Datos sin redundancia: +0,1 a +0,4 %
+
+- mixed y photos: +0,1/+0,2 % con el mejor N; +0,2 a +0,4 % default contra
+  default (N=3 tiene 8× más fragmentos que N=6, y cada uno es índice).
+- **Qué probar**: nada barato; el promedio adaptativo ya se probó y no sirvió
+  (`docs/experiments/frag-adaptive.md`).
+
+#### 6. Un byte al principio de cada archivo: empate
+
+- `insert` N=3 +0,1 %, N=6 −0,6 %. Los dos pierden el primer fragmento de cada
+  archivo. Con mínimo A/16 sería −1,2 % (punto 2).
+
+#### 7. Memoria del índice con muchos fragmentos
+
+- Default contra default, `x` pide +24 % en `bin-releases` y +36 % en
+  `src-omega` con `-m5`; agregar v2 a `disk` en N=3 pide +30 %. Es la otra
+  cara de cortar más fino (N=3 contra N=6, o 33 % más fragmentos en `disk`).
+  Donde hay muchos datos únicos pasa lo contrario: −57 % en el historial y
+  −43 % en db8k con `-m5`. Si se baja el mínimo (punto 2), este número sube: hay que
+  medirlo junto.
 
 ## Tablas por corpus
 

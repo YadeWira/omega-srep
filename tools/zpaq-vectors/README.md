@@ -98,6 +98,31 @@ make -j8
 
 Sizes and times: `docs/zpaq-osrep-mode.md`.
 
+## zpaq-std 2.11.0
+
+`osrep-fragmenter-zpaq-std-2.11.0.patch` is the same switch for zpaq-std
+2.11.0 (`6b165e3`, zpaqfranz 65.20 merged): `git apply` on a clean 2.11.0
+tree. Besides the 2.7.2 hunks (moved; the `Makefile` one adds `OSREPSRC`
+after 2.10.0's longer `LZ6SRC`), with `-sa`/`-sae`/`-sat` the check of whether
+a file is already partly in the archive cuts it with `osrep_fragment_buffer()`
+when `-osrep` is on. `osrep-switch-test.sh` against the 2.11.0 baseline:
+fails=0 (2026-11-15); the archives are also the same with `-turbochunk 1`/`7`
+and 2, 3 or 8 threads.
+
+`make_weakspots.py` builds the corpora for zpaq's own weak spots from real
+files, with a fixed seed: a 512 MiB disk-like image and a v2 with 350
+scattered changes, a tree and the same tree with one byte inserted at the
+start of every file, and database-like files of 4/8/16 KiB pages in four
+versions. Version k gets the mtime 2024-k-01 (zpaq skips a file with the
+same size and date).
+
+`bench_fair.py` and `bench_versions.py` also print the time of `l` and the
+time and peak RSS of `x` (with `--xextra` switches), and `bench_versions.py`
+the time and RSS of the last `a` alone (one more version on top of the
+archive). `frag_stats gearS N FLAGS` is the gear of `-osrep` with min
+A >> S. Results: `bench-2110-*.tsv` and `docs/zpaq-osrep-mode.md`
+("zpaq-std 2.11.0").
+
 ## Fragmenter analysis without zpaq
 
 `frag_stats MODE N FLAGS < list` cuts every listed file, dedups the

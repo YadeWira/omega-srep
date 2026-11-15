@@ -16,8 +16,10 @@ needed with the old -osrep mapping, 2^(N-3) KiB). A fragment "d" runs both
 without -fragment: zpaq's default N=6 against -osrep's N=3. --extra passes
 more switches to every add (e.g. --extra=-threads --extra=4).
 
-Prints one TSV line per case: archive size, wall time, peak RSS, and whether
-the baseline extracts the archive to the original bytes. One run each.
+Prints one TSV line per case: archive size, wall time, peak RSS, whether
+the baseline extracts the archive to the original bytes, and the time of
+`l`, the time and the peak RSS of that `x` (the RAM the index needs to
+extract). One run each.
 """
 import argparse
 import filecmp
@@ -53,12 +55,15 @@ def main():
     ap.add_argument("--workdir", required=True)
     ap.add_argument("--osrep-shift", type=int, default=0)
     ap.add_argument("--extra", action="append", default=[])
+    ap.add_argument("--xextra", action="append", default=[],
+                    help="switches for l and x (e.g. --xextra=-threads --xextra=4)")
     a = ap.parse_args()
     methods = a.method or ["-m1", "-m5"]
     os.makedirs(a.workdir, exist_ok=True)
     arc = os.path.join(a.workdir, "a.zpaq")
     xdir = os.path.join(a.workdir, "x")
-    print("input\tmethod\tfragmenter\tN\tarchive\twall_s\trss_mb\textract")
+    print("input\tmethod\tfragmenter\tN\tarchive\twall_s\trss_mb\textract\t"
+          "l_s\tx_s\tx_rss_mb")
     for inp in a.input:
         inp = os.path.abspath(inp)
         for m in methods:
@@ -81,12 +86,14 @@ def main():
                         continue
                     size = os.path.getsize(arc)
                     shutil.rmtree(xdir, ignore_errors=True)
-                    xrc, _, _ = run([a.baseline, "x", arc, "-to", xdir])
+                    _, l_s, _ = run([a.baseline, "l", arc] + a.xextra)
+                    xrc, x_s, x_rss = run([a.baseline, "x", arc, "-to", xdir] + a.xextra)
                     out = xdir + inp
                     ok = (xrc == 0 and os.path.exists(out)
                           and filecmp.cmp(inp, out, shallow=False))
                     print(f"{os.path.basename(inp)}\t{m}\t{kind}\t{nn}\t{size}\t"
-                          f"{wall:.2f}\t{rss}\t{'ok' if ok else 'FAIL'}",
+                          f"{wall:.2f}\t{rss}\t{'ok' if ok else 'FAIL'}\t"
+                          f"{l_s:.2f}\t{x_s:.2f}\t{x_rss}",
                           flush=True)
     shutil.rmtree(xdir, ignore_errors=True)
     if os.path.exists(arc):

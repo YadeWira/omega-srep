@@ -4,8 +4,10 @@
 
    usage: frag_stats MODE N FLAGS < list-of-files
      MODE  zpaq | osrep (osrep_frag_params_osrep: the gear CDC of -osrep)
+           | gearS (S = 1..4: the same gear with min A >> S, from
+           osrep_frag_params_gear; gear1 is osrep)
      N     -fragment N (2^N KiB on average for both)
-     FLAGS OSREP_FRAG_F_* bit mask (osrep only; 0 = plain gear CDC,
+     FLAGS OSREP_FRAG_F_* bit mask (osrep/gearS; 0 = plain gear CDC,
            42 = OSREP_FRAG_F_FORMAT, what -osrep uses)
 
    Prints: files bytes fragments unique_fragments unique_bytes mean_size
@@ -52,16 +54,20 @@ int main(int argc, char **argv) {
   uint64_t files = 0, bytes = 0, frags = 0, ufr = 0, ubytes = 0;
   double secs = 0;
   unsigned n;
-  int osrep;
+  int osrep, rc;
   if (argc != 4) {
-    fprintf(stderr, "usage: %s zpaq|osrep N FLAGS < files\n", argv[0]);
+    fprintf(stderr, "usage: %s zpaq|osrep|gearS N FLAGS < files\n", argv[0]);
     return 2;
   }
-  osrep = strcmp(argv[1], "osrep") == 0;
+  osrep = strcmp(argv[1], "zpaq") != 0;
   n = (unsigned)strtoul(argv[2], NULL, 10);
-  if ((osrep ? osrep_frag_params_osrep(&p, n, 0)
-             : osrep_frag_params_zpaq(&p, n, 0)) != OSREP_FRAG_OK)
-    return 2;
+  if (strncmp(argv[1], "gear", 4) == 0)
+    rc = osrep_frag_params_gear(&p, n, 0, (unsigned)strtoul(argv[1] + 4, NULL, 10), 0);
+  else if (osrep)
+    rc = osrep_frag_params_osrep(&p, n, 0);
+  else
+    rc = osrep_frag_params_zpaq(&p, n, 0);
+  if (rc != OSREP_FRAG_OK) return 2;
   if (osrep) p.flags = (uint32_t)strtoul(argv[3], NULL, 0);
   tabcap = (uint64_t)1 << 24;
   tab = calloc((size_t)tabcap, 20);
