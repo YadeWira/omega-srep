@@ -675,6 +675,34 @@ zpaq-std todavía.
    árboles, bases de datos y tars, y pierde en `src-zpaqstd`. Es lo primero a
    medir con archivos reales (`-m1` y `-m5`), junto con el punto 2.
 
+6. **Revisión de zpaq-std del parche 2.11.0 (2026-11-15):**
+   - Rama `-sa` (~270627): si `osrep_fragment_buffer` falla (ENOMEM), `safr`
+     queda vacío sin aviso. Que caiga a `fragment_buffer` o corte con error.
+   - `-osrep -stdin`: revisar qué hace el camino `if (flagstdin) if (fragment
+     != 6)` con N=3 forzado antes.
+   - `g_fragmentgiven` por `argv[i]` es frágil: comparar `fragment` antes y
+     después de `cli_getint`, o usar un centinela.
+   - Velocidad: en `add2_scan` el tramo está en memoria; una función
+     (base, desde, hasta) que devuelva el corte evita la llamada por byte
+     (ver el punto 3).
+   - Ayuda en cinco idiomas y `-helpcheck` en 0, cuando deje de ser prototipo.
+   - Probar `-sa`: `codecs/` de `zpaq-std-v2.11.0-linux-x64-extra-codecs.zip`
+     al lado del binario, y `suite_sa.sh` del testlab de zpaq-std (copiar
+     `/mnt/IA_LAB/agentes/ZPAQ-STD/testlab`, solo lectura).
+7. **Lo que falta en el marcador, según zpaq-std:**
+   - La tabla que decide es N contra el mismo N (3 contra 3, 6 contra 6); default
+     contra default mide sobre todo el tamaño del fragmento.
+   - El costo de N=3 por defecto en conjuntos grandes (50 GB o más): `l`, `t` y
+     `x` (tiempo y RAM), tamaño de los bloques de índice, y agregar una
+     versión. Es el riesgo principal de ese default.
+   - Archivo mezclado: v1 sin `-osrep` y v2 con él (y al revés, y con otro N).
+     Medir cuánto cuesta y decidir si avisar o detectar (zpaq no guarda el
+     fragmentador; la propuesta es `frag=osrep:N` en VFILE-info).
+   - x86 de 32 bits y Windows 7: los mismos bytes de archivo que x64. Es
+     condición para entrar.
+   - PJA `-m5` (+4–5 %): ver si es el corte de tar partiendo flujos que `-sa`
+     agrupa, o fragmentos chicos que le quitan contexto al CM.
+
 ---
 
 ## Mapeo anterior (histórico, hasta 2026-11-11)
