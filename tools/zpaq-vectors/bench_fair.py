@@ -54,6 +54,8 @@ def main():
     ap.add_argument("--fragments", default="6,5,3")
     ap.add_argument("--workdir", required=True)
     ap.add_argument("--osrep-shift", type=int, default=0)
+    ap.add_argument("--kinds", default="zpaq,osrep",
+                    help="fragmenters to run (e.g. osrep to skip the baseline)")
     ap.add_argument("--extra", action="append", default=[])
     ap.add_argument("--xextra", action="append", default=[],
                     help="switches for l and x (e.g. --xextra=-threads --xextra=4)")
@@ -68,7 +70,7 @@ def main():
         inp = os.path.abspath(inp)
         for m in methods:
             for n in a.fragments.split(","):
-                for kind in ("zpaq", "osrep"):
+                for kind in a.kinds.split(","):
                     binary = a.baseline if kind == "zpaq" else a.patched
                     extra = ["-osrep"] if kind == "osrep" else []
                     if n == "d":

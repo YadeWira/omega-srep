@@ -424,7 +424,9 @@ memoria en [`zpaq-osrep-mode.md`](zpaq-osrep-mode.md#zpaq-std-2110-2026-11-15).
   −15,7 %), empata 1 y pierde 6: PJA `-m5` +4,3 %, imagen de disco +1,2 %,
   `versions.tar -m5` +1,1 %, mixed +0,1/+0,2 % e `insert` +0,1 %. Todavía no
   se le puede decir "gana siempre".
-- La palanca más grande es el **mínimo A/2** del gear: con mínimo A/8–A/16 y
+- ~~La palanca más grande es el **mínimo A/2** del gear~~ (medido el mismo día
+  con archivos reales: **no sirve**, ver
+  [`experiments/frag-minimum.md`](experiments/frag-minimum.md)): con mínimo A/8–A/16 y
   los mismos cortes de formato, `frag_stats` convierte la imagen de disco y el
   byte insertado en victorias y agranda las de tars y bases de datos; empeora
   los fuentes de zpaq-std. Falta medirlo con archivos reales.
@@ -550,7 +552,9 @@ gana casi siempre).
   en N=6 −40/−52 % (hoy −30/−34 %); `src-zpaqstd` empeora (N=3 −1,5 % contra
   −4,7 %; N=6 +4,0 % contra −1,2 %). Parte de la ganancia es que el
   fragmento medio baja (disk N=3: 3,2 KiB contra 6,9 KiB), así que hay que
-  medirlo en archivos reales y con `-m5` antes de cambiarlo. Es la palanca más
+  medirlo en archivos reales y con `-m5` antes de cambiarlo. **Medido: con el
+  mejor N de cada uno A/2 sigue siendo mejor en 9 de 12 casos `-m1`; rechazado
+  ([`experiments/frag-minimum.md`](experiments/frag-minimum.md)).** Era la palanca más
   grande que dejó esta medición.
 
 #### 3. Árboles de fuentes chicos a N fijo (`src-omega`)
