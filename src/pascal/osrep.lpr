@@ -404,7 +404,7 @@ begin
         Mode := 'info';
       end
       else if (A = '-m0') or (A = '-m1') or (A = '-m2') or (A = '-m3') or
-              (A = '-m4') or (A = '-m5') then
+              (A = '-m4') or (A = '-m5') or (A = '-m6') then
       begin
         if Mode <> '' then
           CmdError('only one mode can be selected');

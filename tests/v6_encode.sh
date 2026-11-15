@@ -24,6 +24,8 @@ $CC -O2 -fPIC -fno-builtin -fno-stack-protector \
 $CC -O2 -fPIC -fno-builtin -fno-stack-protector \
   -c "$ROOT/src/c/osrep_match.c" -o "$BUILD/osrep_match.o" || fail "cc osrep_match.c"
 $CC -O2 -fPIC -fno-builtin -fno-stack-protector \
+  -c "$ROOT/src/c/osrep_lr.c" -o "$BUILD/osrep_lr.o" || fail "cc osrep_lr.c"
+$CC -O2 -fPIC -fno-builtin -fno-stack-protector \
   -c "$ROOT/src/c/osrep_crc_native.c" -o "$BUILD/osrep_crc_native.o" || fail "cc osrep_crc_native.c"
 fpc -Mobjfpc -O2 -Sh -Fu"$ROOT/src/pascal" -Fo"$BUILD" -FU"$UNITS" -FE"$BUILD" \
   "$ROOT/src/pascal/osrep.lpr" >"$TMP/fpc.log" 2>&1 || {

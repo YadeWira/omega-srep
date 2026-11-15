@@ -30,7 +30,7 @@ exec ar "$@"
 EOF
 chmod +x "$OUT/toolbin/"*
 
-for f in osrep_cdc osrep_match osrep_crc_native osrep_csu_stub; do
+for f in osrep_cdc osrep_match osrep_lr osrep_crc_native osrep_csu_stub; do
   gcc -m32 -O3 -fno-builtin -fno-stack-protector \
     -c "$ROOT/src/c/$f.c" -o "$OUT/obj/$f.o"
 done

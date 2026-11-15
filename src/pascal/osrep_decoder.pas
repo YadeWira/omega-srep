@@ -662,6 +662,7 @@ begin
     if Result then
     begin
       if (Src < BlockStart) or (Dst < BlockStart) or
+         (Src >= BlockEnd) or (Dst >= BlockEnd) or
          (Len > BlockEnd - Src) or (Len > BlockEnd - Dst) then
         Result := False;
     end;
@@ -721,9 +722,18 @@ begin
     BH.BlockCrc := GetU32LE(Buf, 12);
 
     if (BH.LiteralBytes = BH.OrigSize) and (BH.StatSize <> 0) then
-      DataError(Format('block %d: stored block has records', [I]));
+    begin
+      Result := False;
+      Exit;
+    end;
+    { Future-LZ: a block with no sources of its own can still be covered by
+      matches from earlier blocks; only the block-local path needs the
+      literals to cover it. }
     if (BH.StatSize = 0) and (BH.LiteralBytes <> BH.OrigSize) then
-      DataError(Format('block %d: no records but literals do not cover it', [I]));
+    begin
+      Result := False;
+      Exit;
+    end;
 
     PayloadLen := QWord(FHeader.HashSize) + QWord(BH.StatSize) +
       QWord(BH.LiteralBytes);
@@ -1013,11 +1023,6 @@ begin
       BH.StatSize := GetU32LE(Buf, 8);
       BH.BlockCrc := GetU32LE(Buf, 12);
 
-      if (BH.LiteralBytes = BH.OrigSize) and (BH.StatSize <> 0) then
-        DataError(Format('block %d: stored block has records', [I]));
-      if (BH.StatSize = 0) and (BH.LiteralBytes <> BH.OrigSize) then
-        DataError(Format('block %d: no records but literals do not cover it',
-          [I]));
 
       PayloadLen := QWord(FHeader.HashSize) + QWord(BH.StatSize) +
         QWord(BH.LiteralBytes);
@@ -1072,7 +1077,17 @@ begin
           Active[High(Active)] := PMatch(Pending[J]);
           Inc(J);
         end;
-        { pick the last active match that covers this position }
+        { drop the active matches that end at or before this position (the
+          order of the rest is kept), then pick the last one that covers it }
+        L := 0;
+        for A := 0 to High(Active) do
+          if Active[A]^.Dst + Active[A]^.Len > P then
+          begin
+            Active[L] := Active[A];
+            Inc(L);
+          end;
+        if L <> Length(Active) then
+          SetLength(Active, L);
         M := nil;
         for A := 0 to High(Active) do
           if (Active[A]^.Dst <= P) and (P < Active[A]^.Dst + Active[A]^.Len) then
@@ -1140,18 +1155,19 @@ begin
 
       { Free matches that are fully applied and keep only the sources that
         pending matches still need. }
-      J := 0;
-      while J < Pending.Count do
+      L := 0;
+      for J := 0 to Pending.Count - 1 do
       begin
         M := PMatch(Pending[J]);
         if M^.Dst + M^.Len <= BlockStart + QWord(BH.OrigSize) then
-        begin
-          Dispose(M);
-          Pending.Delete(J);
-        end
+          Dispose(M)
         else
-          Inc(J);
+        begin
+          Pending[L] := M;
+          Inc(L);
+        end;
       end;
+      Pending.Count := L;
       Inc(BlockStart, QWord(BH.OrigSize));
       CompactWindow;
       if QWord(Length(Win)) > WinLen then
@@ -1266,10 +1282,6 @@ begin
     BH.StatSize := GetU32LE(Buf, 8);
     BH.BlockCrc := GetU32LE(Buf, 12);
 
-    if (BH.LiteralBytes = BH.OrigSize) and (BH.StatSize <> 0) then
-      DataError(Format('block %d: stored block has records', [I]));
-    if (BH.StatSize = 0) and (BH.LiteralBytes <> BH.OrigSize) then
-      DataError(Format('block %d: no records but literals do not cover it', [I]));
 
     PayloadLen := QWord(FHeader.HashSize) + QWord(BH.StatSize) +
       QWord(BH.LiteralBytes);
