@@ -6,7 +6,7 @@ input into a compact match/literal stream; it is **not** an entropy coder or an
 archiver. The final compression is a separate stage (a backend such as
 `zpaq-std`), and OSREP is also meant to be the deduplication engine for that
 backend. Its core is Free Pascal, with C/asm hot paths planned for phase 2;
-it is licensed MIT, and its own format is **v6**: blocks with CRC-32C and a
+it is licensed MIT, and its own formats are **v6** and **v7**: blocks with CRC-32C and a
 VHASH-128 digest, a footer that chains the block CRCs, and a CLI for
 preprocessing, decompression, verification and inspection.
 
@@ -30,7 +30,14 @@ preprocessing, decompression, verification and inspection.
   Implementation notes and the open limitations are in
   `docs/implementation-notes.md`; the 0.0.14 notes are in
   `docs/release-0.0.14.md`.
-- **Format:** v6 only (`OSR6`). OSREP does **not** read or write the SREP
+- **Default method: `-m6`** (long range, format v7, `spec/format-v7.md`): one
+  index over the whole input finds repeats at any distance, and the match
+  table goes first. Defaults `-l512 --align=16` are for a backend behind
+  (xz, zstd, `zpaq -m5`); `-m6 -l64 --align=1` for `zpaq -m1`, and
+  `-m6 -l32 --align=1` without a backend. `-m0`..`-m5` still write v6, and
+  `-dup` without `-m` keeps `-m3`. The library's default stays `-m3`.
+  Measurements against SREP, REP and Omega are in `docs/scoreboard.md`.
+- **Format:** v6 (`OSR6`) and v7 (`OSR7`, `-m6`; draft until frozen). OSREP does **not** read or write the SREP
   v1-v5 formats, and there is no compatibility goal with upstream SREP.
 - **License:** MIT, from the first commit of this branch (`LICENSE`).
 - **Platforms:** Linux x86_64, x86 (cross-built and tested) and ARM64

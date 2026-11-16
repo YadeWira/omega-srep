@@ -20,6 +20,7 @@ var
   EncOptions: TEncoderOptions;
   EncOptionsUsed: Boolean = False;
   DupMode: Boolean = False;
+  MethodGiven: Boolean = False;
 
 procedure CmdError(const Msg: string);
 begin
@@ -32,15 +33,16 @@ procedure Usage;
 begin
   WriteLn(OsrepVersionText);
   WriteLn('usage:');
-  WriteLn('  osrep -m3 [options] <input> [<output>]');
+  WriteLn('  osrep [-m6] [options] <input> [<output>]');
   WriteLn('  osrep -d <archive> [<output>]');
   WriteLn('  osrep --verify <archive>');
   WriteLn('  osrep -i <archive>');
   WriteLn('  osrep --version');
-  WriteLn('methods: -m0..-m5 (v6), -m6 long-range for a backend (v7)');
+  WriteLn('methods: -m6 long range, format v7 (default); -m0..-m5 block LZ, v6');
   WriteLn('encode options:');
   WriteLn('  -bN      block size (default 8mb)');
-  WriteLn('  -lN      minimum match length (default 4; 512 with -m6)');
+  WriteLn('  -lN      minimum match length (default 512 with -m6, 4 with -m0..-m5;');
+  WriteLn('           -m6 -l32 --align=1 without a backend)');
   WriteLn('  -cN      hash insertion stride (default 1)');
   WriteLn('  -aN[/M]  hash chain depth (default 16)');
   WriteLn('  -tN      encoder threads (default auto, up to 8)');
@@ -413,6 +415,7 @@ begin
           CmdError('only one mode can be selected');
         Mode := 'encode';
         EncOptions.Method := StrToInt(Copy(A, 3, 1));
+        MethodGiven := True;
         if EncOptions.Method in [1, 2] then
           DupMode := True;
         EncOptionsUsed := True;
@@ -523,7 +526,14 @@ begin
     if Mode = '' then
       CmdError('no mode selected');
     if (Mode <> 'encode') and EncOptionsUsed then
-      CmdError('encoder options require -m3');
+      CmdError('encoder options require an encode mode (-m0..-m6)');
+    { The default method is -m6 (long range, v7); -dup alone, which -m6 does
+      not combine with, keeps the old default -m3. }
+    if not MethodGiven then
+      if DupMode then
+        EncOptions.Method := 3
+      else
+        EncOptions.Method := 6;
 
     if Mode = 'd' then
       RunDecode

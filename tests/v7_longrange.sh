@@ -93,6 +93,20 @@ for name in text versions mixed; do
   done
 done
 
+echo "== default method is -m6; -dup alone keeps -m3 =="
+"$NAT/osrep" -m6 "$CORPUS/versions.bin" "$TMP/def6.osr" || fail "-m6 versions"
+"$NAT/osrep" "$CORPUS/versions.bin" "$TMP/def.osr" || fail "default versions"
+cmp -s "$TMP/def6.osr" "$TMP/def.osr" || fail "default is not -m6"
+"$NAT/osrep" -l64 - "$TMP/defl.osr" <"$CORPUS/versions.bin" || fail "default -l64 stdin"
+[ "$(head -c 4 "$TMP/defl.osr")" = "OSR7" ] || fail "default with options is not v7"
+"$NAT/osrep" -dup "$CORPUS/versions.bin" "$TMP/dup.osr" || fail "-dup alone"
+"$NAT/osrep" -m3 -dup "$CORPUS/versions.bin" "$TMP/dup3.osr" || fail "-m3 -dup"
+cmp -s "$TMP/dup.osr" "$TMP/dup3.osr" || fail "-dup alone is not -m3 -dup"
+if "$NAT/osrep" -m6 -dup "$CORPUS/versions.bin" "$TMP/bad6.osr" 2>/dev/null; then
+  fail "-m6 -dup accepted"
+fi
+rm -f "$TMP/def6.osr" "$TMP/def.osr" "$TMP/defl.osr" "$TMP/dup.osr" "$TMP/dup3.osr" "$TMP/bad6.osr"
+
 echo "== matches cross blocks =="
 "$NAT/osrep" -m6 -l64 -b64kb "$CORPUS/versions.bin" "$TMP/v.osr"
 count=$(python3 -c "
