@@ -102,6 +102,19 @@ cabe (`(stat_size − 12) / 3`); un varint mal formado o bytes de más entre la
 bloque con `statsize ≠ 0` o con más literales que bytes; literales que
 sobran o faltan; matches después del último bloque; `flags ≠ 0`.
 
+El decoder suma los `origsize` de los headers de bloque y comprueba que
+caben en el área de bloques **antes** de reservar nada que dependa de
+`original_size` (páginas y sus arreglos): un header con CRC válido pero un
+`original_size` falso no puede hacerle reservar páginas enormes. Un varint
+no mínimo (`80 00`) se acepta: decodifica al mismo valor.
+
+`tests/fuzz_v7.sh` (2026-11-16) muta archivos v7 sabiendo su estructura
+(campos de la tabla, del header y de los bloques, con los CRC recalculados
+para llegar a las validaciones de fondo) y corre `-d` y `--verify` en un
+build con chequeos de rango (`-Cr -Ct -CR`). Encontró el reparto de páginas
+de arriba y una cuenta de páginas que daba la vuelta con `original_size`
+cerca de 2^64; 20.000 casos limpios después del arreglo.
+
 ## Lo que el encoder de `-m6` decide (no es formato)
 
 - `-l` mínimo de match (default 512); ventana de hash y paso del índice =

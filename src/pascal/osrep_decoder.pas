@@ -280,7 +280,7 @@ begin
 
   if FHeader.BlockCount <> FFooter.BlockCount then
     DataError(Format('block count mismatch: header %d, footer %d',
-      [FHeader.BlockCount, FFooter.BlockCount]));
+      [Int64(FHeader.BlockCount), Int64(FFooter.BlockCount)]));
 
   if (FHeader.Flags and 1) <> 0 then
   begin
@@ -433,12 +433,37 @@ begin
   end;
   N := Length(FMDst);
 
+  { Before any allocation sized by the header's original_size: the block
+    headers must add up to it and fit in the block area, so a forged size
+    cannot make the pages (or their arrays) huge. }
+  Pos := FBlocksStart;
+  SetLength(Buf, OsrepBlockHeaderSize);
+  P := 0;
+  for I := 1 to FHeader.BlockCount do
+  begin
+    if Pos + OsrepBlockHeaderSize > FDataEnd then
+      DataError(Format('block %d: header past end of block area', [Int64(I)]));
+    FStream.Position := Pos;
+    ReadExact(FStream, Buf[0], OsrepBlockHeaderSize,
+      Format('block %d header', [Int64(I)]));
+    PayloadLen := QWord(FHeader.HashSize) + QWord(GetU32LE(Buf, 0));
+    if PayloadLen > QWord(FDataEnd - Pos - OsrepBlockHeaderSize) then
+      DataError(Format('block %d: payload past end of block area', [Int64(I)]));
+    Inc(Pos, OsrepBlockHeaderSize + Int64(PayloadLen));
+    Inc(P, QWord(GetU32LE(Buf, 4)));
+  end;
+  if P <> FHeader.OriginalSize then
+    DataError(Format('original size mismatch: header %d, blocks %d',
+      [FHeader.OriginalSize, P]));
+
   { pages: 4 KiB, larger for huge inputs so the arrays stay small }
   PageShift := 12;
   while (FHeader.OriginalSize shr PageShift) > (QWord(1) shl 22) do
     Inc(PageShift);
   PageSize := QWord(1) shl PageShift;
-  NPagesQ := (FHeader.OriginalSize + PageSize - 1) shr PageShift;
+  NPagesQ := FHeader.OriginalSize shr PageShift;
+  if (FHeader.OriginalSize and (PageSize - 1)) <> 0 then
+    Inc(NPagesQ);
   if NPagesQ > QWord(High(SizeInt) div 16) then
     DataError('original size does not fit in memory');
   NPages := SizeInt(NPagesQ);

@@ -95,6 +95,34 @@ f="$CORPUS/mixed.bin"
   fail "library encode with options"
 cmp "$TMP/cli-opts.osr" "$TMP/lib-opts.osr" || fail "option .osr differs"
 
+echo "== the library reads v7 (-m6, the CLI default) =="
+for name in text mixed zeros tiny; do
+  f="$CORPUS/$name.bin"
+  for opt in "" "-l64 --align=1 -b64kb" "-l32 -hash- -b64kb"; do
+    # shellcheck disable=SC2086
+    "$CLI" -m6 $opt "$f" "$TMP/cli7.osr" || fail "CLI -m6 $opt $name"
+    [ "$(head -c 4 "$TMP/cli7.osr")" = "OSR7" ] || fail "not v7: $name $opt"
+    "$TMP/test_lib" --decode "$TMP/cli7.osr" "$TMP/lib7-back.bin" || \
+      fail "library decode v7 $name $opt"
+    cmp "$TMP/lib7-back.bin" "$f" || fail "library decode of v7: $name $opt"
+  done
+done
+"$CLI" "$CORPUS/text.bin" "$TMP/def7.osr" || fail "CLI default encode"
+"$TMP/test_lib" --decode-limit "$TMP/def7.osr" 1048576 || \
+  fail "max_output on a v7 archive"
+python3 - "$ROOT/tests" "$TMP/def7.osr" "$TMP/bad7.osr" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+from fuzz_v7 import Archive
+d = open(sys.argv[2], 'rb').read()
+a = Archive(d)
+a.dist[0] += 1  # a valid table CRC, but the block digest no longer matches
+open(sys.argv[3], 'wb').write(a.build())
+PY
+if "$TMP/test_lib" --decode "$TMP/bad7.osr" "$TMP/bad7.out" 2>/dev/null; then
+  fail "library accepted a v7 archive with a wrong match"
+fi
+
 echo "== pinned v6 fixtures through the library =="
 bash "$ROOT/tests/golden/inputs.sh" "$INPUTS" >"$TMP/inputs.log" 2>&1 || {
   cat "$TMP/inputs.log"

@@ -276,7 +276,7 @@ begin
     Aes256Encrypt(Ctx.Aes, InBlock, OutBlock);
     Ctx.NHKey[I] := GetU64BE(OutBlock, 0);
     Ctx.NHKey[I + 1] := GetU64BE(OutBlock, 8);
-    Inc(InBlock[15]);
+    InBlock[15] := Byte(InBlock[15] + 1); { wraps on purpose }
     Inc(I, 2);
   end;
 
@@ -290,7 +290,7 @@ begin
     Ctx.PolyKey[I + 1] := GetU64BE(OutBlock, 8) and MPoly;
     Ctx.PolyTmp[I] := Ctx.PolyKey[I];
     Ctx.PolyTmp[I + 1] := Ctx.PolyKey[I + 1];
-    Inc(InBlock[15]);
+    InBlock[15] := Byte(InBlock[15] + 1); { wraps on purpose }
     Inc(I, 2);
   end;
 
@@ -303,7 +303,7 @@ begin
       Aes256Encrypt(Ctx.Aes, InBlock, OutBlock);
       Ctx.L3Key[I] := GetU64BE(OutBlock, 0);
       Ctx.L3Key[I + 1] := GetU64BE(OutBlock, 8);
-      Inc(InBlock[15]);
+      InBlock[15] := Byte(InBlock[15] + 1); { wraps on purpose }
     until (Ctx.L3Key[I] < P64) and (Ctx.L3Key[I + 1] < P64);
     Inc(I, 2);
   end;
