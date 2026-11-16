@@ -1,0 +1,48 @@
+# 2026-11-16, build 50f029f. Sin backend: -m6 -l32 --align=1 (OSREP) contra srep-m5f-l32 (el mejor rival sin backend en las 7 filas, scoreboard-2026-11-15-m6.tsv).
+# bytes enc(s,KB) dec(s,KB) ida y vuelta
+pja.tar [-l32 --align=1] 4270804 enc(s,KB)=0.45 90772 dec(s,KB)=0.07 26028 ok
+versions.tar [-l32 --align=1] 17981253 enc(s,KB)=1.90 184116 dec(s,KB)=0.26 66876 ok
+zpaqstd-history.tar [-l32 --align=1] 20578939 enc(s,KB)=4.03 296296 dec(s,KB)=0.42 77452 ok
+real64.bin [-l32 --align=1] 44457205 enc(s,KB)=1.34 184620 dec(s,KB)=0.16 38436 ok
+enwik8 [-l32 --align=1] 88138071 enc(s,KB)=11.35 189232 dec(s,KB)=0.27 92960 ok
+silesia.tar [-l32 --align=1] 137969306 enc(s,KB)=7.16 333112 dec(s,KB)=0.51 82636 ok
+game-assets.tar [-l32 --align=1] 398613663 enc(s,KB)=18.21 972088 dec(s,KB)=1.24 96304 ok
+
+# Empates con backend: barrido de -l y --align (xz -9 -T1, zstd -19 --long=27)
+pja.tar [-m6] pre=6607255 | xz 1172080 | zstd 1220985
+pja.tar [-m6 -l256] pre=6454046 | xz 1172188 | zstd 1221040
+pja.tar [-m6 -l384] pre=6567111 | xz 1173928 | zstd 1222887
+pja.tar [-m6 -l768] pre=6635379 | xz 1173204 | zstd 1221305
+pja.tar [-m6 -l1024] pre=6666788 | xz 1172396 | zstd 1221428
+pja.tar [-m6 --align=8] pre=6603079 | xz 1172784 | zstd 1221168
+pja.tar [-m6 --align=32] pre=6613591 | xz 1171920 | zstd 1219737
+pja.tar [-m6 -l256 --align=32] pre=6456760 | xz 1170524 | zstd 1220822
+pja.tar [-m6 -l1024 --align=32] pre=6672740 | xz 1172008 | zstd 1220932
+versions.tar [-m6] pre=28085686 | xz 4681952 | zstd 4881235
+versions.tar [-m6 -l256] pre=26829416 | xz 4687696 | zstd 4883474
+versions.tar [-m6 -l384] pre=27623199 | xz 4691252 | zstd 4886818
+versions.tar [-m6 -l768] pre=28464218 | xz 4683852 | zstd 4879780
+versions.tar [-m6 -l1024] pre=28889266 | xz 4687816 | zstd 4884040
+versions.tar [-m6 --align=8] pre=28058069 | xz 4685392 | zstd 4878795
+versions.tar [-m6 --align=32] pre=28097015 | xz 4687292 | zstd 4882763
+versions.tar [-m6 -l256 --align=32] pre=26857834 | xz 4686380 | zstd 4882523
+versions.tar [-m6 -l1024 --align=32] pre=28894408 | xz 4688028 | zstd 4882222
+zpaqstd-history.tar [-m6] pre=33442922 | xz 5402564 | zstd 5616467
+zpaqstd-history.tar [-m6 -l256] pre=31344318 | xz 5407444 | zstd 5623682
+zpaqstd-history.tar [-m6 -l384] pre=32525229 | xz 5410724 | zstd 5627495
+zpaqstd-history.tar [-m6 -l768] pre=34153683 | xz 5407624 | zstd 5620382
+zpaqstd-history.tar [-m6 -l1024] pre=35041979 | xz 5402992 | zstd 5615823
+zpaqstd-history.tar [-m6 --align=8] pre=33383803 | xz 5406776 | zstd 5617597
+zpaqstd-history.tar [-m6 --align=32] pre=33491257 | xz 5404200 | zstd 5618808
+zpaqstd-history.tar [-m6 -l256 --align=32] pre=31428493 | xz 5409304 | zstd 5626454
+zpaqstd-history.tar [-m6 -l1024 --align=32] pre=35078907 | xz 5403340 | zstd 5616058
+
+# xz --x86 --lzma2=preset=9 sobre la entrada (filtro BCJ sin selección; xz -9 solo: silesia 48754028, juegos 301237692, real64 30398360)
+silesia.tar x86+lzma2-9: 48541156
+game-assets.tar x86+lzma2-9: 301393276
+real64.bin x86+lzma2-9: 30500976
+
+# Tabla v7 con largos/16 y distancias de repetición (4 últimas), simulada: a = actual, b = compacta
+pja.tar | a xz 1172080 zstd 1220985 | b xz 1172224 zstd 1221647
+versions.tar | a xz 4681952 zstd 4881235 | b xz 4683196 zstd 4880416
+zpaqstd-history.tar | a xz 5402564 zstd 5616467 | b xz 5400156 zstd 5615297

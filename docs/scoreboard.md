@@ -90,6 +90,27 @@ entre corridas por su semilla aleatoria.
   (load ~27); SREP en el scoreboard, con menos carga: 0,05–0,56 s. Detalle
   en `tools/scoreboard/m6-decode-2026-11-16.log`.
 
+- **Sin backend (2026-11-16): `-m6 -l32 --align=1` gana en los 7 corpus**
+  al mejor rival (SREP `-m5f -l32`): pja −13,2 %, versions −12,5 %,
+  historial −13,8 %, real64 −6,0 %, enwik8 −3,4 %, silesia −9,8 %, juegos
+  −3,4 %. Antes, con `-l64`, perdía en las 7 (+0,9 a +12 %). Cuesta más:
+  codificar 0,45–18 s (SREP 0,39–10,6 s; enwik8 11,4 contra 2,8 s) y RSS
+  91–972 MB (SREP 55–639 MB); decodificar 0,07–1,24 s con 26–96 MB.
+  Ida y vuelta OK en los 7. Detalle en `tools/scoreboard/m6-ties-2026-11-16.log`.
+- **Los 17 empates con backend son el techo del dedup.** En enwik8, real64,
+  los juegos y silesia, todos los preprocesadores quedan a menos de 0,1 % del
+  backend solo: no hay redundancia lejana que sacar. En los multi-versión
+  `-m6` ya va delante por 0,03–0,08 %. Probado, sin ganancia estable:
+  `-l` 256–1024 y `--align` 8/32 (se mueve ±0,1 %, y en cada celda gana una
+  combinación distinta: pja/xz −0,19 % con `-l256 --align=32`, pja/zstd
+  −0,12 % con `--align=32` y versions/zstd −0,12 % con `--align=8`, pero eso
+  es ajustar al ruido); tabla con largos/16 y distancias de repetición
+  (−1,6 KB solo, ±0,05 % dentro de la tubería). Lo único que movería las
+  celdas sin redundancia es transformar el contenido, que ningún rival hace:
+  `xz --x86` sobre la entrada da −0,44 % en silesia, pero +0,05 % en los
+  juegos y +0,34 % en real64, así que tendría que aplicarse solo a las zonas
+  con código x86.
+
 Qué se probó y no sirvió (medido con xz): no quitar matches cercanos
 (distancia menor que la ventana del backend) salvo los largos; no quitar
 matches cuyo contenido ya se repite en los 64 KiB anteriores. Los dos
