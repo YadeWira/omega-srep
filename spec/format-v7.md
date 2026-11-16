@@ -18,7 +18,12 @@ registros de cada bloque van entre el digest y los literales, ordenados por
 Medido con `xz -9` sobre la salida de `-m6 -l512` (mismos matches): en el
 historial de zpaq-std, v6 da 5.426.756 bytes. Con la tabla aparte en columnas
 y por destino da 5.407.576 (−0,35 %) y con largos múltiplos de 16 da
-5.401.136, contra 5.417.412 de REP 1 GB. Como el encoder de `-m6` ya conoce
+5.401.136, contra 5.417.412 de REP 1 GB.
+
+Las columnas son varints y no enteros de ancho fijo: con `-l64`, la tabla del
+historial ocupa 513.687 bytes en varints contra 1.127.367 en anchos fijos, y
+`zpaq -m1` (un LZ77 sin modelo de contexto) deja 7.903.216 contra 7.999.138;
+con xz la tabla también sale más chica (314.044 contra 319.552). Como el encoder de `-m6` ya conoce
 todos los matches antes de escribir, la tabla entera puede ir al principio.
 
 ## Layout
@@ -28,9 +33,9 @@ header (28 bytes)             igual que v6, con magic "OSR7" y version 7
 seed (seed_size bytes)        igual que v6
 match table (stat_size bytes)
   match_count    u64
-  gap[count]     u64 LE cada uno
-  length[count]  u64 LE cada uno
-  distance[count] u64 LE cada uno
+  gap[count]      varint LEB128 cada uno
+  length[count]   varint LEB128 cada uno
+  distance[count] varint LEB128 cada uno
   table_crc      u32   CRC-32C de todo lo anterior de la tabla
 bloque 1 .. bloque N
   literal_bytes  u32
@@ -61,7 +66,8 @@ para cada i en 0 .. match_count-1:
     prev_end = dst_i + length_i
 ```
 
-Reglas: `length ≥ 1`, `distance ≥ 1`, `distance ≤ dst` (la fuente no queda
+Las tres columnas van una después de la otra, `match_count` varints cada una,
+y terminan justo antes de `table_crc`. Reglas: `length ≥ 1`, `distance ≥ 1`, `distance ≤ dst` (la fuente no queda
 antes del inicio) y `dst + length ≤ original_size`. `distance < length` es
 válido (copia solapada, byte a byte). Un match puede cruzar bordes de bloque
 en destino y su fuente puede estar en cualquier bloque anterior o en el
@@ -84,8 +90,9 @@ ventana.
 
 ## Rechazos
 
-Además de los de v6: `table_crc` distinto; `match_count` que no coincide con
-`stat_size` (`8 + 24·count + 4`); un match fuera de las reglas de arriba; un
+Además de los de v6: `table_crc` distinto; `match_count` mayor que lo que
+cabe (`(stat_size − 12) / 3`); un varint mal formado o bytes de más entre la
+última columna y el CRC; un match fuera de las reglas de arriba; un
 bloque con `statsize ≠ 0` o con más literales que bytes; literales que
 sobran o faltan; matches después del último bloque; `flags ≠ 0`.
 
@@ -93,7 +100,9 @@ sobran o faltan; matches después del último bloque; `flags ≠ 0`.
 
 - `-l` mínimo de match (default 512); ventana de hash y paso del índice =
   `-l/2`; `-c` cambia el paso.
-- Largo de cada match múltiplo de 16 (`OsrepLrAlign`): los bytes que siguen a
-  un match quitado conservan su posición módulo 16, que modelan los backends
-  (los `pb` de LZMA, el código x86). En `mozilla` de silesia, un tar de
-  ejecutables, pasa de +1,5 % a −0,1 % contra xz solo.
+- Largo de cada match múltiplo de `--align` (default 16): los bytes que
+  siguen a un match quitado conservan su posición módulo 16, que modelan los
+  backends (los `pb` de LZMA, el código x86). En `mozilla` de silesia, un tar
+  de ejecutables, pasa de +1,5 % a −0,1 % contra xz solo. Con un LZ77 sin
+  modelo de posición (`zpaq -m1`) la alineación cuesta 0,1–0,9 % y conviene
+  `--align=1`.

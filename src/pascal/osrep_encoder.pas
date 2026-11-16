@@ -27,6 +27,8 @@ type
       block size (and, if needed, the thread count) to stay under it. }
     MemLimit: QWord;
     Seed: TBytes;
+    { -m6: the length of every match is a multiple of Align (--align=N) }
+    Align: LongWord;
   end;
 
 function DefaultEncoderOptions: TEncoderOptions;
@@ -316,6 +318,7 @@ begin
   Result.Threads := 0; { auto: up to 8 }
   Result.MemLimit := 0;
   Result.Seed := SeedFromNumber(0);
+  Result.Align := OsrepLrAlign;
 end;
 
 const
@@ -842,6 +845,7 @@ var
   K: QWord;
   DI, I, Col: SizeInt;
   Pos, E: QWord;
+  TabBuf: TByteBuffer;
 begin
   InSize := QWord(InStream.Size);
   if InSize > QWord(High(SizeInt)) then
@@ -875,7 +879,7 @@ begin
     FillChar(Filter[0], Length(Filter), 0);
     Need := InSize div MinLen + 16;
     SetLength(Matches, SizeInt(Need));
-    Count := OsrepLrFind(@All[0], InSize, MinLen, Win, Step, OsrepLrAlign,
+    Count := OsrepLrFind(@All[0], InSize, MinLen, Win, Step, Opt.Align,
       @Table[0], TBits, @Filter[0], FBits, @Matches[0], SizeUInt(Need));
     if Count = High(SizeUInt) then
       raise EOsrepError.Create(2, 'long-range finder capacity is too small');
@@ -905,24 +909,29 @@ begin
   if Opt.UseHash then
     OutStream.WriteBuffer(Opt.Seed[0], 32);
 
-  { the match table: count, then the gap, length and distance columns }
-  TableSize := 8 + 24 * QWord(Length(Matches)) + 4;
-  SetLength(Tab, SizeInt(TableSize));
-  PutU64LE(Tab, 0, QWord(Length(Matches)));
+  { the match table: count, then the gap, length and distance columns, each
+    a run of LEB128 varints }
+  TabBuf.Init;
+  for I := 0 to 7 do
+    TabBuf.AddByte(Byte(QWord(Length(Matches)) shr (8 * I)));
   for Col := 0 to 2 do
   begin
     PrevEnd := 0;
     for I := 0 to High(Matches) do
     begin
       case Col of
-        0: PutU64LE(Tab, 8 + 8 * I, Matches[I].Dst - PrevEnd);
-        1: PutU64LE(Tab, 8 + 8 * (Length(Matches) + I), Matches[I].Len);
-        2: PutU64LE(Tab, 8 + 8 * (2 * Length(Matches) + I),
-             Matches[I].Dst - Matches[I].Src);
+        0: AddVarint(TabBuf, Matches[I].Dst - PrevEnd);
+        1: AddVarint(TabBuf, Matches[I].Len);
+      else
+        AddVarint(TabBuf, Matches[I].Dst - Matches[I].Src);
       end;
       PrevEnd := Matches[I].Dst + Matches[I].Len;
     end;
   end;
+  for I := 0 to 3 do
+    TabBuf.AddByte(0);
+  Tab := TabBuf.Finish;
+  TableSize := QWord(Length(Tab));
   PutU32LE(Tab, SizeInt(TableSize) - 4, Crc32C(Tab, 0, SizeInt(TableSize) - 4));
   OutStream.WriteBuffer(Tab[0], Length(Tab));
   Tab := nil;

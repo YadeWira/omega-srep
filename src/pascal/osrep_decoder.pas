@@ -316,14 +316,16 @@ begin
 end;
 
 { v7 match table: match_count u64, then match_count gaps, lengths and
-  distances (u64 each, column after column), then a CRC-32C of everything
-  before it.  Matches are in destination order: dst = end of the previous
-  match + gap, src = dst - distance. }
+  distances (LEB128 varints, column after column), then a CRC-32C of
+  everything before it.  Matches are in destination order: dst = end of the
+  previous match + gap, src = dst - distance. }
 procedure TArchiveReader.LoadMatchTable(TableStart: Int64);
 var
   Tab: TBytes;
   Count, I, Gap, Len, Dist, PrevEnd, Dst: QWord;
-  N: SizeInt;
+  N, P, Limit: SizeInt;
+  Col: Integer;
+  V: QWord;
 begin
   FMSrc := nil;
   FMDst := nil;
@@ -336,20 +338,36 @@ begin
   if Crc32C(Tab, 0, Length(Tab) - 4) <> GetU32LE(Tab, Length(Tab) - 4) then
     DataError('match table CRC mismatch');
   Count := GetU64LE(Tab, 0);
-  if (Count > (FFooter.StatSize - 12) div 24) or
-     (8 + 24 * Count + 4 <> FFooter.StatSize) then
-    DataError('match count does not match the table size');
+  { every varint takes at least one byte }
+  if Count > (FFooter.StatSize - 12) div 3 then
+    DataError('match count does not fit in the table');
   N := SizeInt(Count);
   SetLength(FMSrc, N);
   SetLength(FMDst, N);
   SetLength(FMLen, N);
+  P := 8;
+  Limit := Length(Tab) - 4;
+  for Col := 0 to 2 do
+    for I := 1 to Count do
+    begin
+      if not ReadVarint(Tab, P, Limit, V) then
+        DataError('bad varint in the match table');
+      case Col of
+        0: FMDst[I - 1] := V;
+        1: FMLen[I - 1] := V;
+      else
+        FMSrc[I - 1] := V;
+      end;
+    end;
+  if P <> Limit then
+    DataError('match table has bytes after the last column');
   PrevEnd := 0;
   I := 0;
   while I < Count do
   begin
-    Gap := GetU64LE(Tab, SizeInt(8 + 8 * I));
-    Len := GetU64LE(Tab, SizeInt(8 + 8 * (Count + I)));
-    Dist := GetU64LE(Tab, SizeInt(8 + 8 * (2 * Count + I)));
+    Gap := FMDst[I];
+    Len := FMLen[I];
+    Dist := FMSrc[I];
     if (Len = 0) or (Dist = 0) then
       DataError('zero match length or distance');
     if Gap > FHeader.OriginalSize - PrevEnd then

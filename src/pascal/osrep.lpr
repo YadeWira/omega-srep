@@ -45,6 +45,8 @@ begin
   WriteLn('  -aN[/M]  hash chain depth (default 16)');
   WriteLn('  -tN      encoder threads (default auto, up to 8)');
   WriteLn('  -memN    encoder memory budget, N is MB (or use kb/mb/gb)');
+  WriteLn('  --align=N -m6: match lengths are multiples of N (default 16;');
+  WriteLn('           1 for plain LZ77 backends such as zpaq -m1)');
   WriteLn('  --seed=N deterministic VHASH seed');
   WriteLn('  -hash-   no per-block digest');
   WriteLn('  -dup     deduplicate before encoding');
@@ -469,6 +471,13 @@ begin
         if not ParseNumber(Rest, N) or (N = 0) then
           CmdError('invalid -a chain depth: ' + A);
         EncOptions.ChainDepth := LongWord(N);
+        EncOptionsUsed := True;
+      end
+      else if Copy(A, 1, 8) = '--align=' then
+      begin
+        if not ParseNumber(Copy(A, 9, MaxInt), N) or (N = 0) or (N > 4096) then
+          CmdError('invalid --align (1..4096): ' + A);
+        EncOptions.Align := LongWord(N);
         EncOptionsUsed := True;
       end
       else if Copy(A, 1, 7) = '--seed=' then

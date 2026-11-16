@@ -58,7 +58,7 @@ fpc -Mobjfpc -O2 -Sh -dOSREP_NO_NATIVE -Fu"$ROOT/src/pascal" \
 
 echo "== native = reference, round trip, verify =="
 for name in empty tiny zeros mixed text random versions; do
-  for opt in "" "-l64" "-l128 -b64kb" "-l32 -hash-"; do
+  for opt in "" "-l64" "-l128 -b64kb" "-l32 -hash-" "-l64 --align=1"; do
     tag="$name${opt// /}"
     # shellcheck disable=SC2086
     "$NAT/osrep" -m6 $opt "$CORPUS/$name.bin" "$TMP/$tag.n.osr" || fail "native $tag"
@@ -86,12 +86,13 @@ echo "== corruption is rejected =="
 python3 - "$TMP/v.osr" "$TMP" <<'EOF'
 import struct, sys
 d = bytearray(open(sys.argv[1], 'rb').read())
-n = struct.unpack_from('<Q', d, 60)[0]
+stat = struct.unpack_from('<Q', d, len(d) - 36 + 8)[0]   # table size
+t0 = 60                                                    # header + seed
 cases = {
-    'table-gap': 60 + 8 + 3,                 # inside the gap column
-    'table-dist': 60 + 8 + 16 * n + 2,       # inside the distance column
-    'table-crc': 60 + 8 + 24 * n,            # the table CRC itself
-    'block': 60 + 8 + 24 * n + 4 + 16 + 20,  # first block's literals
+    'table-gap': t0 + 8,                     # the first gap varint
+    'table-dist': t0 + stat - 4 - 2,         # inside the distance column
+    'table-crc': t0 + stat - 4,              # the table CRC itself
+    'block': t0 + stat + 16 + 20,            # first block's literals
 }
 for name, off in cases.items():
     c = bytearray(d)

@@ -107,6 +107,9 @@ PRE = {
     'osrep-m6': osrep('-m6'),
     'osrep-m6-l128': osrep('-m6', '-l128'),
     'osrep-m6-l64': osrep('-m6', '-l64'),
+    # --align=1 for plain LZ77 backends (zpaq -m1)
+    'osrep-m6-l128-a1': osrep('-m6', '-l128', '--align=1'),
+    'osrep-m6-l64-a1': osrep('-m6', '-l64', '--align=1'),
     'srep-m3f': srep('-m3f'),
     'srep-m5f': srep('-m5f'),
     'srep-m5f-l32': srep('-m5f', '-l32'),
@@ -165,6 +168,8 @@ PIPE = {
     'osrep-m6': ['none'] + FAST_BE + ['zpaq-m5'],
     'osrep-m6-l128': ['none'] + FAST_BE + ['zpaq-m5'],
     'osrep-m6-l64': ['none'] + FAST_BE + ['zpaq-m5'],
+    'osrep-m6-l128-a1': ['none', 'zpaq-m1', 'zpaq-m5'],
+    'osrep-m6-l64-a1': ['none', 'zpaq-m1', 'zpaq-m5'],
     'srep-m3f': ['none'] + FAST_BE,
     'srep-m5f': ['none'] + FAST_BE + ['zpaq-m5'],
     'srep-m5f-l32': ['none'],
