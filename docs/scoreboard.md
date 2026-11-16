@@ -31,6 +31,59 @@ primero.
   casi entera (el historial con `zpaq -m5` pasa de +35 % a +0,8 %), así que
   la causa está confirmada; falta hacerlo barato.
 
+## Actualización 2026-11-15: `-m6` (largo alcance, formato v7)
+
+`-m6` es un método nuevo pensado para ir delante de un backend. Hace una sola
+pasada con un índice global (estilo SREP: hash cada `-l/2` bytes, filtro de
+bits, verificación y extensión en los dos sentidos) y encuentra repeticiones
+en todo el archivo, no solo dentro del bloque. Escribe el formato v7
+(`spec/format-v7.md`): la tabla de matches entera al principio, por destino
+y en columnas varint, y bloques que solo tienen literales. Los largos son
+múltiplos de 16 (`--align`), para no correr la posición que modelan xz y
+zpaq `-m5`. Commits `0dc4354`, `3a5edf4`, `d377eab`, `6c89785`; TSV en
+`tools/scoreboard/scoreboard-2026-11-15-m6.tsv`, tabla con
+`tools/scoreboard/compare_m6.py`.
+
+**Contra SREP 3.93a, REP 1 GB y Omega 3.0.0, en las 28 celdas con backend:
+gana 11, empata 17 (< 0,1 %) y no pierde ninguna.** Antes: 6 / 8 / 14.
+
+| corpus | xz | zstd | zpaq -m1 | zpaq -m5 |
+|---|---:|---:|---:|---:|
+| enwik8 | +0,00 % | −0,00 % | **−0,54 %** | +0,00 % |
+| silesia.tar | **−0,15 %** | −0,01 % | **−0,78 %** | **−0,21 %** |
+| real64.bin | −0,01 % | +0,01 % | **−0,37 %** | −0,00 % |
+| versions.tar | −0,08 % | −0,07 % | **−1,51 %** | −0,08 % |
+| pja.tar | −0,06 % | −0,02 % | **−1,29 %** | −0,04 % |
+| zpaqstd-history.tar | **−0,27 %** | **−0,10 %** | **−2,99 %** | −0,03 % |
+| game-assets.tar | −0,04 % | +0,00 % | **−0,35 %** | −0,03 % |
+
+Contra el mejor rival de cada celda; negativo = gana OSREP. Configuración:
+`-m6` (`-l512`, `--align=16`) con xz, zstd y `zpaq -m5` (con xz en enwik8 y
+silesia, `-l128` queda igual); `-m6 -l64 --align=1` con `zpaq -m1`. Los
+cuatro `+` son de +0,003 % a +0,01 %: menos que lo que varían SREP y Omega
+entre corridas por su semilla aleatoria.
+
+- Contra el backend solo pierde en una celda: silesia con `zpaq -m5`
+  (+0,22 %; SREP y REP pierden +0,44 %). Con xz, `-m6` le gana también al
+  backend solo en silesia (48.707.612 contra 48.754.028).
+- **CPU de codificar: 1,4–2,8× la de SREP `-m5f`** (antes 21–37×), menos que
+  REP en los multi-versión.
+- **Memoria: es lo que falta.** El encoder lee la entrada entera (RSS de
+  49 MB en pja a 654 MB en los juegos, contra 20–68 MB de SREP), y el decoder
+  guarda desde la menor fuente pendiente (hasta 827 MB en los juegos; REP
+  571 MB). Decodificar tarda 2–15× lo de SREP.
+
+Qué se probó y no sirvió (medido con xz): no quitar matches cercanos
+(distancia menor que la ventana del backend) salvo los largos; no quitar
+matches cuyo contenido ya se repite en los 64 KiB anteriores. Los dos
+arreglan silesia y empeoran los multi-versión. La alineación de 16 sí
+arregla silesia: la pérdida estaba en `mozilla` (ejecutables), por correr la
+posición módulo 4 que modela LZMA.
+
+Lo que sigue de la sección de abajo es la medición del 2026-11-14 (sin
+`-m6`); las brechas 1–3 quedan resueltas por `-m6` en tamaño y CPU, la 4
+(memoria) y la 5 (decodificación) siguen abiertas.
+
 ## Qué se midió
 
 - **Preprocesador solo**: tamaño, tiempo, CPU y RSS pico de codificar;
