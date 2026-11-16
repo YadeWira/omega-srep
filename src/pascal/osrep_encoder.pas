@@ -944,7 +944,13 @@ begin
   FBits := 6;
   while (QWord(1) shl FBits) < Entries * 8 do
     Inc(FBits);
+  { native buckets: 6 u32 (16-bit tags, osrep_lr.c); the reference keeps
+    two u32 per entry }
+{$ifndef OSREP_NO_NATIVE}
+  SetLength(Table, SizeInt((QWord(1) shl TBits) * 6));
+{$else}
   SetLength(Table, SizeInt((QWord(1) shl TBits) * 8));
+{$endif}
   FillChar(Table[0], Length(Table) * SizeOf(LongWord), 0);
   SetLength(Filter, SizeInt((QWord(1) shl FBits) div 8));
   FillChar(Filter[0], Length(Filter), 0);

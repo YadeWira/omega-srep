@@ -1,0 +1,15 @@
+# nb_cmp.sh: power-of-two index (t1) vs exact-size index at 4 windows per bucket (t2, rejected). pre = osrep bytes, time s, RSS KB; final = after xz -9 (default -m6) or zpaq-std -m1 (-m6 -l64 --align=1)
+pja.tar xz | t1 pre=6607255 0.22 38348 | t2 pre=6610719 0.20 35952 | t1 final=1172080 | t2 final=1172368
+pja.tar zpaq | t1 pre=5521333 0.28 62264 | t2 pre=5521362 0.25 43776 | t1 final=1694422 | t2 final=1694682
+enwik8 xz | t1 pre=99850468 1.17 41724 | t2 pre=99852234 1.19 38012 | t1 final=24863544 | t2 final=24863376
+enwik8 zpaq | t1 pre=95732857 2.46 123356 | t2 pre=95756467 2.26 92876 | t1 final=35489987 | t2 final=35493471
+real64.bin xz | t1 pre=56661558 0.91 41316 | t2 pre=56662288 0.96 37280 | t1 final=30375244 | t2 final=30374404
+real64.bin zpaq | t1 pre=48863212 1.00 126536 | t2 pre=48864087 0.85 89752 | t1 final=34443842 | t2 final=34444487
+versions.tar xz | t1 pre=28085686 0.88 41648 | t2 pre=28087983 0.85 38804 | t1 final=4681952 | t2 final=4685528
+versions.tar zpaq | t1 pre=22458509 1.20 125768 | t2 pre=22461362 1.08 100668 | t1 final=6809796 | t2 final=6811169
+silesia.tar xz | t1 pre=200555172 3.13 48708 | t2 pre=200555443 3.00 41248 | t1 final=48707612 | t2 final=48707836
+silesia.tar zpaq | t1 pre=163270156 5.21 189744 | t2 pre=163276884 5.06 129828 | t1 final=68867743 | t2 final=68868429
+zpaqstd-history.tar xz | t1 pre=33442922 1.63 48912 | t2 pre=33475028 1.70 42120 | t1 final=5402564 | t2 final=5402620
+zpaqstd-history.tar zpaq | t1 pre=25774094 2.52 179664 | t2 pre=25787655 2.34 123972 | t1 final=7904078 | t2 final=7909783
+game-assets.tar xz | t1 pre=464289744 9.14 89932 | t2 pre=464284519 8.88 55032 | t1 final=301073708 | t2 final=301048816
+game-assets.tar zpaq | t1 pre=416262629 12.86 521156 | t2 pre=416265747 13.20 234852 | t1 final=338909527 | t2 final=338909107

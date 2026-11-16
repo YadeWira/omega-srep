@@ -1,0 +1,15 @@
+# st_cmp3.sh: -m6 before (build-nat) vs 16-bit index tags (build-t1); time s, RSS KB; 'same' = identical archive
+pja.tar [] old(s,KB)=0.28 51136 | def same 0.23 37768
+pja.tar [-l64 --align=1] old(s,KB)=0.36 81592 | def same 0.27 62344
+enwik8 [] old(s,KB)=1.41 121616 | def same 1.16 41928
+enwik8 [-l64 --align=1] old(s,KB)=2.01 205896 | def same 2.66 123000
+real64.bin [] old(s,KB)=0.96 95236 | def same 0.97 41696
+real64.bin [-l64 --align=1] old(s,KB)=1.04 161568 | def same 1.00 125492
+versions.tar [] old(s,KB)=1.01 152436 | def same 0.88 41580
+versions.tar [-l64 --align=1] old(s,KB)=1.33 246920 | def same 1.20 124568
+silesia.tar [] old(s,KB)=3.07 236564 | def same 3.24 48632
+silesia.tar [-l64 --align=1] old(s,KB)=5.41 425700 | def same 5.83 189788
+zpaqstd-history.tar [] old(s,KB)=1.93 266828 | def same 1.72 48752
+zpaqstd-history.tar [-l64 --align=1] old(s,KB)=2.49 466220 | def same 2.34 178616
+game-assets.tar [] old(s,KB)=9.12 669464 | def same 9.72 90200
+game-assets.tar [-l64 --align=1] old(s,KB)=13.56 1344172 | def same 13.91 521536

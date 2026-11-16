@@ -41,7 +41,7 @@ typedef struct {
   osrep_lr_read_fn read;  /* returns 0 when it filled all `len` bytes */
   osrep_lr_emit_fn emit;  /* returns 0 to go on */
   void *ctx;
-  uint32_t *table;        /* (1 << tbits) buckets of LR_WAYS (tag, idx+1) */
+  uint32_t *table;        /* (1 << tbits) buckets of LR_BUCKET u32 */
   uint8_t *filter;        /* (1 << fbits) bits */
   uint8_t *buf;           /* buf_cap bytes, only with `read` */
   uint32_t minlen, win, step, align, tbits, fbits;
@@ -53,6 +53,7 @@ typedef struct {
 
 #define LR_B UINT64_C(0x9E3779B97F4A7C15)
 #define LR_WAYS 4u
+#define LR_BUCKET 6u   /* u32 words per bucket: 4 tags of 16 bits, 4 idx */
 #define LR_CHUNK0 4096u
 
 static uint64_t lr_hash(const uint8_t *p, uint32_t win) {
@@ -69,23 +70,38 @@ static uint64_t lr_mix(uint64_t h) {
   return h;
 }
 
-/* table: (1 << tbits) buckets of LR_WAYS entries, each entry two u32:
-   tag and index + 1 of the window (position = index * step); 0 = empty.
-   filter: (1 << fbits) bits. */
+/* table: (1 << tbits) buckets of LR_WAYS entries, 24 bytes each: words 0
+   and 1 hold the four 16-bit tags (way w in bits 16 * (w % 2) of word
+   w / 2), words 2..5 the index + 1 of each window (position = index *
+   step); index 0 = empty.  The tag only decides which entries are verified:
+   two equal windows have the same hash, so a shorter tag adds failed
+   verifications and never changes a match (it was 32 bits, 8 bytes per
+   entry).  The bucket is the top tbits bits of the mixed hash.  (Sizing
+   the table exactly instead of to a power of two, 27-50 % full, saves up
+   to 70 % of it but remaps the buckets: -0.01 to +0.08 % after the
+   backends, measured 2026-11-16, enough to undo the versions/xz margin.)
+   filter: (1 << fbits) bits (only skips lookups, never changes a match). */
+static uint32_t *lr_bucket(uint32_t *table, uint32_t tbits, uint64_t m) {
+  return table + (m >> (64 - tbits)) * LR_BUCKET;
+}
+
+static uint32_t lr_tag(const uint32_t *b, uint32_t w) {
+  return (b[w >> 1] >> (16u * (w & 1u))) & 0xFFFFu;
+}
+
 static void lr_insert(uint32_t *table, uint32_t tbits, uint8_t *filter,
                       uint32_t fbits, uint64_t h, uint32_t idx1) {
   uint64_t m = lr_mix(h);
-  uint32_t *b = table + ((m >> (64 - tbits)) * LR_WAYS * 2u);
+  uint32_t *b = lr_bucket(table, tbits, m);
   uint64_t f = m & ((UINT64_C(1) << fbits) - 1u);
-  uint32_t i;
   filter[f >> 3] |= (uint8_t)(1u << (f & 7u));
   /* newest first: shift the others down, the oldest falls out */
-  for (i = LR_WAYS - 1u; i > 0; i--) {
-    b[2u * i] = b[2u * (i - 1u)];
-    b[2u * i + 1u] = b[2u * (i - 1u) + 1u];
-  }
-  b[0] = (uint32_t)m;
-  b[1] = idx1;
+  b[1] = (b[1] << 16) | (b[0] >> 16);
+  b[0] = (b[0] << 16) | ((uint32_t)m & 0xFFFFu);
+  b[5] = b[4];
+  b[4] = b[3];
+  b[3] = b[2];
+  b[2] = idx1;
 }
 
 /* a % b without a 64-bit division (32-bit targets would need libgcc) */
@@ -294,11 +310,10 @@ int64_t osrep_lr_find(const osrep_lr_params *pr) {
   uint32_t *table;
   uint8_t *filter;
   uint64_t fmask;
-  uint32_t tshift;
   lr_io io;
   uint32_t i;
   if (win == 0 || step == 0 || align == 0 || n < (uint64_t)win ||
-      pr->minlen < win)
+      pr->minlen < win || pr->tbits == 0 || pr->tbits > 32)
     return 0;
   io.pr = pr;
   io.err = 0;
@@ -342,7 +357,6 @@ int64_t osrep_lr_find(const osrep_lr_params *pr) {
   table = pr->table;
   filter = pr->filter;
   fmask = (UINT64_C(1) << pr->fbits) - 1u;
-  tshift = 64u - pr->tbits;
   cq = lr_cursor(&io, 0, win);
   if (!cq) return io.err;
   cend = pr->mem ? n : io.cur.base + io.cur.len;
@@ -352,15 +366,15 @@ int64_t osrep_lr_find(const osrep_lr_params *pr) {
     uint64_t m = lr_mix(h);
     uint64_t f = m & fmask;
     if (filter[f >> 3] & (1u << (f & 7u))) {
-      uint32_t *b = table + ((m >> tshift) * LR_WAYS * 2u);
-      uint32_t tag = (uint32_t)m;
+      uint32_t *b = lr_bucket(table, pr->tbits, m);
+      uint32_t tag = (uint32_t)m & 0xFFFFu;
       uint64_t best_len = 0, best_src = 0, best_back = 0;
       uint32_t w;
       for (w = 0; w < LR_WAYS; w++) {
         uint64_t p, fl, bl, blim;
-        if (b[2u * w + 1u] == 0) break;
-        if (b[2u * w] != tag) continue;
-        p = (uint64_t)(b[2u * w + 1u] - 1u) * step;
+        if (b[2u + w] == 0) break;
+        if (lr_tag(b, w) != tag) continue;
+        p = (uint64_t)(b[2u + w] - 1u) * step;
         if (p >= q) continue;
         fl = lr_fwd(&io, p, q, n - q);
         if (io.err) return io.err;

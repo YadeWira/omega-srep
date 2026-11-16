@@ -73,8 +73,15 @@ entre corridas por su semilla aleatoria.
   los bloques salen de una segunda pasada. Mismos bytes que antes en los 14
   casos (7 corpus × `-l512` y `-l64 --align=1`). RSS con `-l512`: 39–106 MB
   (antes 51–669 MB; SREP 20–68 MB), con 5–15 % más de tiempo. Con `-l64`:
-  70–653 MB (antes 82–1.344 MB), donde manda el índice (512 MiB en los
-  juegos). Detalle en `tools/scoreboard/m6-stream-2026-11-16.log`.
+  62–521 MB (antes 82–1.344 MB), donde manda el índice: sus entradas pasaron
+  de 8 a 6 bytes (tags de 16 bits; mismos matches, porque dos ventanas
+  iguales tienen el mismo hash). Detalle en
+  `tools/scoreboard/m6-stream-2026-11-16.log` y `m6-index-2026-11-16.log`.
+  Descartado: dimensionar el índice exacto en vez de a potencia de dos
+  (ahorra hasta 70 % más, 403 → 110 MB en los juegos con `-l64`), porque
+  cambia el reparto en buckets y mueve el final −0,01 a +0,08 %; en
+  versions/xz se come casi todo el margen (−0,08 %) contra los rivales
+  (`tools/scoreboard/m6-index-exact-2026-11-16.log`).
 - **Decoder (2026-11-16):** guarda solo las páginas de 4 KiB de las que
   todavía copia algún match (spec/format-v7.md) y el NH de VHASH pasó a C
   (`src/c/osrep_vhash_nh.c`, mismos digests). Con `-l512`: RSS 26–65 MB
