@@ -75,9 +75,13 @@ entre corridas por su semilla aleatoria.
   (antes 51–669 MB; SREP 20–68 MB), con 5–15 % más de tiempo. Con `-l64`:
   70–653 MB (antes 82–1.344 MB), donde manda el índice (512 MiB en los
   juegos). Detalle en `tools/scoreboard/m6-stream-2026-11-16.log`.
-- **Memoria del decoder: es lo que falta.** Guarda desde la menor fuente
-  pendiente (hasta 827 MB en los juegos; REP 571 MB). Decodificar tarda
-  2–15× lo de SREP.
+- **Decoder (2026-11-16):** guarda solo las páginas de 4 KiB de las que
+  todavía copia algún match (spec/format-v7.md) y el NH de VHASH pasó a C
+  (`src/c/osrep_vhash_nh.c`, mismos digests). Con `-l512`: RSS 26–65 MB
+  (antes 45–847 MB; SREP 19–57 MB, REP 45–571 MB) y 0,09–1,29 s (antes
+  0,22–14,3 s; los juegos: 14,3 → 1,3 s). Medido con la máquina cargada
+  (load ~27); SREP en el scoreboard, con menos carga: 0,05–0,56 s. Detalle
+  en `tools/scoreboard/m6-decode-2026-11-16.log`.
 
 Qué se probó y no sirvió (medido con xz): no quitar matches cercanos
 (distancia menor que la ventana del backend) salvo los largos; no quitar
@@ -87,8 +91,9 @@ arregla silesia: la pérdida estaba en `mozilla` (ejecutables), por correr la
 posición módulo 4 que modela LZMA.
 
 Lo que sigue de la sección de abajo es la medición del 2026-11-14 (sin
-`-m6`); las brechas 1–3 quedan resueltas por `-m6` en tamaño y CPU, la 4
-(memoria) y la 5 (decodificación) siguen abiertas.
+`-m6`); las brechas 1–3 quedan resueltas por `-m6` en tamaño y CPU, y la 4
+(memoria) y la 5 (decodificación) por el encoder en streaming y el decoder
+por páginas (2026-11-16).
 
 ## Qué se midió
 

@@ -83,10 +83,16 @@ literales. `literal_bytes` tiene que consumirse exacto.
 
 ## Lo que hace el decoder con la memoria
 
-Conoce todos los matches antes del primer bloque, así que solo guarda los
-bytes desde la menor fuente de los matches que todavía no terminaron (un
-mínimo de sufijos sobre la tabla). Cuesta 32 bytes por match más esa
-ventana.
+Conoce todos los matches antes del primer bloque, así que de lo ya escrito
+guarda solo las páginas (4 KiB; más grandes si la salida pasa de 16 GiB) de
+las que todavía copia algún match: la página `k` hace falta hasta el mayor
+fin (`dst + length`) de los matches cuya fuente la toca, y se guarda solo
+mientras ese fin quede más allá del bloque actual. El bloque actual se
+decodifica en su propio búfer. Cuesta 24 bytes por match, ~24 bytes por
+página de la salida (fin, puntero, lista de liberación) y las páginas vivas:
+7 MB en el tar de juegos de 584 MB, donde guardar desde la fuente pendiente
+más vieja pedía 427 MB. No depende de que la salida se pueda releer (sirve
+para stdout).
 
 ## Rechazos
 

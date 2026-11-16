@@ -120,7 +120,34 @@ begin
   Add128(AH, AL, 0, T2H);
 end;
 
+{$ifndef OSREP_NO_NATIVE}
+{$L osrep_vhash_nh.o}
+procedure OsrepVhashNh2(M: PByte; K: PQWord; NW: LongWord; OutR: PQWord);
+  cdecl; external name 'osrep_vhash_nh2';
+
+{ native NH (src/c/osrep_vhash_nh.c): one 64x64 -> 128 multiplication per
+  instruction instead of four 32-bit ones, ~5x faster; NhFull2Ref below is
+  its reference }
 procedure NhFull2(const Data: TBytes; Off: SizeUInt;
+  const Key: array of QWord; NW: Integer;
+  out RH, RL, RH2, RL2: QWord);
+var
+  R: array[0..3] of QWord;
+begin
+  OsrepVhashNh2(@Data[SizeInt(Off)], @Key[0], LongWord(NW), @R[0]);
+  RH := R[0];
+  RL := R[1];
+  RH2 := R[2];
+  RL2 := R[3];
+end;
+{$define OSREP_NH_REF_NAME}
+{$endif}
+
+{$ifdef OSREP_NH_REF_NAME}
+procedure NhFull2Ref(const Data: TBytes; Off: SizeUInt;
+{$else}
+procedure NhFull2(const Data: TBytes; Off: SizeUInt;
+{$endif}
   const Key: array of QWord; NW: Integer;
   out RH, RL, RH2, RL2: QWord);
 var

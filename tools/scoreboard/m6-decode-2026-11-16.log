@@ -1,0 +1,15 @@
+# dec_cmp.sh: v7 decode of default -m6 and -m6 -l64 --align=1 archives; build-st6 = window from the oldest pending source, build-d2 = 4 KiB pages + native NH. Columns: seconds, RSS KB, round trip. Machine load ~27.
+pja.tar | st6 0.22 45304 ok | d2 0.09 26036 ok
+pja.tar.l64 | st6 0.24 24540 ok | d2 0.08 25120 ok
+enwik8 | st6 1.25 168896 ok | d2 0.23 35416 ok
+enwik8.l64 | st6 2.80 195216 ok | d2 0.33 63172 ok
+real64.bin | st6 0.66 93940 ok | d2 0.19 27268 ok
+real64.bin.l64 | st6 0.74 121768 ok | d2 0.19 27680 ok
+versions.tar | st6 1.44 191120 ok | d2 0.31 60768 ok
+versions.tar.l64 | st6 1.49 193036 ok | d2 0.37 62272 ok
+silesia.tar | st6 2.80 324184 ok | d2 0.58 36208 ok
+silesia.tar.l64 | st6 3.48 395492 ok | d2 0.78 56788 ok
+zpaqstd-history.tar | st6 3.77 435680 ok | d2 0.59 64644 ok
+zpaqstd-history.tar.l64 | st6 4.90 436520 ok | d2 0.58 72524 ok
+game-assets.tar | st6 14.25 846968 ok | d2 1.29 55724 ok
+game-assets.tar.l64 | st6 15.94 1079108 ok | d2 1.74 81772 ok

@@ -41,7 +41,7 @@ open(sys.argv[2], 'wb').write(bytes(out))
 EOF
 
 echo "== builds =="
-for f in osrep_cdc osrep_match osrep_lr osrep_crc_native; do
+for f in osrep_cdc osrep_match osrep_lr osrep_vhash_nh osrep_crc_native; do
   $CC -O2 -fPIC -fno-builtin -fno-stack-protector \
     -c "$ROOT/src/c/$f.c" -o "$NAT/$f.o" || fail "cc $f"
 done

@@ -386,23 +386,43 @@ begin
   end;
 end;
 
-{ v7 decoder: the matches are known up front, so the window keeps only the
-  bytes that a later match still copies from (the minimum source of the
-  matches not yet finished). }
+{ v7 decoder.  The matches are known up front, so the decoder keeps, of the
+  bytes already written, only the pages a later match still copies from:
+  page k (PageSize bytes) is needed until the largest end of the matches
+  whose source touches it, and it is stored only while that end lies past
+  the current block.  The current block is decoded in its own buffer.
+  Measured on the scoreboard corpora (default -m6): 7 MB of pages for the
+  584 MB game tar, where the window from the oldest pending source took
+  427 MB. }
 procedure TArchiveReader.DecodeV7(OutStream: TStream; out Data: TBytes);
 var
   I: LongWord;
   Pos: Int64;
-  Buf, Payload, Digest: TBytes;
+  Buf, Payload, Digest, Blk: TBytes;
   BH: TBlockHeader;
   PayloadLen: QWord;
   CrcBytes: array[0..3] of Byte;
-  BlockStart, BlockEnd, P, RunEnd, SrcAbs, Keep, Shift: QWord;
+  BlockStart, BlockEnd, P, RunEnd, SrcAbs, E, Gran, PageSize, NPagesQ: QWord;
   BlocksCrc: LongWord;
-  SufMin: array of QWord;
-  Win: TBytes;
-  WinBase, WinLen: QWord;
-  N, MI, K, Run, LitPos, LitStart, SrcOff, DstOff, L: SizeInt;
+  PageShift: Integer;
+  PageRel: array of QWord;          { 0: never needed }
+  PagePtr: array of PByte;
+  BucketHead, PageNext: array of SizeInt;
+  NPages, NBuckets, FreeBucket, Pg, PgA, PgB, J: SizeInt;
+  N, MI, K, Run, LitPos, LitStart, SrcOff, DstOff, L, Chunk, Off: SizeInt;
+
+  procedure FreeAllPages;
+  var
+    X: SizeInt;
+  begin
+    for X := 0 to High(PagePtr) do
+      if PagePtr[X] <> nil then
+      begin
+        FreeMem(PagePtr[X]);
+        PagePtr[X] := nil;
+      end;
+  end;
+
 begin
   Data := nil;
   if OutStream = nil then
@@ -412,140 +432,215 @@ begin
     SetLength(Data, SizeInt(FHeader.OriginalSize));
   end;
   N := Length(FMDst);
-  SetLength(SufMin, N + 1);
-  SufMin[N] := High(QWord);
-  for MI := N - 1 downto 0 do
+
+  { pages: 4 KiB, larger for huge inputs so the arrays stay small }
+  PageShift := 12;
+  while (FHeader.OriginalSize shr PageShift) > (QWord(1) shl 22) do
+    Inc(PageShift);
+  PageSize := QWord(1) shl PageShift;
+  NPagesQ := (FHeader.OriginalSize + PageSize - 1) shr PageShift;
+  if NPagesQ > QWord(High(SizeInt) div 16) then
+    DataError('original size does not fit in memory');
+  NPages := SizeInt(NPagesQ);
+  SetLength(PageRel, NPages);
+  SetLength(PagePtr, NPages);
+  for Pg := 0 to NPages - 1 do
   begin
-    SufMin[MI] := FMSrc[MI];
-    if SufMin[MI + 1] < SufMin[MI] then
-      SufMin[MI] := SufMin[MI + 1];
+    PageRel[Pg] := 0;
+    PagePtr[Pg] := nil;
   end;
-
-  BlocksCrc := 0;
-  FSumOrig := 0;
-  Win := nil;
-  WinBase := 0;
-  WinLen := 0;
-  MI := 0;
-  BlockStart := 0;
-  Pos := FBlocksStart;
-  SetLength(Buf, OsrepBlockHeaderSize);
-  for I := 1 to FHeader.BlockCount do
+  for MI := 0 to N - 1 do
   begin
-    if Pos + OsrepBlockHeaderSize > FDataEnd then
-      DataError(Format('block %d: header past end of block area', [I]));
-    FStream.Position := Pos;
-    ReadExact(FStream, Buf[0], OsrepBlockHeaderSize,
-      Format('block %d header', [I]));
-    Inc(Pos, OsrepBlockHeaderSize);
-    BH.LiteralBytes := GetU32LE(Buf, 0);
-    BH.OrigSize := GetU32LE(Buf, 4);
-    BH.StatSize := GetU32LE(Buf, 8);
-    BH.BlockCrc := GetU32LE(Buf, 12);
-    if BH.StatSize <> 0 then
-      DataError(Format('block %d: v7 block with records', [I]));
-    if BH.LiteralBytes > BH.OrigSize then
-      DataError(Format('block %d: more literals than bytes', [I]));
-    if QWord(BH.OrigSize) > FHeader.OriginalSize - BlockStart then
-      DataError(Format('block %d: block extends past the original data', [I]));
-    if (FMaxOutput > 0) and
-       (BlockStart + QWord(BH.OrigSize) > FMaxOutput) then
-      raise EOsrepError.Create(6, 'original size exceeds max_output');
-    PayloadLen := QWord(FHeader.HashSize) + QWord(BH.LiteralBytes);
-    if PayloadLen > QWord(FDataEnd - Pos) then
-      DataError(Format('block %d: payload past end of block area', [I]));
-    SetLength(Payload, SizeInt(PayloadLen));
-    if PayloadLen > 0 then
-      ReadExact(FStream, Payload[0], SizeInt(PayloadLen),
-        Format('block %d payload', [I]));
-    Inc(Pos, Int64(PayloadLen));
-    if Crc32C(Payload) <> BH.BlockCrc then
-      DataError(Format('block %d: CRC mismatch', [I]));
-    PutU32LE(CrcBytes, 0, BH.BlockCrc);
-    BlocksCrc := Crc32CUpdate(BlocksCrc, CrcBytes[0], 4);
-
-    BlockEnd := BlockStart + QWord(BH.OrigSize);
-    SetLength(Win, SizeInt(WinLen + QWord(BH.OrigSize)));
-    LitStart := SizeInt(FHeader.HashSize);
-    LitPos := 0;
-    K := 0;
-    while K < SizeInt(BH.OrigSize) do
+    E := FMDst[MI] + FMLen[MI];
+    PgA := SizeInt(FMSrc[MI] shr PageShift);
+    PgB := SizeInt((FMSrc[MI] + FMLen[MI] - 1) shr PageShift);
+    for Pg := PgA to PgB do
+      if PageRel[Pg] < E then
+        PageRel[Pg] := E;
+  end;
+  { release buckets: page k is freed once the decoded size reaches the end
+    of the bucket its PageRel falls in (at most one bucket late) }
+  Gran := QWord(FHeader.MaxMatch);
+  if Gran < PageSize then
+    Gran := PageSize;
+  NBuckets := SizeInt(FHeader.OriginalSize div Gran) + 1;
+  SetLength(BucketHead, NBuckets);
+  SetLength(PageNext, NPages);
+  for J := 0 to NBuckets - 1 do
+    BucketHead[J] := -1;
+  for Pg := NPages - 1 downto 0 do
+    if PageRel[Pg] > 0 then
     begin
-      P := BlockStart + QWord(K);
-      while (MI < N) and (FMDst[MI] + FMLen[MI] <= P) do
-        Inc(MI);
-      if (MI < N) and (FMDst[MI] <= P) then
+      J := SizeInt((PageRel[Pg] - 1) div Gran);
+      PageNext[Pg] := BucketHead[J];
+      BucketHead[J] := Pg;
+    end;
+  FreeBucket := 0;
+
+  try
+    BlocksCrc := 0;
+    FSumOrig := 0;
+    MI := 0;
+    BlockStart := 0;
+    Pos := FBlocksStart;
+    SetLength(Buf, OsrepBlockHeaderSize);
+    Blk := nil;
+    for I := 1 to FHeader.BlockCount do
+    begin
+      if Pos + OsrepBlockHeaderSize > FDataEnd then
+        DataError(Format('block %d: header past end of block area', [I]));
+      FStream.Position := Pos;
+      ReadExact(FStream, Buf[0], OsrepBlockHeaderSize,
+        Format('block %d header', [I]));
+      Inc(Pos, OsrepBlockHeaderSize);
+      BH.LiteralBytes := GetU32LE(Buf, 0);
+      BH.OrigSize := GetU32LE(Buf, 4);
+      BH.StatSize := GetU32LE(Buf, 8);
+      BH.BlockCrc := GetU32LE(Buf, 12);
+      if BH.StatSize <> 0 then
+        DataError(Format('block %d: v7 block with records', [I]));
+      if BH.LiteralBytes > BH.OrigSize then
+        DataError(Format('block %d: more literals than bytes', [I]));
+      if QWord(BH.OrigSize) > FHeader.OriginalSize - BlockStart then
+        DataError(Format('block %d: block extends past the original data', [I]));
+      if (FMaxOutput > 0) and
+         (BlockStart + QWord(BH.OrigSize) > FMaxOutput) then
+        raise EOsrepError.Create(6, 'original size exceeds max_output');
+      PayloadLen := QWord(FHeader.HashSize) + QWord(BH.LiteralBytes);
+      if PayloadLen > QWord(FDataEnd - Pos) then
+        DataError(Format('block %d: payload past end of block area', [I]));
+      SetLength(Payload, SizeInt(PayloadLen));
+      if PayloadLen > 0 then
+        ReadExact(FStream, Payload[0], SizeInt(PayloadLen),
+          Format('block %d payload', [I]));
+      Inc(Pos, Int64(PayloadLen));
+      if Crc32C(Payload) <> BH.BlockCrc then
+        DataError(Format('block %d: CRC mismatch', [I]));
+      PutU32LE(CrcBytes, 0, BH.BlockCrc);
+      BlocksCrc := Crc32CUpdate(BlocksCrc, CrcBytes[0], 4);
+
+      BlockEnd := BlockStart + QWord(BH.OrigSize);
+      if Length(Blk) < SizeInt(BH.OrigSize) then
+        SetLength(Blk, SizeInt(BH.OrigSize));
+      LitStart := SizeInt(FHeader.HashSize);
+      LitPos := 0;
+      K := 0;
+      while K < SizeInt(BH.OrigSize) do
       begin
-        RunEnd := FMDst[MI] + FMLen[MI];
-        if RunEnd > BlockEnd then
-          RunEnd := BlockEnd;
-        Run := SizeInt(RunEnd - P);
-        SrcAbs := FMSrc[MI] + (P - FMDst[MI]);
-        if SrcAbs < WinBase then
-          DataError('match source is outside the decode window');
-        SrcOff := SizeInt(SrcAbs - WinBase);
-        DstOff := SizeInt(WinLen) + K;
-        if DstOff - SrcOff >= Run then
-          Move(Win[SrcOff], Win[DstOff], Run)
+        P := BlockStart + QWord(K);
+        while (MI < N) and (FMDst[MI] + FMLen[MI] <= P) do
+          Inc(MI);
+        if (MI < N) and (FMDst[MI] <= P) then
+        begin
+          RunEnd := FMDst[MI] + FMLen[MI];
+          if RunEnd > BlockEnd then
+            RunEnd := BlockEnd;
+          Run := SizeInt(RunEnd - P);
+          SrcAbs := FMSrc[MI] + (P - FMDst[MI]);
+          DstOff := K;
+          L := Run;
+          { the part of the source before this block comes from the pages }
+          while (L > 0) and (SrcAbs < BlockStart) do
+          begin
+            Pg := SizeInt(SrcAbs shr PageShift);
+            Off := SizeInt(SrcAbs and (PageSize - 1));
+            Chunk := SizeInt(PageSize) - Off;
+            if Chunk > L then
+              Chunk := L;
+            if QWord(Chunk) > BlockStart - SrcAbs then
+              Chunk := SizeInt(BlockStart - SrcAbs);
+            if PagePtr[Pg] = nil then
+              DataError('match source is outside the decode window');
+            Move(PagePtr[Pg][Off], Blk[DstOff], Chunk);
+            Inc(SrcAbs, QWord(Chunk));
+            Inc(DstOff, Chunk);
+            Dec(L, Chunk);
+          end;
+          { the rest from this block, maybe overlapping the destination }
+          if L > 0 then
+          begin
+            SrcOff := SizeInt(SrcAbs - BlockStart);
+            if DstOff - SrcOff >= L then
+              Move(Blk[SrcOff], Blk[DstOff], L)
+            else
+              for J := 0 to L - 1 do
+                Blk[DstOff + J] := Blk[SrcOff + J];
+          end;
+        end
         else
-          for L := 0 to Run - 1 do
-            Win[DstOff + L] := Win[SrcOff + L];
-      end
-      else
-      begin
-        RunEnd := BlockEnd;
-        if (MI < N) and (FMDst[MI] < RunEnd) then
-          RunEnd := FMDst[MI];
-        Run := SizeInt(RunEnd - P);
-        if LitPos + Run > SizeInt(BH.LiteralBytes) then
-          DataError(Format('block %d: not enough literal bytes', [I]));
-        Move(Payload[LitStart + LitPos], Win[SizeInt(WinLen) + K], Run);
-        Inc(LitPos, Run);
+        begin
+          RunEnd := BlockEnd;
+          if (MI < N) and (FMDst[MI] < RunEnd) then
+            RunEnd := FMDst[MI];
+          Run := SizeInt(RunEnd - P);
+          if LitPos + Run > SizeInt(BH.LiteralBytes) then
+            DataError(Format('block %d: not enough literal bytes', [I]));
+          Move(Payload[LitStart + LitPos], Blk[K], Run);
+          Inc(LitPos, Run);
+        end;
+        Inc(K, Run);
       end;
-      Inc(K, Run);
-    end;
-    if LitPos <> SizeInt(BH.LiteralBytes) then
-      DataError(Format('block %d: literal bytes left over', [I]));
+      if LitPos <> SizeInt(BH.LiteralBytes) then
+        DataError(Format('block %d: literal bytes left over', [I]));
 
-    SetLength(Digest, FHeader.HashSize);
-    if FHeader.HashSize > 0 then
-      Move(Payload[0], Digest[0], FHeader.HashSize);
-    if not VerifyBlockDigest(FHeader.HashId, FSeed, Win, WinLen,
-      BH.OrigSize, Digest) then
-      DataError(Format('block %d: digest mismatch', [I]));
-    if BH.OrigSize > 0 then
-    begin
-      if OutStream <> nil then
-        OutStream.WriteBuffer(Win[SizeInt(WinLen)], BH.OrigSize)
-      else
-        Move(Win[SizeInt(WinLen)], Data[SizeInt(BlockStart)], BH.OrigSize);
-    end;
-    Inc(WinLen, QWord(BH.OrigSize));
-    BlockStart := BlockEnd;
-    Inc(FSumOrig, QWord(BH.OrigSize));
+      SetLength(Digest, FHeader.HashSize);
+      if FHeader.HashSize > 0 then
+        Move(Payload[0], Digest[0], FHeader.HashSize);
+      if not VerifyBlockDigest(FHeader.HashId, FSeed, Blk, 0,
+        BH.OrigSize, Digest) then
+        DataError(Format('block %d: digest mismatch', [I]));
+      if BH.OrigSize > 0 then
+      begin
+        if OutStream <> nil then
+          OutStream.WriteBuffer(Blk[0], BH.OrigSize)
+        else
+          Move(Blk[0], Data[SizeInt(BlockStart)], BH.OrigSize);
+      end;
 
-    { keep only what the unfinished matches still copy from }
+      { store the pages of this block that a later block still needs }
+      if BH.OrigSize > 0 then
+      begin
+        PgA := SizeInt(BlockStart shr PageShift);
+        PgB := SizeInt((BlockEnd - 1) shr PageShift);
+        for Pg := PgA to PgB do
+          if PageRel[Pg] > BlockEnd then
+          begin
+            if PagePtr[Pg] = nil then
+              PagePtr[Pg] := GetMem(SizeInt(PageSize));
+            P := QWord(Pg) shl PageShift;
+            if P < BlockStart then
+              P := BlockStart;
+            E := (QWord(Pg) + 1) shl PageShift;
+            if E > BlockEnd then
+              E := BlockEnd;
+            Move(Blk[SizeInt(P - BlockStart)],
+              PagePtr[Pg][SizeInt(P and (PageSize - 1))], SizeInt(E - P));
+          end;
+      end;
+      BlockStart := BlockEnd;
+      Inc(FSumOrig, QWord(BH.OrigSize));
+
+      { free the pages no later match copies from }
+      while (FreeBucket < NBuckets) and
+            (QWord(FreeBucket + 1) * Gran <= BlockStart) do
+      begin
+        Pg := BucketHead[FreeBucket];
+        while Pg >= 0 do
+        begin
+          if PagePtr[Pg] <> nil then
+          begin
+            FreeMem(PagePtr[Pg]);
+            PagePtr[Pg] := nil;
+          end;
+          Pg := PageNext[Pg];
+        end;
+        Inc(FreeBucket);
+      end;
+    end;
     while (MI < N) and (FMDst[MI] + FMLen[MI] <= BlockStart) do
       Inc(MI);
-    Keep := BlockStart;
-    if SufMin[MI] < Keep then
-      Keep := SufMin[MI];
-    if Keep > WinBase then
-    begin
-      Shift := Keep - WinBase;
-      if Shift >= WinLen then
-      begin
-        WinBase := Keep;
-        WinLen := 0;
-      end
-      else
-      begin
-        Move(Win[SizeInt(Shift)], Win[0], SizeInt(WinLen - Shift));
-        Dec(WinLen, Shift);
-        Inc(WinBase, Shift);
-      end;
-      SetLength(Win, SizeInt(WinLen));
-    end;
+  finally
+    FreeAllPages;
   end;
 
   if Pos <> FDataEnd then
