@@ -68,10 +68,16 @@ entre corridas por su semilla aleatoria.
   backend solo en silesia (48.707.612 contra 48.754.028).
 - **CPU de codificar: 1,4–2,8× la de SREP `-m5f`** (antes 21–37×), menos que
   REP en los multi-versión.
-- **Memoria: es lo que falta.** El encoder lee la entrada entera (RSS de
-  49 MB en pja a 654 MB en los juegos, contra 20–68 MB de SREP), y el decoder
-  guarda desde la menor fuente pendiente (hasta 827 MB en los juegos; REP
-  571 MB). Decodificar tarda 2–15× lo de SREP.
+- **Memoria del encoder (2026-11-16):** ya no lee la entrada entera; el
+  buscador lee por posición con un búfer de 32 MiB (64 MiB con `-l` < 128) y
+  los bloques salen de una segunda pasada. Mismos bytes que antes en los 14
+  casos (7 corpus × `-l512` y `-l64 --align=1`). RSS con `-l512`: 39–106 MB
+  (antes 51–669 MB; SREP 20–68 MB), con 5–15 % más de tiempo. Con `-l64`:
+  70–653 MB (antes 82–1.344 MB), donde manda el índice (512 MiB en los
+  juegos). Detalle en `tools/scoreboard/m6-stream-2026-11-16.log`.
+- **Memoria del decoder: es lo que falta.** Guarda desde la menor fuente
+  pendiente (hasta 827 MB en los juegos; REP 571 MB). Decodificar tarda
+  2–15× lo de SREP.
 
 Qué se probó y no sirvió (medido con xz): no quitar matches cercanos
 (distancia menor que la ventana del backend) salvo los largos; no quitar

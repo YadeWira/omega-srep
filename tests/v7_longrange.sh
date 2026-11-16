@@ -74,6 +74,25 @@ for name in empty tiny zeros mixed text random versions; do
   done
 done
 
+echo "== streaming finder: tiny buffers and stdin give the same archive =="
+for name in text versions mixed; do
+  for opt in "-l64" "-l128 --align=1"; do
+    tag="$name${opt// /}"
+    # shellcheck disable=SC2086
+    "$NAT/osrep" -m6 $opt "$CORPUS/$name.bin" "$TMP/$tag.a.osr" || fail "native $tag"
+    for cap in 1 300 4096 65536; do
+      # shellcheck disable=SC2086
+      OSREP_LR_BUF=$cap "$NAT/osrep" -m6 $opt "$CORPUS/$name.bin" "$TMP/$tag.b.osr" ||
+        fail "buffer $cap $tag"
+      cmp -s "$TMP/$tag.a.osr" "$TMP/$tag.b.osr" || fail "$tag: buffer $cap differs"
+    done
+    # shellcheck disable=SC2086
+    "$NAT/osrep" -m6 $opt - "$TMP/$tag.c.osr" <"$CORPUS/$name.bin" || fail "stdin $tag"
+    cmp -s "$TMP/$tag.a.osr" "$TMP/$tag.c.osr" || fail "$tag: stdin differs"
+    rm -f "$TMP/$tag.a.osr" "$TMP/$tag.b.osr" "$TMP/$tag.c.osr"
+  done
+done
+
 echo "== matches cross blocks =="
 "$NAT/osrep" -m6 -l64 -b64kb "$CORPUS/versions.bin" "$TMP/v.osr"
 count=$(python3 -c "

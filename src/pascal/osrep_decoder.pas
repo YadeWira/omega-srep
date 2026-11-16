@@ -323,7 +323,7 @@ procedure TArchiveReader.LoadMatchTable(TableStart: Int64);
 var
   Tab: TBytes;
   Count, I, Gap, Len, Dist, PrevEnd, Dst: QWord;
-  N, P, Limit: SizeInt;
+  N, J, P, Limit: SizeInt;
   Col: Integer;
   V: QWord;
 begin
@@ -347,16 +347,17 @@ begin
   SetLength(FMLen, N);
   P := 8;
   Limit := Length(Tab) - 4;
+  { SizeInt counter: a QWord is not ordinal on 32-bit targets }
   for Col := 0 to 2 do
-    for I := 1 to Count do
+    for J := 0 to N - 1 do
     begin
       if not ReadVarint(Tab, P, Limit, V) then
         DataError('bad varint in the match table');
       case Col of
-        0: FMDst[I - 1] := V;
-        1: FMLen[I - 1] := V;
+        0: FMDst[J] := V;
+        1: FMLen[J] := V;
       else
-        FMSrc[I - 1] := V;
+        FMSrc[J] := V;
       end;
     end;
   if P <> Limit then

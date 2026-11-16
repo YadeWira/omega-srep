@@ -12,7 +12,8 @@ unit osrep_encoder;
 interface
 
 uses
-  SysUtils, Classes, osrep_crc, osrep_format, osrep_vhash;
+  {$ifdef unix}BaseUnix,{$endif} SysUtils, Classes, osrep_crc, osrep_format,
+  osrep_vhash;
 
 type
   TEncoderOptions = record
@@ -60,9 +61,28 @@ const
 
 {$ifndef OSREP_NO_NATIVE}
 {$L osrep_lr.o}
-function OsrepLrFind(Data: Pointer; N: QWord; MinLen, Win, Step,
-  Align: LongWord; Table: PLongWord; TBits: LongWord; Filter: PByte;
-  FBits: LongWord; OutMatches: Pointer; Cap: SizeUInt): SizeUInt; cdecl;
+type
+  TLrReadFn = function(Ctx: Pointer; Pos: QWord; Buf: PByte;
+    Len: SizeUInt): LongInt; cdecl;
+  TLrEmitFn = function(Ctx: Pointer; Src, Dst, Len: QWord): LongInt; cdecl;
+  {$push}{$packrecords c}
+  { osrep_lr_params (src/c/osrep_lr.c) }
+  TLrParams = record
+    N: QWord;
+    BufCap: QWord;
+    Mem: PByte;
+    Read: TLrReadFn;
+    Emit: TLrEmitFn;
+    Ctx: Pointer;
+    Table: PLongWord;
+    Filter: PByte;
+    Buf: PByte;
+    MinLen, Win, Step, Align, TBits, FBits: LongWord;
+  end;
+  {$pop}
+  PLrParams = ^TLrParams;
+
+function OsrepLrFindIo(Params: PLrParams): Int64; cdecl;
   external name 'osrep_lr_find';
 {$else}
 { Pascal reference of osrep_lr_find (src/c/osrep_lr.c): same table, same
@@ -824,20 +844,192 @@ begin
   Job.EncodeOne;
 end;
 
+type
+  { what the finder gives back, and where it reads from }
+  TLrCollect = record
+    Stream: TStream;
+    Matches: TLrMatchArray;
+    Count: SizeInt;
+  end;
+  PLrCollect = ^TLrCollect;
+
+{$ifndef OSREP_NO_NATIVE}
+function LrReadCb(Ctx: Pointer; Pos: QWord; Buf: PByte;
+  Len: SizeUInt): LongInt; cdecl;
+{$if defined(unix) and defined(CPU64)}
+var
+  Got: TSsize;
+{$endif}
+begin
+{$if defined(unix) and defined(CPU64)}
+  { a file: pread, one call and no shared position }
+  if PLrCollect(Ctx)^.Stream is THandleStream then
+  begin
+    while Len > 0 do
+    begin
+      { PChar: an untyped `var buf` overload exists and would take the
+        address of the local pointer }
+      Got := fpPRead(THandleStream(PLrCollect(Ctx)^.Stream).Handle,
+        PChar(Buf), Len, TOff(Pos));
+      if Got <= 0 then
+        Exit(1);
+      Inc(Buf, Got);
+      Inc(Pos, QWord(Got));
+      Dec(Len, SizeUInt(Got));
+    end;
+    Exit(0);
+  end;
+{$endif}
+  try
+    PLrCollect(Ctx)^.Stream.Position := Int64(Pos);
+    if Len > 0 then
+      PLrCollect(Ctx)^.Stream.ReadBuffer(Buf^, Len);
+    Result := 0;
+  except
+    Result := 1;
+  end;
+end;
+
+function LrEmitCb(Ctx: Pointer; Src, Dst, Len: QWord): LongInt; cdecl;
+var
+  C: PLrCollect;
+begin
+  C := PLrCollect(Ctx);
+  try
+    if C^.Count >= Length(C^.Matches) then
+      SetLength(C^.Matches, 2 * Length(C^.Matches) + 1024);
+    C^.Matches[C^.Count].Src := Src;
+    C^.Matches[C^.Count].Dst := Dst;
+    C^.Matches[C^.Count].Len := Len;
+    Inc(C^.Count);
+    Result := 0;
+  except
+    Result := 1;
+  end;
+end;
+{$endif}
+
+{ Every long-range match of InStream (osrep_lr.c), in destination order.
+  The native finder reads the input by position through a 32-64 MiB buffer
+  (or uses it in place when it is already in memory, or reads it whole when
+  it is no larger than that buffer); the Pascal reference reads it whole. }
+function LrFindMatches(InStream: TStream; InSize: QWord; MinLen, Win, Step,
+  Align: LongWord): TLrMatchArray;
+var
+  Entries: QWord;
+  TBits, FBits: LongWord;
+  Table: array of LongWord;
+  Filter: TBytes;
+  Coll: TLrCollect;
+{$ifndef OSREP_NO_NATIVE}
+  Params: TLrParams;
+  Buf: TBytes;
+  BufCap: QWord;
+  R: Int64;
+{$else}
+  All: TBytes;
+  Need: QWord;
+  Count: SizeUInt;
+{$endif}
+begin
+  Result := nil;
+  if InSize < QWord(MinLen) then
+    Exit;
+  Entries := InSize div Step + 1;
+  if Entries > QWord(High(LongWord)) then
+    raise EOsrepError.Create(2, '-m6: input too large for this step');
+  TBits := 4;
+  while (QWord(1) shl TBits) * 4 < Entries * 2 do
+    Inc(TBits);
+  FBits := 6;
+  while (QWord(1) shl FBits) < Entries * 8 do
+    Inc(FBits);
+  SetLength(Table, SizeInt((QWord(1) shl TBits) * 8));
+  FillChar(Table[0], Length(Table) * SizeOf(LongWord), 0);
+  SetLength(Filter, SizeInt((QWord(1) shl FBits) div 8));
+  FillChar(Filter[0], Length(Filter), 0);
+  Coll.Stream := InStream;
+  Coll.Matches := nil;
+  Coll.Count := 0;
+{$ifndef OSREP_NO_NATIVE}
+  FillChar(Params, SizeOf(Params), 0);
+  Params.N := InSize;
+  Params.Read := @LrReadCb;
+  Params.Emit := @LrEmitCb;
+  Params.Ctx := @Coll;
+  Params.Table := @Table[0];
+  Params.Filter := @Filter[0];
+  Params.MinLen := MinLen;
+  Params.Win := Win;
+  Params.Step := Step;
+  Params.Align := Align;
+  Params.TBits := TBits;
+  Params.FBits := FBits;
+  if InStream is TCustomMemoryStream then
+    Params.Mem := PByte(TCustomMemoryStream(InStream).Memory)
+  else
+  begin
+    { 32 MiB; with small windows there are many more candidates, spread
+      over the file, and 64 MiB saves reads (silesia -l64: 11.8 s against
+      9.1 s, the index already takes 128 MiB there) }
+    BufCap := 32 shl 20;
+    if Win < 64 then
+      BufCap := 64 shl 20;
+    { tests force a tiny buffer to run every refill path on small inputs }
+    if GetEnvironmentVariable('OSREP_LR_BUF') <> '' then
+      BufCap := StrToQWordDef(GetEnvironmentVariable('OSREP_LR_BUF'), BufCap)
+    else if InSize <= BufCap then
+      BufCap := 0;
+    if BufCap = 0 then
+    begin
+      { an input no larger than the buffer is cheaper to hold whole }
+      SetLength(Buf, SizeInt(InSize));
+      InStream.Position := 0;
+      InStream.ReadBuffer(Buf[0], SizeInt(InSize));
+      Params.Mem := @Buf[0];
+    end
+    else
+    begin
+      if BufCap < 8 * (QWord(Win) + 1) then
+        BufCap := 8 * (QWord(Win) + 1);
+      SetLength(Buf, SizeInt(BufCap));
+      Params.Buf := @Buf[0];
+      Params.BufCap := BufCap;
+    end;
+  end;
+  R := OsrepLrFindIo(@Params);
+  if R < 0 then
+    raise EOsrepError.Create(2, '-m6: long-range finder failed (' +
+      IntToStr(R) + ')');
+{$else}
+  SetLength(All, SizeInt(InSize));
+  InStream.Position := 0;
+  InStream.ReadBuffer(All[0], SizeInt(InSize));
+  Need := InSize div MinLen + 16;
+  SetLength(Coll.Matches, SizeInt(Need));
+  Count := OsrepLrFind(@All[0], InSize, MinLen, Win, Step, Align,
+    @Table[0], TBits, @Filter[0], FBits, @Coll.Matches[0], SizeUInt(Need));
+  if Count = High(SizeUInt) then
+    raise EOsrepError.Create(2, 'long-range finder capacity is too small');
+  Coll.Count := SizeInt(Count);
+{$endif}
+  SetLength(Coll.Matches, Coll.Count);
+  Result := Coll.Matches;
+end;
+
 { Long-range method (-m6): one global pass over the whole input finds every
   repeat of at least MinMatch bytes (osrep_lr.c).  Writes format v7
-  (spec/format-v7.md): the whole match table first, in destination order and
-  in three u64 columns, then blocks that hold only literals. }
+  (spec/format-v7.md): the whole match table first, in destination order
+  and in three varint columns, then blocks that hold only literals.  The
+  input is read twice (the finder, then the blocks), so it has to be
+  seekable; it is never all in memory. }
 procedure EncodeLongRange(InStream, OutStream: TStream;
   const Opt: TEncoderOptions; BSize: QWord; HashId, HashSize: Byte);
 var
-  InSize, BlockCountQ, BS, BE, Entries, Need, PrevEnd, TableSize: QWord;
-  All: TBytes;
+  InSize, BlockCountQ, BS, BE, PrevEnd, TableSize: QWord;
+  Block: TBytes;
   Matches: TLrMatchArray;
-  Count: SizeUInt;
-  MinLen, Win, Step, TBits, FBits: LongWord;
-  Table: array of LongWord;
-  Filter: TBytes;
+  MinLen, Win, Step: LongWord;
   Hdr, Ftr, BlockHdr, Digest, Payload, Tab: TBytes;
   Lit: TByteBuffer;
   BlocksCrc, Crc: LongWord;
@@ -848,11 +1040,6 @@ var
   TabBuf: TByteBuffer;
 begin
   InSize := QWord(InStream.Size);
-  if InSize > QWord(High(SizeInt)) then
-    raise EOsrepError.Create(2, 'input does not fit in memory');
-  SetLength(All, SizeInt(InSize));
-  if InSize > 0 then
-    InStream.ReadBuffer(All[0], SizeInt(InSize));
 
   MinLen := Opt.MinMatch;
   if MinLen < 32 then
@@ -862,31 +1049,7 @@ begin
   if Opt.Stride > 1 then
     Step := Opt.Stride;
 
-  Matches := nil;
-  Count := 0;
-  if InSize >= QWord(MinLen) then
-  begin
-    Entries := InSize div Step + 1;
-    TBits := 4;
-    while (QWord(1) shl TBits) * 4 < Entries * 2 do
-      Inc(TBits);
-    FBits := 6;
-    while (QWord(1) shl FBits) < Entries * 8 do
-      Inc(FBits);
-    SetLength(Table, SizeInt((QWord(1) shl TBits) * 8));
-    FillChar(Table[0], Length(Table) * SizeOf(LongWord), 0);
-    SetLength(Filter, SizeInt((QWord(1) shl FBits) div 8));
-    FillChar(Filter[0], Length(Filter), 0);
-    Need := InSize div MinLen + 16;
-    SetLength(Matches, SizeInt(Need));
-    Count := OsrepLrFind(@All[0], InSize, MinLen, Win, Step, Opt.Align,
-      @Table[0], TBits, @Filter[0], FBits, @Matches[0], SizeUInt(Need));
-    if Count = High(SizeUInt) then
-      raise EOsrepError.Create(2, 'long-range finder capacity is too small');
-    SetLength(Matches, SizeInt(Count));
-    Table := nil;
-    Filter := nil;
-  end;
+  Matches := LrFindMatches(InStream, InSize, MinLen, Win, Step, Opt.Align);
 
   if InSize = 0 then
     BlockCountQ := 0
@@ -936,6 +1099,14 @@ begin
   OutStream.WriteBuffer(Tab[0], Length(Tab));
   Tab := nil;
 
+  InStream.Position := 0;
+  if BlockCountQ > 0 then
+  begin
+    if BSize > InSize then
+      SetLength(Block, SizeInt(InSize))
+    else
+      SetLength(Block, SizeInt(BSize));
+  end;
   BlocksCrc := 0;
   DI := 0;
   K := 0;
@@ -946,6 +1117,7 @@ begin
     BE := BS + BSize;
     if BE > InSize then
       BE := InSize;
+    InStream.ReadBuffer(Block[0], SizeInt(BE - BS));
     { literals: the bytes of this block no match destination covers }
     Lit.Init;
     Pos := BS;
@@ -956,7 +1128,7 @@ begin
     while (DI < Length(Matches)) and (Matches[DI].Dst < BE) do
     begin
       if Matches[DI].Dst > Pos then
-        Lit.AddBytes(All[SizeInt(Pos)], SizeInt(Matches[DI].Dst - Pos));
+        Lit.AddBytes(Block[SizeInt(Pos - BS)], SizeInt(Matches[DI].Dst - Pos));
       E := Matches[DI].Dst + Matches[DI].Len;
       if E > Pos then
         Pos := E;
@@ -965,11 +1137,11 @@ begin
     if Pos > BE then
       Pos := BE;
     if Pos < BE then
-      Lit.AddBytes(All[SizeInt(Pos)], SizeInt(BE - Pos));
+      Lit.AddBytes(Block[SizeInt(Pos - BS)], SizeInt(BE - Pos));
 
     Digest := nil;
     if Opt.UseHash then
-      if not Vhash128(Opt.Seed, All, SizeInt(BS), SizeInt(BE - BS), Digest) then
+      if not Vhash128(Opt.Seed, Block, 0, SizeInt(BE - BS), Digest) then
         raise EOsrepError.Create(3, 'encoder: VHASH failed');
     SetLength(Payload, Length(Digest) + Lit.Len);
     if Length(Digest) > 0 then

@@ -100,6 +100,13 @@ sobran o faltan; matches después del último bloque; `flags ≠ 0`.
 
 - `-l` mínimo de match (default 512); ventana de hash y paso del índice =
   `-l/2`; `-c` cambia el paso.
+- El encoder no guarda la entrada entera: el buscador lee por posición
+  (`pread`) a través de un búfer fijo (ventana alrededor del cursor con
+  historia, caché de fuentes por bloques y dos cachés de comparación), y una
+  segunda pasada lee los bloques para sacar los literales. La memoria es ese
+  búfer más el índice (≈ 16–32 bytes por ventana indexada, `n / paso`) y la
+  lista de matches. Por eso la entrada tiene que poder releerse; stdin se
+  guarda en memoria antes.
 - Largo de cada match múltiplo de `--align` (default 16): los bytes que
   siguen a un match quitado conservan su posición módulo 16, que modelan los
   backends (los `pb` de LZMA, el código x86). En `mozilla` de silesia, un tar

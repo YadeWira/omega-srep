@@ -1,0 +1,15 @@
+# st_cmp3.sh: -m6 before (build-nat, whole input) vs streaming finder (32/64 MiB buffer); time s, RSS KB; 'same' = identical archive
+pja.tar [] old(s,KB)=0.40 51416 | def same 0.33 39608
+pja.tar [-l64 --align=1] old(s,KB)=0.47 81396 | def same 0.52 103284
+enwik8 [] old(s,KB)=1.70 121256 | def same 1.78 43168
+enwik8 [-l64 --align=1] old(s,KB)=2.61 205972 | def same 3.80 139992
+real64.bin [] old(s,KB)=1.19 94832 | def same 1.40 43520
+real64.bin [-l64 --align=1] old(s,KB)=1.19 162044 | def same 1.40 141384
+versions.tar [] old(s,KB)=1.21 152648 | def same 1.37 43832
+versions.tar [-l64 --align=1] old(s,KB)=1.64 247016 | def same 1.79 141484
+silesia.tar [] old(s,KB)=3.93 235848 | def same 4.55 52700
+silesia.tar [-l64 --align=1] old(s,KB)=6.68 426332 | def same 8.03 222520
+zpaqstd-history.tar [] old(s,KB)=2.17 265700 | def same 2.46 52888
+zpaqstd-history.tar [-l64 --align=1] old(s,KB)=2.86 465968 | def same 3.43 211068
+game-assets.tar [] old(s,KB)=10.95 668564 | def same 11.95 106144
+game-assets.tar [-l64 --align=1] old(s,KB)=19.67 1344032 | def same 21.44 652628
