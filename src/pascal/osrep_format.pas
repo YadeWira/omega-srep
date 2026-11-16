@@ -19,6 +19,10 @@ const
   OsrepMagicMeta   = LongWord($52505544); { "DUPR", little endian }
 
   OsrepVersion          = 6;
+  { v7 (spec/format-v7.md): the match table first, blocks of literals only;
+    written by -m6 }
+  OsrepMagicHeaderV7 = LongWord($3752534F); { "OSR7", little endian }
+  OsrepVersionV7        = 7;
 
   { the product version, not the format version }
   OsrepProductVersion   = '0.0.14';

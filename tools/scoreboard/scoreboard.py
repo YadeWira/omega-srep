@@ -102,12 +102,11 @@ PRE = {
     # how much the 8 MiB block-local search costs on multi-version data
     'osrep-m5-l128-b256': osrep('-m5', '-l128', '-b256mb', '-t1'),
     'osrep-m5-l512-b256': osrep('-m5', '-l512', '-b256mb', '-t1'),
-    # long-range method (global index, records across blocks): -m6 -l<L>
-    'osrep-m6-l512': osrep('-m6', '-l512'),
-    'osrep-m6-l256': osrep('-m6', '-l256'),
+    # long-range method, format v7 (global index, match table first): -m6
+    # is -l512
+    'osrep-m6': osrep('-m6'),
     'osrep-m6-l128': osrep('-m6', '-l128'),
     'osrep-m6-l64': osrep('-m6', '-l64'),
-    'osrep-m6-l32': osrep('-m6', '-l32'),
     'srep-m3f': srep('-m3f'),
     'srep-m5f': srep('-m5f'),
     'srep-m5f-l32': srep('-m5f', '-l32'),
@@ -163,11 +162,9 @@ PIPE = {
     'osrep-dup-m5-l128': ['none'] + FAST_BE,
     'osrep-m5-l128-b256': ['none', 'xz', 'zpaq-m1', 'zpaq-m5'],
     'osrep-m5-l512-b256': ['none', 'xz', 'zpaq-m1'],
-    'osrep-m6-l512': ['none'] + FAST_BE + ['zpaq-m5'],
-    'osrep-m6-l256': ['none'] + FAST_BE + ['zpaq-m5'],
+    'osrep-m6': ['none'] + FAST_BE + ['zpaq-m5'],
     'osrep-m6-l128': ['none'] + FAST_BE + ['zpaq-m5'],
     'osrep-m6-l64': ['none'] + FAST_BE + ['zpaq-m5'],
-    'osrep-m6-l32': ['none'] + FAST_BE + ['zpaq-m5'],
     'srep-m3f': ['none'] + FAST_BE,
     'srep-m5f': ['none'] + FAST_BE + ['zpaq-m5'],
     'srep-m5f-l32': ['none'],

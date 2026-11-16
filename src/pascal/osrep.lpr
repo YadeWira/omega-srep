@@ -37,9 +37,10 @@ begin
   WriteLn('  osrep --verify <archive>');
   WriteLn('  osrep -i <archive>');
   WriteLn('  osrep --version');
+  WriteLn('methods: -m0..-m5 (v6), -m6 long-range for a backend (v7)');
   WriteLn('encode options:');
   WriteLn('  -bN      block size (default 8mb)');
-  WriteLn('  -lN      minimum match length (default 4)');
+  WriteLn('  -lN      minimum match length (default 4; 512 with -m6)');
   WriteLn('  -cN      hash insertion stride (default 1)');
   WriteLn('  -aN[/M]  hash chain depth (default 16)');
   WriteLn('  -tN      encoder threads (default auto, up to 8)');

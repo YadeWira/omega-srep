@@ -41,6 +41,12 @@ scripts, but the default and only writer is v6.
 - `-m5`: lazy matching and a deeper chain (twice the `-a` depth, capped at
   256). The v6 match stream is free, so the LZ methods write the same
   format; only the parse changes.
+- `-m6`: long-range method for a backend (xz, zstd, zpaq). One pass over the
+  whole input finds every repeat of at least `-l` bytes (default 512; values
+  under 32 mean 512) anywhere earlier in the file, with a global index; the
+  length of each match is a multiple of 16. Writes format v7
+  (`format-v7.md`). Reads the whole input into memory; `-t`, `-a` and `-mem`
+  do not apply, and it does not combine with `-dup`.
 
 `-m1` and `-m2` write a `DUPR` meta (exact duplicate chunks removed) and store
 the unique body; `-m3`..`-m5` write the LZ stream. `-dup` is a pre-pass that

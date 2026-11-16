@@ -44,7 +44,13 @@ type
     FBlocksCrc: LongWord;
     FSumOrig: QWord;
     FSumStat: QWord;
+    { v7: the match table (destination order) and where the blocks start }
+    FIsV7: Boolean;
+    FBlocksStart: Int64;
+    FMSrc, FMDst, FMLen: array of QWord;
     procedure LoadHeaderFooter;
+    procedure LoadMatchTable(TableStart: Int64);
+    procedure DecodeV7(OutStream: TStream; out Data: TBytes);
     procedure ValidateMeta;
     procedure ReadMeta(out Meta: TBytes);
     function DupOutputSize: QWord;
@@ -217,15 +223,24 @@ begin
   FStream.Position := 0;
   ReadExact(FStream, Buf[0], OsrepHeaderSize, 'header');
 
-  if GetU32LE(Buf, 0) <> OsrepMagicHeader then
-    DataError('bad magic: not an OSR6 archive');
+  FIsV7 := GetU32LE(Buf, 0) = OsrepMagicHeaderV7;
+  if (GetU32LE(Buf, 0) <> OsrepMagicHeader) and not FIsV7 then
+    DataError('bad magic: not an OSR6 or OSR7 archive');
   FHeader.Version := Buf[4];
-  if FHeader.Version <> OsrepVersion then
+  if FIsV7 then
+  begin
+    if FHeader.Version <> OsrepVersionV7 then
+      DataError(Format('unsupported version %d (expected %d)',
+        [FHeader.Version, OsrepVersionV7]));
+  end
+  else if FHeader.Version <> OsrepVersion then
     DataError(Format('unsupported version %d (expected %d)',
       [FHeader.Version, OsrepVersion]));
   FHeader.Flags := Buf[5];
   if (FHeader.Flags and not 1) <> 0 then
     DataError(Format('unsupported flags byte $%02x', [FHeader.Flags]));
+  if FIsV7 and (FHeader.Flags <> 0) then
+    DataError('v7 archive with the dup flag');
   FHeader.HashId := Buf[6];
   FHeader.HashSize := Buf[7];
   FHeader.MaxMatch := GetU32LE(Buf, 8);
@@ -286,9 +301,244 @@ begin
 
   if FDataEnd < DataStart then
     DataError('block area ends before it starts');
+  FBlocksStart := DataStart;
+  if FIsV7 then
+  begin
+    { the footer's stat_size is the size of the match table }
+    if FFooter.StatSize > QWord(FDataEnd - DataStart) then
+      DataError('match table does not fit before the footer');
+    LoadMatchTable(DataStart);
+    FBlocksStart := DataStart + Int64(FFooter.StatSize);
+  end;
   if QWord(FHeader.BlockCount) * QWord(OsrepBlockHeaderSize) >
-     QWord(FDataEnd - DataStart) then
+     QWord(FDataEnd - FBlocksStart) then
     DataError('block count does not fit in the block area');
+end;
+
+{ v7 match table: match_count u64, then match_count gaps, lengths and
+  distances (u64 each, column after column), then a CRC-32C of everything
+  before it.  Matches are in destination order: dst = end of the previous
+  match + gap, src = dst - distance. }
+procedure TArchiveReader.LoadMatchTable(TableStart: Int64);
+var
+  Tab: TBytes;
+  Count, I, Gap, Len, Dist, PrevEnd, Dst: QWord;
+  N: SizeInt;
+begin
+  FMSrc := nil;
+  FMDst := nil;
+  FMLen := nil;
+  if (FFooter.StatSize < 12) or (FFooter.StatSize > QWord(High(SizeInt))) then
+    DataError('bad match table size');
+  SetLength(Tab, SizeInt(FFooter.StatSize));
+  FStream.Position := TableStart;
+  ReadExact(FStream, Tab[0], Length(Tab), 'match table');
+  if Crc32C(Tab, 0, Length(Tab) - 4) <> GetU32LE(Tab, Length(Tab) - 4) then
+    DataError('match table CRC mismatch');
+  Count := GetU64LE(Tab, 0);
+  if (Count > (FFooter.StatSize - 12) div 24) or
+     (8 + 24 * Count + 4 <> FFooter.StatSize) then
+    DataError('match count does not match the table size');
+  N := SizeInt(Count);
+  SetLength(FMSrc, N);
+  SetLength(FMDst, N);
+  SetLength(FMLen, N);
+  PrevEnd := 0;
+  I := 0;
+  while I < Count do
+  begin
+    Gap := GetU64LE(Tab, SizeInt(8 + 8 * I));
+    Len := GetU64LE(Tab, SizeInt(8 + 8 * (Count + I)));
+    Dist := GetU64LE(Tab, SizeInt(8 + 8 * (2 * Count + I)));
+    if (Len = 0) or (Dist = 0) then
+      DataError('zero match length or distance');
+    if Gap > FHeader.OriginalSize - PrevEnd then
+      DataError('match destination is outside the original data');
+    Dst := PrevEnd + Gap;
+    if Len > FHeader.OriginalSize - Dst then
+      DataError('match destination is outside the original data');
+    if Dist > Dst then
+      DataError('match source is before the start of the data');
+    FMSrc[I] := Dst - Dist;
+    FMDst[I] := Dst;
+    FMLen[I] := Len;
+    PrevEnd := Dst + Len;
+    Inc(I);
+  end;
+end;
+
+{ v7 decoder: the matches are known up front, so the window keeps only the
+  bytes that a later match still copies from (the minimum source of the
+  matches not yet finished). }
+procedure TArchiveReader.DecodeV7(OutStream: TStream; out Data: TBytes);
+var
+  I: LongWord;
+  Pos: Int64;
+  Buf, Payload, Digest: TBytes;
+  BH: TBlockHeader;
+  PayloadLen: QWord;
+  CrcBytes: array[0..3] of Byte;
+  BlockStart, BlockEnd, P, RunEnd, SrcAbs, Keep, Shift: QWord;
+  BlocksCrc: LongWord;
+  SufMin: array of QWord;
+  Win: TBytes;
+  WinBase, WinLen: QWord;
+  N, MI, K, Run, LitPos, LitStart, SrcOff, DstOff, L: SizeInt;
+begin
+  Data := nil;
+  if OutStream = nil then
+  begin
+    if FHeader.OriginalSize > QWord(High(SizeInt)) then
+      DataError('original size does not fit in memory');
+    SetLength(Data, SizeInt(FHeader.OriginalSize));
+  end;
+  N := Length(FMDst);
+  SetLength(SufMin, N + 1);
+  SufMin[N] := High(QWord);
+  for MI := N - 1 downto 0 do
+  begin
+    SufMin[MI] := FMSrc[MI];
+    if SufMin[MI + 1] < SufMin[MI] then
+      SufMin[MI] := SufMin[MI + 1];
+  end;
+
+  BlocksCrc := 0;
+  FSumOrig := 0;
+  Win := nil;
+  WinBase := 0;
+  WinLen := 0;
+  MI := 0;
+  BlockStart := 0;
+  Pos := FBlocksStart;
+  SetLength(Buf, OsrepBlockHeaderSize);
+  for I := 1 to FHeader.BlockCount do
+  begin
+    if Pos + OsrepBlockHeaderSize > FDataEnd then
+      DataError(Format('block %d: header past end of block area', [I]));
+    FStream.Position := Pos;
+    ReadExact(FStream, Buf[0], OsrepBlockHeaderSize,
+      Format('block %d header', [I]));
+    Inc(Pos, OsrepBlockHeaderSize);
+    BH.LiteralBytes := GetU32LE(Buf, 0);
+    BH.OrigSize := GetU32LE(Buf, 4);
+    BH.StatSize := GetU32LE(Buf, 8);
+    BH.BlockCrc := GetU32LE(Buf, 12);
+    if BH.StatSize <> 0 then
+      DataError(Format('block %d: v7 block with records', [I]));
+    if BH.LiteralBytes > BH.OrigSize then
+      DataError(Format('block %d: more literals than bytes', [I]));
+    if QWord(BH.OrigSize) > FHeader.OriginalSize - BlockStart then
+      DataError(Format('block %d: block extends past the original data', [I]));
+    if (FMaxOutput > 0) and
+       (BlockStart + QWord(BH.OrigSize) > FMaxOutput) then
+      raise EOsrepError.Create(6, 'original size exceeds max_output');
+    PayloadLen := QWord(FHeader.HashSize) + QWord(BH.LiteralBytes);
+    if PayloadLen > QWord(FDataEnd - Pos) then
+      DataError(Format('block %d: payload past end of block area', [I]));
+    SetLength(Payload, SizeInt(PayloadLen));
+    if PayloadLen > 0 then
+      ReadExact(FStream, Payload[0], SizeInt(PayloadLen),
+        Format('block %d payload', [I]));
+    Inc(Pos, Int64(PayloadLen));
+    if Crc32C(Payload) <> BH.BlockCrc then
+      DataError(Format('block %d: CRC mismatch', [I]));
+    PutU32LE(CrcBytes, 0, BH.BlockCrc);
+    BlocksCrc := Crc32CUpdate(BlocksCrc, CrcBytes[0], 4);
+
+    BlockEnd := BlockStart + QWord(BH.OrigSize);
+    SetLength(Win, SizeInt(WinLen + QWord(BH.OrigSize)));
+    LitStart := SizeInt(FHeader.HashSize);
+    LitPos := 0;
+    K := 0;
+    while K < SizeInt(BH.OrigSize) do
+    begin
+      P := BlockStart + QWord(K);
+      while (MI < N) and (FMDst[MI] + FMLen[MI] <= P) do
+        Inc(MI);
+      if (MI < N) and (FMDst[MI] <= P) then
+      begin
+        RunEnd := FMDst[MI] + FMLen[MI];
+        if RunEnd > BlockEnd then
+          RunEnd := BlockEnd;
+        Run := SizeInt(RunEnd - P);
+        SrcAbs := FMSrc[MI] + (P - FMDst[MI]);
+        if SrcAbs < WinBase then
+          DataError('match source is outside the decode window');
+        SrcOff := SizeInt(SrcAbs - WinBase);
+        DstOff := SizeInt(WinLen) + K;
+        if DstOff - SrcOff >= Run then
+          Move(Win[SrcOff], Win[DstOff], Run)
+        else
+          for L := 0 to Run - 1 do
+            Win[DstOff + L] := Win[SrcOff + L];
+      end
+      else
+      begin
+        RunEnd := BlockEnd;
+        if (MI < N) and (FMDst[MI] < RunEnd) then
+          RunEnd := FMDst[MI];
+        Run := SizeInt(RunEnd - P);
+        if LitPos + Run > SizeInt(BH.LiteralBytes) then
+          DataError(Format('block %d: not enough literal bytes', [I]));
+        Move(Payload[LitStart + LitPos], Win[SizeInt(WinLen) + K], Run);
+        Inc(LitPos, Run);
+      end;
+      Inc(K, Run);
+    end;
+    if LitPos <> SizeInt(BH.LiteralBytes) then
+      DataError(Format('block %d: literal bytes left over', [I]));
+
+    SetLength(Digest, FHeader.HashSize);
+    if FHeader.HashSize > 0 then
+      Move(Payload[0], Digest[0], FHeader.HashSize);
+    if not VerifyBlockDigest(FHeader.HashId, FSeed, Win, WinLen,
+      BH.OrigSize, Digest) then
+      DataError(Format('block %d: digest mismatch', [I]));
+    if BH.OrigSize > 0 then
+    begin
+      if OutStream <> nil then
+        OutStream.WriteBuffer(Win[SizeInt(WinLen)], BH.OrigSize)
+      else
+        Move(Win[SizeInt(WinLen)], Data[SizeInt(BlockStart)], BH.OrigSize);
+    end;
+    Inc(WinLen, QWord(BH.OrigSize));
+    BlockStart := BlockEnd;
+    Inc(FSumOrig, QWord(BH.OrigSize));
+
+    { keep only what the unfinished matches still copy from }
+    while (MI < N) and (FMDst[MI] + FMLen[MI] <= BlockStart) do
+      Inc(MI);
+    Keep := BlockStart;
+    if SufMin[MI] < Keep then
+      Keep := SufMin[MI];
+    if Keep > WinBase then
+    begin
+      Shift := Keep - WinBase;
+      if Shift >= WinLen then
+      begin
+        WinBase := Keep;
+        WinLen := 0;
+      end
+      else
+      begin
+        Move(Win[SizeInt(Shift)], Win[0], SizeInt(WinLen - Shift));
+        Dec(WinLen, Shift);
+        Inc(WinBase, Shift);
+      end;
+      SetLength(Win, SizeInt(WinLen));
+    end;
+  end;
+
+  if Pos <> FDataEnd then
+    DataError('there is data between the last block and the footer');
+  if FSumOrig <> FHeader.OriginalSize then
+    DataError(Format('original size mismatch: header %d, blocks %d',
+      [FHeader.OriginalSize, FSumOrig]));
+  if MI <> N then
+    DataError('match table has matches past the last block');
+  if BlocksCrc <> FFooter.BlocksCrc then
+    DataError('blocks CRC mismatch');
+  FBlocksCrc := BlocksCrc;
 end;
 
 procedure TArchiveReader.ReadMeta(out Meta: TBytes);
@@ -704,7 +954,7 @@ var
   Matches: TBlockMatchArray;
 begin
   Result := True;
-  Pos := OsrepHeaderSize + Length(FSeed);
+  Pos := FBlocksStart;
   BlockStart := 0;
   for I := 1 to FHeader.BlockCount do
   begin
@@ -848,7 +1098,7 @@ begin
   FSumOrig := 0;
   FSumStat := 0;
   BlocksCrc := 0;
-  Pos := OsrepHeaderSize + Length(FSeed);
+  Pos := FBlocksStart;
   BlockStart := 0;
   for I := 1 to FHeader.BlockCount do
   begin
@@ -1005,7 +1255,7 @@ begin
   Win := nil;
   WinBase := 0;
   WinLen := 0;
-  Pos := OsrepHeaderSize + Length(FSeed);
+  Pos := FBlocksStart;
   BlockStart := 0;
   try
     for I := 1 to FHeader.BlockCount do
@@ -1266,7 +1516,7 @@ begin
   BlocksCrc := 0;
   SumOrig := 0;
   SumStat := 0;
-  Pos := OsrepHeaderSize + Length(FSeed);
+  Pos := FBlocksStart;
   for I := 1 to FHeader.BlockCount do
   begin
     if Pos + OsrepBlockHeaderSize > FDataEnd then
@@ -1311,7 +1561,13 @@ begin
   if SumOrig <> FHeader.OriginalSize then
     DataError(Format('original size mismatch: header %d, blocks %d',
       [FHeader.OriginalSize, SumOrig]));
-  if SumStat <> FFooter.StatSize then
+  if FIsV7 then
+  begin
+    { v7 blocks hold no records; stat_size is the match table's size }
+    if SumStat <> 0 then
+      DataError('v7 block with records');
+  end
+  else if SumStat <> FFooter.StatSize then
     DataError(Format('stat size mismatch: footer %d, blocks %d',
       [FFooter.StatSize, SumStat]));
   if BlocksCrc <> FFooter.BlocksCrc then
@@ -1352,6 +1608,11 @@ var
   AllLocal: Boolean;
 begin
   LoadHeaderFooter;
+  if FIsV7 then
+  begin
+    DecodeV7(OutStream, Dummy);
+    Exit;
+  end;
   AllLocal := ScanBlockLocality;
   if (FHeader.Flags and 1) = 0 then
   begin
@@ -1414,6 +1675,11 @@ var
   AllLocal: Boolean;
 begin
   LoadHeaderFooter;
+  if FIsV7 then
+  begin
+    DecodeV7(nil, Data);
+    Exit;
+  end;
   AllLocal := ScanBlockLocality;
   if (FHeader.Flags and 1) = 0 then
   begin

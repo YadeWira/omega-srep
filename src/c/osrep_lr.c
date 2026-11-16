@@ -9,6 +9,11 @@
    bytes or more always contains an indexed window, so with win = step =
    minlen / 2 every repeat of minlen - 1 bytes is seen.
 
+   The length of every match is a multiple of `align`: the bytes after a
+   removed match keep their offset modulo align, which backends model
+   (LZMA's position bits, x86 code); measured on silesia's mozilla, a tar of
+   executables, +1.5 % with xz unaligned and -0.1 % with align 16.
+
    The caller owns every buffer (no libc): the filter, the table and the
    output.  Matches come out in destination order, never overlapping in
    destination, each with src < dst.  Deterministic: no addresses, no
@@ -47,7 +52,6 @@ static void lr_insert(uint32_t *table, uint32_t tbits, uint8_t *filter,
                       uint32_t fbits, uint64_t h, uint32_t idx1) {
   uint64_t m = lr_mix(h);
   uint32_t *b = table + ((m >> (64 - tbits)) * LR_WAYS * 2u);
-  uint32_t tag = (uint32_t)m;
   uint64_t f = m & ((UINT64_C(1) << fbits) - 1u);
   uint32_t i;
   filter[f >> 3] |= (uint8_t)(1u << (f & 7u));
@@ -56,14 +60,8 @@ static void lr_insert(uint32_t *table, uint32_t tbits, uint8_t *filter,
     b[2u * i] = b[2u * (i - 1u)];
     b[2u * i + 1u] = b[2u * (i - 1u) + 1u];
   }
-  b[0] = tag;
+  b[0] = (uint32_t)m;
   b[1] = idx1;
-}
-
-static uint64_t lr_fwd(const uint8_t *d, uint64_t a, uint64_t b, uint64_t n) {
-  uint64_t l = 0;
-  while (b + l < n && d[a + l] == d[b + l]) l++;
-  return l;
 }
 
 static int lr_same(const uint8_t *a, const uint8_t *b, uint32_t n) {
@@ -74,16 +72,17 @@ static int lr_same(const uint8_t *a, const uint8_t *b, uint32_t n) {
 }
 
 /* Returns the number of matches written, or SIZE_MAX if `cap` is too
-   small.  mindist: matches with dst - src < mindist are not emitted
-   (0 = all). */
+   small (n / minlen + 1 always suffices). */
 size_t osrep_lr_find(const uint8_t *d, uint64_t n, uint32_t minlen,
-                     uint32_t win, uint32_t step, uint64_t mindist,
+                     uint32_t win, uint32_t step, uint32_t align,
                      uint32_t *table, uint32_t tbits, uint8_t *filter,
                      uint32_t fbits, osrep_lr_match *out, size_t cap) {
   uint64_t bw1 = 1, h, q, last_end = 0, next_ins = 0;
   size_t count = 0;
   uint32_t i;
-  if (win == 0 || step == 0 || n < (uint64_t)win || minlen < win) return 0;
+  if (win == 0 || step == 0 || align == 0 || n < (uint64_t)win ||
+      minlen < win)
+    return 0;
   for (i = 1; i < win; i++) bw1 *= LR_B;
   h = lr_hash(d, win);
   q = 0;
@@ -101,7 +100,8 @@ size_t osrep_lr_find(const uint8_t *d, uint64_t n, uint32_t minlen,
         if (b[2u * w] != tag) continue;
         p = (uint64_t)(b[2u * w + 1u] - 1u) * step;
         if (p >= q || !lr_same(d + p, d + q, win)) continue;
-        fl = win + lr_fwd(d, p + win, q + win, n);
+        fl = win;
+        while (q + fl < n && d[p + fl] == d[q + fl]) fl++;
         bl = 0;
         while (bl < p && q - bl > last_end && d[p - bl - 1u] == d[q - bl - 1u])
           bl++;
@@ -111,7 +111,8 @@ size_t osrep_lr_find(const uint8_t *d, uint64_t n, uint32_t minlen,
           best_back = bl;
         }
       }
-      if (best_len >= minlen && (q - best_back) - best_src >= mindist) {
+      best_len -= best_len % align;
+      if (best_len >= minlen) {
         uint64_t dst = q - best_back, end = dst + best_len;
         if (count >= cap) return (size_t)-1;
         out[count].src = best_src;

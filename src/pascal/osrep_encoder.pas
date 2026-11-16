@@ -51,10 +51,15 @@ type
   TLrMatchArray = array of TLrMatch;
   PLrMatch = ^TLrMatch;
 
+const
+  { -m6: the default minimum match and the length alignment (osrep_lr.c) }
+  OsrepLrDefaultMinMatch = 512;
+  OsrepLrAlign = 16;
+
 {$ifndef OSREP_NO_NATIVE}
 {$L osrep_lr.o}
-function OsrepLrFind(Data: Pointer; N: QWord; MinLen, Win, Step: LongWord;
-  MinDist: QWord; Table: PLongWord; TBits: LongWord; Filter: PByte;
+function OsrepLrFind(Data: Pointer; N: QWord; MinLen, Win, Step,
+  Align: LongWord; Table: PLongWord; TBits: LongWord; Filter: PByte;
   FBits: LongWord; OutMatches: Pointer; Cap: SizeUInt): SizeUInt; cdecl;
   external name 'osrep_lr_find';
 {$else}
@@ -102,8 +107,8 @@ begin
   B[1] := Idx1;
 end;
 
-function OsrepLrFind(Data: Pointer; N: QWord; MinLen, Win, Step: LongWord;
-  MinDist: QWord; Table: PLongWord; TBits: LongWord; Filter: PByte;
+function OsrepLrFind(Data: Pointer; N: QWord; MinLen, Win, Step,
+  Align: LongWord; Table: PLongWord; TBits: LongWord; Filter: PByte;
   FBits: LongWord; OutMatches: Pointer; Cap: SizeUInt): SizeUInt;
 var
   D: PByte;
@@ -117,7 +122,8 @@ begin
   Result := 0;
   D := PByte(Data);
   Outp := PLrMatch(OutMatches);
-  if (Win = 0) or (Step = 0) or (N < QWord(Win)) or (MinLen < Win) then
+  if (Win = 0) or (Step = 0) or (Align = 0) or (N < QWord(Win)) or
+     (MinLen < Win) then
     Exit;
   Bw1 := 1;
   for I := 1 to Win - 1 do
@@ -161,7 +167,8 @@ begin
           BestBack := Bl;
         end;
       end;
-      if (BestLen >= MinLen) and ((Q - BestBack) - BestSrc >= MinDist) then
+      BestLen := BestLen - BestLen mod Align;
+      if BestLen >= MinLen then
       begin
         Dst := Q - BestBack;
         E := Dst + BestLen;
@@ -814,67 +821,27 @@ begin
   Job.EncodeOne;
 end;
 
-{ Long-range method (-m6, prototype): one global pass over the whole input
-  finds every repeat of at least MinMatch bytes (osrep_lr.c); the records go
-  to the block that holds their source (Future-LZ), the uncovered bytes stay
-  as literals of the block that holds them. }
+{ Long-range method (-m6): one global pass over the whole input finds every
+  repeat of at least MinMatch bytes (osrep_lr.c).  Writes format v7
+  (spec/format-v7.md): the whole match table first, in destination order and
+  in three u64 columns, then blocks that hold only literals. }
 procedure EncodeLongRange(InStream, OutStream: TStream;
   const Opt: TEncoderOptions; BSize: QWord; HashId, HashSize: Byte);
 var
-  InSize, BlockCountQ, BS, BE, StatSize, Entries, Need: QWord;
+  InSize, BlockCountQ, BS, BE, Entries, Need, PrevEnd, TableSize: QWord;
   All: TBytes;
-  Matches, BySrc: TLrMatchArray;
+  Matches: TLrMatchArray;
   Count: SizeUInt;
-  Win, Step, TBits, FBits: LongWord;
+  MinLen, Win, Step, TBits, FBits: LongWord;
   Table: array of LongWord;
   Filter: TBytes;
-  MinDist: QWord;
-  Hdr, Ftr, BlockHdr, Digest, Payload: TBytes;
-  Rec, Lit: TByteBuffer;
+  Hdr, Ftr, BlockHdr, Digest, Payload, Tab: TBytes;
+  Lit: TByteBuffer;
   BlocksCrc, Crc: LongWord;
   CrcBytes: array[0..3] of Byte;
   K: QWord;
-  DI, SI, I: SizeInt;
-  Pos, E, PrevSrc: QWord;
-  Env: string;
-
-  procedure SortBySrc(var A: TLrMatchArray);
-  var
-    Tmp: TLrMatchArray;
-    Width, L, M, R, X, Y, Z: SizeInt;
-  begin
-    if Length(A) < 2 then
-      Exit;
-    SetLength(Tmp, Length(A));
-    Width := 1;
-    while Width < Length(A) do
-    begin
-      L := 0;
-      while L < Length(A) do
-      begin
-        M := L + Width;
-        if M > Length(A) then M := Length(A);
-        R := L + 2 * Width;
-        if R > Length(A) then R := Length(A);
-        X := L; Y := M; Z := L;
-        while (X < M) and (Y < R) do
-        begin
-          if (A[X].Src < A[Y].Src) or
-             ((A[X].Src = A[Y].Src) and (A[X].Dst <= A[Y].Dst)) then
-          begin Tmp[Z] := A[X]; Inc(X); end
-          else
-          begin Tmp[Z] := A[Y]; Inc(Y); end;
-          Inc(Z);
-        end;
-        while X < M do begin Tmp[Z] := A[X]; Inc(X); Inc(Z); end;
-        while Y < R do begin Tmp[Z] := A[Y]; Inc(Y); Inc(Z); end;
-        Inc(L, 2 * Width);
-      end;
-      A := Copy(Tmp);
-      Width := Width * 2;
-    end;
-  end;
-
+  DI, I, Col: SizeInt;
+  Pos, E: QWord;
 begin
   InSize := QWord(InStream.Size);
   if InSize > QWord(High(SizeInt)) then
@@ -883,20 +850,17 @@ begin
   if InSize > 0 then
     InStream.ReadBuffer(All[0], SizeInt(InSize));
 
-  Win := Opt.MinMatch div 2;
-  if Win < 8 then
-    Win := 8;
+  MinLen := Opt.MinMatch;
+  if MinLen < 32 then
+    MinLen := OsrepLrDefaultMinMatch;
+  Win := MinLen div 2;
   Step := Win;
   if Opt.Stride > 1 then
     Step := Opt.Stride;
-  MinDist := 0;
-  Env := GetEnvironmentVariable('OSREP_LR_MINDIST');
-  if Env <> '' then
-    MinDist := StrToQWord(Env);
 
   Matches := nil;
   Count := 0;
-  if InSize >= QWord(Opt.MinMatch) then
+  if InSize >= QWord(MinLen) then
   begin
     Entries := InSize div Step + 1;
     TBits := 4;
@@ -909,9 +873,9 @@ begin
     FillChar(Table[0], Length(Table) * SizeOf(LongWord), 0);
     SetLength(Filter, SizeInt((QWord(1) shl FBits) div 8));
     FillChar(Filter[0], Length(Filter), 0);
-    Need := InSize div Opt.MinMatch + 16;
+    Need := InSize div MinLen + 16;
     SetLength(Matches, SizeInt(Need));
-    Count := OsrepLrFind(@All[0], InSize, Opt.MinMatch, Win, Step, MinDist,
+    Count := OsrepLrFind(@All[0], InSize, MinLen, Win, Step, OsrepLrAlign,
       @Table[0], TBits, @Filter[0], FBits, @Matches[0], SizeUInt(Need));
     if Count = High(SizeUInt) then
       raise EOsrepError.Create(2, 'long-range finder capacity is too small');
@@ -919,8 +883,6 @@ begin
     Table := nil;
     Filter := nil;
   end;
-  BySrc := Copy(Matches);
-  SortBySrc(BySrc);
 
   if InSize = 0 then
     BlockCountQ := 0
@@ -930,8 +892,8 @@ begin
     raise EOsrepError.Create(2, 'too many blocks');
 
   SetLength(Hdr, OsrepHeaderSize);
-  PutU32LE(Hdr, 0, OsrepMagicHeader);
-  Hdr[4] := OsrepVersion;
+  PutU32LE(Hdr, 0, OsrepMagicHeaderV7);
+  Hdr[4] := OsrepVersionV7;
   Hdr[5] := 0;
   Hdr[6] := HashId;
   Hdr[7] := HashSize;
@@ -943,37 +905,43 @@ begin
   if Opt.UseHash then
     OutStream.WriteBuffer(Opt.Seed[0], 32);
 
+  { the match table: count, then the gap, length and distance columns }
+  TableSize := 8 + 24 * QWord(Length(Matches)) + 4;
+  SetLength(Tab, SizeInt(TableSize));
+  PutU64LE(Tab, 0, QWord(Length(Matches)));
+  for Col := 0 to 2 do
+  begin
+    PrevEnd := 0;
+    for I := 0 to High(Matches) do
+    begin
+      case Col of
+        0: PutU64LE(Tab, 8 + 8 * I, Matches[I].Dst - PrevEnd);
+        1: PutU64LE(Tab, 8 + 8 * (Length(Matches) + I), Matches[I].Len);
+        2: PutU64LE(Tab, 8 + 8 * (2 * Length(Matches) + I),
+             Matches[I].Dst - Matches[I].Src);
+      end;
+      PrevEnd := Matches[I].Dst + Matches[I].Len;
+    end;
+  end;
+  PutU32LE(Tab, SizeInt(TableSize) - 4, Crc32C(Tab, 0, SizeInt(TableSize) - 4));
+  OutStream.WriteBuffer(Tab[0], Length(Tab));
+  Tab := nil;
+
   BlocksCrc := 0;
-  StatSize := 0;
   DI := 0;
-  SI := 0;
-  for K := 0 to BlockCountQ - 1 do
+  K := 0;
+  while K < BlockCountQ do
   begin
     BS := K * BSize;
+    Inc(K);
     BE := BS + BSize;
     if BE > InSize then
       BE := InSize;
-    { records: matches whose source is in this block, by source }
-    Rec.Init;
-    PrevSrc := BS;
-    while (SI < Length(BySrc)) and (BySrc[SI].Src < BE) do
-    begin
-      AddVarint(Rec, BySrc[SI].Src - PrevSrc);
-      AddVarint(Rec, BySrc[SI].Len);
-      AddVarint(Rec, BySrc[SI].Dst - BySrc[SI].Src);
-      PrevSrc := BySrc[SI].Src;
-      Inc(SI);
-    end;
     { literals: the bytes of this block no match destination covers }
     Lit.Init;
     Pos := BS;
-    { a match from an earlier block may still cover the start }
-    while (DI > 0) and (Matches[DI - 1].Dst + Matches[DI - 1].Len > Pos) and
-          (Matches[DI - 1].Dst < BS) do
-    begin
+    if (DI > 0) and (Matches[DI - 1].Dst + Matches[DI - 1].Len > Pos) then
       Pos := Matches[DI - 1].Dst + Matches[DI - 1].Len;
-      Break;
-    end;
     if Pos > BE then
       Pos := BE;
     while (DI < Length(Matches)) and (Matches[DI].Dst < BE) do
@@ -994,43 +962,34 @@ begin
     if Opt.UseHash then
       if not Vhash128(Opt.Seed, All, SizeInt(BS), SizeInt(BE - BS), Digest) then
         raise EOsrepError.Create(3, 'encoder: VHASH failed');
-    SetLength(Payload, Length(Digest) + Rec.Len + Lit.Len);
-    I := 0;
+    SetLength(Payload, Length(Digest) + Lit.Len);
     if Length(Digest) > 0 then
-    begin
       Move(Digest[0], Payload[0], Length(Digest));
-      I := Length(Digest);
-    end;
-    if Rec.Len > 0 then
-      Move(Rec.Data[0], Payload[I], Rec.Len);
-    Inc(I, Rec.Len);
     if Lit.Len > 0 then
-      Move(Lit.Data[0], Payload[I], Lit.Len);
+      Move(Lit.Data[0], Payload[Length(Digest)], Lit.Len);
     Crc := Crc32C(Payload);
     SetLength(BlockHdr, OsrepBlockHeaderSize);
     PutU32LE(BlockHdr, 0, LongWord(Lit.Len));
     PutU32LE(BlockHdr, 4, LongWord(BE - BS));
-    PutU32LE(BlockHdr, 8, LongWord(Rec.Len));
+    PutU32LE(BlockHdr, 8, 0);
     PutU32LE(BlockHdr, 12, Crc);
     OutStream.WriteBuffer(BlockHdr[0], Length(BlockHdr));
     if Length(Payload) > 0 then
       OutStream.WriteBuffer(Payload[0], Length(Payload));
     PutU32LE(CrcBytes, 0, Crc);
     BlocksCrc := Crc32CUpdate(BlocksCrc, CrcBytes[0], 4);
-    Inc(StatSize, QWord(Rec.Len));
   end;
 
   SetLength(Ftr, OsrepFooterSize);
   PutU32LE(Ftr, 0, OsrepMagicFooter);
   PutU32LE(Ftr, 4, LongWord(BlockCountQ));
-  PutU64LE(Ftr, 8, StatSize);
+  PutU64LE(Ftr, 8, TableSize);
   PutU64LE(Ftr, 16, 0);
   PutU32LE(Ftr, 24, 0);
   PutU32LE(Ftr, 28, BlocksCrc);
   PutU32LE(Ftr, 32, Crc32C(Ftr, 0, 32));
   OutStream.WriteBuffer(Ftr[0], Length(Ftr));
 end;
-
 
 procedure EncodeToStream(InStream, OutStream: TStream;
   const Opt: TEncoderOptions; const Meta: TBytes);
