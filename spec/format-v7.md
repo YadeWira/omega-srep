@@ -115,6 +115,33 @@ build con chequeos de rango (`-Cr -Ct -CR`). Encontró el reparto de páginas
 de arriba y una cuenta de páginas que daba la vuelta con `original_size`
 cerca de 2^64; 20.000 casos limpios después del arreglo.
 
+## Por qué la tabla va entera y no por segmentos (medido 2026-11-16)
+
+La tabla entera al principio obliga a conocer todos los matches antes de
+escribir. Se midió si convenía partirla (`tools/scoreboard/v7-table-ram-2026-11-16.log`):
+
+- **Cuánto pesa.** Con `-l512` hay a lo sumo ~100 matches por MB de entrada
+  (juegos; el historial ~54): ≈ 2,4 MB por GB en el encoder (24 bytes por
+  match) y ≈ 3 MB por GB en el decoder. Con `-l32 --align=1`, hasta ~6.000
+  por MB (silesia): ≈ 145 MB por GB en el encoder y ≈ 175 MB por GB en el
+  decoder.
+- **No es lo que limita al encoder.** Su índice cuesta 13–26 bytes por
+  ventana indexada (una cada `-l/2` bytes): 52–104 MB por GB con `-l512` y
+  0,8–1,6 GB por GB con `-l32`, 20–40 veces la lista de matches.
+- **En el decoder se resuelve sin cambiar el formato.** Las columnas se
+  pueden leer con tres cursores sobre la tabla tal como está en disco
+  (≈ 5 bytes por match en vez de 24+5, o nada en memoria si el archivo se
+  puede releer), y el cálculo de páginas es una pasada más.
+- **Partirla cuesta.** Con un segmento de tabla delante de cada S bytes de
+  salida, mismos matches: con S = 16 MiB, de −0,05 a +0,12 %; con 64 MiB,
+  de −0,07 a +0,14 % (historial con zstd), del orden del margen contra
+  los rivales. Y no le sirve al decoder por sí sola: para soltar páginas
+  necesita saber qué matches futuros las leen, que es justo lo que da la
+  tabla entera.
+
+Conclusión: la tabla se queda entera. La memoria del decoder con `-l32` se
+baja en la implementación (pendiente), no en el formato.
+
 ## Lo que el encoder de `-m6` decide (no es formato)
 
 - `-l` mínimo de match (default 512); ventana de hash y paso del índice =

@@ -1,0 +1,25 @@
+# 2026-11-16, build a6efefa. Tabla v7 en RAM y tabla por segmentos.
+# 1) -m6 por corpus: matches, bytes de tabla, archivo; enc/dec = s y RSS KB (tiempos inflados: máquina cargada)
+pja.tar [-l512] in=33587200 matches 978 table bytes 7799 file 6607255 enc=0.43 38528 dec=0.35 25148 ok
+pja.tar [-l32 --align=1] in=33587200 matches 54292 table bytes 255309 file 4270804 enc=1.70 90692 dec=0.29 25636 ok
+versions.tar [-l512] in=130498560 matches 5264 table bytes 38806 file 28085686 enc=2.18 41296 dec=1.40 60552 ok
+versions.tar [-l32 --align=1] in=130498560 matches 212406 table bytes 1000345 file 17981253 enc=8.04 180700 dec=0.84 66472 ok
+zpaqstd-history.tar [-l512] in=241684480 matches 13047 table bytes 97706 file 33442922 enc=5.13 48456 dec=1.87 64092 ok
+zpaqstd-history.tar [-l32 --align=1] in=241684480 matches 278407 table bytes 1343671 file 20578939 enc=17.26 294260 dec=2.07 76920 ok
+real64.bin [-l512] in=67108864 matches 5542 table bytes 35814 file 56661558 enc=2.74 40996 dec=0.37 27208 ok
+real64.bin [-l32 --align=1] in=67108864 matches 219142 table bytes 1050662 file 44457205 enc=6.72 180612 dec=0.70 38192 ok
+enwik8 [-l512] in=100000000 matches 184 table bytes 1332 file 99850468 enc=3.21 41736 dec=0.76 35300 ok
+enwik8 [-l32 --align=1] in=100000000 matches 283237 table bytes 1601571 file 88138071 enc=55.32 187228 dec=1.36 92216 ok
+silesia.tar [-l512] in=211957760 matches 11033 table bytes 76468 file 200555172 enc=11.09 47648 dec=2.07 36568 ok
+silesia.tar [-l32 --align=1] in=211957760 matches 1269133 table bytes 6750883 file 137969306 enc=49.50 332620 dec=2.73 81796 ok
+game-assets.tar [-l512] in=584499200 matches 56851 table bytes 365616 file 464289744 enc=29.72 89780 dec=4.27 55192 ok
+game-assets.tar [-l32 --align=1] in=584499200 matches 1193966 table bytes 5944621 file 398613663 enc=98.79 971604 dec=4.47 95876 ok
+
+# 2) Misma salida de -m6 (-l512) con la tabla partida: cada segmento de S bytes de salida lleva su tabla antes de sus bloques (tools: seg.py). S=0M = tabla entera (actual).
+pja.tar | S=0M xz 1172080 zstd 1220985 | S=16M xz 1172040 zstd 1221430 | S=64M xz 1172080 zstd 1220985 | S=256M xz 1172080 zstd 1220985
+versions.tar | S=0M xz 4681952 zstd 4881235 | S=16M xz 4684668 zstd 4878890 | S=64M xz 4682788 zstd 4877696 | S=256M xz 4681952 zstd 4881235
+zpaqstd-history.tar | S=0M xz 5402564 zstd 5616467 | S=16M xz 5407816 zstd 5623102 | S=64M xz 5404792 zstd 5624475 | S=256M xz 5402564 zstd 5616467
+real64.bin | S=0M xz 30375244 zstd 31103691 | S=16M xz 30375964 zstd 31101057 | S=64M xz 30375244 zstd 31103691 | S=256M xz 30375244 zstd 31103691
+enwik8 | S=0M xz 24863544 zstd 26391279 | S=16M xz 24863352 zstd 26389672 | S=64M xz 24863708 zstd 26395166 | S=256M xz 24863544 zstd 26391279
+silesia.tar | S=0M xz 48707612 zstd 52579591 | S=16M xz 48730132 zstd 52576357 | S=64M xz 48706220 zstd 52579270 | S=256M xz 48707612 zstd 52579591
+game-assets.tar | S=0M xz 301073708 zstd 308512995 | S=16M xz 301082232 zstd 308560347 | S=64M xz 301064388 zstd 308522939 | S=256M xz 301062740 zstd 308546731
