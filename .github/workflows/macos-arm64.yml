@@ -24,6 +24,8 @@ jobs:
         run: |
           bash tests/v6_read.sh
           bash tests/v6_encode.sh
+      - name: Long range (-m6, format v7) and the frozen v7 fixtures
+        run: bash tests/v7_longrange.sh
       - name: Memory budget
         run: bash tests/memory_budget.sh
       - name: Block-wise decoder

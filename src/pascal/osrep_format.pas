@@ -25,8 +25,8 @@ const
   OsrepVersionV7        = 7;
 
   { the product version, not the format version }
-  OsrepProductVersion   = '0.0.14';
-  OsrepProductDate      = '2026-11-10';
+  OsrepProductVersion   = '0.0.15';
+  OsrepProductDate      = '2026-11-16';
 
   OsrepHeaderSize       = 28;
   OsrepFooterSize       = 36;

@@ -1,9 +1,12 @@
-# Formato `.osr` v7 — OSREP (borrador interno)
+# Formato `.osr` v7 — OSREP
 
-**Estado: borrador, 2026-11-15.** Lo escribe `-m6` (el método de largo
-alcance) y lo leen el decoder, `--verify` y `-i`. Los demás métodos siguen
-escribiendo v6 (`format-v6.md`). Nada de esto se publicó: el formato puede
-cambiar hasta que se congele.
+**Estado: congelado en OSREP 0.0.15 (2026-11-16).** Lo escribe `-m6` (el
+método de largo alcance y el default de la CLI) y lo leen el decoder,
+`--verify`, `-i` y la biblioteca. Los demás métodos siguen escribiendo v6
+(`format-v6.md`). Todo lector posterior tiene que decodificar igual los
+archivos de `tests/fixtures/v7/` (sha256 fijos en su `manifest.tsv`). Un
+cambio incompatible lleva otro número de versión y otro magic; lo que el
+encoder decide (sección final) puede cambiar sin tocar el formato.
 
 ## Por qué un v7
 

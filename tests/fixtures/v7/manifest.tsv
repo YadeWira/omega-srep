@@ -1,0 +1,6 @@
+c426e51bbe4a0afe7b6b02c305ea3089fd7d16972161662e3addac86efa3e912	text-m6	text.bin	-m6
+7e843b18f3fda55f33051bac0b3ce9595a4b863f3bbec4815180aff99269a872	text-m6-l32-a1-b64kb	text.bin	-m6 -l32 --align=1 -b64kb
+a8aa7e8e4700f14ed490c0cec10d57c98a71b15b4b5602af371f56c651ed0c3a	zeros-m6-hashnone	zeros.bin	-m6 -hash-
+9647d81cb0daea662688bfe80358f6df03f7682a523a9da5fc14e489457dda46	tiny-m6-l32	tiny.bin	-m6 -l32
+3ef6cadad9d284057dfb965110c5f918999a7244e24fd9332d501cee6f5d1276	empty-m6	empty.bin	-m6
+60733757dd0f258df658e43f82d3d97f08b41302ff42e445998c879eee3c4ea3	rversions-m6-l64-b64kb	rversions.bin	-m6 -l64 -b64kb

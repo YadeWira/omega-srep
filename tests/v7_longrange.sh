@@ -141,4 +141,42 @@ for name in table-gap table-dist table-crc block; do
   [ "$rc" -eq 4 ] || fail "corrupt $name: --verify rc=$rc"
 done
 
+echo "== pinned v7 fixtures (frozen format) =="
+FX="$ROOT/tests/fixtures/v7"
+[ -f "$FX/manifest.tsv" ] || fail "missing v7 manifest"
+python3 - "$CORPUS/random.bin" "$CORPUS/rversions.bin" <<'EOF'
+import sys
+r = open(sys.argv[1], 'rb').read()[:65536]
+out = bytearray()
+for v in range(3):
+    b = bytearray(r)
+    for k in range(12):
+        p = (k * 7919 + v * 104729) % (len(b) - 8)
+        b[p:p + 4] = b'v%03d' % v
+    out += b
+open(sys.argv[2], 'wb').write(bytes(out))
+EOF
+nfx=0
+while IFS=$'\t' read -r sha id input args; do
+  [ -n "$id" ] || continue
+  case "$id" in \#*) continue ;; esac
+  archive="$FX/$id.osr"
+  [ -f "$archive" ] || fail "missing fixture $id"
+  if command -v sha256sum >/dev/null 2>&1; then
+    actual="$(sha256sum "$archive" | cut -d' ' -f1)"
+  else
+    actual="$(shasum -a 256 "$archive" | cut -d' ' -f1)"
+  fi
+  [ "$actual" = "$sha" ] || fail "sha256 mismatch for $id"
+  for b in "$NAT/osrep" "$REF/osrep"; do
+    "$b" --verify "$archive" >/dev/null || fail "--verify $id"
+    "$b" -d "$archive" "$TMP/fx.out" || fail "-d $id"
+    cmp "$TMP/fx.out" "$CORPUS/$input" || fail "v7 fixture $id content"
+    "$b" -d "$archive" - < /dev/null | cmp - "$CORPUS/$input" || \
+      fail "v7 fixture $id to stdout"
+  done
+  nfx=$((nfx + 1))
+done < "$FX/manifest.tsv"
+[ "$nfx" -eq 6 ] || fail "expected 6 v7 fixtures, read $nfx"
+
 echo "v7 long-range: all checks passed"

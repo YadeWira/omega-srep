@@ -10,7 +10,7 @@ it is licensed MIT, and its own formats are **v6** and **v7**: blocks with CRC-3
 VHASH-128 digest, a footer that chains the block CRCs, and a CLI for
 preprocessing, decompression, verification and inspection.
 
-- **Status: 0.0.14 checkpoint (pre-release).** The v6 reader and writer are
+- **Status: 0.0.15 checkpoint (pre-release).** The v6 reader and writer are
   implemented in `src/pascal/`: container, CRC-32C, VHASH-128 block digest,
   `-d`, `--verify`, `-i`, `-dup` write/read/restore, `-m0` stored, dedup-only
   `-m1` (fixed-window CDC) and `-m2` (order-1 CDC), a hash-chain match finder
@@ -25,11 +25,13 @@ preprocessing, decompression, verification and inspection.
   The tests cover the ten compatibility fixtures in `tests/fixtures/v6/`, the
   encoder round-trip/determinism, `-hash-`, `-dup`, the new golden archives in
   `tests/fixtures/v6-new/`, the native CDC and match finder against the
-  Pascal reference, and the library (73 checks, 103 with the corpus).
+  Pascal reference, the library (73 checks, 103 with the corpus), the
+  frozen v7 archives in `tests/fixtures/v7/` and a structure-aware v7
+  fuzzer (`tests/fuzz_v7.sh`).
   Every 0.0.x release is a pre-release; 1.0.0 is the first stable release.
   Implementation notes and the open limitations are in
-  `docs/implementation-notes.md`; the 0.0.14 notes are in
-  `docs/release-0.0.14.md`.
+  `docs/implementation-notes.md`; the 0.0.15 notes are in
+  `docs/release-0.0.15.md`.
 - **Default method: `-m6`** (long range, format v7, `spec/format-v7.md`): one
   index over the whole input finds repeats at any distance, and the match
   table goes first. Defaults `-l512 --align=16` are for a backend behind
@@ -37,7 +39,7 @@ preprocessing, decompression, verification and inspection.
   `-m6 -l32 --align=1` without a backend. `-m0`..`-m5` still write v6, and
   `-dup` without `-m` keeps `-m3`. The library's default stays `-m3`.
   Measurements against SREP, REP and Omega are in `docs/scoreboard.md`.
-- **Format:** v6 (`OSR6`) and v7 (`OSR7`, `-m6`; draft until frozen). OSREP does **not** read or write the SREP
+- **Format:** v6 (`OSR6`) and v7 (`OSR7`, `-m6`; frozen in 0.0.15). OSREP does **not** read or write the SREP
   v1-v5 formats, and there is no compatibility goal with upstream SREP.
 - **License:** MIT, from the first commit of this branch (`LICENSE`).
 - **Platforms:** Linux x86_64, x86 (cross-built and tested) and ARM64
