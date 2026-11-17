@@ -60,7 +60,9 @@ longer than OREP anyway.
 reference build with `-t3`, against `-t1`, on three inputs and three option
 sets. The rest as in 0.0.1 (round trips, native == reference, ring wrap,
 stdin/stdout, memory limit, 300 corrupt or truncated streams).
-WINDOWS_LINE
+The six binaries give the same stream with `-t1` and `-t4` (qemu for arm64,
+wine, and a real Windows 10 for x64 and x86: three files × three option
+sets × two thread counts, round trips and `-d` to stdout).
 
 ## Files
 
