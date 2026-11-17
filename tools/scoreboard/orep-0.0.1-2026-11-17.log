@@ -1,0 +1,121 @@
+# OREP 0.0.1 vs REP (FreeArc'Next 0.11 -mrep), 2026-11-17
+# backend m4 = xz --format=raw --lzma1=dict=96MiB,lc=4,lp=0,pb=2,mode=normal,nice=16,mf=hc4,depth=8
+# backend m7 = xz --format=raw --lzma1=dict=64MiB,lc=4,lp=0,pb=2,mode=normal,nice=273,mf=bt4
+# names: oN = -lN (a1, before padding); PNaM = -lN -aM with padding; QN = -w512m -lN -a4; D = -D64m
+# tilin = tilin_512m.tar (first 512 MiB of PArc's TILIN.tar)
+## cmp3
+m4 none pre=536870912 final=255466616 lzma_s=219.505622941
+m4 o128 pre=441385784 final=255189658 lzma_s=197.363319425
+m4 o256 pre=451958420 final=255176196 lzma_s=212.201351683
+m4 o512 pre=460046772 final=255226031 lzma_s=198.597810594
+m4 o64 pre=420206746 final=255079818 lzma_s=202.644444931
+m4 rep96 pre=458962774 final=255185911 lzma_s=212.992437099
+m7 none pre=536870912 final=249140105 lzma_s=316.213455745
+m7 o128D pre=536082771 final=249230203 lzma_s=313.245727115
+m7 o32D pre=534893049 final=249222403 lzma_s=303.348218974
+m7 o512 pre=459749154 final=249152703 lzma_s=283.469856486
+m7 o512D pre=536418218 final=249202907 lzma_s=307.498708800
+m7 o64D pre=535585673 final=249183643 lzma_s=306.244610360
+m7 rep512 pre=458554757 final=249113518 lzma_s=288.168870239
+## cmp4
+m4 enwik8.none pre=100000000 final=30339891 lzma_s=31.491131194
+m4 enwik8.o128 pre=98130888 final=30305857 lzma_s=31.981669745
+m4 enwik8.o32 pre=88581385 final=30042414 lzma_s=32.820891252
+m4 enwik8.o512 pre=99858657 final=30338331 lzma_s=31.481605110
+m4 enwik8.o64 pre=95860918 final=30242639 lzma_s=31.885134281
+m4 enwik8.rep96 pre=99856108 final=30338496 lzma_s=33.211154118
+m4 game-assets.tar.none pre=584499200 final=303578873 lzma_s=195.811834907
+m4 game-assets.tar.o128 pre=440330511 final=303641397 lzma_s=205.112937329
+m4 game-assets.tar.o32 pre=399925518 final=303990313 lzma_s=206.821497482
+m4 game-assets.tar.o512 pre=471490620 final=303549949 lzma_s=196.006390368
+m4 game-assets.tar.o64 pre=417237249 final=303639837 lzma_s=205.833073074
+m4 game-assets.tar.rep96 pre=465958667 final=303520426 lzma_s=206.369125194
+m4 pja.tar.none pre=33587200 final=1371469 lzma_s=1.498400254
+m4 pja.tar.o128 pre=6125211 final=1362913 lzma_s=1.096147861
+m4 pja.tar.o32 pre=4346381 final=1354325 lzma_s=1.084891765
+m4 pja.tar.o512 pre=6634339 final=1363259 lzma_s=1.076050904
+m4 pja.tar.o64 pre=5506458 final=1357224 lzma_s=1.095944891
+m4 pja.tar.rep96 pre=6615773 final=1361970 lzma_s=1.099493780
+m4 silesia.tar.none pre=211957760 final=54704070 lzma_s=46.829142554
+m4 silesia.tar.o128 pre=184595668 final=54836359 lzma_s=47.446171644
+m4 silesia.tar.o32 pre=139710378 final=54926502 lzma_s=47.228893442
+m4 silesia.tar.o512 pre=202529456 final=54812961 lzma_s=45.900987690
+m4 silesia.tar.o64 pre=165786912 final=54896410 lzma_s=47.818866335
+m4 silesia.tar.rep96 pre=201195703 final=54769356 lzma_s=47.535995482
+m4 versions.tar.none pre=130498560 final=5474742 lzma_s=6.606605893
+m4 versions.tar.o128 pre=25214564 final=5427606 lzma_s=4.823710835
+m4 versions.tar.o32 pre=18205939 final=5361804 lzma_s=5.047251905
+m4 versions.tar.o512 pre=28321377 final=5443297 lzma_s=4.752181729
+m4 versions.tar.o64 pre=22482275 final=5380126 lzma_s=5.112466262
+m4 versions.tar.rep96 pre=28119427 final=5440237 lzma_s=4.868513437
+m4 zpaqstd-history.tar.none pre=241684480 final=6475595 lzma_s=9.812178490
+m4 zpaqstd-history.tar.o128 pre=29288630 final=6296228 lzma_s=5.582040617
+m4 zpaqstd-history.tar.o32 pre=20847935 final=6210288 lzma_s=5.367070898
+m4 zpaqstd-history.tar.o512 pre=33992676 final=6340050 lzma_s=6.013982211
+m4 zpaqstd-history.tar.o64 pre=25753056 final=6220890 lzma_s=5.669571966
+m4 zpaqstd-history.tar.rep96 pre=33577629 final=6330866 lzma_s=6.004265972
+## cmp5
+m4 enwik8.o32a16 pre=89788900 final=30287544 lzma_s=32.889144993
+m4 enwik8.o512a16 pre=99859997 final=30338269 lzma_s=33.656679938
+m4 enwik8.o64a16 pre=96086379 final=30284185 lzma_s=32.622403949
+m4 enwik8.o64a4 pre=95910191 final=30261472 lzma_s=31.776392413
+m4 game-assets.tar.o32a16 pre=404038131 final=303867220 lzma_s=213.025057062
+m4 game-assets.tar.o512a16 pre=471699663 final=303411551 lzma_s=187.009740748
+m4 game-assets.tar.o64a16 pre=419341656 final=303466180 lzma_s=211.608267430
+m4 game-assets.tar.o64a4 pre=417674396 final=303381757 lzma_s=209.346011297
+m4 silesia.tar.o32a16 pre=144382583 final=54771586 lzma_s=48.487986832
+m4 silesia.tar.o512a16 pre=202578997 final=54719087 lzma_s=44.616638936
+m4 silesia.tar.o64a16 pre=166985653 final=54450430 lzma_s=46.408538275
+m4 silesia.tar.o64a4 pre=166118450 final=54405316 lzma_s=45.596103076
+m4 zpaqstd-history.tar.o32a16 pre=21737549 final=6364114 lzma_s=5.998518712
+m4 zpaqstd-history.tar.o512a16 pre=34072628 final=6334836 lzma_s=5.584412350
+m4 zpaqstd-history.tar.o64a16 pre=26094487 final=6281224 lzma_s=5.585921700
+m4 zpaqstd-history.tar.o64a4 pre=25848885 final=6247474 lzma_s=5.395865441
+## cmp6
+m4 enwik8.P32a4 pre=88883217 final=30136693 lzma_s=31.209130260
+m4 enwik8.P512a4 pre=99858893 final=30338644 lzma_s=31.557789428
+m4 enwik8.P64a16 pre=96086573 final=30284034 lzma_s=31.432068971
+m4 enwik8.P64a4 pre=95910221 final=30261237 lzma_s=32.269637971
+m4 game-assets.tar.P32a4 pre=400872865 final=303666234 lzma_s=214.925198807
+m4 game-assets.tar.P512a4 pre=471532953 final=303406321 lzma_s=202.877081328
+m4 game-assets.tar.P64a16 pre=419342685 final=303425552 lzma_s=203.164485683
+m4 game-assets.tar.P64a4 pre=417674605 final=303365351 lzma_s=205.130571347
+m4 pja.tar.P32a4 pre=4392089 final=1362476 lzma_s=1.115773668
+m4 pja.tar.P512a4 pre=6635257 final=1363399 lzma_s=1.108830566
+m4 pja.tar.P64a16 pre=5575181 final=1363438 lzma_s=1.156107816
+m4 pja.tar.P64a4 pre=5520541 final=1360143 lzma_s=1.153945919
+m4 silesia.tar.P32a4 pre=140991617 final=54343353 lzma_s=47.569763883
+m4 silesia.tar.P512a4 pre=202540273 final=54639616 lzma_s=45.111699923
+m4 silesia.tar.P64a16 pre=166986077 final=54357260 lzma_s=46.189090867
+m4 silesia.tar.P64a4 pre=166118521 final=54333022 lzma_s=46.019375749
+m4 versions.tar.P32a4 pre=18382041 final=5399825 lzma_s=4.780274383
+m4 versions.tar.P512a4 pre=28324901 final=5442052 lzma_s=4.947001215
+m4 versions.tar.P64a16 pre=22786125 final=5416438 lzma_s=4.966324240
+m4 versions.tar.P64a4 pre=22546421 final=5393973 lzma_s=4.767495392
+m4 zpaqstd-history.tar.P32a4 pre=21066769 final=6266364 lzma_s=5.839491917
+m4 zpaqstd-history.tar.P512a4 pre=34008593 final=6339224 lzma_s=5.638524459
+m4 zpaqstd-history.tar.P64a16 pre=26094973 final=6280848 lzma_s=5.714978862
+m4 zpaqstd-history.tar.P64a4 pre=25848969 final=6247803 lzma_s=5.562583684
+## cmp7
+m4 tilin.o32 pre=390517281 final=255348067 lzma_s=204.409949707
+m4 tilin.P64a4 pre=420639961 final=255097990 lzma_s=213.257547603
+m7 tilin.P64a4 pre=420006317 final=249648291 lzma_s=278.841983720
+## cmp8
+m7 silesia.tar.none pre=211957760 final=48371088 lzma_s=137.632120078
+m7 silesia.tar.Q128 pre=184679365 final=48568921 lzma_s=119.078207067
+m7 silesia.tar.Q512 pre=202532745 final=48385963 lzma_s=130.541099997
+m7 silesia.tar.Q64 pre=166108901 final=49175193 lzma_s=98.432558351
+m7 silesia.tar.rep512 pre=201178147 final=48615525 lzma_s=129.005259080
+m7 tilin.Q128 pre=441019885 final=249172714 lzma_s=277.176561227
+m7 tilin.Q256 pre=451635557 final=249059109 lzma_s=292.494565957
+m7 tilin.Q512 pre=459769105 final=249029973 lzma_s=292.093460760
+m7 versions.tar.none pre=130498560 final=4684614 lzma_s=50.935946657
+m7 versions.tar.Q128 pre=25240193 final=4695397 lzma_s=13.052804054
+m7 versions.tar.Q512 pre=28324901 final=4665349 lzma_s=14.450932030
+m7 versions.tar.Q64 pre=22546293 final=4746169 lzma_s=10.973787766
+m7 versions.tar.rep512 pre=28110530 final=4660290 lzma_s=14.788090613
+m7 zpaqstd-history.tar.none pre=241684480 final=5429813 lzma_s=92.447359594
+m7 zpaqstd-history.tar.Q128 pre=29306825 final=5432381 lzma_s=16.685514290
+m7 zpaqstd-history.tar.Q512 pre=33917253 final=5388962 lzma_s=19.378763553
+m7 zpaqstd-history.tar.Q64 pre=25837489 final=5499419 lzma_s=14.209285404
+m7 zpaqstd-history.tar.rep512 pre=33364889 final=5381975 lzma_s=18.797771433
