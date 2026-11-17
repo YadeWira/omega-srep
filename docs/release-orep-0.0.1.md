@@ -89,8 +89,9 @@ All binaries give the same stream for the same input and options.
 windows that wrap the ring many times), native == reference byte for byte,
 stdin/stdout, the memory limit, and 300 truncated or corrupted streams (none
 crashes the decoder or decodes to wrong data). Run on Linux x86_64 and in the
-macOS arm64 workflow; the five Linux/Windows binaries were cross-checked
-under qemu and wine.
+macOS arm64 workflow. The five Linux/Windows binaries give the same
+stream hashes under qemu and wine, and on a real Windows 10 (x64 and x86:
+three files × three option sets, round trips and `-d` to stdout).
 
 ## Limitations
 
