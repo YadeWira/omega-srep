@@ -119,3 +119,12 @@ m7 zpaqstd-history.tar.Q128 pre=29306825 final=5432381 lzma_s=16.685514290
 m7 zpaqstd-history.tar.Q512 pre=33917253 final=5388962 lzma_s=19.378763553
 m7 zpaqstd-history.tar.Q64 pre=25837489 final=5499419 lzma_s=14.209285404
 m7 zpaqstd-history.tar.rep512 pre=33364889 final=5381975 lzma_s=18.797771433
+## cmp8b (m7, -s16 and -a1 on versions/history)
+m7 versions.tar.Q256s16 pre=26795129 final=4672379
+m7 versions.tar.Q512a1 pre=28321377 final=4663007
+m7 versions.tar.Q512s16 pre=28139169 final=4662398
+m7 versions.tar.Q512s16a1 pre=28136240 final=4663906
+m7 zpaqstd-history.tar.Q256s16 pre=31234781 final=5404063
+m7 zpaqstd-history.tar.Q512a1 pre=33901188 final=5390437
+m7 zpaqstd-history.tar.Q512s16 pre=33481649 final=5381869
+m7 zpaqstd-history.tar.Q512s16a1 pre=33465689 final=5384360
