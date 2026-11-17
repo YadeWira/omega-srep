@@ -1,5 +1,5 @@
 #!/bin/sh
-# Build the OREP CLI for the host (Linux x86_64): native (C core) and
+# Build the OREP CLI for the host (Linux, or macOS in CI): native (C core) and
 # reference (all Pascal, -dOREP_NO_NATIVE).
 #
 #   scripts/build_orep.sh <out dir>      -> <out>/orep, <out>/orep-ref
@@ -8,8 +8,13 @@ OUT=${1:?usage: build_orep.sh <out dir>}
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 CC=${CC:-gcc}
 FPC=${FPC:-fpc}
-CFLAGS="-O2 -fno-builtin -ffreestanding -fno-stack-protector -fno-pic \
- -fno-tree-loop-distribute-patterns -fno-asynchronous-unwind-tables"
+CFLAGS="-O2 -fno-builtin -ffreestanding -fno-stack-protector \
+ -fno-asynchronous-unwind-tables"
+# gcc only; macOS (clang, Mach-O) needs PIC
+case $(uname -s) in
+  Darwin) CFLAGS="$CFLAGS -fPIC" ;;
+  *) CFLAGS="$CFLAGS -fno-pic -fno-tree-loop-distribute-patterns" ;;
+esac
 mkdir -p "$OUT/nat" "$OUT/ref"
 OUT=$(cd "$OUT" && pwd)
 $CC $CFLAGS -c "$ROOT/src/c/orep_core.c" -o "$OUT/nat/orep_core.o"

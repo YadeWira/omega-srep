@@ -59,9 +59,11 @@ type
     Window: QWord;      { max distance, bytes (default 512 MiB) }
     SizeHint: QWord;    { total input if known, 0 = unknown: a smaller
                           input gets a smaller window (same matches) }
-    MinLen: LongWord;   { shortest match searched, >= 16 (default 32) }
+    MinLen: LongWord;   { shortest match searched, >= 16 (default 64) }
     Chunk: LongWord;    { block size, 64 KiB..64 MiB (default 4 MiB) }
-    Align: LongWord;    { match lengths multiple of this (default 1) }
+    Align: LongWord;    { match lengths multiple of this, and literals kept
+                          at their input position modulo it (default 4,
+                          lzma's pb2) }
     MinDist: QWord;     { matches nearer than this are left to the
                           backend (default 0) }
     Density: LongWord;  { anchors: about one per (MinLen - gram) / Density
@@ -102,6 +104,7 @@ type
     BlkPhys: QWord;
     BlkLen: LongWord;
     Total: QWord;
+    StreamPos: QWord;    { stream bytes staged or written so far }
     Ended, Inited: Boolean;
   end;
 
@@ -130,6 +133,9 @@ type
     BlkPos: LongWord;    { bytes of the block written }
     CrcBuf: array[0..7] of Byte;
     CrcLen: LongWord;
+    InPos: QWord;        { stream bytes consumed }
+    Align: LongWord;
+    PadLeft: LongWord;
     EmitPos: LongWord;
     Inited: Boolean;
   end;
@@ -235,9 +241,9 @@ procedure OrepParamsDefault(out P: TOrepParams);
 begin
   P.Window := 512 * QWord(1024 * 1024);
   P.SizeHint := 0;
-  P.MinLen := 32;
+  P.MinLen := 64;
   P.Chunk := 4 * 1024 * 1024;
-  P.Align := 1;
+  P.Align := 4;
   P.Density := 4;
   P.MinDist := 0;
 end;
@@ -301,7 +307,7 @@ begin
   Derive(P, W, G, SM, MG, TB, MK, SS);
   Cap := P.Chunk div MK + 2;
   Result := RingFor(W, P.Chunk) + (QWord(32) shl TB) + 64 + 3 * OREP_SUB * 4 +
-    QWord(Cap) * 16 + QWord(Cap) * 15 + 64 + SizeOf(TOrepEnc);
+    QWord(Cap) * 16 + QWord(Cap) * 15 + 4160 + SizeOf(TOrepEnc);
 end;
 
 function OrepDecMemory(Window: QWord; Chunk: LongWord): QWord;
@@ -590,7 +596,7 @@ begin
   E.Chunk := P.Chunk;
   E.Cfg.RingSize := RingFor(W, P.Chunk);
   E.Cap := P.Chunk div E.Cfg.MinKeep + 2;
-  E.StageCap := E.Cap * 15 + 64;
+  E.StageCap := E.Cap * 15 + 64 + 4096;
   try
     E.TableRaw := AllocMem((SizeUInt(32) shl E.Cfg.TBits) + 64);
     E.Cfg.Table := PQWord((PtrUInt(E.TableRaw) + 63) and not PtrUInt(63));
@@ -608,12 +614,14 @@ begin
   { stream header }
   Move(Magic, E.Stage[0], 4);
   E.Stage[4] := OREP_FORMAT;
-  E.Stage[5] := 0; E.Stage[6] := 0; E.Stage[7] := 0;
+  E.Stage[5] := 0;
+  E.Stage[6] := Byte(P.Align); E.Stage[7] := Byte(P.Align shr 8);
   Put64(E.Stage + 8, W);
   Put32(E.Stage + 16, P.Chunk);
   Put32(E.Stage + 20, P.MinLen);
   Put32(E.Stage + 24, OrepCrc32c(0, E.Stage, 24));
   E.StageLen := HDR_SIZE;
+  E.StreamPos := HDR_SIZE;
   E.StagePos := 0;
   E.Phase := 2;   { drain the header, then fill }
   E.Inited := True;
@@ -648,7 +656,7 @@ end;
 function EncBlock(var E: TOrepEnc): Integer;
 var
   N: LongInt;
-  I, Q, Sum: LongWord;
+  I, Q, Sum, SumLen, Pad, A: LongWord;
   CAbs: QWord;
   Tmp: array[0..15] of Byte;
 begin
@@ -662,6 +670,7 @@ begin
   { column bytes, and the distance to continue with in the next block }
   Q := 0;
   Sum := 0;
+  SumLen := 0;
   I := 0;
   while I < E.NMatch do
   begin
@@ -669,6 +678,7 @@ begin
       PutVar(@Tmp[0], E.Len[I] - OREP_MIN_MATCH) +
       PutVar(@Tmp[0], E.Dist[I] - 1));
     Inc(Sum, E.Lit[I] + E.Len[I]);
+    Inc(SumLen, E.Len[I]);
     Inc(I);
   end;
   E.PrevDist := 0;
@@ -684,6 +694,12 @@ begin
       E.Len[I - 1] - OREP_MIN_MATCH));
   for I := 1 to E.NMatch do
     Inc(E.StageLen, PutVar(E.Stage + E.StageLen, E.Dist[I - 1] - 1));
+  { zeros so that every literal sits at its input position modulo Align }
+  A := E.Cfg.Align;
+  Pad := ((CAbs mod A) + A - ((E.StreamPos + E.StageLen) mod A)) mod A;
+  FillChar(E.Stage[E.StageLen], Pad, 0);
+  Inc(E.StageLen, Pad);
+  Inc(E.StreamPos, QWord(E.StageLen) + (E.BlkLen - SumLen) + 4);
   E.StagePos := 0;
   E.BlockCrc := OrepCrc32c(0, E.Cfg.Ring + E.BlkPhys, E.BlkLen);
   E.LitRun := 0;
@@ -857,8 +873,9 @@ begin
     if Char(D.Hdr[I]) <> Magic[I] then Exit(OREP_E_VERSION);
   if Get32(@D.Hdr[24]) <> OrepCrc32c(0, @D.Hdr[0], 24) then Exit(OREP_E_DATA);
   if D.Hdr[4] <> OREP_FORMAT then Exit(OREP_E_VERSION);
-  if (D.Hdr[5] <> 0) or (D.Hdr[6] <> 0) or (D.Hdr[7] <> 0) then
-    Exit(OREP_E_VERSION);
+  if D.Hdr[5] <> 0 then Exit(OREP_E_VERSION);
+  D.Align := D.Hdr[6] or (LongWord(D.Hdr[7]) shl 8);
+  if (D.Align < 1) or (D.Align > 4096) then Exit(OREP_E_DATA);
   D.Window := Get64(@D.Hdr[8]);
   D.Chunk := Get32(@D.Hdr[16]);
   if (D.Window < 1) or (D.Window > OREP_MAX_WINDOW) or
@@ -992,7 +1009,7 @@ begin
              K := HDR_SIZE - D.HdrLen;
              if K > AvailIn then K := AvailIn;
              Move(NextIn^, D.Hdr[D.HdrLen], K);
-             Inc(NextIn, K); Dec(AvailIn, K); Inc(D.HdrLen, K);
+             Inc(NextIn, K); Dec(AvailIn, K); Inc(D.InPos, K); Inc(D.HdrLen, K);
              Continue;
            end;
            R := DecHeader(D);
@@ -1003,7 +1020,7 @@ begin
       1: begin { block header: out size, matches, column bytes }
            if AvailIn = 0 then Exit(OREP_OK);
            B := NextIn^;
-           Inc(NextIn); Dec(AvailIn);
+           Inc(NextIn); Dec(AvailIn); Inc(D.InPos);
            if D.VarShift > 63 then begin D.Phase := 99; Exit(OREP_E_DATA); end;
            D.VarVal := D.VarVal or (QWord(B and $7F) shl D.VarShift);
            Inc(D.VarShift, 7);
@@ -1053,11 +1070,24 @@ begin
              K := D.ColSize - D.ColLen;
              if K > AvailIn then K := AvailIn;
              Move(NextIn^, D.Cols[D.ColLen], K);
-             Inc(NextIn, K); Dec(AvailIn, K); Inc(D.ColLen, K);
+             Inc(NextIn, K); Dec(AvailIn, K); Inc(D.InPos, K); Inc(D.ColLen, K);
              Continue;
            end;
            R := DecCols(D);
            if R <> OREP_OK then begin D.Phase := 99; Exit(R); end;
+           D.PadLeft := ((D.Total mod D.Align) + D.Align -
+             (D.InPos mod D.Align)) mod D.Align;
+           D.Phase := 8;
+         end;
+      8: begin { zero padding before the literals }
+           if D.PadLeft > 0 then
+           begin
+             if AvailIn = 0 then Exit(OREP_OK);
+             if NextIn^ <> 0 then begin D.Phase := 99; Exit(OREP_E_DATA); end;
+             Inc(NextIn); Dec(AvailIn); Inc(D.InPos);
+             Dec(D.PadLeft);
+             Continue;
+           end;
            D.Rec := 0;
            D.InRec := False;
            D.BlkPos := 0;
@@ -1072,7 +1102,7 @@ begin
              K := D.LitLeft;
              if K > AvailIn then K := AvailIn;
              Move(NextIn^, D.Ring[D.WPhys + D.BlkPos], K);
-             Inc(NextIn, K); Dec(AvailIn, K);
+             Inc(NextIn, K); Dec(AvailIn, K); Inc(D.InPos, K);
              Inc(D.BlkPos, K); Dec(D.LitLeft, K);
              Continue;
            end;
@@ -1092,7 +1122,7 @@ begin
            begin
              if AvailIn = 0 then Exit(OREP_OK);
              D.CrcBuf[D.CrcLen] := NextIn^;
-             Inc(NextIn); Dec(AvailIn); Inc(D.CrcLen);
+             Inc(NextIn); Dec(AvailIn); Inc(D.InPos); Inc(D.CrcLen);
              Continue;
            end;
            if Get32(@D.CrcBuf[0]) <>
@@ -1123,7 +1153,7 @@ begin
            begin
              if AvailIn = 0 then Exit(OREP_OK);
              D.CrcBuf[D.CrcLen] := NextIn^;
-             Inc(NextIn); Dec(AvailIn); Inc(D.CrcLen);
+             Inc(NextIn); Dec(AvailIn); Inc(D.InPos); Inc(D.CrcLen);
              Continue;
            end;
            if Get64(@D.CrcBuf[0]) <> D.Total then

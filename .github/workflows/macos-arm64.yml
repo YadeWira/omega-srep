@@ -37,6 +37,12 @@ jobs:
           bash tests/sha1.sh
           bash tests/zpaq_fragments_exact.sh
           bash tests/osrep_cdc_mode.sh
+      - name: OREP (round trips, native == reference, corrupt streams)
+        run: |
+          bash scripts/build_orep.sh build/orep
+          bash tests/orep.sh build/orep
+          mkdir -p build/macos
+          cp build/orep/orep build/macos/orep
       - name: Build the release binary
         run: |
           mkdir -p build/macos/obj build/macos/units
@@ -52,4 +58,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: osrep-macos-arm64
-          path: build/macos/osrep
+          path: |
+            build/macos/osrep
+            build/macos/orep

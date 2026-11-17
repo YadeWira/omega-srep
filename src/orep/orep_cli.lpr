@@ -21,9 +21,9 @@ begin
   WriteLn(StdErr, '       orep -d [options] <in> <out>  decode   ("-" = stdin/stdout)');
   WriteLn(StdErr, 'options:');
   WriteLn(StdErr, '  -w<size>   window (max distance), default 512m; k/m/g suffixes');
-  WriteLn(StdErr, '  -l<n>      shortest match, >= 16, default 32');
+  WriteLn(StdErr, '  -l<n>      shortest match, >= 16, default 64 (32 for text)');
   WriteLn(StdErr, '  -b<size>   block size, 64k..64m, default 4m');
-  WriteLn(StdErr, '  -a<n>      match lengths multiple of n, default 1');
+  WriteLn(StdErr, '  -a<n>      keep literals aligned to n, default 4 (1 for text)');
   WriteLn(StdErr, '  -s<n>      anchor density 1..64, default 4 (higher: more short matches, slower)');
   WriteLn(StdErr, '  -D<size>   leave matches nearer than this to the backend, default 0');
   WriteLn(StdErr, '  -M<size>   decode: refuse streams that need more memory');

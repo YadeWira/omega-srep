@@ -50,6 +50,17 @@ preprocessing, decompression, verification and inspection.
   finder and CRC-32C; more C/asm hot paths (SIMD, hashes, prefetch/CPUID)
   in phase 2.
 
+## OREP
+
+**OREP** (`src/orep/`, `src/c/orep_core.c`) is a second product in this
+repository: a one-pass **streaming** long-range dedup for a backend
+compressor, written for PArc as an MIT replacement for FreeArc's REP
+(clean-room, own format: `spec/orep-format.md`). Zlib-style Pascal API, a
+bounded decoder, the same bytes on every platform. It has its own release
+line (`orep-vX.Y.Z`); see `docs/orep.md` and
+`docs/release-orep-0.0.1.md`. With lzma behind (PArc's `-m4`), its defaults
+beat REP on the seven corpora measured (−0.03% to −1.31%).
+
 ## Priority
 
 The product comes first: finish the v6 preprocessor, the CLI, the encoder

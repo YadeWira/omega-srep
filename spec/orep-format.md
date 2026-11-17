@@ -24,7 +24,8 @@ end
 |---:|---:|---|
 | 0 | 4 | magic `OREP` |
 | 4 | 1 | version = 1 |
-| 5 | 3 | zero (flags, reserved) |
+| 5 | 1 | zero (flags, reserved) |
+| 6 | 2 | align A, 1 .. 4096 |
 | 8 | 8 | window W: the largest distance, 1 .. 0xF0000000 |
 | 16 | 4 | chunk C: the slot size, 65536 .. 67108864 |
 | 20 | 4 | the encoder's minimum match length (information only) |
@@ -52,11 +53,19 @@ columns:
   n varints  lit[i]       literal bytes before match i
   n varints  len[i] - 16  match length, >= 16
   n varints  dist[i] - 1  match distance, >= 1
+padding               zero bytes, see below
 literals              out_size - sum(len) bytes
 u32     crc           CRC-32C of the block's out_size output bytes
 ```
 
 Each varint of a column holds a value below 2^32 (at most 5 bytes).
+
+The padding has `(pos - q) mod A` zero bytes, where `pos` is the block's
+first output position and `q` the stream offset (from the first header
+byte) right after the columns. With it, the first literal of the block sits
+at a stream offset equal to its output position modulo A; the encoder makes
+every match length a multiple of A, so all literals keep that property,
+which the position-dependent contexts of a backend (lzma's pb/lp) use.
 
 Decoding, with `pos` the block's first output position: for i in 0..n-1,
 copy `lit[i]` literal bytes, then copy `len[i]` bytes one by one from
@@ -69,6 +78,7 @@ A block is valid when:
 - `out_size <= C` and `(pos mod C) + out_size <= C`;
 - `n <= out_size / 16`, `3n <= col_size <= 15n` and the columns use exactly
   `col_size` bytes;
+- the padding bytes are zero;
 - for every match, `sum(lit[0..i]) + sum(len[0..i]) <= out_size`;
 - every `dist[i] <= W` and `dist[i] <=` the output position of match i
   (it never points before the start of the stream);

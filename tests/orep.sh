@@ -61,7 +61,7 @@ done
 
 echo "== versions found"
 "$NAT" -q -w1m "$W/versions.bin" "$W/v.orp"
-s=$(stat -c%s "$W/v.orp")
+s=$(wc -c < "$W/v.orp" | tr -d " ")
 [ "$s" -lt 400000 ] || bad "versions.bin: $s bytes, the repeats were not found"
 
 echo "== stdin / stdout"
