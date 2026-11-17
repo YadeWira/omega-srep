@@ -90,6 +90,10 @@ Detalle y método en `docs/scoreboard.md` y `tools/scoreboard/`.
 - `v6_read`, `v6_encode`, `decode_blockwise`, `native_match`, `native_cdc`,
   `memory_budget`, `windows_cross.sh`, `arm64_cross.sh`,
   `linux_x86_cross.sh` y el workflow de macOS (ahora con `v7_longrange`).
+- Windows 10 real (x64 y x86, los binarios del release): los 6 fixtures v7,
+  idas y vueltas con `-m6`, `-m6 -l32 --align=1` y `-m3` (texto, mixto,
+  versiones, tiny, vacío) con `--verify`, y `-d` a stdout. Los tamaños de
+  los `.osr` son los mismos que en Linux.
 
 ## Limitaciones
 
