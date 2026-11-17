@@ -1,5 +1,5 @@
 #!/bin/bash
-# Used for tools/scoreboard/orep-0.0.1-2026-11-17.log: one pipeline row
+# Used for tools/scoreboard/orep-2026-11-17.log: one pipeline row
 # (preprocessor, then lzma), paths are the ones of the measuring machine.
 # job.sh <name> <backend m4|m7> <pre...>: one pipeline row
 cd /mnt/IA_LAB/agentes/osrep/score/orep

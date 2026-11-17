@@ -128,3 +128,8 @@ m7 zpaqstd-history.tar.Q256s16 pre=31234781 final=5404063
 m7 zpaqstd-history.tar.Q512a1 pre=33901188 final=5390437
 m7 zpaqstd-history.tar.Q512s16 pre=33481649 final=5381869
 m7 zpaqstd-history.tar.Q512s16a1 pre=33465689 final=5384360
+## cmp9 (TILIN.tar whole, m4, OREP 0.0.2 -t4)
+m4 TILIN.o256 pre=1324284629 final=1014652985 lzma_s=768.891291420
+m4 TILIN.o512 pre=1343009625 final=1014676387 lzma_s=807.257319437
+m4 TILIN.o64 pre=1270940001 final=1012323242 lzma_s=788.268223696
+m4 TILIN.rep96 pre=1415525869 final=1017365357 lzma_s=825.540640363

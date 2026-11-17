@@ -182,6 +182,10 @@ salida, contra 2,54 s y 1.415.525.869 de REP 96m (y 155 MB de RSS contra
 ~8 bytes y escala mal entre los dos sockets de esta máquina); en los presets
 donde rinde (lzma normal) lzma tarda cien veces más que OREP.
 
+Tamaño final con TILIN.tar entero y el lzma de `parc -m4`: REP 96m
+1.017.365.357; OREP `-l512` 1.014.676.387 (−0,26 %), `-l256` 1.014.652.985
+(−0,27 %), `-l64` 1.012.323.242 (−0,50 %).
+
 El decoder saca 0,7–1 GB/s.
 
 ## Pruebas
