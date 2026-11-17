@@ -88,11 +88,18 @@ guarda solo las páginas (4 KiB; más grandes si la salida pasa de 16 GiB) de
 las que todavía copia algún match: la página `k` hace falta hasta el mayor
 fin (`dst + length`) de los matches cuya fuente la toca, y se guarda solo
 mientras ese fin quede más allá del bloque actual. El bloque actual se
-decodifica en su propio búfer. Cuesta 24 bytes por match, ~24 bytes por
-página de la salida (fin, puntero, lista de liberación) y las páginas vivas:
-7 MB en el tar de juegos de 584 MB, donde guardar desde la fuente pendiente
-más vieja pedía 427 MB. No depende de que la salida se pueda releer (sirve
-para stdout).
+decodifica en su propio búfer. La tabla no se guarda: se lee del archivo con
+tres cursores (uno por columna, 64 KiB cada uno), una pasada para el cálculo
+de páginas y otra al decodificar, y los literales y el digest de cada bloque
+se leen directo a su lugar (el CRC del bloque se calcula al pasar). Cuesta
+~24 bytes por página de la salida (fin, puntero, lista de liberación), el
+búfer de un bloque y las páginas vivas: 7 MB de páginas en el tar de juegos
+de 584 MB, donde guardar desde la fuente pendiente más vieja pedía 427 MB.
+RSS medido (2026-11-16, `tools/scoreboard/v7-decoder-ram-2026-11-16.log`):
+12–62 MB con `-l512` y 25–70 MB con `-l32 --align=1`, contra 26–65 y
+25–96 MB con la tabla en arreglos. No depende de que la salida se pueda
+releer (sirve para stdout); sí de que el archivo se pueda leer por
+posición.
 
 ## Rechazos
 
@@ -129,9 +136,8 @@ escribir. Se midió si convenía partirla (`tools/scoreboard/v7-table-ram-2026-1
   ventana indexada (una cada `-l/2` bytes): 52–104 MB por GB con `-l512` y
   0,8–1,6 GB por GB con `-l32`, 20–40 veces la lista de matches.
 - **En el decoder se resuelve sin cambiar el formato.** Las columnas se
-  pueden leer con tres cursores sobre la tabla tal como está en disco
-  (≈ 5 bytes por match en vez de 24+5, o nada en memoria si el archivo se
-  puede releer), y el cálculo de páginas es una pasada más.
+  leen con tres cursores sobre la tabla tal como está en disco (hecho, ver
+  arriba), y el cálculo de páginas es una pasada más.
 - **Partirla cuesta.** Con un segmento de tabla delante de cada S bytes de
   salida, mismos matches: con S = 16 MiB, de −0,05 a +0,12 %; con 64 MiB,
   de −0,07 a +0,14 % (historial con zstd), del orden del margen contra
@@ -140,7 +146,7 @@ escribir. Se midió si convenía partirla (`tools/scoreboard/v7-table-ram-2026-1
   tabla entera.
 
 Conclusión: la tabla se queda entera. La memoria del decoder con `-l32` se
-baja en la implementación (pendiente), no en el formato.
+bajó en la implementación, no en el formato.
 
 ## Lo que el encoder de `-m6` decide (no es formato)
 

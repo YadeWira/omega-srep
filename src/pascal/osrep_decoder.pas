@@ -47,7 +47,8 @@ type
     { v7: the match table (destination order) and where the blocks start }
     FIsV7: Boolean;
     FBlocksStart: Int64;
-    FMSrc, FMDst, FMLen: array of QWord;
+    FMatchCount: QWord;
+    FColStart: array[0..3] of Int64;  { gap, length, distance, table CRC }
     procedure LoadHeaderFooter;
     procedure LoadMatchTable(TableStart: Int64);
     procedure DecodeV7(OutStream: TStream; out Data: TBytes);
@@ -160,6 +161,192 @@ begin
     Inc(Shift, 7);
   end;
   Result := False;
+end;
+
+{ v7: a range of the archive read through a small buffer: one varint
+  column of the match table (the table is not kept in memory) or the
+  digest and literals of a block. }
+type
+  TV7Column = class
+  private
+    FStream: TStream;
+    FPos, FEnd: Int64;
+    FBuf: array[0..65535] of Byte;
+    FBufPos, FBufLen: SizeInt;
+  public
+    constructor Create(AStream: TStream; AStart, AEnd: Int64);
+    procedure Reset(AStart, AEnd: Int64);
+    function ReadVarint(out Value: QWord): Boolean;
+    { Count bytes into Dest, added to Crc; False if the range ends first }
+    function ReadBytes(var Dest; Count: SizeInt; var Crc: LongWord): Boolean;
+    function Offset: Int64;
+  end;
+
+  { the matches of a v7 table in destination order, checked as they are read }
+  TV7Matches = class
+  private
+    FCol: array[0..2] of TV7Column;
+    FCount, FIndex, FPrevEnd, FOrigSize: QWord;
+  public
+    Valid: Boolean;
+    Src, Dst, Len: QWord;
+    constructor Create(AStream: TStream; const ColStart: array of Int64;
+      ACount, AOrigSize: QWord);
+    destructor Destroy; override;
+    procedure Next;
+    function ColumnOffset(C: Integer): Int64;
+  end;
+
+constructor TV7Column.Create(AStream: TStream; AStart, AEnd: Int64);
+begin
+  inherited Create;
+  FStream := AStream;
+  FPos := AStart;
+  FEnd := AEnd;
+  FBufPos := 0;
+  FBufLen := 0;
+end;
+
+procedure TV7Column.Reset(AStart, AEnd: Int64);
+begin
+  FPos := AStart;
+  FEnd := AEnd;
+  FBufPos := 0;
+  FBufLen := 0;
+end;
+
+function TV7Column.ReadBytes(var Dest; Count: SizeInt;
+  var Crc: LongWord): Boolean;
+var
+  D: PByte;
+  N: SizeInt;
+  Want: Int64;
+begin
+  D := @Dest;
+  while Count > 0 do
+  begin
+    if FBufPos >= FBufLen then
+    begin
+      Want := FEnd - FPos;
+      if Want <= 0 then
+        Exit(False);
+      if Want > SizeOf(FBuf) then
+        Want := SizeOf(FBuf);
+      FStream.Position := FPos;
+      ReadExact(FStream, FBuf[0], SizeInt(Want), 'block payload');
+      Inc(FPos, Want);
+      FBufPos := 0;
+      FBufLen := SizeInt(Want);
+    end;
+    N := FBufLen - FBufPos;
+    if N > Count then
+      N := Count;
+    Move(FBuf[FBufPos], D^, N);
+    Crc := Crc32CUpdate(Crc, FBuf[FBufPos], PtrUInt(N));
+    Inc(FBufPos, N);
+    Inc(D, N);
+    Dec(Count, N);
+  end;
+  Result := True;
+end;
+
+function TV7Column.Offset: Int64;
+begin
+  Result := FPos - (FBufLen - FBufPos);
+end;
+
+function TV7Column.ReadVarint(out Value: QWord): Boolean;
+var
+  B: Byte;
+  Shift: Integer;
+  Part: QWord;
+  Want: Int64;
+begin
+  Value := 0;
+  Shift := 0;
+  while True do
+  begin
+    if FBufPos >= FBufLen then
+    begin
+      Want := FEnd - FPos;
+      if Want <= 0 then
+        Exit(False);
+      if Want > SizeOf(FBuf) then
+        Want := SizeOf(FBuf);
+      FStream.Position := FPos;
+      ReadExact(FStream, FBuf[0], SizeInt(Want), 'match table');
+      Inc(FPos, Want);
+      FBufPos := 0;
+      FBufLen := SizeInt(Want);
+    end;
+    B := FBuf[FBufPos];
+    Inc(FBufPos);
+    if Shift >= 64 then
+      Exit(False);
+    Part := QWord(B and $7F);
+    if (Shift = 63) and (Part > 1) then
+      Exit(False);
+    Value := Value or (Part shl Shift);
+    if (B and $80) = 0 then
+      Exit(True);
+    Inc(Shift, 7);
+  end;
+end;
+
+constructor TV7Matches.Create(AStream: TStream; const ColStart: array of Int64;
+  ACount, AOrigSize: QWord);
+var
+  C: Integer;
+begin
+  inherited Create;
+  for C := 0 to 2 do
+    FCol[C] := TV7Column.Create(AStream, ColStart[C], ColStart[C + 1]);
+  FCount := ACount;
+  FOrigSize := AOrigSize;
+  FIndex := 0;
+  FPrevEnd := 0;
+  Valid := True;
+  Next;
+end;
+
+destructor TV7Matches.Destroy;
+var
+  C: Integer;
+begin
+  for C := 0 to 2 do
+    FCol[C].Free;
+  inherited Destroy;
+end;
+
+function TV7Matches.ColumnOffset(C: Integer): Int64;
+begin
+  Result := FCol[C].Offset;
+end;
+
+procedure TV7Matches.Next;
+var
+  Gap, Dist: QWord;
+begin
+  if FIndex >= FCount then
+  begin
+    Valid := False;
+    Exit;
+  end;
+  if not FCol[0].ReadVarint(Gap) or not FCol[1].ReadVarint(Len) or
+     not FCol[2].ReadVarint(Dist) then
+    DataError('bad varint in the match table');
+  if (Len = 0) or (Dist = 0) then
+    DataError('zero match length or distance');
+  if Gap > FOrigSize - FPrevEnd then
+    DataError('match destination is outside the original data');
+  Dst := FPrevEnd + Gap;
+  if Len > FOrigSize - Dst then
+    DataError('match destination is outside the original data');
+  if Dist > Dst then
+    DataError('match source is before the start of the data');
+  Src := Dst - Dist;
+  FPrevEnd := Dst + Len;
+  Inc(FIndex);
 end;
 
 procedure MarkCovered(var Bits: TBytes; Index: QWord); inline;
@@ -321,69 +508,79 @@ end;
   previous match + gap, src = dst - distance. }
 procedure TArchiveReader.LoadMatchTable(TableStart: Int64);
 var
-  Tab: TBytes;
-  Count, I, Gap, Len, Dist, PrevEnd, Dst: QWord;
-  N, J, P, Limit: SizeInt;
+  Buf: array[0..65535] of Byte;
+  CountBytes: array[0..7] of Byte;
+  Crc, Stored: LongWord;
+  Left, Pos, Limit: Int64;
+  Chunk: SizeInt;
+  Count, J: QWord;
   Col: Integer;
+  Cur: TV7Column;
+  It: TV7Matches;
   V: QWord;
 begin
-  FMSrc := nil;
-  FMDst := nil;
-  FMLen := nil;
-  if (FFooter.StatSize < 12) or (FFooter.StatSize > QWord(High(SizeInt))) then
+  FMatchCount := 0;
+  if (FFooter.StatSize < 12) or (FFooter.StatSize > QWord(High(Int64))) then
     DataError('bad match table size');
-  SetLength(Tab, SizeInt(FFooter.StatSize));
-  FStream.Position := TableStart;
-  ReadExact(FStream, Tab[0], Length(Tab), 'match table');
-  if Crc32C(Tab, 0, Length(Tab) - 4) <> GetU32LE(Tab, Length(Tab) - 4) then
+  Limit := TableStart + Int64(FFooter.StatSize) - 4;
+  { the table is read in passes from the archive, never held whole }
+  Crc := 0;
+  Pos := TableStart;
+  FStream.Position := Pos;
+  Left := Limit - TableStart;
+  while Left > 0 do
+  begin
+    Chunk := SizeOf(Buf);
+    if Left < Chunk then
+      Chunk := SizeInt(Left);
+    ReadExact(FStream, Buf[0], Chunk, 'match table');
+    Crc := Crc32CUpdate(Crc, Buf[0], Chunk);
+    Dec(Left, Chunk);
+  end;
+  ReadExact(FStream, Buf[0], 4, 'match table CRC');
+  Stored := LongWord(Buf[0]) or (LongWord(Buf[1]) shl 8) or
+    (LongWord(Buf[2]) shl 16) or (LongWord(Buf[3]) shl 24);
+  if Crc <> Stored then
     DataError('match table CRC mismatch');
-  Count := GetU64LE(Tab, 0);
+  FStream.Position := TableStart;
+  ReadExact(FStream, CountBytes[0], 8, 'match count');
+  Count := 0;
+  for Col := 7 downto 0 do
+    Count := (Count shl 8) or CountBytes[Col];
   { every varint takes at least one byte }
   if Count > (FFooter.StatSize - 12) div 3 then
     DataError('match count does not fit in the table');
-  N := SizeInt(Count);
-  SetLength(FMSrc, N);
-  SetLength(FMDst, N);
-  SetLength(FMLen, N);
-  P := 8;
-  Limit := Length(Tab) - 4;
-  { SizeInt counter: a QWord is not ordinal on 32-bit targets }
-  for Col := 0 to 2 do
-    for J := 0 to N - 1 do
+
+  { where each column starts: one pass over the varints }
+  FColStart[0] := TableStart + 8;
+  Cur := TV7Column.Create(FStream, FColStart[0], Limit);
+  try
+    for Col := 0 to 2 do
     begin
-      if not ReadVarint(Tab, P, Limit, V) then
-        DataError('bad varint in the match table');
-      case Col of
-        0: FMDst[J] := V;
-        1: FMLen[J] := V;
-      else
-        FMSrc[J] := V;
+      J := 0;
+      while J < Count do
+      begin
+        if not Cur.ReadVarint(V) then
+          DataError('bad varint in the match table');
+        Inc(J);
       end;
+      FColStart[Col + 1] := Cur.Offset;
     end;
-  if P <> Limit then
-    DataError('match table has bytes after the last column');
-  PrevEnd := 0;
-  I := 0;
-  while I < Count do
-  begin
-    Gap := FMDst[I];
-    Len := FMLen[I];
-    Dist := FMSrc[I];
-    if (Len = 0) or (Dist = 0) then
-      DataError('zero match length or distance');
-    if Gap > FHeader.OriginalSize - PrevEnd then
-      DataError('match destination is outside the original data');
-    Dst := PrevEnd + Gap;
-    if Len > FHeader.OriginalSize - Dst then
-      DataError('match destination is outside the original data');
-    if Dist > Dst then
-      DataError('match source is before the start of the data');
-    FMSrc[I] := Dst - Dist;
-    FMDst[I] := Dst;
-    FMLen[I] := Len;
-    PrevEnd := Dst + Len;
-    Inc(I);
+  finally
+    Cur.Free;
   end;
+  if FColStart[3] <> Limit then
+    DataError('match table has bytes after the last column');
+
+  { the match rules (destination order, inside the data) }
+  It := TV7Matches.Create(FStream, FColStart, Count, FHeader.OriginalSize);
+  try
+    while It.Valid do
+      It.Next;
+  finally
+    It.Free;
+  end;
+  FMatchCount := Count;
 end;
 
 { v7 decoder.  The matches are known up front, so the decoder keeps, of the
@@ -398,7 +595,7 @@ procedure TArchiveReader.DecodeV7(OutStream: TStream; out Data: TBytes);
 var
   I: LongWord;
   Pos: Int64;
-  Buf, Payload, Digest, Blk: TBytes;
+  Buf, Digest, Blk: TBytes;
   BH: TBlockHeader;
   PayloadLen: QWord;
   CrcBytes: array[0..3] of Byte;
@@ -409,7 +606,12 @@ var
   PagePtr: array of PByte;
   BucketHead, PageNext: array of SizeInt;
   NPages, NBuckets, FreeBucket, Pg, PgA, PgB, J: SizeInt;
-  N, MI, K, Run, LitPos, LitStart, SrcOff, DstOff, L, Chunk, Off: SizeInt;
+  It: TV7Matches;
+  MaxOrig: QWord;
+  Lit: TV7Column;
+  Crc: LongWord;
+  MatchesLeft: Boolean;
+  K, Run, LitPos, SrcOff, DstOff, L, Chunk, Off: SizeInt;
 
   procedure FreeAllPages;
   var
@@ -431,7 +633,6 @@ begin
       DataError('original size does not fit in memory');
     SetLength(Data, SizeInt(FHeader.OriginalSize));
   end;
-  N := Length(FMDst);
 
   { Before any allocation sized by the header's original_size: the block
     headers must add up to it and fit in the block area, so a forged size
@@ -439,6 +640,7 @@ begin
   Pos := FBlocksStart;
   SetLength(Buf, OsrepBlockHeaderSize);
   P := 0;
+  MaxOrig := 0;
   for I := 1 to FHeader.BlockCount do
   begin
     if Pos + OsrepBlockHeaderSize > FDataEnd then
@@ -451,6 +653,8 @@ begin
       DataError(Format('block %d: payload past end of block area', [Int64(I)]));
     Inc(Pos, OsrepBlockHeaderSize + Int64(PayloadLen));
     Inc(P, QWord(GetU32LE(Buf, 4)));
+    if QWord(GetU32LE(Buf, 4)) > MaxOrig then
+      MaxOrig := QWord(GetU32LE(Buf, 4));
   end;
   if P <> FHeader.OriginalSize then
     DataError(Format('original size mismatch: header %d, blocks %d',
@@ -474,14 +678,21 @@ begin
     PageRel[Pg] := 0;
     PagePtr[Pg] := nil;
   end;
-  for MI := 0 to N - 1 do
-  begin
-    E := FMDst[MI] + FMLen[MI];
-    PgA := SizeInt(FMSrc[MI] shr PageShift);
-    PgB := SizeInt((FMSrc[MI] + FMLen[MI] - 1) shr PageShift);
-    for Pg := PgA to PgB do
-      if PageRel[Pg] < E then
-        PageRel[Pg] := E;
+  It := TV7Matches.Create(FStream, FColStart, FMatchCount,
+    FHeader.OriginalSize);
+  try
+    while It.Valid do
+    begin
+      E := It.Dst + It.Len;
+      PgA := SizeInt(It.Src shr PageShift);
+      PgB := SizeInt((It.Src + It.Len - 1) shr PageShift);
+      for Pg := PgA to PgB do
+        if PageRel[Pg] < E then
+          PageRel[Pg] := E;
+      It.Next;
+    end;
+  finally
+    It.Free;
   end;
   { release buckets: page k is freed once the decoded size reaches the end
     of the bucket its PageRel falls in (at most one bucket late) }
@@ -502,14 +713,21 @@ begin
     end;
   FreeBucket := 0;
 
+  Lit := TV7Column.Create(FStream, 0, 0);
+  It := nil;
   try
+    It := TV7Matches.Create(FStream, FColStart, FMatchCount,
+      FHeader.OriginalSize);
     BlocksCrc := 0;
     FSumOrig := 0;
-    MI := 0;
     BlockStart := 0;
     Pos := FBlocksStart;
     SetLength(Buf, OsrepBlockHeaderSize);
-    Blk := nil;
+    { the block buffer once, at the largest block (resizing it per block
+      leaves the heap holding more); the digest and literals are read
+      straight into place through Lit, without a payload buffer }
+    SetLength(Blk, SizeInt(MaxOrig));
+    SetLength(Digest, FHeader.HashSize);
     for I := 1 to FHeader.BlockCount do
     begin
       if Pos + OsrepBlockHeaderSize > FDataEnd then
@@ -534,34 +752,28 @@ begin
       PayloadLen := QWord(FHeader.HashSize) + QWord(BH.LiteralBytes);
       if PayloadLen > QWord(FDataEnd - Pos) then
         DataError(Format('block %d: payload past end of block area', [I]));
-      SetLength(Payload, SizeInt(PayloadLen));
-      if PayloadLen > 0 then
-        ReadExact(FStream, Payload[0], SizeInt(PayloadLen),
-          Format('block %d payload', [I]));
+      Lit.Reset(Pos, Pos + Int64(PayloadLen));
       Inc(Pos, Int64(PayloadLen));
-      if Crc32C(Payload) <> BH.BlockCrc then
-        DataError(Format('block %d: CRC mismatch', [I]));
-      PutU32LE(CrcBytes, 0, BH.BlockCrc);
-      BlocksCrc := Crc32CUpdate(BlocksCrc, CrcBytes[0], 4);
+      Crc := 0;
+      if FHeader.HashSize > 0 then
+        if not Lit.ReadBytes(Digest[0], FHeader.HashSize, Crc) then
+          DataError(Format('block %d: payload past end of block area', [I]));
 
       BlockEnd := BlockStart + QWord(BH.OrigSize);
-      if Length(Blk) < SizeInt(BH.OrigSize) then
-        SetLength(Blk, SizeInt(BH.OrigSize));
-      LitStart := SizeInt(FHeader.HashSize);
       LitPos := 0;
       K := 0;
       while K < SizeInt(BH.OrigSize) do
       begin
         P := BlockStart + QWord(K);
-        while (MI < N) and (FMDst[MI] + FMLen[MI] <= P) do
-          Inc(MI);
-        if (MI < N) and (FMDst[MI] <= P) then
+        while It.Valid and (It.Dst + It.Len <= P) do
+          It.Next;
+        if It.Valid and (It.Dst <= P) then
         begin
-          RunEnd := FMDst[MI] + FMLen[MI];
+          RunEnd := It.Dst + It.Len;
           if RunEnd > BlockEnd then
             RunEnd := BlockEnd;
           Run := SizeInt(RunEnd - P);
-          SrcAbs := FMSrc[MI] + (P - FMDst[MI]);
+          SrcAbs := It.Src + (P - It.Dst);
           DstOff := K;
           L := Run;
           { the part of the source before this block comes from the pages }
@@ -595,12 +807,13 @@ begin
         else
         begin
           RunEnd := BlockEnd;
-          if (MI < N) and (FMDst[MI] < RunEnd) then
-            RunEnd := FMDst[MI];
+          if It.Valid and (It.Dst < RunEnd) then
+            RunEnd := It.Dst;
           Run := SizeInt(RunEnd - P);
           if LitPos + Run > SizeInt(BH.LiteralBytes) then
             DataError(Format('block %d: not enough literal bytes', [I]));
-          Move(Payload[LitStart + LitPos], Blk[K], Run);
+          if (Run > 0) and not Lit.ReadBytes(Blk[K], Run, Crc) then
+            DataError(Format('block %d: not enough literal bytes', [I]));
           Inc(LitPos, Run);
         end;
         Inc(K, Run);
@@ -608,9 +821,10 @@ begin
       if LitPos <> SizeInt(BH.LiteralBytes) then
         DataError(Format('block %d: literal bytes left over', [I]));
 
-      SetLength(Digest, FHeader.HashSize);
-      if FHeader.HashSize > 0 then
-        Move(Payload[0], Digest[0], FHeader.HashSize);
+      if Crc <> BH.BlockCrc then
+        DataError(Format('block %d: CRC mismatch', [I]));
+      PutU32LE(CrcBytes, 0, BH.BlockCrc);
+      BlocksCrc := Crc32CUpdate(BlocksCrc, CrcBytes[0], 4);
       if not VerifyBlockDigest(FHeader.HashId, FSeed, Blk, 0,
         BH.OrigSize, Digest) then
         DataError(Format('block %d: digest mismatch', [I]));
@@ -662,9 +876,12 @@ begin
         Inc(FreeBucket);
       end;
     end;
-    while (MI < N) and (FMDst[MI] + FMLen[MI] <= BlockStart) do
-      Inc(MI);
+    while It.Valid and (It.Dst + It.Len <= BlockStart) do
+      It.Next;
+    MatchesLeft := It.Valid;
   finally
+    It.Free;
+    Lit.Free;
     FreeAllPages;
   end;
 
@@ -673,7 +890,7 @@ begin
   if FSumOrig <> FHeader.OriginalSize then
     DataError(Format('original size mismatch: header %d, blocks %d',
       [FHeader.OriginalSize, FSumOrig]));
-  if MI <> N then
+  if MatchesLeft then
     DataError('match table has matches past the last block');
   if BlocksCrc <> FFooter.BlocksCrc then
     DataError('blocks CRC mismatch');
