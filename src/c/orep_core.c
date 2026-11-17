@@ -160,7 +160,8 @@ static void pf(const void *p) { __builtin_prefetch(p, 1, 0); }
         valid distance), then the insert.  A bucket belongs to one shard,
         so the table ends the same whatever the number of shards.
      3. orep_verify   per segment: forward and backward match lengths of
-        every candidate, capped at `cap` (= minlen + align).
+        every candidate, the forward one capped at `cap` (= minlen +
+        align) and the backward one at what the sum needs to reach cap.
      4. orep_select   in order: the greedy choice.  The capped lengths
         decide exactly whether a match reaches minlen; an accepted match is
         then extended in full.
@@ -182,10 +183,14 @@ uint32_t orep_anchors(const orep_cfg *c, const uint8_t *p, uint32_t s0,
   if (s1 <= s0) return 0;
   for (i = 0; i + 1 < g; i++) h = (h << 1) + T[p[s0 + i]];
   /* pass 1, without branches: the content-defined anchors (into aidx) */
-  for (pos = s0; pos < s1; pos++) {
-    h = (h << 1) + T[p[pos + g - 1]];
-    aidx[nn] = pos;
-    nn += ((((uint32_t)(h >> sshift)) & smask) == 0);
+  {
+    const uint64_t am = (uint64_t)smask << sshift;
+    const uint8_t *q = p + g - 1;
+    for (pos = s0; pos < s1; pos++) {
+      h = (h << 1) + T[q[pos]];
+      aidx[nn] = pos;
+      nn += (h & am) == 0;
+    }
   }
   /* merge in the forced ones: after maxgap positions without an anchor
      (counted from s0), one every maxgap until the next natural one */
@@ -279,8 +284,9 @@ void orep_verify(const orep_cfg *c, uint64_t cabs, uint64_t cphys,
       uint64_t dp = cphys + a, s = srcpos(c, dp, d);
       if (mf > cap) mf = cap;
       if ((uint64_t)mb > cabs + a - d) mb = (uint32_t)(cabs + a - d);
-      if (mb > cap) mb = cap;
       fl[j] = fwd(c, s, dp, mf);
+      /* backward only as far as the total needs to reach cap */
+      if (mb > cap - fl[j]) mb = cap - fl[j];
       bl[j] = fl[j] >= c->gram ? bwd(c, s, dp, mb) : 0;
     }
   }
@@ -297,36 +303,36 @@ int32_t orep_select(const orep_cfg *c, uint64_t cabs, uint64_t cphys,
                     uint32_t mcap) {
   uint32_t j, ls = *litstart, k = *nm;
   for (j = 0; j < n; j++) {
-    uint32_t a = apos[j], d = cand[j], f, b, lim, tot;
+    uint32_t a = apos[j], d = cand[j], f, b, lim, tot, bc;
     if (!d || a < ls) continue;
     f = fl[j];
     if (f < c->gram) continue;
     lim = a - ls;
     if ((uint64_t)lim > cabs + a - d) lim = (uint32_t)(cabs + a - d);
     b = bl[j];
+    bc = b >= cap - f;            /* the backward length may be capped */
     if (b > lim) b = lim;
-    if (b + f < c->minlen + (c->align - 1) && f < cap && b < cap) {
+    if (f < cap && (!bc || lim <= bl[j])) {
       /* the exact lengths: decide now */
       tot = b + f;
       tot -= tot % c->align;
       if (tot < c->minlen) continue;
-    }
-    /* accepted (a capped length means at least cap = minlen + align):
-       extend in full */
-    {
+    } else {
+      /* a capped length means the sum reaches cap = minlen + align:
+         accepted; extend in full */
       uint64_t dp = cphys + a, s = srcpos(c, dp, d);
       if (f >= cap) f = fwd(c, s, dp, clen - a);
-      if (bl[j] >= cap && lim > cap) b = bwd(c, s, dp, lim);
+      if (bc && lim > bl[j]) b = bwd(c, s, dp, lim);
       tot = b + f;
       tot -= tot % c->align;
       if (tot < c->minlen) continue;
-      if (k >= mcap) return -1;
-      lit[k] = a - b - ls;
-      len[k] = tot;
-      dist[k] = d;
-      k++;
-      ls = a - b + tot;
     }
+    if (k >= mcap) return -1;
+    lit[k] = a - b - ls;
+    len[k] = tot;
+    dist[k] = d;
+    k++;
+    ls = a - b + tot;
   }
   *litstart = ls;
   *nm = k;

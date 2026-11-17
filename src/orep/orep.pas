@@ -554,8 +554,8 @@ begin
       S := SrcPos(c, Dp, D);
       if MF > cap then MF := cap;
       if QWord(MB) > cabs + A - D then MB := LongWord(cabs + A - D);
-      if MB > cap then MB := cap;
       fl[J - 1] := Fwd(c^, S, Dp, MF);
+      if MB > cap - fl[J - 1] then MB := cap - fl[J - 1];
       if fl[J - 1] >= c^.Gram then bl[J - 1] := Bwd(c^, S, Dp, MB)
       else bl[J - 1] := 0;
     end;
@@ -568,6 +568,7 @@ function orep_select(c: POrepCfg; cabs, cphys: QWord; clen: LongWord;
 var
   J, A, D, F, B, Lim, Tot, Ls, K: LongWord;
   Dp, S: QWord;
+  BC: Boolean;
 begin
   Ls := litstart;
   K := nm;
@@ -581,20 +582,24 @@ begin
     Lim := A - Ls;
     if QWord(Lim) > cabs + A - D then Lim := LongWord(cabs + A - D);
     B := bl[J - 1];
+    BC := B >= cap - F;
     if B > Lim then B := Lim;
-    if (B + F < c^.MinLen + (c^.Align - 1)) and (F < cap) and (B < cap) then
+    if (F < cap) and ((not BC) or (Lim <= bl[J - 1])) then
     begin
       Tot := B + F;
       Tot := Tot - Tot mod c^.Align;
       if Tot < c^.MinLen then Continue;
+    end
+    else
+    begin
+      Dp := cphys + A;
+      S := SrcPos(c, Dp, D);
+      if F >= cap then F := Fwd(c^, S, Dp, clen - A);
+      if BC and (Lim > bl[J - 1]) then B := Bwd(c^, S, Dp, Lim);
+      Tot := B + F;
+      Tot := Tot - Tot mod c^.Align;
+      if Tot < c^.MinLen then Continue;
     end;
-    Dp := cphys + A;
-    S := SrcPos(c, Dp, D);
-    if F >= cap then F := Fwd(c^, S, Dp, clen - A);
-    if (bl[J - 1] >= cap) and (Lim > cap) then B := Bwd(c^, S, Dp, Lim);
-    Tot := B + F;
-    Tot := Tot - Tot mod c^.Align;
-    if Tot < c^.MinLen then Continue;
     if K >= mcap then Exit(-1);
     lit[K] := A - B - Ls;
     len[K] := Tot;
