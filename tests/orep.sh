@@ -59,6 +59,19 @@ for f in $INPUTS; do
   rt "$f" -w1m -b64k -l512
 done
 
+echo "== same bytes with any number of threads"
+for f in "$C/mixed.bin" "$W/versions.bin" "$C/text.bin"; do
+  for o in "" "-w64k -b64k -l16" "-l512 -b64k"; do
+    "$NAT" -q $o "$f" "$W/t1.orp"
+    for t in 2 3 4 8; do
+      "$NAT" -q $o -t$t "$f" "$W/tn.orp" || bad "encode -t$t $f $o"
+      cmp -s "$W/t1.orp" "$W/tn.orp" || bad "-t$t differs from -t1: $f $o"
+    done
+    "$REF" -q $o -t3 "$f" "$W/tn.orp" || bad "ref encode -t3 $f $o"
+    cmp -s "$W/t1.orp" "$W/tn.orp" || bad "ref -t3 differs: $f $o"
+  done
+done
+
 echo "== versions found"
 "$NAT" -q -w1m "$W/versions.bin" "$W/v.orp"
 s=$(wc -c < "$W/v.orp" | tr -d " ")

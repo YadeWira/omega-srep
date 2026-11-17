@@ -13,6 +13,13 @@
                        ->  OrepEncEnd(E)
     OrepDecInit(D, MemLimit) -> OrepDecRun(D, ...) -> OrepDecEnd(D)
 
+  P.Threads >= 2 runs the search on a coordinator thread helped by
+  Threads - 1 workers, while the caller's thread copies input and writes
+  output; the stream is the same with any number of threads.  With threads
+  the TOrepEnc must stay where OrepEncInit put it until OrepEncEnd (the
+  threads keep its address).  On Unix the program needs a thread manager
+  (cthreads); without one OREP runs on the caller's thread only.
+
   Run returns OREP_OK (call again with more input or more output room),
   OREP_END (the stream is complete and all of it was written), or an error
   (< 0).  OrepEncodeBuf / OrepDecodeBuf do a whole buffer in memory.
@@ -69,8 +76,13 @@ type
     Density: LongWord;  { anchors: about one per (MinLen - gram) / Density
                           positions; higher finds more short matches and is
                           slower and uses more table (default 4) }
+    Threads: LongWord;  { threads for the encoder, 0 or 1 = the caller's
+                          only; OREP creates the others and goes on with
+                          fewer if it cannot.  The output is the same with
+                          any number. }
   end;
 
+  POrepCfg = ^TOrepCfg;
   TOrepCfg = record      { shared with orep_core.c: same layout }
     T: array[0..255] of QWord;
     Window: QWord;
@@ -78,7 +90,6 @@ type
     MinDist: QWord;
     Ring: PByte;
     Table: PQWord;
-    Scratch: PLongWord;
     MinLen, Gram, SMask, MaxGap, TBits, Align, MinKeep, SShift: LongWord;
   end;
 
@@ -106,6 +117,22 @@ type
     Total: QWord;
     StreamPos: QWord;    { stream bytes staged or written so far }
     Ended, Inited: Boolean;
+    { the search of one block, in batches of segments }
+    APos, AIdx, ATag, Cand, FL, BL: PLongWord;  { OREP_BATCH * OREP_SUB }
+    SegCnt: array[0..7] of LongWord;
+    BCAbs, BPhysQ: QWord;                       { the block being searched }
+    BLen, BSeg0, BNPos, VCap: LongWord;
+    Pool: Pointer;                              { worker threads, or nil }
+    NShard: LongWord;
+    { the block being searched (by the coordinator thread, or inline) }
+    SLit, SLen: PLongWord;
+    SDist: PQWord;
+    SNM: LongInt;
+    InFlight: Boolean;
+    Coord: Pointer;                             { coordinator, or nil }
+    SList: PLongWord;    { per segment: its anchors grouped by shard }
+    SOfs: PLongWord;     { per segment: NShard + 1 offsets into SList }
+    CandL: PLongWord;    { the candidates in SList order }
   end;
 
   TOrepDec = record
@@ -167,9 +194,22 @@ implementation
 
 {$IFNDEF OREP_NO_NATIVE}
 {$L orep_core.o}
-function orep_find(c: Pointer; cabs, cphys: QWord; clen: LongWord;
-  prev_dist: QWord; lit, len: PLongWord; dist: PQWord;
-  cap: LongWord): LongInt; cdecl; external name 'orep_find';
+function orep_anchors(c: POrepCfg; p: PByte; s0, s1: LongWord;
+  apos, aidx, atag: PLongWord): LongWord; cdecl; external name 'orep_anchors';
+procedure orep_probe(c: POrepCfg; cabs: QWord; apos, aidx, atag,
+  list: PLongWord; nl: LongWord; cand: PLongWord); cdecl;
+  external name 'orep_probe';
+procedure orep_verify(c: POrepCfg; cabs, cphys: QWord; clen: LongWord;
+  apos, cand: PLongWord; n, cap: LongWord; fl, bl: PLongWord); cdecl;
+  external name 'orep_verify';
+function orep_select(c: POrepCfg; cabs, cphys: QWord; clen: LongWord;
+  apos, cand, fl, bl: PLongWord; n, cap: LongWord; var litstart, nm: LongWord;
+  lit, len: PLongWord; dist: PQWord; mcap: LongWord): LongInt; cdecl;
+  external name 'orep_select';
+function orep_cont(c: POrepCfg; cabs, cphys: QWord; clen: LongWord;
+  prev_dist: QWord): LongWord; cdecl; external name 'orep_cont';
+procedure orep_shard(aidx: PLongWord; n, ns, tbits: LongWord;
+  list, ofs: PLongWord); cdecl; external name 'orep_shard';
 function orep_crc32c(t: PLongWord; crc: LongWord; p: PByte;
   n: SizeUInt): LongWord; cdecl; external name 'orep_crc32c';
 {$ENDIF}
@@ -177,6 +217,8 @@ function orep_crc32c(t: PLongWord; crc: LongWord; p: PByte;
 const
   OREP_B = QWord($9E3779B97F4A7C15);
   OREP_SUB = 65536;
+  OREP_BATCH = 8;      { segments per batch }
+  OREP_PF = 16;
   HDR_SIZE = 28;
   Magic: array[0..3] of Char = 'OREP';
 
@@ -246,6 +288,7 @@ begin
   P.Align := 4;
   P.Density := 4;
   P.MinDist := 0;
+  P.Threads := 1;
 end;
 
 function CheckParams(const P: TOrepParams): Boolean;
@@ -254,7 +297,7 @@ begin
     (P.MinLen >= OREP_MIN_MATCH) and (P.MinLen <= 65536) and
     (P.Chunk >= OREP_MIN_CHUNK) and (P.Chunk <= OREP_MAX_CHUNK) and
     (P.Align >= 1) and (P.Align <= 4096) and (P.Align <= P.MinLen) and
-    (P.Density >= 1) and (P.Density <= 64);
+    (P.Density >= 1) and (P.Density <= 64) and (P.Threads <= 256);
 end;
 
 { the window the stream actually uses: a known small input gets a smaller
@@ -306,8 +349,9 @@ begin
   W := EffWindow(P);
   Derive(P, W, G, SM, MG, TB, MK, SS);
   Cap := P.Chunk div MK + 2;
-  Result := RingFor(W, P.Chunk) + (QWord(32) shl TB) + 64 + 3 * OREP_SUB * 4 +
-    QWord(Cap) * 16 + QWord(Cap) * 15 + 4160 + SizeOf(TOrepEnc);
+  Result := RingFor(W, P.Chunk) + P.Chunk + (QWord(32) shl TB) + 64 +
+    8 * OREP_BATCH * OREP_SUB * 4 +
+    QWord(Cap) * 32 + QWord(Cap) * 15 + 4160 + SizeOf(TOrepEnc);
 end;
 
 function OrepDecMemory(Window: QWord; Chunk: LongWord): QWord;
@@ -416,112 +460,179 @@ begin
   Result := L;
 end;
 
-function orep_find(var C: TOrepCfg; CAbs, CPhys: QWord; CLen: LongWord;
-  PrevDist: QWord; Lit, Len: PLongWord; Dist: PQWord;
-  Cap: LongWord): LongInt;
+function Way(B: PQWord; Tag: LongWord): Integer;
 var
-  P: PByte;
-  APos, AIdx, ATag: PLongWord;
-  Slot: PQWord;
-  M, Ent: QWord;
-  Way, K: Integer;
-  N, LitStart, G, TShift, LastAnchor, Pos, I, EndP, NA, J, A, Cur32: LongWord;
-  L, Fl, Bl, MaxB, Tot: LongWord;
-  H, W, S, DD, DP: QWord;
+  W: Integer;
 begin
-  P := C.Ring + CPhys;
-  APos := C.Scratch;
-  AIdx := C.Scratch + OREP_SUB;
-  ATag := C.Scratch + 2 * OREP_SUB;
-  N := 0; LitStart := 0; G := C.Gram; TShift := 64 - C.TBits;
-  LastAnchor := 0; Pos := 0; H := 0; W := C.Window;
-  if (PrevDist <> 0) and (PrevDist <= CAbs) and (PrevDist <= W) and
-    (CLen <> 0) then
+  for W := 0 to 3 do
+    if (LongWord(B[W] shr 32) = Tag) and (LongWord(B[W]) <> 0) then Exit(W);
+  Result := -1;
+end;
+
+function SrcPos(C: POrepCfg; Dp, D: QWord): QWord;
+begin
+  if Dp >= D then Result := Dp - D else Result := Dp + C^.RingSize - D;
+end;
+
+function orep_anchors(c: POrepCfg; p: PByte; s0, s1: LongWord;
+  apos, aidx, atag: PLongWord): LongWord;
+var
+  G, Last, Pos, I, TShift: LongWord;
+  H, M: QWord;
+begin
+  Result := 0;
+  if s1 <= s0 then Exit;
+  G := c^.Gram;
+  TShift := 64 - c^.TBits;
+  H := 0;
+  Last := s0;
+  for I := 0 to G - 2 do H := (H shl 1) + c^.T[p[s0 + I]];
+  for Pos := s0 to s1 - 1 do
   begin
-    if CPhys >= PrevDist then S := CPhys - PrevDist
-    else S := CPhys + C.RingSize - PrevDist;
-    L := Fwd(C, S, CPhys, CLen);
-    L := L - L mod C.Align;
-    if L >= C.MinKeep then
+    H := (H shl 1) + c^.T[p[Pos + G - 1]];
+    if ((LongWord(H shr c^.SShift) and c^.SMask) = 0) or
+      (Pos - Last >= c^.MaxGap) then
     begin
-      if N >= Cap then Exit(-1);
-      Lit[N] := 0; Len[N] := L; Dist[N] := PrevDist;
-      Inc(N);
-      LitStart := L;
+      M := GramHash(p + Pos, G);
+      apos[Result] := Pos;
+      aidx[Result] := LongWord(M shr TShift);
+      atag[Result] := LongWord(M);
+      Inc(Result);
+      Last := Pos;
     end;
   end;
-  if CLen < G then Exit(N);
-  for I := 0 to G - 2 do H := (H shl 1) + C.T[P[I]];
-  while Pos + G <= CLen do
+end;
+
+procedure orep_probe(c: POrepCfg; cabs: QWord; apos, aidx, atag,
+  list: PLongWord; nl: LongWord; cand: PLongWord);
+var
+  I, J, A, Cur32, D: LongWord;
+  B: PQWord;
+  W: Integer;
+  DD: QWord;
+begin
+  for I := 1 to nl do
   begin
-    EndP := Pos + OREP_SUB;
-    if EndP > CLen - G + 1 then EndP := CLen - G + 1;
-    NA := 0;
-    while Pos < EndP do
+    if list <> nil then J := list[I - 1] else J := I - 1;
+    B := c^.Table + 4 * aidx[J];
+    A := apos[J];
+    Cur32 := LongWord(cabs + A);
+    W := Way(B, atag[J]);
+    D := 0;
+    if W >= 0 then
     begin
-      H := (H shl 1) + C.T[P[Pos + G - 1]];
-      if ((LongWord(H shr C.SShift) and C.SMask) = 0) or
-        (Pos - LastAnchor >= C.MaxGap) then
-      begin
-        M := GramHash(P + Pos, G);
-        APos[NA] := Pos;
-        AIdx[NA] := LongWord(M shr TShift);
-        ATag[NA] := LongWord(M);
-        Inc(NA);
-        LastAnchor := Pos;
-      end;
-      Inc(Pos);
+      DD := LongWord(Cur32 - (LongWord(B[W]) - 1));
+      if (DD <> 0) and (DD >= c^.MinDist) and (DD <= c^.Window) and
+        (DD <= cabs + A) then D := DD;
     end;
-    J := 0;
-    while J < NA do
+    cand[I - 1] := D;
+    if W < 0 then W := 3;
+    while W > 0 do
     begin
-      A := APos[J];
-      Slot := C.Table + 4 * AIdx[J];
-      Cur32 := LongWord(CAbs + A);
-      Way := -1;
-      for K := 0 to 3 do
-        if (Way < 0) and (LongWord(Slot[K] shr 32) = ATag[J]) and
-          (LongWord(Slot[K]) <> 0) then Way := K;
-      if (A >= LitStart) and (Way >= 0) then
-      begin
-        Ent := Slot[Way];
-        DD := LongWord(Cur32 - (LongWord(Ent) - 1));
-        if (DD >= C.MinDist) and (DD <> 0) and (DD <= W) and
-          (DD <= CAbs + A) then
-        begin
-          DP := CPhys + A;
-          if DP >= DD then S := DP - DD else S := DP + C.RingSize - DD;
-          Fl := Fwd(C, S, DP, CLen - A);
-          if Fl >= G then
-          begin
-            MaxB := A - LitStart;
-            if QWord(MaxB) > CAbs + A - DD then MaxB := LongWord(CAbs + A - DD);
-            Bl := Bwd(C, S, DP, MaxB);
-            Tot := Bl + Fl;
-            Tot := Tot - Tot mod C.Align;
-            if Tot >= C.MinLen then
-            begin
-              if N >= Cap then Exit(-1);
-              Lit[N] := A - Bl - LitStart;
-              Len[N] := Tot;
-              Dist[N] := DD;
-              Inc(N);
-              LitStart := A - Bl + Tot;
-            end;
-          end;
-        end;
-      end;
-      if Way < 0 then Way := 3;
-      while Way > 0 do
-      begin
-        Slot[Way] := Slot[Way - 1];
-        Dec(Way);
-      end;
-      Slot[0] := (QWord(ATag[J]) shl 32) or LongWord(Cur32 + 1);
-      Inc(J);
+      B[W] := B[W - 1];
+      Dec(W);
+    end;
+    B[0] := (QWord(atag[J]) shl 32) or LongWord(Cur32 + 1);
+  end;
+end;
+
+procedure orep_verify(c: POrepCfg; cabs, cphys: QWord; clen: LongWord;
+  apos, cand: PLongWord; n, cap: LongWord; fl, bl: PLongWord);
+var
+  J, A, D, MF, MB: LongWord;
+  Dp, S: QWord;
+begin
+  for J := 1 to n do
+  begin
+    D := cand[J - 1];
+    if D <> 0 then
+    begin
+      A := apos[J - 1];
+      MF := clen - A;
+      MB := A;
+      Dp := cphys + A;
+      S := SrcPos(c, Dp, D);
+      if MF > cap then MF := cap;
+      if QWord(MB) > cabs + A - D then MB := LongWord(cabs + A - D);
+      if MB > cap then MB := cap;
+      fl[J - 1] := Fwd(c^, S, Dp, MF);
+      if fl[J - 1] >= c^.Gram then bl[J - 1] := Bwd(c^, S, Dp, MB)
+      else bl[J - 1] := 0;
     end;
   end;
-  Result := N;
+end;
+
+function orep_select(c: POrepCfg; cabs, cphys: QWord; clen: LongWord;
+  apos, cand, fl, bl: PLongWord; n, cap: LongWord; var litstart, nm: LongWord;
+  lit, len: PLongWord; dist: PQWord; mcap: LongWord): LongInt;
+var
+  J, A, D, F, B, Lim, Tot, Ls, K: LongWord;
+  Dp, S: QWord;
+begin
+  Ls := litstart;
+  K := nm;
+  for J := 1 to n do
+  begin
+    A := apos[J - 1];
+    D := cand[J - 1];
+    if (D = 0) or (A < Ls) then Continue;
+    F := fl[J - 1];
+    if F < c^.Gram then Continue;
+    Lim := A - Ls;
+    if QWord(Lim) > cabs + A - D then Lim := LongWord(cabs + A - D);
+    B := bl[J - 1];
+    if B > Lim then B := Lim;
+    if (B + F < c^.MinLen + (c^.Align - 1)) and (F < cap) and (B < cap) then
+    begin
+      Tot := B + F;
+      Tot := Tot - Tot mod c^.Align;
+      if Tot < c^.MinLen then Continue;
+    end;
+    Dp := cphys + A;
+    S := SrcPos(c, Dp, D);
+    if F >= cap then F := Fwd(c^, S, Dp, clen - A);
+    if (bl[J - 1] >= cap) and (Lim > cap) then B := Bwd(c^, S, Dp, Lim);
+    Tot := B + F;
+    Tot := Tot - Tot mod c^.Align;
+    if Tot < c^.MinLen then Continue;
+    if K >= mcap then Exit(-1);
+    lit[K] := A - B - Ls;
+    len[K] := Tot;
+    dist[K] := D;
+    Inc(K);
+    Ls := A - B + Tot;
+  end;
+  litstart := Ls;
+  nm := K;
+  Result := 0;
+end;
+
+procedure orep_shard(aidx: PLongWord; n, ns, tbits: LongWord;
+  list, ofs: PLongWord);
+var
+  J, T: LongWord;
+begin
+  for T := 0 to ns do ofs[T] := 0;
+  for J := 1 to n do
+    Inc(ofs[((QWord(aidx[J - 1]) * ns) shr tbits) + 1]);
+  for T := 1 to ns do Inc(ofs[T], ofs[T - 1]);
+  for J := 1 to n do
+  begin
+    T := (QWord(aidx[J - 1]) * ns) shr tbits;
+    list[ofs[T]] := J - 1;
+    Inc(ofs[T]);
+  end;
+end;
+
+function orep_cont(c: POrepCfg; cabs, cphys: QWord; clen: LongWord;
+  prev_dist: QWord): LongWord;
+begin
+  Result := 0;
+  if (prev_dist = 0) or (prev_dist > cabs) or (prev_dist > c^.Window) or
+    (clen = 0) then Exit;
+  Result := Fwd(c^, SrcPos(c, cphys, prev_dist), cphys, clen);
+  Result := Result - Result mod c^.Align;
+  if Result < c^.MinKeep then Result := 0;
 end;
 {$ENDIF}
 
@@ -563,6 +674,340 @@ begin
   Result := QWord(Get32(P)) or (QWord(Get32(P + 4)) shl 32);
 end;
 
+{ ---- worker pool ----------------------------------------------------------
+
+  The caller's thread plus up to Threads - 1 workers run the items of one
+  job (0 .. Items - 1) and the call returns when all are done.  Items are
+  taken from a shared counter, so the split varies from run to run; the
+  jobs write disjoint data and give the same result in any order. }
+
+type
+  TOrepJob = procedure(E: Pointer; Item: LongInt);
+  POrepPool = ^TOrepPool;
+  TOrepWorker = record
+    Pool: POrepPool;
+    Go: PRTLEvent;
+    Id: TThreadID;
+  end;
+  TOrepPool = record
+    N: LongInt;                 { workers started }
+    W: array of TOrepWorker;
+    Done: PRTLEvent;
+    Gen: LongInt;               { bumped for every job }
+    Active, NextItem, Items: LongInt;
+    Job: TOrepJob;
+    Ctx: Pointer;
+    Quit: Boolean;
+  end;
+
+procedure PoolItems(P: POrepPool);
+var
+  K: LongInt;
+begin
+  repeat
+    K := InterLockedIncrement(P^.NextItem) - 1;
+    if K >= P^.Items then Break;
+    P^.Job(P^.Ctx, K);
+  until False;
+end;
+
+const
+  { a waking thread takes ~0.5 ms here: between the jobs of one block the
+    workers spin for a while before they sleep }
+  OREP_SPIN = 20000;
+  OREP_YIELD = 3000;
+
+function PoolWorker(Arg: Pointer): PtrInt;
+var
+  Wk: ^TOrepWorker;
+  P: POrepPool;
+  MyGen, I: LongInt;
+begin
+  Wk := Arg;
+  P := Wk^.Pool;
+  MyGen := 0;
+  repeat
+    I := 0;
+    while (P^.Gen = MyGen) and (I < OREP_SPIN) do
+    begin
+      ReadBarrier;
+      Inc(I);
+    end;
+    { then yield for a while (~ms) before sleeping }
+    I := 0;
+    while (P^.Gen = MyGen) and (I < OREP_YIELD) do
+    begin
+      ThreadSwitch;
+      ReadBarrier;
+      Inc(I);
+    end;
+    while P^.Gen = MyGen do
+      RTLEventWaitFor(Wk^.Go, 100);
+    ReadBarrier;
+    MyGen := P^.Gen;
+    if P^.Quit then Break;
+    PoolItems(P);
+    if InterLockedDecrement(P^.Active) = 0 then RTLEventSetEvent(P^.Done);
+  until False;
+  Result := 0;
+end;
+
+{ start up to Want - 1 workers; nil when none could be started }
+function PoolCreate(Want: LongWord): POrepPool;
+var
+  I: LongInt;
+begin
+  Result := nil;
+  if Want <= 1 then Exit;
+  New(Result);
+  FillChar(Result^, SizeOf(TOrepPool), 0);
+  SetLength(Result^.W, Want - 1);
+  try
+    Result^.Done := RTLEventCreate;
+    for I := 0 to LongInt(Want) - 2 do
+    begin
+      Result^.W[I].Pool := Result;
+      Result^.W[I].Go := RTLEventCreate;
+      Result^.W[I].Id := BeginThread(@PoolWorker, @Result^.W[I]);
+      if Result^.W[I].Id = TThreadID(0) then
+      begin
+        RTLEventDestroy(Result^.W[I].Go);
+        Break;
+      end;
+      Inc(Result^.N);
+    end;
+  except
+    { no thread support (a program without cthreads on Unix): go on with
+      the ones that started }
+  end;
+  if Result^.N = 0 then
+  begin
+    if Result^.Done <> nil then RTLEventDestroy(Result^.Done);
+    Result^.W := nil;
+    Dispose(Result);
+    Result := nil;
+  end;
+end;
+
+procedure PoolFree(P: POrepPool);
+var
+  I: LongInt;
+begin
+  if P = nil then Exit;
+  P^.Quit := True;
+  WriteBarrier;
+  InterLockedIncrement(P^.Gen);
+  for I := 0 to P^.N - 1 do RTLEventSetEvent(P^.W[I].Go);
+  for I := 0 to P^.N - 1 do
+  begin
+    WaitForThreadTerminate(P^.W[I].Id, 0);
+    CloseThread(P^.W[I].Id);
+    RTLEventDestroy(P^.W[I].Go);
+  end;
+  RTLEventDestroy(P^.Done);
+  P^.W := nil;
+  Dispose(P);
+end;
+
+procedure PoolRun(P: POrepPool; Job: TOrepJob; Ctx: Pointer; Items: LongInt);
+var
+  I, K: LongInt;
+begin
+  if Items <= 0 then Exit;
+  if (P = nil) or (Items = 1) then
+  begin
+    for K := 0 to Items - 1 do Job(Ctx, K);
+    Exit;
+  end;
+  P^.Job := Job;
+  P^.Ctx := Ctx;
+  P^.Items := Items;
+  P^.NextItem := 0;
+  P^.Active := P^.N;
+  WriteBarrier;
+  InterLockedIncrement(P^.Gen);
+  for I := 0 to P^.N - 1 do RTLEventSetEvent(P^.W[I].Go);
+  PoolItems(P);
+  { the workers are about to finish: spin, then yield, then sleep }
+  I := 0;
+  while P^.Active > 0 do
+  begin
+    Inc(I);
+    if I > OREP_SPIN + 10 * OREP_YIELD then RTLEventWaitFor(P^.Done, 1)
+    else if I > OREP_SPIN then ThreadSwitch;
+    ReadBarrier;
+  end;
+  ReadBarrier;
+end;
+
+{ ---- the search of one block (phases: see orep_core.c) ---------------------- }
+
+type
+  POrepEnc = ^TOrepEnc;
+
+procedure SegRange(E: POrepEnc; K: LongInt; out S0, S1: LongWord);
+begin
+  S0 := (E^.BSeg0 + LongWord(K)) * OREP_SUB;
+  S1 := S0 + OREP_SUB;
+  if S1 > E^.BNPos then S1 := E^.BNPos;
+end;
+
+procedure JobAnchors(Ctx: Pointer; Item: LongInt);
+var
+  E: POrepEnc;
+  S0, S1, O: LongWord;
+begin
+  E := Ctx;
+  SegRange(E, Item, S0, S1);
+  O := LongWord(Item) * OREP_SUB;
+  E^.SegCnt[Item] := orep_anchors(@E^.Cfg, E^.Cfg.Ring + E^.BPhysQ, S0, S1,
+    E^.APos + O, E^.AIdx + O, E^.ATag + O);
+  if E^.NShard > 1 then
+    orep_shard(E^.AIdx + O, E^.SegCnt[Item], E^.NShard, E^.Cfg.TBits,
+      E^.SList + O, E^.SOfs + LongWord(Item) * (E^.NShard + 1));
+end;
+
+procedure JobProbe(Ctx: Pointer; Item: LongInt);
+var
+  E: POrepEnc;
+  K, O, S, NS: LongWord;
+  Ofs: PLongWord;
+begin
+  E := Ctx;
+  NS := E^.NShard;
+  for K := 0 to OREP_BATCH - 1 do
+    if E^.SegCnt[K] > 0 then
+    begin
+      O := K * OREP_SUB;
+      if NS = 1 then
+        orep_probe(@E^.Cfg, E^.BCAbs, E^.APos + O, E^.AIdx + O, E^.ATag + O,
+          nil, E^.SegCnt[K], E^.Cand + O)
+      else
+      begin
+        Ofs := E^.SOfs + K * (NS + 1);
+        if Item = 0 then S := 0 else S := Ofs[Item - 1];
+        orep_probe(@E^.Cfg, E^.BCAbs, E^.APos + O, E^.AIdx + O, E^.ATag + O,
+          E^.SList + O + S, Ofs[Item] - S, E^.CandL + O + S);
+      end;
+    end;
+end;
+
+procedure JobVerify(Ctx: Pointer; Item: LongInt);
+var
+  E: POrepEnc;
+  O, I: LongWord;
+begin
+  E := Ctx;
+  O := LongWord(Item) * OREP_SUB;
+  { the candidates back in anchor order }
+  if (E^.NShard > 1) and (E^.SegCnt[Item] > 0) then
+    for I := O to O + E^.SegCnt[Item] - 1 do
+      E^.Cand[O + E^.SList[I]] := E^.CandL[I];
+  orep_verify(@E^.Cfg, E^.BCAbs, E^.BPhysQ, E^.BLen, E^.APos + O,
+    E^.Cand + O, E^.SegCnt[Item], E^.VCap, E^.FL + O, E^.BL + O);
+end;
+
+{ the matches of [BlkPhys, BlkPhys + BlkLen) into Lit/Len/Dist; -1 when
+  they do not fit }
+{ search the block [BPhysQ, BPhysQ + BLen) (absolute BCAbs) into
+  SLit/SLen/SDist; the count, or -1 when it does not fit }
+function SearchBlock(var E: TOrepEnc): LongInt;
+var
+  NSeg, B, NB, K, LitStart, NM, L: LongWord;
+  CAbs: QWord;
+begin
+  CAbs := E.BCAbs;
+  E.VCap := E.Cfg.MinLen + E.Cfg.Align;
+  NM := 0;
+  LitStart := 0;
+  L := orep_cont(@E.Cfg, CAbs, E.BPhysQ, E.BLen, E.PrevDist);
+  if L > 0 then
+  begin
+    E.SLit[0] := 0; E.SLen[0] := L; E.SDist[0] := E.PrevDist;
+    NM := 1;
+    LitStart := L;
+  end;
+  if E.BLen >= E.Cfg.Gram then E.BNPos := E.BLen - E.Cfg.Gram + 1
+  else E.BNPos := 0;
+  NSeg := (E.BNPos + OREP_SUB - 1) div OREP_SUB;
+  B := 0;
+  while B < NSeg do
+  begin
+    NB := NSeg - B;
+    if NB > OREP_BATCH then NB := OREP_BATCH;
+    E.BSeg0 := B;
+    FillChar(E.SegCnt, SizeOf(E.SegCnt), 0);
+    PoolRun(E.Pool, @JobAnchors, @E, NB);
+    PoolRun(E.Pool, @JobProbe, @E, E.NShard);
+    PoolRun(E.Pool, @JobVerify, @E, NB);
+    for K := 0 to NB - 1 do
+      if orep_select(@E.Cfg, CAbs, E.BPhysQ, E.BLen, E.APos + K * OREP_SUB,
+        E.Cand + K * OREP_SUB, E.FL + K * OREP_SUB, E.BL + K * OREP_SUB,
+        E.SegCnt[K], E.VCap, LitStart, NM, E.SLit, E.SLen, E.SDist,
+        E.Cap) < 0 then Exit(-1);
+    Inc(B, NB);
+  end;
+  Result := NM;
+end;
+
+{ the coordinator: runs SearchBlock while the caller's thread copies input
+  and writes output }
+type
+  POrepCoord = ^TOrepCoord;
+  TOrepCoord = record
+    E: POrepEnc;
+    Go, Done: PRTLEvent;
+    Id: TThreadID;
+    Quit: Boolean;
+  end;
+
+function CoordMain(Arg: Pointer): PtrInt;
+var
+  C: POrepCoord;
+begin
+  C := Arg;
+  repeat
+    RTLEventWaitFor(C^.Go);
+    if C^.Quit then Break;
+    C^.E^.SNM := SearchBlock(C^.E^);
+    RTLEventSetEvent(C^.Done);
+  until False;
+  Result := 0;
+end;
+
+function CoordCreate(E: POrepEnc): POrepCoord;
+begin
+  New(Result);
+  FillChar(Result^, SizeOf(TOrepCoord), 0);
+  Result^.E := E;
+  try
+    Result^.Go := RTLEventCreate;
+    Result^.Done := RTLEventCreate;
+    Result^.Id := BeginThread(@CoordMain, Result);
+  except
+    Result^.Id := TThreadID(0);
+  end;
+  if Result^.Id = TThreadID(0) then
+  begin
+    if Result^.Go <> nil then RTLEventDestroy(Result^.Go);
+    if Result^.Done <> nil then RTLEventDestroy(Result^.Done);
+    Dispose(Result);
+    Result := nil;
+  end;
+end;
+
+procedure CoordFree(C: POrepCoord);
+begin
+  if C = nil then Exit;
+  C^.Quit := True;
+  RTLEventSetEvent(C^.Go);
+  WaitForThreadTerminate(C^.Id, 0);
+  CloseThread(C^.Id);
+  RTLEventDestroy(C^.Go);
+  RTLEventDestroy(C^.Done);
+  Dispose(C);
+end;
+
 { ---- encoder ------------------------------------------------------------- }
 
 procedure EncFree(var E: TOrepEnc);
@@ -570,12 +1015,34 @@ begin
   if E.Cfg.Ring <> nil then FreeMem(E.Cfg.Ring);
   if E.TableRaw <> nil then FreeMem(E.TableRaw);
   E.TableRaw := nil;
-  if E.Cfg.Scratch <> nil then FreeMem(E.Cfg.Scratch);
+  if E.InFlight and (E.Coord <> nil) then
+    RTLEventWaitFor(POrepCoord(E.Coord)^.Done);
+  E.InFlight := False;
+  CoordFree(POrepCoord(E.Coord));
+  E.Coord := nil;
+  PoolFree(POrepPool(E.Pool));
+  E.Pool := nil;
+  if E.SList <> nil then FreeMem(E.SList);
+  if E.SOfs <> nil then FreeMem(E.SOfs);
+  if E.CandL <> nil then FreeMem(E.CandL);
+  E.SList := nil; E.SOfs := nil; E.CandL := nil;
+  if E.APos <> nil then FreeMem(E.APos);
+  if E.AIdx <> nil then FreeMem(E.AIdx);
+  if E.ATag <> nil then FreeMem(E.ATag);
+  if E.Cand <> nil then FreeMem(E.Cand);
+  if E.FL <> nil then FreeMem(E.FL);
+  if E.BL <> nil then FreeMem(E.BL);
+  E.APos := nil; E.AIdx := nil; E.ATag := nil; E.Cand := nil;
+  E.FL := nil; E.BL := nil;
   if E.Lit <> nil then FreeMem(E.Lit);
   if E.Len <> nil then FreeMem(E.Len);
   if E.Dist <> nil then FreeMem(E.Dist);
+  if E.SLit <> nil then FreeMem(E.SLit);
+  if E.SLen <> nil then FreeMem(E.SLen);
+  if E.SDist <> nil then FreeMem(E.SDist);
+  E.SLit := nil; E.SLen := nil; E.SDist := nil;
   if E.Stage <> nil then FreeMem(E.Stage);
-  E.Cfg.Ring := nil; E.Cfg.Table := nil; E.Cfg.Scratch := nil;
+  E.Cfg.Ring := nil; E.Cfg.Table := nil;
   E.Lit := nil; E.Len := nil; E.Dist := nil; E.Stage := nil;
 end;
 
@@ -594,16 +1061,26 @@ begin
     E.Cfg.MinKeep, E.Cfg.SShift);
   InitTables(E.Cfg);
   E.Chunk := P.Chunk;
-  E.Cfg.RingSize := RingFor(W, P.Chunk);
+  { one slot more than a decoder needs: the caller's thread fills the next
+    slot while the search of this one may still read the oldest }
+  E.Cfg.RingSize := RingFor(W, P.Chunk) + P.Chunk;
   E.Cap := P.Chunk div E.Cfg.MinKeep + 2;
   E.StageCap := E.Cap * 15 + 64 + 4096;
   try
     E.TableRaw := AllocMem((SizeUInt(32) shl E.Cfg.TBits) + 64);
     E.Cfg.Table := PQWord((PtrUInt(E.TableRaw) + 63) and not PtrUInt(63));
-    E.Cfg.Scratch := GetMem(3 * OREP_SUB * 4);
+    E.APos := GetMem(OREP_BATCH * OREP_SUB * 4);
+    E.AIdx := GetMem(OREP_BATCH * OREP_SUB * 4);
+    E.ATag := GetMem(OREP_BATCH * OREP_SUB * 4);
+    E.Cand := GetMem(OREP_BATCH * OREP_SUB * 4);
+    E.FL := GetMem(OREP_BATCH * OREP_SUB * 4);
+    E.BL := GetMem(OREP_BATCH * OREP_SUB * 4);
     E.Lit := GetMem(E.Cap * 4);
     E.Len := GetMem(E.Cap * 4);
     E.Dist := GetMem(E.Cap * 8);
+    E.SLit := GetMem(E.Cap * 4);
+    E.SLen := GetMem(E.Cap * 4);
+    E.SDist := GetMem(E.Cap * 8);
     E.Stage := GetMem(E.StageCap);
     E.RingAlloc := P.Chunk;
     E.Cfg.Ring := GetMem(E.RingAlloc);
@@ -611,6 +1088,21 @@ begin
     EncFree(E);
     Exit(OREP_E_MEM);
   end;
+  { Threads >= 2: a coordinator runs the search, helped by Threads - 1
+    workers, while the caller's thread copies input and writes output }
+  if P.Threads >= 2 then E.Coord := CoordCreate(@E);
+  if E.Coord <> nil then E.Pool := PoolCreate(P.Threads);
+  if E.Pool <> nil then E.NShard := POrepPool(E.Pool)^.N + 1
+  else E.NShard := 1;
+  if E.NShard > 1 then
+    try
+      E.SList := GetMem(OREP_BATCH * OREP_SUB * 4);
+      E.CandL := GetMem(OREP_BATCH * OREP_SUB * 4);
+      E.SOfs := GetMem(OREP_BATCH * (E.NShard + 1) * 4);
+    except
+      EncFree(E);
+      Exit(OREP_E_MEM);
+    end;
   { stream header }
   Move(Magic, E.Stage[0], 4);
   E.Stage[4] := OREP_FORMAT;
@@ -651,22 +1143,51 @@ begin
   E.RingAlloc := NewSize;
 end;
 
-{ search [BlockStart, Fill) of the slot and stage the block header and
-  columns; the literals are written straight from the ring }
-function EncBlock(var E: TOrepEnc): Integer;
+{ hand the block [BlockStart, Fill) of the slot to the search (the
+  coordinator, or inline), move on, and make room in the ring for the next
+  bytes while no search runs }
+function Launch(var E: TOrepEnc): Integer;
+begin
+  E.BCAbs := E.SlotAbs + E.BlockStart;
+  E.BPhysQ := E.SlotPhys + E.BlockStart;
+  E.BLen := E.Fill - E.BlockStart;
+  if E.Fill = E.Chunk then
+  begin
+    Inc(E.SlotAbs, E.Chunk);
+    Inc(E.SlotPhys, E.Chunk);
+    if E.SlotPhys >= E.Cfg.RingSize then E.SlotPhys := 0;
+    E.Fill := 0;
+    E.BlockStart := 0;
+  end
+  else
+    E.BlockStart := E.Fill;
+  if not GrowRing(E, E.SlotPhys + E.Chunk) then Exit(OREP_E_MEM);
+  { the search writes the spare match arrays (SLit...); Finalize swaps them
+    with the ones being written out, which are done by then }
+  E.InFlight := True;
+  if E.Coord <> nil then RTLEventSetEvent(POrepCoord(E.Coord)^.Go)
+  else E.SNM := SearchBlock(E);
+  Result := OREP_OK;
+end;
+
+{ wait for the search and stage its block: header, columns, padding; the
+  literals are then written straight from the ring }
+function Finalize(var E: TOrepEnc): Integer;
 var
-  N: LongInt;
+  T: Pointer;
+  TQ: PQWord;
   I, Q, Sum, SumLen, Pad, A: LongWord;
-  CAbs: QWord;
   Tmp: array[0..15] of Byte;
 begin
-  E.BlkPhys := E.SlotPhys + E.BlockStart;
-  E.BlkLen := E.Fill - E.BlockStart;
-  CAbs := E.SlotAbs + E.BlockStart;
-  N := orep_find({$IFDEF OREP_NO_NATIVE}E.Cfg{$ELSE}@E.Cfg{$ENDIF}, CAbs,
-    E.BlkPhys, E.BlkLen, E.PrevDist, E.Lit, E.Len, E.Dist, E.Cap);
-  if N < 0 then Exit(OREP_E_PARAM);
-  E.NMatch := N;
+  if E.Coord <> nil then RTLEventWaitFor(POrepCoord(E.Coord)^.Done);
+  E.InFlight := False;
+  if E.SNM < 0 then Exit(OREP_E_PARAM);
+  T := E.SLit; E.SLit := E.Lit; E.Lit := T;
+  T := E.SLen; E.SLen := E.Len; E.Len := T;
+  TQ := E.SDist; E.SDist := E.Dist; E.Dist := TQ;
+  E.NMatch := E.SNM;
+  E.BlkPhys := E.BPhysQ;
+  E.BlkLen := E.BLen;
   { column bytes, and the distance to continue with in the next block }
   Q := 0;
   Sum := 0;
@@ -682,7 +1203,8 @@ begin
     Inc(I);
   end;
   E.PrevDist := 0;
-  if (N > 0) and (Sum = E.BlkLen) then E.PrevDist := E.Dist[N - 1];
+  if (E.NMatch > 0) and (Sum = E.BlkLen) then
+    E.PrevDist := E.Dist[E.NMatch - 1];
   { header: out size, matches, column bytes; then the three columns }
   E.StageLen := PutVar(E.Stage, E.BlkLen);
   Inc(E.StageLen, PutVar(E.Stage + E.StageLen, E.NMatch));
@@ -696,7 +1218,7 @@ begin
     Inc(E.StageLen, PutVar(E.Stage + E.StageLen, E.Dist[I - 1] - 1));
   { zeros so that every literal sits at its input position modulo Align }
   A := E.Cfg.Align;
-  Pad := ((CAbs mod A) + A - ((E.StreamPos + E.StageLen) mod A)) mod A;
+  Pad := ((E.BCAbs mod A) + A - ((E.StreamPos + E.StageLen) mod A)) mod A;
   FillChar(E.Stage[E.StageLen], Pad, 0);
   Inc(E.StageLen, Pad);
   Inc(E.StreamPos, QWord(E.StageLen) + (E.BlkLen - SumLen) + 4);
@@ -706,7 +1228,7 @@ begin
   E.LitOff := 0;
   E.LitBase := 0;
   Inc(E.Total, E.BlkLen);
-  E.BlockStart := E.Fill;
+  E.Phase := 2;
   Result := OREP_OK;
 end;
 
@@ -721,31 +1243,38 @@ begin
   while True do
     case E.Phase of
       1: begin { filling the slot }
-           if E.Fill = E.Chunk then
+           if (E.Fill = E.Chunk) or ((Mode <> OREP_RUN) and (AvailIn = 0) and
+             (E.Fill > E.BlockStart)) then
            begin
-             Result := EncBlock(E);
+             { a block is ready: finish the one in flight, start this one,
+               then write the finished one out }
+             if E.InFlight then
+             begin
+               Result := Finalize(E);
+               if Result <> OREP_OK then Exit;
+               Result := Launch(E);
+               if Result <> OREP_OK then Exit;
+               Continue;           { phase 2 }
+             end;
+             Result := Launch(E);
              if Result <> OREP_OK then Exit;
-             E.Phase := 2;
              Continue;
            end;
            if AvailIn > 0 then
            begin
              Want := E.Chunk - E.Fill;
              if Want > AvailIn then Want := AvailIn;
-             if not GrowRing(E, E.SlotPhys + E.Fill + Want) then
-               Exit(OREP_E_MEM);
              Move(NextIn^, E.Cfg.Ring[E.SlotPhys + E.Fill], Want);
              Inc(NextIn, Want);
              Dec(AvailIn, Want);
              Inc(E.Fill, Want);
              Continue;
            end;
-           if (Mode <> OREP_RUN) and (E.Fill > E.BlockStart) then
+           if (Mode <> OREP_RUN) and E.InFlight then
            begin
-             Result := EncBlock(E);
+             Result := Finalize(E);
              if Result <> OREP_OK then Exit;
-             E.Phase := 2;
-             Continue;
+             Continue;             { phase 2 }
            end;
            if (Mode = OREP_FINISH) and not E.Ended then
            begin
@@ -822,15 +1351,6 @@ begin
              Continue;
            end;
            E.BlkLen := 0;
-           { next slot when this one is full }
-           if E.Fill = E.Chunk then
-           begin
-             Inc(E.SlotAbs, E.Chunk);
-             Inc(E.SlotPhys, E.Chunk);
-             if E.SlotPhys >= E.Cfg.RingSize then E.SlotPhys := 0;
-             E.Fill := 0;
-             E.BlockStart := 0;
-           end;
            E.Phase := 1;
          end;
     else

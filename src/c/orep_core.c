@@ -44,7 +44,6 @@ typedef struct {
   uint64_t *table;       /* 1 << tbits buckets of 4 entries (32-byte
                             aligned): tag << 32 | position + 1, 0 = empty,
                             newest first */
-  uint32_t *scratch;     /* 3 * OREP_SUB u32 */
   uint32_t minlen;       /* shortest match found by the search */
   uint32_t gram;         /* bytes hashed per anchor, 4..64 */
   uint32_t smask;        /* anchor when ((h >> sshift) & smask) == 0 */
@@ -147,110 +146,203 @@ static int way(const uint64_t *b, uint32_t tag) {
 
 static void pf(const void *p) { __builtin_prefetch(p, 1, 0); }
 
-/* Search one chunk: ring[cphys .. cphys + clen), absolute position cabs.
-   prev_dist is the distance of the previous chunk's last match when it
-   ended exactly at cabs (0 otherwise).  Matches go to lit/len/dist in
-   order: lit[i] literal bytes, then len[i] bytes copied from dist[i] back.
-   Returns the count, or -1 when cap is too small (cap = clen / minkeep + 2
-   is always enough). */
-int32_t orep_find(orep_cfg *c, uint64_t cabs, uint64_t cphys, uint32_t clen,
-                  uint64_t prev_dist, uint32_t *lit, uint32_t *len,
-                  uint64_t *dist, uint32_t cap) {
-  const uint8_t *p = c->ring + cphys;
-  uint32_t *apos = c->scratch, *aidx = c->scratch + OREP_SUB;
-  uint32_t *atag = c->scratch + 2 * OREP_SUB;
-  uint32_t n = 0, litstart = 0, g = c->gram, tshift = 64u - c->tbits;
-  uint32_t lastanchor = 0, pos = 0, i;
-  uint64_t h = 0, W = c->window;
-  /* locals: the stores to the anchor lists could alias the config */
+/* ---- the search, in four phases ------------------------------------------
+
+   A block (ring[cphys .. cphys + clen), absolute position cabs) is searched
+   in batches of segments of OREP_SUB positions.  For each batch:
+
+     1. orep_anchors  per segment: the anchors (position, bucket, tag).
+        Segment-local: the gear hash restarts at the segment (its bits
+        below gram only depend on the last gram bytes) and so does the
+        forced-anchor count, so segments are independent.
+     2. orep_probe    per shard of buckets (its anchors, in order): the
+        candidate distance (newest entry with the same tag, if it is a
+        valid distance), then the insert.  A bucket belongs to one shard,
+        so the table ends the same whatever the number of shards.
+     3. orep_verify   per segment: forward and backward match lengths of
+        every candidate, capped at `cap` (= minlen + align).
+     4. orep_select   in order: the greedy choice.  The capped lengths
+        decide exactly whether a match reaches minlen; an accepted match is
+        then extended in full.
+
+   Phases 1-3 can run on several threads; phase 4 is sequential.  The
+   result does not depend on how the work is split.  orep_cont handles the
+   continuation of the previous block's last match. */
+
+/* anchors of the segment [s0, s1) (gram start positions, s1 + gram - 1 <=
+   clen); returns the count (at most s1 - s0) */
+uint32_t orep_anchors(const orep_cfg *c, const uint8_t *p, uint32_t s0,
+                      uint32_t s1, uint32_t *apos, uint32_t *aidx,
+                      uint32_t *atag) {
   const uint64_t *T = c->T;
+  const uint32_t g = c->gram, smask = c->smask, sshift = c->sshift,
+                 maxgap = c->maxgap, tshift = 64u - c->tbits;
+  uint32_t na = 0, nn = 0, last = s0, pos, i;
+  uint64_t h = 0;
+  if (s1 <= s0) return 0;
+  for (i = 0; i + 1 < g; i++) h = (h << 1) + T[p[s0 + i]];
+  /* pass 1, without branches: the content-defined anchors (into aidx) */
+  for (pos = s0; pos < s1; pos++) {
+    h = (h << 1) + T[p[pos + g - 1]];
+    aidx[nn] = pos;
+    nn += ((((uint32_t)(h >> sshift)) & smask) == 0);
+  }
+  /* merge in the forced ones: after maxgap positions without an anchor
+     (counted from s0), one every maxgap until the next natural one */
+  for (i = 0; i <= nn; i++) {
+    uint32_t next = i < nn ? aidx[i] : s1;
+    while (next - last > maxgap) {
+      last += maxgap;
+      apos[na++] = last;
+    }
+    if (i < nn) {
+      apos[na++] = next;
+      last = next;
+    }
+  }
+  /* pass 2: their hashes (independent of each other) */
+  for (i = 0; i < na; i++) {
+    uint64_t m = gramhash(p + apos[i], g);
+    aidx[i] = (uint32_t)(m >> tshift);
+    atag[i] = (uint32_t)m;
+  }
+  return na;
+}
+
+/* group anchors [0, n) by the shard that owns their bucket (shard t owns
+   the buckets k with (k * ns) >> tbits = t), keeping their order: list
+   gets the indexes, ofs[t] the end of shard t (its start is ofs[t - 1], or
+   0 for t = 0); ofs has ns + 1 entries */
+void orep_shard(const uint32_t *aidx, uint32_t n, uint32_t ns, uint32_t tbits,
+                uint32_t *list, uint32_t *ofs) {
+  uint32_t cnt[257], j, t, sh = 32u - tbits;  /* ns <= 256 */
+  for (t = 0; t <= ns; t++) cnt[t] = 0;
+  /* owner = (k * ns) >> tbits, with k < 2^tbits: as a 32-bit product
+     shifted up first it needs no 64-bit multiply */
+  for (j = 0; j < n; j++) cnt[((uint64_t)(aidx[j] << sh) * ns >> 32) + 1]++;
+  for (t = 1; t <= ns; t++) cnt[t] += cnt[t - 1];
+  for (j = 0; j < n; j++) {
+    t = (uint32_t)((uint64_t)(aidx[j] << sh) * ns >> 32);
+    list[cnt[t]++] = j;
+  }
+  for (t = 0; t <= ns; t++) ofs[t] = cnt[t];
+}
+
+/* table pass over the anchors list[0..nl) (indexes into the segment's
+   anchors, in order; list NULL = all of 0..nl): cand[i] = the distance of
+   the candidate of anchor list[i], or 0; then insert.  The caller gives
+   each thread the anchors of its own buckets, and cand in list order keeps
+   the threads' writes apart. */
+void orep_probe(orep_cfg *c, uint64_t cabs, const uint32_t *apos,
+                const uint32_t *aidx, const uint32_t *atag,
+                const uint32_t *list, uint32_t nl, uint32_t *cand) {
   uint64_t *table = c->table;
-  const uint32_t smask = c->smask, sshift = c->sshift, maxgap = c->maxgap;
+  const uint64_t W = c->window, md = c->mindist;
+  uint32_t i;
+#define OREP_AT(i) (list ? list[i] : (i))
+  for (i = 0; i < nl && i < OREP_PF; i++) pf(table + 4u * aidx[OREP_AT(i)]);
+  for (i = 0; i < nl; i++) {
+    uint32_t j = OREP_AT(i);
+    uint64_t *b = table + 4u * aidx[j];
+    uint32_t a = apos[j], tag = atag[j], cur32 = (uint32_t)(cabs + a);
+    int w = way(b, tag);
+    uint32_t d = 0;
+    if (i + OREP_PF < nl) pf(table + 4u * aidx[OREP_AT(i + OREP_PF)]);
+    if (w >= 0) {
+      uint64_t dd = (uint32_t)(cur32 - ((uint32_t)b[w] - 1u));
+      if (dd && dd >= md && dd <= W && dd <= cabs + a) d = (uint32_t)dd;
+    }
+    cand[i] = d;
+    /* newest first; the same gram replaces its older entry */
+    if (w < 0) w = 3;
+    for (; w > 0; w--) b[w] = b[w - 1];
+    b[0] = ((uint64_t)tag << 32) | (uint32_t)(cur32 + 1u);
+  }
+#undef OREP_AT
+}
 
-  if (prev_dist && prev_dist <= cabs && prev_dist <= W && clen) {
-    uint64_t s = cphys >= prev_dist ? cphys - prev_dist
-                                    : cphys + c->ring_size - prev_dist;
-    uint32_t l = fwd(c, s, cphys, clen);
-    l -= l % c->align;
-    if (l >= c->minkeep) {
-      if (n >= cap) return -1;
-      lit[n] = 0;
-      len[n] = l;
-      dist[n] = prev_dist;
-      n++;
-      litstart = l;
+static uint64_t srcpos(const orep_cfg *c, uint64_t dp, uint64_t d) {
+  return dp >= d ? dp - d : dp + c->ring_size - d;
+}
+
+/* capped lengths of the candidates of anchors [0, n) of one segment */
+void orep_verify(const orep_cfg *c, uint64_t cabs, uint64_t cphys,
+                 uint32_t clen, const uint32_t *apos, const uint32_t *cand,
+                 uint32_t n, uint32_t cap, uint32_t *fl, uint32_t *bl) {
+  uint32_t j;
+  for (j = 0; j < n; j++) {
+    uint32_t d = cand[j];
+    if (j + OREP_PF2 < n && cand[j + OREP_PF2])
+      pf(c->ring + srcpos(c, cphys + apos[j + OREP_PF2], cand[j + OREP_PF2]));
+    if (d) {
+      uint32_t a = apos[j], mf = clen - a, mb = a;
+      uint64_t dp = cphys + a, s = srcpos(c, dp, d);
+      if (mf > cap) mf = cap;
+      if ((uint64_t)mb > cabs + a - d) mb = (uint32_t)(cabs + a - d);
+      if (mb > cap) mb = cap;
+      fl[j] = fwd(c, s, dp, mf);
+      bl[j] = fl[j] >= c->gram ? bwd(c, s, dp, mb) : 0;
     }
   }
-  if (clen < g) return (int32_t)n;
-  for (i = 0; i + 1 < g; i++) h = (h << 1) + T[p[i]];
+}
 
-  while (pos + g <= clen) {
-    /* collect the anchors of one sub-block */
-    uint32_t end = pos + OREP_SUB, na = 0, j;
-    if (end > clen - g + 1) end = clen - g + 1;
-    for (; pos < end; pos++) {
-      h = (h << 1) + T[p[pos + g - 1]];
-      if ((((uint32_t)(h >> sshift)) & smask) == 0 ||
-          pos - lastanchor >= maxgap) {
-        uint64_t m = gramhash(p + pos, g);
-        apos[na] = pos;
-        aidx[na] = (uint32_t)(m >> tshift);
-        atag[na] = (uint32_t)m;
-        na++;
-        lastanchor = pos;
-      }
+/* greedy choice over anchors [0, n) of one segment, in order.  *litstart
+   (block offset of the first byte not yet in a match) and *nm carry over
+   between calls.  Returns 0, or -1 when mcap is too small. */
+int32_t orep_select(const orep_cfg *c, uint64_t cabs, uint64_t cphys,
+                    uint32_t clen, const uint32_t *apos, const uint32_t *cand,
+                    const uint32_t *fl, const uint32_t *bl, uint32_t n,
+                    uint32_t cap, uint32_t *litstart, uint32_t *nm,
+                    uint32_t *lit, uint32_t *len, uint64_t *dist,
+                    uint32_t mcap) {
+  uint32_t j, ls = *litstart, k = *nm;
+  for (j = 0; j < n; j++) {
+    uint32_t a = apos[j], d = cand[j], f, b, lim, tot;
+    if (!d || a < ls) continue;
+    f = fl[j];
+    if (f < c->gram) continue;
+    lim = a - ls;
+    if ((uint64_t)lim > cabs + a - d) lim = (uint32_t)(cabs + a - d);
+    b = bl[j];
+    if (b > lim) b = lim;
+    if (b + f < c->minlen + (c->align - 1) && f < cap && b < cap) {
+      /* the exact lengths: decide now */
+      tot = b + f;
+      tot -= tot % c->align;
+      if (tot < c->minlen) continue;
     }
-    for (j = 0; j < na && j < OREP_PF; j++) pf(table + 4u * aidx[j]);
-    for (j = 0; j < na; j++) {
-      uint32_t a = apos[j], tag = atag[j], cur32 = (uint32_t)(cabs + a);
-      uint64_t *b = table + 4u * aidx[j], ne;
-      int w = way(b, tag);
-      if (j + OREP_PF < na) pf(table + 4u * aidx[j + OREP_PF]);
-      if (j + OREP_PF2 < na) {
-        /* the candidate of a later anchor: fetch its bytes */
-        const uint64_t *b2 = table + 4u * aidx[j + OREP_PF2];
-        int w2 = way(b2, atag[j + OREP_PF2]);
-        if (w2 >= 0) {
-          uint32_t a2 = apos[j + OREP_PF2];
-          uint64_t d2 =
-              (uint32_t)((uint32_t)(cabs + a2) - ((uint32_t)b2[w2] - 1u));
-          if (d2 && d2 <= W && d2 <= cabs + a2) {
-            uint64_t dp2 = cphys + a2;
-            pf(c->ring + (dp2 >= d2 ? dp2 - d2 : dp2 + c->ring_size - d2));
-          }
-        }
-      }
-      if (a >= litstart && w >= 0) {
-        uint64_t d = (uint32_t)(cur32 - ((uint32_t)b[w] - 1u));
-        if (d >= c->mindist && d && d <= W && d <= cabs + a) {
-          uint64_t dp = cphys + a;
-          uint64_t s = dp >= d ? dp - d : dp + c->ring_size - d;
-          uint32_t fl = fwd(c, s, dp, clen - a);
-          if (fl >= g) {
-            uint32_t maxb = a - litstart, bl, tot;
-            if ((uint64_t)maxb > cabs + a - d) maxb = (uint32_t)(cabs + a - d);
-            bl = bwd(c, s, dp, maxb);
-            tot = bl + fl;
-            tot -= tot % c->align;
-            if (tot >= c->minlen) {
-              if (n >= cap) return -1;
-              lit[n] = a - bl - litstart;
-              len[n] = tot;
-              dist[n] = d;
-              n++;
-              litstart = a - bl + tot;
-            }
-          }
-        }
-      }
-      /* newest first; the same gram replaces its older entry */
-      ne = ((uint64_t)tag << 32) | (uint32_t)(cur32 + 1u);
-      if (w < 0) w = 3;
-      for (; w > 0; w--) b[w] = b[w - 1];
-      b[0] = ne;
+    /* accepted (a capped length means at least cap = minlen + align):
+       extend in full */
+    {
+      uint64_t dp = cphys + a, s = srcpos(c, dp, d);
+      if (f >= cap) f = fwd(c, s, dp, clen - a);
+      if (bl[j] >= cap && lim > cap) b = bwd(c, s, dp, lim);
+      tot = b + f;
+      tot -= tot % c->align;
+      if (tot < c->minlen) continue;
+      if (k >= mcap) return -1;
+      lit[k] = a - b - ls;
+      len[k] = tot;
+      dist[k] = d;
+      k++;
+      ls = a - b + tot;
     }
   }
-  return (int32_t)n;
+  *litstart = ls;
+  *nm = k;
+  return 0;
+}
+
+/* the previous block's last match continued at the start of this one:
+   its length (a multiple of align, >= minkeep) or 0 */
+uint32_t orep_cont(const orep_cfg *c, uint64_t cabs, uint64_t cphys,
+                   uint32_t clen, uint64_t prev_dist) {
+  uint32_t l;
+  if (!prev_dist || prev_dist > cabs || prev_dist > c->window || !clen)
+    return 0;
+  l = fwd(c, srcpos(c, cphys, prev_dist), cphys, clen);
+  l -= l % c->align;
+  return l >= c->minkeep ? l : 0;
 }
 
 /* CRC-32C (Castagnoli), reflected, init ~0, final xor ~0 (the usual one).
