@@ -1,6 +1,6 @@
 # OREP: dedup de largo alcance en streaming (reemplazo de REP)
 
-**Estado: 0.0.1, pre-release (2026-11-17).** Formato `spec/orep-format.md`,
+**Estado: 0.0.2, pre-release (2026-11-17).** Formato `spec/orep-format.md`,
 versión 1, en borrador (puede cambiar hasta que se congele).
 
 OREP es un preprocesador de una pasada, en streaming, que va delante de un
@@ -136,12 +136,53 @@ Lo que se aprendió en el camino:
 - **tilin_512m** (el corpus de PArc) casi no tiene repeticiones lejanas:
   todo empata (±0,1 %) con lzma de 96 MB y con lzma de 64 MB en `max`.
 
-Velocidad, un hilo (Xeon E5 v4, 2026-11-17): con `-l64`, 1,5 s de CPU para
-silesia (212 MB) y 4,2 s para los juegos (584 MB); REP usa 1,3 y 2,8 s de
-CPU pero en ~4 hilos (0,35 y 0,79 s de pared). Con `-l512`, ~290 MB/s. El
-decoder saca 0,7–1 GB/s. **Pendiente:** hilos en el encoder (las anclas y
-las extensiones son puras y se pueden repartir; la tabla queda secuencial y
-el resultado es el mismo).
+## Hilos (0.0.2)
+
+`P.Threads` (CLI `-t<n>`): con 2 o más, un hilo coordinador corre la
+búsqueda ayudado por `Threads - 1` workers, y el hilo del que llama copia la
+entrada del bloque siguiente y escribe la salida del anterior mientras
+tanto. **El stream es el mismo con cualquier número de hilos** (lo verifica
+`tests/orep.sh` con 1, 2, 3, 4 y 8, y con el build de referencia). Si un
+hilo no se puede crear, sigue con los que tiene; sin thread manager
+(programa Unix sin `cthreads`) usa solo el hilo del que llama.
+
+La búsqueda de un bloque va por tramos de 8 segmentos de 64 KiB, en cuatro
+fases:
+
+1. **Anclas**, por segmento, en paralelo. Son locales al segmento (el gear
+   hash y la cuenta de anclas forzadas empiezan en cada segmento). La pasada
+   no tiene saltos: primero las anclas naturales, después se intercalan las
+   forzadas.
+2. **Tabla**, en paralelo por shards de buckets: cada bucket es de un solo
+   hilo y se recorre en orden, así que la tabla termina igual con cualquier
+   reparto. Las anclas se agrupan por dueño con un ordenamiento por conteo
+   estable, y cada hilo escribe sus candidatos en el orden de su lista.
+3. **Verificación**, por segmento, en paralelo: largos adelante y atrás de
+   cada candidato, acotados a lo que hace falta para decidir.
+4. **Elección**, secuencial y barata: decide con los largos acotados y
+   extiende del todo solo los matches aceptados.
+
+El ring del encoder tiene un slot más que el del decoder, para que el hilo
+del que llama pueda llenar el siguiente mientras la búsqueda lee el más
+viejo. Los workers esperan girando, después con yield y recién después
+duermen (despertar un hilo cuesta ~0,5 ms en esta máquina).
+
+Tiempos de pared (Xeon E5 v4 con carga de otros agentes, mejor de 3,
+tilin_512m, `-w96m`):
+
+| | 1 hilo | 4 hilos | 8 hilos | REP (FreeArc'Next, ~5 hilos) |
+|---|---:|---:|---:|---:|
+| `-l512` | 1,5 s | **0,57 s** | 0,53 s | 0,77–0,81 s (`rep:96m`) |
+| `-l256` | 1,7 s | **0,70 s** | 0,62 s | 0,73 s (`rep:96m:256:c256`) |
+| `-l64` | 3,2 s | 1,46 s | 1,4 s | — |
+
+TILIN.tar entero (1,86 GB), `-l512 -t4`: 2,33 s y 1.343.009.625 bytes de
+salida, contra 2,54 s y 1.415.525.869 de REP 96m (y 155 MB de RSS contra
+245 MB). Con `-l64` la búsqueda es más cara (la tabla tiene una entrada cada
+~8 bytes y escala mal entre los dos sockets de esta máquina); en los presets
+donde rinde (lzma normal) lzma tarda cien veces más que OREP.
+
+El decoder saca 0,7–1 GB/s.
 
 ## Pruebas
 

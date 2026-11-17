@@ -8,8 +8,9 @@
 # Outputs: orep-linux-x86_64, orep-linux-x86, orep-linux-arm64,
 # orep-windows-x86_64.exe, orep-windows-x86.exe, orep-unit-<ver>.tar.gz.
 # macOS arm64 is built by .github/workflows/macos-arm64.yml.
-# The CLI needs no libc: the C core is freestanding and the Pascal side uses
-# only the RTL.
+# The C core is freestanding; the CLI links libc on Linux for its threads
+# (cthreads), like the OSREP CLI, with the same stub for the old
+# __libc_csu_* names in FPC's startup code.
 set -eu
 OUT=${1:?usage: build_orep_release.sh <out dir>}
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -49,6 +50,8 @@ fpcb linux-x86_64 orep-linux-x86_64 fpc
 
 # Linux x86 (host binutils with --32)
 core linux-x86 gcc -m32 -fno-pic
+gcc -m32 -c "$ROOT/src/c/osrep_csu_stub.c" -o "$OUT/linux-x86/csu_stub.o"
+GCC32=$(dirname "$(gcc -m32 -print-file-name=libgcc.a)")
 TB=$OUT/linux-x86/toolbin
 mkdir -p "$TB"
 printf '#!/bin/sh\nexec as --32 "$@"\n' > "$TB/i386-linux-as"
@@ -58,14 +61,19 @@ cp "$TB/i386-linux-ld" "$TB/i386-linux-ld.bfd"
 chmod +x "$TB"/*
 U386=$(dirname "$FPC_X86")/units/i386-linux
 PATH="$TB:$PATH" fpcb linux-x86 orep-linux-x86 "$FPC_X86" -n -Tlinux -Pi386 \
-  -XPi386-linux- -Fu"$U386" -Fu"$U386/rtl"
+  -XPi386-linux- -Fu"$U386" -Fu"$U386/rtl" -Fl/usr/lib32 -Fl"$GCC32" \
+  -k"$OUT/linux-x86/csu_stub.o"
 
 # Linux arm64
 core linux-arm64 aarch64-linux-gnu-gcc
+aarch64-linux-gnu-gcc -c "$ROOT/src/c/osrep_csu_stub.c" -o "$OUT/linux-arm64/csu_stub.o"
+GCCA64=$(dirname "$(aarch64-linux-gnu-gcc -print-file-name=libgcc.a)")
 UA64=$(dirname "$FPC_A64")/units/aarch64-linux
 PA64=$(cd "$(dirname "$FPC_A64")/../../.." && pwd)
 PATH="$PA64/bin-aarch64:$PATH" fpcb linux-arm64 orep-linux-arm64 "$FPC_A64" \
-  -n -Tlinux -Paarch64 -XPaarch64-linux- -Fu"$UA64" -Fu"$UA64/rtl"
+  -n -Tlinux -Paarch64 -XPaarch64-linux- -Fu"$UA64" -Fu"$UA64/rtl" \
+  -Fl"${AARCH64_LIBC:-/usr/aarch64-linux-gnu/lib}" -Fl"$GCCA64" \
+  -k"$OUT/linux-arm64/csu_stub.o"
 
 # Windows
 core win64 x86_64-w64-mingw32-gcc
