@@ -86,7 +86,7 @@ P=$OUT/orep-unit-$VER
 rm -rf "$P"
 mkdir -p "$P/obj"
 cp "$ROOT/src/orep/orep.pas" "$ROOT/src/c/orep_core.c" "$ROOT/spec/orep-format.md" \
-  "$ROOT/LICENSE" "$P/"
+  "$ROOT/docs/orep.md" "$ROOT/tests/orep_api.lpr" "$ROOT/LICENSE" "$P/"
 for t in linux-x86_64 linux-x86 linux-arm64 win64 win32; do
   mkdir -p "$P/obj/$t"
   cp "$OUT/$t/orep_core.o" "$P/obj/$t/"
@@ -98,6 +98,8 @@ OREP $VER - Pascal unit (MIT)
   orep_core.c     the native match finder and CRC (freestanding C, no libc)
   obj/<target>/   orep_core.o built for each target
   orep-format.md  the stream format
+  orep.md         design, API, measurements, suggested settings (Spanish)
+  orep_api.lpr    an API test that shows every call (threads, hooks, reset)
 
 Link: put orep_core.o where FPC finds objects (-Fl<dir>), or build with
 -dOREP_NO_NATIVE to use the Pascal reference (same bytes, slower).

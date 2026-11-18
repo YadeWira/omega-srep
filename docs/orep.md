@@ -1,6 +1,6 @@
 # OREP: dedup de largo alcance en streaming (reemplazo de REP)
 
-**Estado: 0.0.4, pre-release (2026-11-18).** Formato `spec/orep-format.md`,
+**Estado: 0.0.5, pre-release (2026-11-18).** Formato `spec/orep-format.md`,
 versión 3, en borrador (puede cambiar hasta que se congele).
 
 OREP es un preprocesador de una pasada, en streaming, que va delante de un
@@ -199,6 +199,16 @@ fases:
    cada candidato, acotados a lo que hace falta para decidir.
 4. **Elección**, secuencial y barata: decide con los largos acotados y
    extiende del todo solo los matches aceptados.
+
+**Presupuesto de hilos (0.0.5).** `P.OnWorkerBusy` / `P.OnWorkerIdle`
+(con `P.HookCtx`) son callbacks opcionales: los llaman los hilos de OREP
+(workers y coordinador) al empezar a trabajar y antes de bloquearse a
+esperar, para que un programa con un presupuesto global de hilos (PArc,
+`PARC_THREADS`) tome y devuelva una ficha por hilo. `Busy` puede bloquear
+hasta que haya ficha: un worker se suma a un trabajo solo mientras quedan
+ítems, así que la búsqueda nunca espera a uno que todavía no llegó. La
+espera activa corta entre trabajos cuenta como ocupado. `tests/orep_api.lpr`
+lo prueba con 5 hilos y 2 fichas: mismos bytes, nunca más de 2 ocupados.
 
 El ring del encoder tiene un slot más que el del decoder, para que el hilo
 del que llama pueda llenar el siguiente mientras la búsqueda lee el más

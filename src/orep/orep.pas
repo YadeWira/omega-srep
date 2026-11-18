@@ -13,6 +13,12 @@
                        ->  OrepEncEnd(E)
     OrepDecInit(D, MemLimit) -> OrepDecRun(D, ...) -> OrepDecEnd(D)
 
+  P.OnWorkerBusy / P.OnWorkerIdle (with P.HookCtx), if set, are called by
+  OREP's own threads when they start working and before they block, so a
+  program with a global thread budget can take and give back one token per
+  thread (Busy may wait for a token; the search never waits for a thread
+  that has not joined).
+
   P.Threads >= 2 runs the search on a coordinator thread helped by
   Threads - 1 workers, while the caller's thread copies input and writes
   output; the stream is the same with any number of threads.  With threads
@@ -53,7 +59,7 @@ const
   OREP_FLUSH = 1;      { end the current block now (the stream goes on) }
   OREP_FINISH = 2;     { no more input: write the end of the stream }
 
-  OREP_VERSION_STR = '0.0.4';
+  OREP_VERSION_STR = '0.0.5';
   OREP_FORMAT = 3;
 
   OREP_MIN_MATCH = 16;               { format minimum match length }
@@ -62,6 +68,13 @@ const
   OREP_MIN_CHUNK = 64 * 1024;
 
 type
+  { called by OREP's own threads (workers and coordinator) when they start
+    working and before they block waiting, so a caller with a global thread
+    budget can take and give back a token per thread.  Busy may block until
+    a token is free: the search does not wait for a thread that has not
+    joined. }
+  TOrepHook = procedure(Ctx: Pointer);
+
   TOrepParams = record
     Window: QWord;      { max distance, bytes (default 512 MiB) }
     SizeHint: QWord;    { total input if known, 0 = unknown: a smaller
@@ -84,6 +97,8 @@ type
                           only; OREP creates the others and goes on with
                           fewer if it cannot.  The output is the same with
                           any number. }
+    OnWorkerBusy, OnWorkerIdle: TOrepHook;  { optional, nil = none }
+    HookCtx: Pointer;
   end;
 
   POrepCfg = ^TOrepCfg;
@@ -137,6 +152,8 @@ type
     SNM: LongInt;
     InFlight: Boolean;
     Coord: Pointer;                             { coordinator, or nil }
+    OnBusy, OnIdle: TOrepHook;
+    HookCtx: Pointer;
     SList: PLongWord;    { per segment: its anchors grouped by shard }
     SOfs: PLongWord;     { per segment: NShard + 1 offsets into SList }
     Cand4: PLongWord;    { 4 candidates per anchor }
@@ -302,6 +319,9 @@ begin
   P.MinDist := 0;
   P.Threads := 1;
   P.Cands := 4;
+  P.OnWorkerBusy := nil;
+  P.OnWorkerIdle := nil;
+  P.HookCtx := nil;
 end;
 
 function CheckParams(const P: TOrepParams): Boolean;
@@ -761,11 +781,15 @@ type
     N: LongInt;                 { workers started }
     W: array of TOrepWorker;
     Done: PRTLEvent;
+    Lock: TRTLCriticalSection;  { Open, Active, the job fields }
     Gen: LongInt;               { bumped for every job }
     Active, NextItem, Items: LongInt;
+    Open: Boolean;              { workers can still join the job }
     Job: TOrepJob;
     Ctx: Pointer;
     Quit: Boolean;
+    OnBusy, OnIdle: TOrepHook;
+    HookCtx: Pointer;
   end;
 
 procedure PoolItems(P: POrepPool);
@@ -785,15 +809,21 @@ const
   OREP_SPIN = 20000;
   OREP_YIELD = 3000;
 
+{ A worker holds its token (OnBusy .. OnIdle) from when it wakes until it
+  is about to sleep; the short spin between the jobs of a block counts as
+  busy.  It joins a job only while the job is open, so a worker that waits
+  in OnBusy never holds the search up. }
 function PoolWorker(Arg: Pointer): PtrInt;
 var
   Wk: ^TOrepWorker;
   P: POrepPool;
   MyGen, I: LongInt;
+  Holding, Join, Last: Boolean;
 begin
   Wk := Arg;
   P := Wk^.Pool;
   MyGen := 0;
+  Holding := False;
   repeat
     I := 0;
     while (P^.Gen = MyGen) and (I < OREP_SPIN) do
@@ -809,19 +839,42 @@ begin
       ReadBarrier;
       Inc(I);
     end;
+    if (P^.Gen = MyGen) and Holding then
+    begin
+      if P^.OnIdle <> nil then P^.OnIdle(P^.HookCtx);
+      Holding := False;
+    end;
     while P^.Gen = MyGen do
       RTLEventWaitFor(Wk^.Go, 100);
     ReadBarrier;
     MyGen := P^.Gen;
     if P^.Quit then Break;
-    PoolItems(P);
-    if InterLockedDecrement(P^.Active) = 0 then RTLEventSetEvent(P^.Done);
+    if not Holding then
+    begin
+      if P^.OnBusy <> nil then P^.OnBusy(P^.HookCtx);
+      Holding := True;
+    end;
+    EnterCriticalSection(P^.Lock);
+    Join := P^.Open and (P^.Gen = MyGen);
+    if Join then Inc(P^.Active);
+    LeaveCriticalSection(P^.Lock);
+    if Join then
+    begin
+      PoolItems(P);
+      EnterCriticalSection(P^.Lock);
+      Dec(P^.Active);
+      Last := P^.Active = 0;
+      LeaveCriticalSection(P^.Lock);
+      if Last then RTLEventSetEvent(P^.Done);
+    end;
   until False;
+  if Holding and (P^.OnIdle <> nil) then P^.OnIdle(P^.HookCtx);
   Result := 0;
 end;
 
 { start up to Want - 1 workers; nil when none could be started }
-function PoolCreate(Want: LongWord): POrepPool;
+function PoolCreate(Want: LongWord; OnBusy, OnIdle: TOrepHook;
+  HookCtx: Pointer): POrepPool;
 var
   I: LongInt;
 begin
@@ -829,6 +882,10 @@ begin
   if Want <= 1 then Exit;
   New(Result);
   FillChar(Result^, SizeOf(TOrepPool), 0);
+  Result^.OnBusy := OnBusy;
+  Result^.OnIdle := OnIdle;
+  Result^.HookCtx := HookCtx;
+  InitCriticalSection(Result^.Lock);
   SetLength(Result^.W, Want - 1);
   try
     Result^.Done := RTLEventCreate;
@@ -851,6 +908,7 @@ begin
   if Result^.N = 0 then
   begin
     if Result^.Done <> nil then RTLEventDestroy(Result^.Done);
+    DoneCriticalSection(Result^.Lock);
     Result^.W := nil;
     Dispose(Result);
     Result := nil;
@@ -873,6 +931,7 @@ begin
     RTLEventDestroy(P^.W[I].Go);
   end;
   RTLEventDestroy(P^.Done);
+  DoneCriticalSection(P^.Lock);
   P^.W := nil;
   Dispose(P);
 end;
@@ -887,16 +946,21 @@ begin
     for K := 0 to Items - 1 do Job(Ctx, K);
     Exit;
   end;
+  EnterCriticalSection(P^.Lock);
   P^.Job := Job;
   P^.Ctx := Ctx;
   P^.Items := Items;
   P^.NextItem := 0;
-  P^.Active := P^.N;
-  WriteBarrier;
+  P^.Active := 0;
+  P^.Open := True;
   InterLockedIncrement(P^.Gen);
+  LeaveCriticalSection(P^.Lock);
   for I := 0 to P^.N - 1 do RTLEventSetEvent(P^.W[I].Go);
   PoolItems(P);
-  { the workers are about to finish: spin, then yield, then sleep }
+  { every item is taken: no one joins any more; wait for those that did }
+  EnterCriticalSection(P^.Lock);
+  P^.Open := False;
+  LeaveCriticalSection(P^.Lock);
   I := 0;
   while P^.Active > 0 do
   begin
@@ -1039,7 +1103,9 @@ begin
   repeat
     RTLEventWaitFor(C^.Go);
     if C^.Quit then Break;
+    if C^.E^.OnBusy <> nil then C^.E^.OnBusy(C^.E^.HookCtx);
     C^.E^.SNM := SearchBlock(C^.E^);
+    if C^.E^.OnIdle <> nil then C^.E^.OnIdle(C^.E^.HookCtx);
     RTLEventSetEvent(C^.Done);
   until False;
   Result := 0;
@@ -1184,7 +1250,11 @@ begin
   { Threads >= 2: a coordinator runs the search, helped by Threads - 1
     workers, while the caller's thread copies input and writes output }
   if P.Threads >= 2 then E.Coord := CoordCreate(@E);
-  if E.Coord <> nil then E.Pool := PoolCreate(P.Threads);
+  E.OnBusy := P.OnWorkerBusy;
+  E.OnIdle := P.OnWorkerIdle;
+  E.HookCtx := P.HookCtx;
+  if E.Coord <> nil then
+    E.Pool := PoolCreate(P.Threads, P.OnWorkerBusy, P.OnWorkerIdle, P.HookCtx);
   if E.Pool <> nil then E.NShard := POrepPool(E.Pool)^.N + 1
   else E.NShard := 1;
   if E.NShard > 1 then

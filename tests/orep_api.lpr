@@ -15,6 +15,36 @@ uses {$IFDEF UNIX}cthreads,{$ENDIF} SysUtils, Classes, orep;
 
 var
   Fails: Integer = 0;
+  { the thread budget of the hook test }
+  HookBusy: LongInt = 0;
+  HookMax: LongInt = 0;
+  HookCalls: LongInt = 0;
+  HookLimit: LongInt = 1;
+
+{ take a token, waiting until one is free }
+procedure TestBusy(Ctx: Pointer);
+var
+  N, M: LongInt;
+begin
+  InterLockedIncrement(HookCalls);
+  repeat
+    N := InterLockedIncrement(HookBusy);
+    if N <= HookLimit then Break;
+    InterLockedDecrement(HookBusy);
+    Sleep(1);
+  until False;
+  repeat
+    M := HookMax;
+    if N <= M then Break;
+  until InterLockedCompareExchange(HookMax, N, M) = M;
+  if Ctx = nil then ;
+end;
+
+procedure TestIdle(Ctx: Pointer);
+begin
+  InterLockedDecrement(HookBusy);
+  if Ctx = nil then ;
+end;
 
 procedure Check(Ok: Boolean; const What: string);
 begin
@@ -180,6 +210,26 @@ begin
     OrepEncEnd(E);
     C := Decode(D, 0, Code);
     Check((Code = OREP_OK) and SameBytes(C, Src), 'flushed stream round trip');
+  end;
+
+  { thread hooks: a budget of HookLimit tokens for OREP's threads }
+  if ParamCount >= 2 then
+  begin
+    P.OnWorkerBusy := @TestBusy;
+    P.OnWorkerIdle := @TestIdle;
+    P.HookCtx := @Fails;
+    HookLimit := 2;
+    Check(OrepEncInit(E, P) = OREP_OK, 'init hooks');
+    B := EncodeWith(E, Src, 3000, 2000, 0);
+    OrepEncEnd(E);
+    Check(SameBytes(A, B), 'hooks change the stream');
+    Check(HookBusy = 0, 'busy and idle calls do not match: ' + IntToStr(HookBusy));
+    Check(HookMax <= HookLimit, 'more threads busy than tokens');
+    { with no data no block is searched and no thread works }
+    if (P.Threads >= 2) and (Length(Src) > 0) then
+      Check(HookCalls > 0, 'the hooks were never called');
+    P.OnWorkerBusy := nil;
+    P.OnWorkerIdle := nil;
   end;
 
   { whole buffers, and the memory limit }
