@@ -327,3 +327,24 @@ OREP -w1024m -l64 size 992268865 enc 11.51s 3167284KB dec 2.45s 2102776KB
 REP rep:2040m size 1056523611 enc 2.84s 2233584KB dec 2.00s 1846212KB
 OREP -w2040m -l512 -s16 size 1052428505 enc 8.03s 3164904KB dec 2.90s 2168296KB
 OREP -w2040m -l64 size 987381469 enc 11.97s 4217932KB dec 2.87s 2102228KB
+### audit partE (m7 -s4/-s8 with c4; m3 -l256 c4, -l128 c1)
+m3 enwik8.o128c1 pre=98130895 final=32854713 lzma_s=11.680075967
+m3 enwik8.o256c4 pre=99447582 final=32884189 lzma_s=12.511446893
+m3 pja.tar.o128c1 pre=6125225 final=1452662 lzma_s=.542621360
+m3 pja.tar.o256c4 pre=6482685 final=1457088 lzma_s=.543100255
+m3 silesia.tar.o128c1 pre=184631409 final=58116648 lzma_s=21.170667366
+m3 silesia.tar.o256c4 pre=193001629 final=58133539 lzma_s=21.556847983
+m3 versions.tar.o128c1 pre=25214581 final=5848678 lzma_s=1.977696022
+m3 versions.tar.o256c4 pre=26929370 final=5878529 lzma_s=2.053588577
+m3 zpaqstd-history.tar.o128c1 pre=29288629 final=6827738 lzma_s=2.412868270
+m3 zpaqstd-history.tar.o256c4 pre=31477800 final=6883173 lzma_s=2.534035097
+m7 pja.tar.q512s4a4 pre=6627133 final=1169081 lzma_s=3.365905782
+m7 pja.tar.q512s8a4 pre=6620929 final=1168532 lzma_s=3.071466835
+m7 silesia.tar.q512s4a4 pre=201619177 final=48371862 lzma_s=127.549938617
+m7 silesia.tar.q512s8a4 pre=201343961 final=48376480 lzma_s=131.064600135
+m7 versions.tar.q512s4a4 pre=28214897 final=4662151 lzma_s=14.891245796
+m7 versions.tar.q512s8a4 pre=28129245 final=4661975 lzma_s=14.137872012
+m7 zpaqstd-history.tar.q512s4a4 pre=33580561 final=5385243 lzma_s=17.560348295
+m7 zpaqstd-history.tar.q512s8a4 pre=33330513 final=5380242 lzma_s=17.230080077
+### speed tilin 4 threads (OREP to /dev/null, REP to file after sync), min of 3
+l256c1 .67 l128c1 1.09 l512 .54 l512s8a4(w512m) .97 l512s16(w512m) 1.38 REP c256 .68 REP 512m .79

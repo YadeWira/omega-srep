@@ -53,7 +53,7 @@ const
   OREP_FLUSH = 1;      { end the current block now (the stream goes on) }
   OREP_FINISH = 2;     { no more input: write the end of the stream }
 
-  OREP_VERSION_STR = '0.0.3';
+  OREP_VERSION_STR = '0.0.4';
   OREP_FORMAT = 3;
 
   OREP_MIN_MATCH = 16;               { format minimum match length }

@@ -89,3 +89,17 @@ con muchos bloques sólidos diminutos.
    el formato siga abierto.
 3. Para los presets rápidos de PArc, `-l256 -c1` / `-l512` ya están a la
    par de REP en tiempo; los defaults son para cuando manda lzma.
+
+## Después de los arreglos (OREP 0.0.4, 2026-11-18)
+
+| # | estado |
+|---|---|
+| 1 | **arreglado**: ring en slots de un chunk, reservados al usarse, sin realloc. TILIN.tar con 1 GB de ventana: decoder 2,17 → **1,06 GB** (REP 1,06), encoder `-l512 -s16` 2,64 → 1,60 GB (REP 1,32; la diferencia es la tabla) |
+| 2 | **arreglado**: decoder 1 GB 2,6 → **1,5 s** (REP 1,8); 512 MB juegos 1,10 → **0,58 s** (REP 0,58), 533 MB (REP 537); silesia 96 MB 0,21 s y 107 MB (REP 0,22 s, 111 MB) |
+| 3 | sin cambio (el precio de la compresión de `-l64`) |
+| 4 | **mitigado**: con 4 candidatos alcanza `-s8` en el preset fuerte: `-w512m -l512 -s8 -a4` 0,97 s vs 1,38 con `-s16` (REP 0,79 s), y en `lzma:max` versions +0,04 %, pja +0,01 %, history −0,03 %, silesia −0,49 % contra REP |
+| 5 | **arreglado** con #2 |
+| 6 | decoder arreglado con #1; encoder sin cambio (tabla) |
+| 7 | preset rápido: `-l128 -c1` gana en los cinco corpus contra REP `c256` (pja −0,12 %, enwik8 −0,12 %, versions −0,54 %, silesia −0,81 %, history −1,12 %) en 1,09 s vs 0,68 (tilin); `-l256 -c1` empata en tiempo (0,67 s) y pierde solo en pja (+0,20 %) |
+| 8 | **arreglado**: cabecera compacta (formato 3), 19–32 bytes por stream (REP ~20) |
+| 9 | probado: lectura y escritura en hilos aparte en la CLI no mejoró (el disco compartido es el límite, con o sin hilos de 0,8 a 7 s); se descartó. La biblioteca no hace E/S. |

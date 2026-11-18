@@ -1,7 +1,7 @@
 # OREP: dedup de largo alcance en streaming (reemplazo de REP)
 
-**Estado: 0.0.3, pre-release (2026-11-18).** Formato `spec/orep-format.md`,
-versión 2, en borrador (puede cambiar hasta que se congele).
+**Estado: 0.0.4, pre-release (2026-11-18).** Formato `spec/orep-format.md`,
+versión 3, en borrador (puede cambiar hasta que se congele).
 
 OREP es un preprocesador de una pasada, en streaming, que va delante de un
 compresor (lzma, zstd...). Saca las repeticiones largas dentro de una
@@ -12,6 +12,9 @@ en este repo junto a OSREP, con releases aparte (`orep-vX.Y.Z`).
 
 ## Diseño
 
+- **Ring en slots (0.0.4).** El ring es un arreglo de slots de un chunk
+  (potencia de 2), cada uno reservado cuando se usa por primera vez: no hay
+  realloc, y la memoria es la que se usa (ver `docs/orep-audit-2026-11-18.md`).
 - **Ring de la ventana.** La entrada entra a un ring de
   `ceil(W/C)*C + C` bytes por slots de C bytes (default 4 MiB). Cada slot
   lleno, o un flush, o el final, se busca y sale como un bloque.
@@ -152,9 +155,9 @@ cortos sobran, porque lzma ya los encuentra. Contra `-mrep:512m`:
 
 | preset de PArc | lzma | OREP |
 |---|---|---|
-| -m1, -m2 (`rep:96m:256:c256`, rápidos) | tor / LZ propio | `-w96m -l256` |
+| -m1, -m2 (`rep:96m:256:c256`, rápidos) | tor / LZ propio | `-w96m -l256 -c1` (a la par de REP en tiempo) o `-l128 -c1` (gana en todo, 1,6× el tiempo) |
 | -m3 .. -m5 (y `4x4:lzma:24mb`) | normal, dict 16–96 MB | 0.0.3: `-w96m -l64` (defaults), o `-l32` si sobra tiempo; grupo de texto `-l32` |
-| -m6 .. -m9 | `max`, dict menor que la ventana | `-w<ventana> -l512 -a4 -s16` |
+| -m6 .. -m9 | `max`, dict menor que la ventana | 0.0.4: `-w<ventana> -l512 -a4 -s8` |
 
 Lo que se aprendió en el camino:
 
