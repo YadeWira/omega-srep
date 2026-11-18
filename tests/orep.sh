@@ -78,7 +78,7 @@ echo "== API (pieces, tiny buffers, reset, flush, whole buffers)"
 mkdir -p "$W/api-nat" "$W/api-ref"
 FPC=${FPC:-fpc}
 if [ -f "$B/nat/orep_core.o" ] &&
-   $FPC -O2 -Fu"$ROOT/src/orep" -Fl"$B/nat" -FU"$W/api-nat" -o"$W/api-nat/orep_api" \
+   $FPC -O2 -Fu"$ROOT/src/orep" -Fo"$B/nat" -Fl"$B/nat" -FU"$W/api-nat" -o"$W/api-nat/orep_api" \
      "$ROOT/tests/orep_api.lpr" >"$W/api-nat/fpc.log" 2>&1 &&
    $FPC -O2 -dOREP_NO_NATIVE -Fu"$ROOT/src/orep" -FU"$W/api-ref" \
      -o"$W/api-ref/orep_api" "$ROOT/tests/orep_api.lpr" >"$W/api-ref/fpc.log" 2>&1; then
@@ -90,6 +90,7 @@ if [ -f "$B/nat/orep_core.o" ] &&
   done
 else
   bad "cannot build tests/orep_api.lpr"
+  tail -20 "$W/api-nat/fpc.log" "$W/api-ref/fpc.log" 2>/dev/null
 fi
 
 echo "== versions found"

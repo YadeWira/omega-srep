@@ -61,7 +61,9 @@ is time (text-heavy data gains the most); `-l512 -s16` in front of
 `tests/orep.sh` (round trips, native == reference, ring wrap, the same
 bytes with 1 to 8 threads and with `-c1`, stdin/stdout, memory limit, 300
 corrupt or truncated streams) and `tests/orep_api.lpr`.
-WINDOWS_LINE
+The six binaries give the same stream with `-t1` and `-t4` (qemu for arm64,
+wine, and a real Windows 10 for x64 and x86: three files × three option
+sets × two thread counts, round trips).
 
 ## Files
 
