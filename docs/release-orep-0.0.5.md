@@ -29,7 +29,8 @@ Idle. It runs with 1, 3 and 5 threads, native and reference, in
 `tests/orep.sh` and in the macOS workflow, together with the rest (round
 trips, native == reference, ring wrap, the same bytes with 1 to 8 threads,
 `-c1`, stdin/stdout, memory limit, 300 corrupt or truncated streams).
-WINDOWS_LINE
+The six binaries give the same stream with `-t1` and `-t4` (qemu for arm64,
+wine, and a real Windows 10 for x64 and x86), and the same bytes as 0.0.4.
 
 ## Files
 
