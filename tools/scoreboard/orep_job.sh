@@ -1,6 +1,6 @@
 #!/bin/bash
-# Used for tools/scoreboard/orep-2026-11-17.log: one pipeline row
-# (preprocessor, then lzma), paths are the ones of the measuring machine.
+# Used for tools/scoreboard/orep.log: one pipeline row (preprocessor, then
+# lzma); BIN picks the orep binary; paths are the measuring machine's.
 # job.sh <name> <backend m4|m7> <pre...>: one pipeline row
 cd /mnt/IA_LAB/agentes/osrep/score/orep
 N=$1; BE=$2; shift 2
@@ -10,7 +10,7 @@ O=t/$N.$BE.pre
 case "$1" in
   none) cp "$IN" $O;;
   rep:*) rm -f $O.fa; $FA a $O.fa -m$1 "$IN" >/dev/null 2>&1; mv $O.fa $O;;
-  *) build4/orep -q "$@" "$IN" $O;;
+  *) ${BIN:-build6/orep} -q -t4 "$@" "$IN" $O;;
 esac
 case $BE in
   m4) L="dict=96MiB,lc=4,lp=0,pb=2,mode=normal,nice=16,mf=hc4,depth=8";;

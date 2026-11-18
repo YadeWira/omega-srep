@@ -1,7 +1,7 @@
 # OREP: dedup de largo alcance en streaming (reemplazo de REP)
 
-**Estado: 0.0.2, pre-release (2026-11-17).** Formato `spec/orep-format.md`,
-versión 1, en borrador (puede cambiar hasta que se congele).
+**Estado: 0.0.3, pre-release (2026-11-18).** Formato `spec/orep-format.md`,
+versión 2, en borrador (puede cambiar hasta que se congele).
 
 OREP es un preprocesador de una pasada, en streaming, que va delante de un
 compresor (lzma, zstd...). Saca las repeticiones largas dentro de una
@@ -20,6 +20,13 @@ en este repo junto a OSREP, con releases aparte (`orep-vX.Y.Z`).
   cero: más o menos una cada `s` posiciones, más una forzada si pasan `4s`
   sin ninguna (para corridas y períodos cortos). `gram = min(32, L/2)` y `s`
   es la potencia de 2 más grande que entra en `(L - gram + 1) / densidad`.
+- **Candidatos (0.0.3).** El bucket guarda hasta cuatro copias del mismo
+  gram; la verificación compara hasta 256 bytes hacia adelante con cada una
+  y se queda con la que más coincide (`-c1`: una entrada por gram, como en
+  0.0.2).
+- **Alineación por bloque (0.0.3).** Con `-a0` (default) cada bloque se
+  alinea a 1 si ~4096 bytes repartidos en él son en un 90 % texto ASCII, y
+  a 4 si no; el valor va en la cabecera del bloque.
 - **Tabla.** Buckets de 4 entradas (32 bytes, una línea de caché) con tag de
   32 bits y posición; como mucho una entrada por gram (la copia nueva
   reemplaza la vieja), la más nueva primero. Se hace prefetch del bucket 16
@@ -80,7 +87,35 @@ Windows x64/x86). El objeto no usa la libc.
 El encoder es ring + tabla (`32 * 2^tbits`, con `2^tbits` ≈ `W / (4s)`); el
 decoder, ring más las columnas de un bloque.
 
-## Números (2026-11-17)
+## Números de 0.0.3 (2026-11-18)
+
+Contra REP (`-mrep:96m`), con el lzma de `parc -m4` detrás, OREP `-w96m`:
+
+| corpus | REP | OREP 0.0.3 (`-l64`, defaults) | OREP 0.0.3 `-l32` |
+|---|---:|---:|---:|
+| zpaqstd-history.tar | 6.330.866 | 6.196.536 (**−2,12 %**) | 6.130.784 (**−3,16 %**) |
+| versions.tar | 5.440.237 | 5.367.412 (**−1,34 %**) | 5.317.780 (**−2,25 %**) |
+| silesia.tar | 54.769.356 | 54.158.366 (**−1,12 %**) | 53.963.072 (**−1,47 %**) |
+| enwik8 | 30.338.496 | 30.232.499 (**−0,35 %**) | 29.997.573 (**−1,12 %**) |
+| game-assets.tar | 303.520.426 | 303.280.014 (**−0,08 %**) | 303.508.638 (−0,00 %) |
+| tilin_512m.tar | 255.185.911 | 254.908.393 (**−0,11 %**) | 255.183.951 (−0,00 %) |
+
+(0.0.2 con sus defaults: −1,31, −0,85, −0,80, −0,25, −0,05 y −0,03 %.)
+Lo que aportó cada cambio, contra 0.0.2:
+
+- **Cuatro candidatos** (`-l64 -a4 -c4`): silesia −0,27 %, history −0,41 %,
+  versions −0,25 %, enwik8 −0,03 %, juegos −0,03 %. Más anclas en vez de
+  más candidatos (`-s16`, cuatro veces más) daba menos (−0,30 / −0,30 /
+  −0,17 / −0,02 %) y cuadruplicaba la tabla. Menos anclas (`-s2`) perdía
+  hasta 0,76 %.
+- **Alineación por bloque**: deja `-a1` en el texto y `-a4` en lo binario;
+  con `-l32` gana en todo (en 0.0.2, `-l32 -a1` perdía 0,55 % en silesia).
+
+Tiempo (4 hilos, mejor de 5 intercalado, máquina compartida, tilin_512m,
+`-l512`): 0.0.2 0,55 s; 0.0.3 0,65 s (`-c1 -a4`: 0,59 s); REP 0,77–0,83 s.
+`-l64` cuesta ~4 veces `-l512` y `-l32` ~8 veces, sobre todo por la tabla.
+
+## Números de 0.0.1 (2026-11-17)
 
 Contra REP de FreeArc'Next 0.11 (`-mrep:96m`, su default `-l512`), cada
 salida comprimida con lzma igual al de `parc -m4`
@@ -118,7 +153,7 @@ cortos sobran, porque lzma ya los encuentra. Contra `-mrep:512m`:
 | preset de PArc | lzma | OREP |
 |---|---|---|
 | -m1, -m2 (`rep:96m:256:c256`, rápidos) | tor / LZ propio | `-w96m -l256` |
-| -m3 .. -m5 (y `4x4:lzma:24mb`) | normal, dict 16–96 MB | `-w96m -l64 -a4`; grupo de texto `-l32 -a1` |
+| -m3 .. -m5 (y `4x4:lzma:24mb`) | normal, dict 16–96 MB | 0.0.3: `-w96m -l64` (defaults), o `-l32` si sobra tiempo; grupo de texto `-l32` |
 | -m6 .. -m9 | `max`, dict menor que la ventana | `-w<ventana> -l512 -a4 -s16` |
 
 Lo que se aprendió en el camino:

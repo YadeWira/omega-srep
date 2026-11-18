@@ -1,8 +1,9 @@
-# OREP stream format, version 1
+# OREP stream format, version 2
 
 **Status: draft (OREP 0.0.x). It can change until it is frozen in a
 release; a frozen version is never changed again, a new one gets a new
-version number.**
+version number.** Version 1 (OREP 0.0.1-0.0.2) had one alignment for the
+whole stream in the header; version 2 (0.0.3) has one per block.
 
 OREP is a one-pass streaming long-range dedup, written for PArc as a
 replacement of REP (clean-room, MIT; it does not read or write REP's
@@ -23,7 +24,7 @@ end
 | offset | size | field |
 |---:|---:|---|
 | 0 | 4 | magic `OREP` |
-| 4 | 1 | version = 1 |
+| 4 | 1 | version = 2 |
 | 5 | 1 | zero (flags, reserved) |
 | 6 | 2 | the encoder's alignment setting, 0 .. 4096 (0 = chosen per block; information only) |
 | 8 | 8 | window W: the largest distance, 1 .. 0xF0000000 |
