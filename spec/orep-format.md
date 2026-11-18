@@ -28,7 +28,7 @@ end
 | 5 | 1 | zero (flags, reserved) |
 | 6 | 2 | the encoder's alignment setting, 0 .. 4096 (0 = chosen per block; information only) |
 | 8 | 8 | window W: the largest distance, 1 .. 0xF0000000 |
-| 16 | 4 | chunk C: the slot size, 65536 .. 67108864 |
+| 16 | 4 | chunk C: the slot size, a power of two, 65536 .. 67108864 |
 | 20 | 4 | the encoder's minimum match length (information only) |
 | 24 | 4 | CRC-32C of bytes 0..23 |
 

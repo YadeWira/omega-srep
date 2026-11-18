@@ -21,8 +21,9 @@
    surely.  Anchors are collected per sub-block and the table slots are
    prefetched a few anchors ahead.
 
-   Ring layout.  The ring has `ring_size` bytes, a multiple of the chunk
-   size, so a chunk is always contiguous; positions before it wrap.  The
+   Ring layout.  The ring has `ring_size` bytes in slots of one chunk
+   (a power of two), each its own allocation, so a block is always
+   contiguous; a comparison crosses slots and wraps.  The
    table stores the low 32 bits of the absolute position + 1 (0 = empty),
    so `window` must stay below 2^32 - chunk.
 
@@ -40,7 +41,7 @@ typedef struct {
   uint64_t window;       /* max distance */
   uint64_t ring_size;    /* bytes in the ring */
   uint64_t mindist;      /* shorter distances are left to the backend */
-  uint8_t *ring;
+  uint8_t **slots;       /* ring_size >> cshift slots of 1 << cshift bytes */
   uint64_t *table;       /* 1 << tbits buckets of 4 entries (32-byte
                             aligned): tag << 32 | position + 1, 0 = empty,
                             newest first */
@@ -55,7 +56,14 @@ typedef struct {
   uint32_t cands;        /* candidates per anchor, 1..4 (1: one entry per
                             gram in the table, the newest) */
   uint32_t score;        /* bytes compared to pick among candidates */
+  uint32_t cshift;       /* log2 of the slot (= chunk) size */
+  uint32_t pad;
 } orep_cfg;
+
+/* the byte at ring offset p */
+static const uint8_t *sp(const orep_cfg *c, uint64_t p) {
+  return c->slots[p >> c->cshift] + (p & ((UINT64_C(1) << c->cshift) - 1u));
+}
 
 #define OREP_SUB 65536u
 #define OREP_PF 16u   /* prefetch the table slot this many anchors ahead */
@@ -88,64 +96,64 @@ static uint64_t gramhash(const uint8_t *p, uint32_t g) {
   return mix(k);
 }
 
-/* forward: ring[s..] against ring[d..], at most max bytes; s wraps at the
-   end of the ring, d does not (it is inside the chunk) */
+/* forward: ring[s..] against ring[d..], at most max bytes; s crosses slots
+   and wraps at the end of the ring, d does not (it is inside the block,
+   which is inside one slot) */
 static uint32_t fwd(const orep_cfg *c, uint64_t s, uint64_t d, uint32_t max) {
-  const uint8_t *r = c->ring;
+  const uint8_t *dp = sp(c, d);
+  const uint64_t cs = UINT64_C(1) << c->cshift;
   uint32_t l = 0;
   while (l < max) {
-    uint64_t room = c->ring_size - s;
+    uint64_t off = s & (cs - 1u);
+    const uint8_t *r = c->slots[s >> c->cshift] + off;
     uint32_t run = max - l, k = 0;
-    if (room < run) run = (uint32_t)room;
+    if (cs - off < run) run = (uint32_t)(cs - off);
     while (k + 8 <= run) {
-      uint64_t x = ld64(r + s + k) ^ ld64(r + d + k);
+      uint64_t x = ld64(r + k) ^ ld64(dp + l + k);
       if (x) return l + k + (ctz64(x) >> 3);
       k += 8;
     }
     while (k < run) {
-      if (r[s + k] != r[d + k]) return l + k;
+      if (r[k] != dp[l + k]) return l + k;
       k++;
     }
     l += run;
     s += run;
-    d += run;
     if (s == c->ring_size) s = 0;
   }
   return l;
 }
 
 /* backward: ring[s-1], ring[s-2].. against ring[d-1].., at most max bytes;
-   s wraps below 0 */
+   s crosses slots and wraps below 0 */
 static uint32_t bwd(const orep_cfg *c, uint64_t s, uint64_t d, uint32_t max) {
-  const uint8_t *r = c->ring;
+  const uint8_t *dp = sp(c, d);
+  const uint64_t cs = UINT64_C(1) << c->cshift;
   uint32_t l = 0;
   while (l < max) {
+    uint64_t last, off;
+    const uint8_t *r;
     uint32_t run = max - l, k = 0;
     if (s == 0) s = c->ring_size;
-    if (s < run) run = (uint32_t)s;
+    last = s - 1;
+    off = last & (cs - 1u);
+    r = c->slots[last >> c->cshift] + off + 1;   /* just past ring[s-1] */
+    if (off + 1 < run) run = (uint32_t)(off + 1);
     while (k + 8 <= run) {
-      uint64_t x = ld64(r + s - k - 8) ^ ld64(r + d - k - 8);
+      uint64_t x = ld64(r - k - 8) ^ ld64(dp - l - k - 8);
       if (x) return l + k + (clz64(x) >> 3);
       k += 8;
     }
     while (k < run) {
-      if (r[s - k - 1] != r[d - k - 1]) return l + k;
+      if (r[-(int64_t)k - 1] != dp[-(int64_t)(l + k) - 1]) return l + k;
       k++;
     }
     l += run;
     s -= run;
-    d -= run;
   }
   return l;
 }
 
-/* the way of bucket b that holds tag, or -1 */
-static int way(const uint64_t *b, uint32_t tag) {
-  int w;
-  for (w = 0; w < 4; w++)
-    if ((uint32_t)(b[w] >> 32) == tag && (uint32_t)b[w]) return w;
-  return -1;
-}
 
 static void pf(const void *p) { __builtin_prefetch(p, 1, 0); }
 
@@ -296,7 +304,7 @@ void orep_verify(const orep_cfg *c, uint64_t cabs, uint64_t cphys,
     if (j + OREP_PF2 < n) {
       const uint32_t *p4 = cand4 + 4u * (j + OREP_PF2);
       uint64_t dp2 = cphys + apos[j + OREP_PF2];
-      for (k = 0; k < nc && p4[k]; k++) pf(c->ring + srcpos(c, dp2, p4[k]));
+      for (k = 0; k < nc && p4[k]; k++) pf(sp(c, srcpos(c, dp2, p4[k])));
     }
     for (k = 0; k < nc && c4[k]; k++) {
       uint32_t mf = clen - a, f;
