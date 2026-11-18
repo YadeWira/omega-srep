@@ -174,6 +174,9 @@ function OrepDecMemory(Window: QWord; Chunk: LongWord): QWord;
 function OrepEncInit(out E: TOrepEnc; const P: TOrepParams): Integer;
 function OrepEncRun(var E: TOrepEnc; var NextIn: PByte; var AvailIn: SizeUInt;
   var NextOut: PByte; var AvailOut: SizeUInt; Mode: Integer): Integer;
+{ start a new stream with the same parameters, keeping the memory and the
+  threads (the same bytes as a new state) }
+function OrepEncReset(var E: TOrepEnc): Integer;
 procedure OrepEncEnd(var E: TOrepEnc);
 
 function OrepDecInit(out D: TOrepDec; MemLimit: QWord): Integer;
@@ -1051,6 +1054,22 @@ begin
   E.Lit := nil; E.Len := nil; E.Dist := nil; E.Stage := nil;
 end;
 
+procedure StageHeader(var E: TOrepEnc);
+begin
+  Move(Magic, E.Stage[0], 4);
+  E.Stage[4] := OREP_FORMAT;
+  E.Stage[5] := 0;
+  E.Stage[6] := Byte(E.Cfg.Align); E.Stage[7] := Byte(E.Cfg.Align shr 8);
+  Put64(E.Stage + 8, E.Cfg.Window);
+  Put32(E.Stage + 16, E.Chunk);
+  Put32(E.Stage + 20, E.Cfg.MinLen);
+  Put32(E.Stage + 24, OrepCrc32c(0, E.Stage, 24));
+  E.StageLen := HDR_SIZE;
+  E.StreamPos := HDR_SIZE;
+  E.StagePos := 0;
+  E.Phase := 2;   { drain the header, then fill }
+end;
+
 function OrepEncInit(out E: TOrepEnc; const P: TOrepParams): Integer;
 var
   W: QWord;
@@ -1108,20 +1127,24 @@ begin
       EncFree(E);
       Exit(OREP_E_MEM);
     end;
-  { stream header }
-  Move(Magic, E.Stage[0], 4);
-  E.Stage[4] := OREP_FORMAT;
-  E.Stage[5] := 0;
-  E.Stage[6] := Byte(P.Align); E.Stage[7] := Byte(P.Align shr 8);
-  Put64(E.Stage + 8, W);
-  Put32(E.Stage + 16, P.Chunk);
-  Put32(E.Stage + 20, P.MinLen);
-  Put32(E.Stage + 24, OrepCrc32c(0, E.Stage, 24));
-  E.StageLen := HDR_SIZE;
-  E.StreamPos := HDR_SIZE;
-  E.StagePos := 0;
-  E.Phase := 2;   { drain the header, then fill }
+  StageHeader(E);
   E.Inited := True;
+  Result := OREP_OK;
+end;
+
+function OrepEncReset(var E: TOrepEnc): Integer;
+begin
+  if not E.Inited then Exit(OREP_E_PARAM);
+  if E.InFlight and (E.Coord <> nil) then
+    RTLEventWaitFor(POrepCoord(E.Coord)^.Done);
+  E.InFlight := False;
+  { a fresh stream: the same bytes as a new state would write }
+  FillChar(E.Cfg.Table^, SizeUInt(32) shl E.Cfg.TBits, 0);
+  E.SlotAbs := 0; E.SlotPhys := 0; E.Fill := 0; E.BlockStart := 0;
+  E.PrevDist := 0; E.NMatch := 0; E.BlkLen := 0; E.Total := 0;
+  E.LitRun := 0; E.LitOff := 0; E.LitBase := 0;
+  E.Ended := False;
+  StageHeader(E);
   Result := OREP_OK;
 end;
 

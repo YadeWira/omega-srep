@@ -72,6 +72,24 @@ for f in "$C/mixed.bin" "$W/versions.bin" "$C/text.bin"; do
   done
 done
 
+echo "== API (pieces, tiny buffers, reset, flush, whole buffers)"
+mkdir -p "$W/api-nat" "$W/api-ref"
+FPC=${FPC:-fpc}
+if [ -f "$B/nat/orep_core.o" ] &&
+   $FPC -O2 -Fu"$ROOT/src/orep" -Fl"$B/nat" -FU"$W/api-nat" -o"$W/api-nat/orep_api" \
+     "$ROOT/tests/orep_api.lpr" >"$W/api-nat/fpc.log" 2>&1 &&
+   $FPC -O2 -dOREP_NO_NATIVE -Fu"$ROOT/src/orep" -FU"$W/api-ref" \
+     -o"$W/api-ref/orep_api" "$ROOT/tests/orep_api.lpr" >"$W/api-ref/fpc.log" 2>&1; then
+  for f in "$C/mixed.bin" "$C/text.bin" "$C/tiny.bin" "$W/empty.bin" "$W/versions.bin"; do
+    for t in 1 3; do
+      "$W/api-nat/orep_api" "$f" $t >/dev/null || bad "API checks: $f -t$t"
+    done
+    "$W/api-ref/orep_api" "$f" 2 >/dev/null || bad "API checks (reference): $f"
+  done
+else
+  bad "cannot build tests/orep_api.lpr"
+fi
+
 echo "== versions found"
 "$NAT" -q -w1m "$W/versions.bin" "$W/v.orp"
 s=$(wc -c < "$W/v.orp" | tr -d " ")
