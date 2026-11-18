@@ -1,9 +1,11 @@
-# OREP stream format, version 2
+# OREP stream format, version 3
 
 **Status: draft (OREP 0.0.x). It can change until it is frozen in a
 release; a frozen version is never changed again, a new one gets a new
 version number.** Version 1 (OREP 0.0.1-0.0.2) had one alignment for the
-whole stream in the header; version 2 (0.0.3) has one per block.
+whole stream in the header; version 2 (0.0.3) has one per block; version 3
+(0.0.4) packs the stream header and the end with varints (the chunk is a
+power of two, stored as its log2).
 
 OREP is a one-pass streaming long-range dedup, written for PArc as a
 replacement of REP (clean-room, MIT; it does not read or write REP's
@@ -14,23 +16,23 @@ per byte, low bits first, high bit set on every byte but the last.
 ## Stream
 
 ```
-header (28 bytes)
+header (15-20 bytes)
 block*
 end
 ```
 
 ### Header
 
-| offset | size | field |
-|---:|---:|---|
-| 0 | 4 | magic `OREP` |
-| 4 | 1 | version = 2 |
-| 5 | 1 | zero (flags, reserved) |
-| 6 | 2 | the encoder's alignment setting, 0 .. 4096 (0 = chosen per block; information only) |
-| 8 | 8 | window W: the largest distance, 1 .. 0xF0000000 |
-| 16 | 4 | chunk C: the slot size, a power of two, 65536 .. 67108864 |
-| 20 | 4 | the encoder's minimum match length (information only) |
-| 24 | 4 | CRC-32C of bytes 0..23 |
+```
+4 bytes   magic `OREP`
+1 byte    version = 3
+1 byte    log2 of the chunk C, 16 .. 26
+varint    window W, 1 .. 0xF0000000 (at most 5 bytes)
+varint    the encoder's alignment setting, 0 .. 4096 (0 = per block;
+          information only)
+varint    the encoder's minimum match length (information only)
+u32       CRC-32C of all the header bytes before it
+```
 
 CRC-32C is the Castagnoli CRC (polynomial 0x82F63B78 reflected), initial
 value 0xFFFFFFFF and final xor 0xFFFFFFFF (the iSCSI one; "123456789" gives
@@ -93,7 +95,7 @@ A decoder that checks these never reads or writes outside its ring.
 
 ```
 varint  0
-u64     total         the number of bytes decoded
+varint  total         the number of bytes decoded
 ```
 
 Nothing follows. A decoder rejects a stream whose total differs, that ends

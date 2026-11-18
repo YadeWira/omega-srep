@@ -54,7 +54,7 @@ const
   OREP_FINISH = 2;     { no more input: write the end of the stream }
 
   OREP_VERSION_STR = '0.0.3';
-  OREP_FORMAT = 2;
+  OREP_FORMAT = 3;
 
   OREP_MIN_MATCH = 16;               { format minimum match length }
   OREP_MAX_WINDOW = QWord($F0000000); { < 2^32 minus a chunk }
@@ -231,7 +231,7 @@ const
   OREP_SUB = 65536;
   OREP_BATCH = 8;      { segments per batch }
   OREP_PF = 16;
-  HDR_SIZE = 28;
+  HDR_MAX = 6 + 5 + 2 + 3 + 4;   { the longest stream header }
   Magic: array[0..3] of Char = 'OREP';
 
 var
@@ -1121,21 +1121,15 @@ procedure StageHeader(var E: TOrepEnc);
 begin
   Move(Magic, E.Stage[0], 4);
   E.Stage[4] := OREP_FORMAT;
-  E.Stage[5] := 0;
-  if E.AutoAlign then
-  begin
-    E.Stage[6] := 0; E.Stage[7] := 0;
-  end
-  else
-  begin
-    E.Stage[6] := Byte(E.Cfg.Align); E.Stage[7] := Byte(E.Cfg.Align shr 8);
-  end;
-  Put64(E.Stage + 8, E.Cfg.Window);
-  Put32(E.Stage + 16, E.Chunk);
-  Put32(E.Stage + 20, E.Cfg.MinLen);
-  Put32(E.Stage + 24, OrepCrc32c(0, E.Stage, 24));
-  E.StageLen := HDR_SIZE;
-  E.StreamPos := HDR_SIZE;
+  E.Stage[5] := Log2Of(E.Chunk);
+  E.StageLen := 6;
+  Inc(E.StageLen, PutVar(E.Stage + E.StageLen, E.Cfg.Window));
+  if E.AutoAlign then Inc(E.StageLen, PutVar(E.Stage + E.StageLen, 0))
+  else Inc(E.StageLen, PutVar(E.Stage + E.StageLen, E.Cfg.Align));
+  Inc(E.StageLen, PutVar(E.Stage + E.StageLen, E.Cfg.MinLen));
+  Put32(E.Stage + E.StageLen, OrepCrc32c(0, E.Stage, E.StageLen));
+  Inc(E.StageLen, 4);
+  E.StreamPos := E.StageLen;
   E.StagePos := 0;
   E.Phase := 2;   { drain the header, then fill }
 end;
@@ -1394,8 +1388,7 @@ begin
            if (Mode = OREP_FINISH) and not E.Ended then
            begin
              E.StageLen := PutVar(E.Stage, 0);
-             Put64(E.Stage + E.StageLen, E.Total);
-             Inc(E.StageLen, 8);
+             Inc(E.StageLen, PutVar(E.Stage + E.StageLen, E.Total));
              E.StagePos := 0;
              E.Ended := True;
              E.NMatch := 0;
@@ -1501,19 +1494,43 @@ begin
   D.Inited := False;
 end;
 
-function DecHeader(var D: TOrepDec): Integer;
+{ the header so far (HdrLen bytes): 1 = complete, 0 = needs more,
+  < 0 = an error.  Magic, version, log2 chunk, then varints window, align
+  setting, minimum length, then the CRC-32C of all that. }
+function DecHeaderState(var D: TOrepDec): Integer;
 var
-  I: Integer;
+  I, P, N, Sh: LongWord;
+  V: array[0..2] of QWord;
 begin
   for I := 0 to 3 do
-    if Char(D.Hdr[I]) <> Magic[I] then Exit(OREP_E_VERSION);
-  if Get32(@D.Hdr[24]) <> OrepCrc32c(0, @D.Hdr[0], 24) then Exit(OREP_E_DATA);
-  if D.Hdr[4] <> OREP_FORMAT then Exit(OREP_E_VERSION);
-  if D.Hdr[5] <> 0 then Exit(OREP_E_VERSION);
-  { the encoder's alignment setting (0 = per block); each block has its own }
-  if (D.Hdr[6] or (LongWord(D.Hdr[7]) shl 8)) > 4096 then Exit(OREP_E_DATA);
-  D.Window := Get64(@D.Hdr[8]);
-  D.Chunk := Get32(@D.Hdr[16]);
+    if (I < D.HdrLen) and (Char(D.Hdr[I]) <> Magic[I]) then
+      Exit(OREP_E_VERSION);
+  if (D.HdrLen > 4) and (D.Hdr[4] <> OREP_FORMAT) then Exit(OREP_E_VERSION);
+  if D.HdrLen < 6 then Exit(0);
+  P := 6;
+  for N := 0 to 2 do
+  begin
+    V[N] := 0;
+    Sh := 0;
+    repeat
+      if P >= D.HdrLen then Exit(0);
+      if Sh >= 35 then Exit(OREP_E_DATA);   { at most 5 bytes }
+      V[N] := V[N] or (QWord(D.Hdr[P] and $7F) shl Sh);
+      Inc(Sh, 7);
+      Inc(P);
+    until D.Hdr[P - 1] < $80;
+  end;
+  if D.HdrLen < P + 4 then Exit(0);
+  if Get32(@D.Hdr[P]) <> OrepCrc32c(0, @D.Hdr[0], P) then Exit(OREP_E_DATA);
+  if (D.Hdr[5] < 16) or (D.Hdr[5] > 26) or (V[1] > 4096) then
+    Exit(OREP_E_DATA);
+  D.Chunk := LongWord(1) shl D.Hdr[5];
+  D.Window := V[0];
+  Result := 1;
+end;
+
+function DecHeader(var D: TOrepDec): Integer;
+begin
   if (D.Window < 1) or (D.Window > OREP_MAX_WINDOW) or
     (D.Chunk < OREP_MIN_CHUNK) or (D.Chunk > OREP_MAX_CHUNK) or
     (D.Chunk and (D.Chunk - 1) <> 0) then
@@ -1627,14 +1644,15 @@ begin
   if not D.Inited then Exit(OREP_E_PARAM);
   while True do
     case D.Phase of
-      0: begin { stream header }
-           if D.HdrLen < HDR_SIZE then
+      0: begin { stream header, a byte at a time (it is short) }
+           R := DecHeaderState(D);
+           if R < 0 then begin D.Phase := 99; Exit(R); end;
+           if R = 0 then
            begin
              if AvailIn = 0 then Exit(OREP_OK);
-             K := HDR_SIZE - D.HdrLen;
-             if K > AvailIn then K := AvailIn;
-             Move(NextIn^, D.Hdr[D.HdrLen], K);
-             Inc(NextIn, K); Dec(AvailIn, K); Inc(D.InPos, K); Inc(D.HdrLen, K);
+             if D.HdrLen >= HDR_MAX then begin D.Phase := 99; Exit(OREP_E_DATA); end;
+             D.Hdr[D.HdrLen] := NextIn^;
+             Inc(NextIn); Dec(AvailIn); Inc(D.InPos); Inc(D.HdrLen);
              Continue;
            end;
            R := DecHeader(D);
@@ -1774,15 +1792,15 @@ begin
            if D.WPhys >= D.RingSize then D.WPhys := 0;
            D.Phase := 1;
          end;
-      6: begin { end: total size }
-           if D.CrcLen < 8 then
-           begin
-             if AvailIn = 0 then Exit(OREP_OK);
-             D.CrcBuf[D.CrcLen] := NextIn^;
-             Inc(NextIn); Dec(AvailIn); Inc(D.InPos); Inc(D.CrcLen);
-             Continue;
-           end;
-           if Get64(@D.CrcBuf[0]) <> D.Total then
+      6: begin { end: total size, a varint }
+           if AvailIn = 0 then Exit(OREP_OK);
+           B := NextIn^;
+           Inc(NextIn); Dec(AvailIn); Inc(D.InPos);
+           if D.VarShift > 63 then begin D.Phase := 99; Exit(OREP_E_DATA); end;
+           D.VarVal := D.VarVal or (QWord(B and $7F) shl D.VarShift);
+           Inc(D.VarShift, 7);
+           if B >= $80 then Continue;
+           if D.VarVal <> D.Total then
            begin
              D.Phase := 99; Exit(OREP_E_DATA);
            end;
