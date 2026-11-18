@@ -107,7 +107,7 @@ the end. A gear hash marks content-defined anchors (about one position in
 gram is looked up in a direct-mapped table of the newest anchor per slot,
 verified and extended both ways (up to four earlier copies of a gram are
 kept, and the one with the longest forward match is used). With alignment
-0 each block gets A = 1 when at least 90% of a sample of its bytes are
+0 each block gets A = 1 when at least 90% of its bytes at offsets k*max(1, n div 4096) are
 printable ASCII, tab, CR or LF, else A = 4. A match that reaches the end of a block is
 continued at the start of the next one with the same distance. The window
 is reduced to the input size (rounded up to a chunk) when the size is known

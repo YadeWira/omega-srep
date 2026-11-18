@@ -1229,21 +1229,24 @@ end;
   coordinator, or inline), move on, and make room in the ring for the next
   bytes while no search runs }
 { the alignment of a block when it is chosen per block: 1 for text (at
-  least 90% of a sample of bytes are printable ASCII or tab/CR/LF), else 4 }
+  least 90% of ~4096 bytes spread over the block are printable ASCII or
+  tab/CR/LF), else 4.  It runs before the search starts, so it samples. }
 function BlockAlign(P: PByte; N: LongWord): LongWord;
 var
-  I, T, Cnt: LongWord;
+  I, T, Cnt, Step: LongWord;
   B: Byte;
 begin
   T := 0;
   Cnt := 0;
   I := 0;
+  Step := N div 4096;
+  if Step < 1 then Step := 1;
   while I < N do
   begin
     B := P[I];
     if ((B >= 32) and (B < 127)) or (B = 9) or (B = 10) or (B = 13) then Inc(T);
     Inc(Cnt);
-    Inc(I, 7);
+    Inc(I, Step);
   end;
   if T * 10 >= Cnt * 9 then Result := 1 else Result := 4;
 end;
