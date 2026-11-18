@@ -14,9 +14,9 @@
    `maxgap` positions went by without one (so long runs and short periods
    still get anchors, at the same offsets in both copies).  The table key
    and tag come from a hash of the gram's bytes.  Every anchor is looked up
-   in the table and then inserted.  The table has buckets of four entries in one cache line, at
-   most one per gram (a newer copy of a gram replaces the older), newest
-   first.  A hit is verified and extended in both directions; repeats of
+   in the table and then inserted.  The table has buckets of four entries
+   in one cache line, newest first; several copies of a gram can be there,
+   and the one that matches longest is taken.  A hit is verified and extended in both directions; repeats of
    minlen bytes contain an anchor with high probability, longer ones almost
    surely.  Anchors are collected per sub-block and the table slots are
    prefetched a few anchors ahead.
@@ -52,6 +52,9 @@ typedef struct {
   uint32_t align;        /* match lengths are a multiple of this */
   uint32_t minkeep;      /* shortest continuation across chunks */
   uint32_t sshift;       /* anchor bits: sshift .. sshift + log2(smask + 1) */
+  uint32_t cands;        /* candidates per anchor, 1..4 (1: one entry per
+                            gram in the table, the newest) */
+  uint32_t score;        /* bytes compared to pick among candidates */
 } orep_cfg;
 
 #define OREP_SUB 65536u
@@ -155,12 +158,13 @@ static void pf(const void *p) { __builtin_prefetch(p, 1, 0); }
         Segment-local: the gear hash restarts at the segment (its bits
         below gram only depend on the last gram bytes) and so does the
         forced-anchor count, so segments are independent.
-     2. orep_probe    per shard of buckets (its anchors, in order): the
-        candidate distance (newest entry with the same tag, if it is a
-        valid distance), then the insert.  A bucket belongs to one shard,
+     2. orep_probe    per shard of buckets (its anchors, in order): up
+        to four candidate distances (the earlier copies of the gram in the
+        bucket), then the insert.  A bucket belongs to one shard,
         so the table ends the same whatever the number of shards.
-     3. orep_verify   per segment: forward and backward match lengths of
-        every candidate, the forward one capped at `cap` (= minlen +
+     3. orep_verify   per segment: the best candidate of each anchor
+        (longest forward match up to 256 bytes) and its lengths, the
+        forward one capped at `cap` (= minlen +
         align) and the backward one at what the sum needs to reach cap.
      4. orep_select   in order: the greedy choice.  The capped lengths
         decide exactly whether a match reaches minlen; an accepted match is
@@ -234,13 +238,15 @@ void orep_shard(const uint32_t *aidx, uint32_t n, uint32_t ns, uint32_t tbits,
 }
 
 /* table pass over the anchors list[0..nl) (indexes into the segment's
-   anchors, in order; list NULL = all of 0..nl): cand[i] = the distance of
-   the candidate of anchor list[i], or 0; then insert.  The caller gives
-   each thread the anchors of its own buckets, and cand in list order keeps
-   the threads' writes apart. */
+   anchors, in order; list NULL = all of 0..nl): cand4[4i..4i+3] = the
+   distances of the (up to four) earlier copies of the gram of anchor
+   list[i], newest first, 0 after the last; then insert, newest first
+   (copies of the same gram are kept: verify picks the best).  The caller
+   gives each thread the anchors of its own buckets, and cand4 in list
+   order keeps the threads' writes apart. */
 void orep_probe(orep_cfg *c, uint64_t cabs, const uint32_t *apos,
                 const uint32_t *aidx, const uint32_t *atag,
-                const uint32_t *list, uint32_t nl, uint32_t *cand) {
+                const uint32_t *list, uint32_t nl, uint32_t *cand4) {
   uint64_t *table = c->table;
   const uint64_t W = c->window, md = c->mindist;
   uint32_t i;
@@ -250,16 +256,20 @@ void orep_probe(orep_cfg *c, uint64_t cabs, const uint32_t *apos,
     uint32_t j = OREP_AT(i);
     uint64_t *b = table + 4u * aidx[j];
     uint32_t a = apos[j], tag = atag[j], cur32 = (uint32_t)(cabs + a);
-    int w = way(b, tag);
-    uint32_t d = 0;
+    uint32_t *o = cand4 + 4u * i, k = 0, w;
     if (i + OREP_PF < nl) pf(table + 4u * aidx[OREP_AT(i + OREP_PF)]);
-    if (w >= 0) {
-      uint64_t dd = (uint32_t)(cur32 - ((uint32_t)b[w] - 1u));
-      if (dd && dd >= md && dd <= W && dd <= cabs + a) d = (uint32_t)dd;
-    }
-    cand[i] = d;
-    /* newest first; the same gram replaces its older entry */
-    if (w < 0) w = 3;
+    for (w = 0; w < 4; w++)
+      if ((uint32_t)(b[w] >> 32) == tag && (uint32_t)b[w]) {
+        uint64_t dd = (uint32_t)(cur32 - ((uint32_t)b[w] - 1u));
+        if (dd && dd >= md && dd <= W && dd <= cabs + a) o[k++] = (uint32_t)dd;
+      }
+    for (; k < 4; k++) o[k] = 0;
+    if (c->cands == 1) {
+      /* one entry per gram: the newer copy replaces the older */
+      for (w = 0; w < 3; w++)
+        if ((uint32_t)(b[w] >> 32) == tag && (uint32_t)b[w]) break;
+    } else
+      w = 3;
     for (; w > 0; w--) b[w] = b[w - 1];
     b[0] = ((uint64_t)tag << 32) | (uint32_t)(cur32 + 1u);
   }
@@ -270,21 +280,39 @@ static uint64_t srcpos(const orep_cfg *c, uint64_t dp, uint64_t d) {
   return dp >= d ? dp - d : dp + c->ring_size - d;
 }
 
-/* capped lengths of the candidates of anchors [0, n) of one segment */
+/* for anchors [0, n) of one segment: the best of their first `cands`
+   candidates (the longest forward match, compared up to max(cap, score)
+   bytes; the newest wins a tie) into cand[j], and its capped lengths */
 void orep_verify(const orep_cfg *c, uint64_t cabs, uint64_t cphys,
-                 uint32_t clen, const uint32_t *apos, const uint32_t *cand,
-                 uint32_t n, uint32_t cap, uint32_t *fl, uint32_t *bl) {
-  uint32_t j;
+                 uint32_t clen, const uint32_t *apos, const uint32_t *cand4,
+                 uint32_t n, uint32_t cap, uint32_t *cand, uint32_t *fl,
+                 uint32_t *bl) {
+  const uint32_t sc = cap > c->score ? cap : c->score, nc = c->cands;
+  uint32_t j, k;
   for (j = 0; j < n; j++) {
-    uint32_t d = cand[j];
-    if (j + OREP_PF2 < n && cand[j + OREP_PF2])
-      pf(c->ring + srcpos(c, cphys + apos[j + OREP_PF2], cand[j + OREP_PF2]));
-    if (d) {
-      uint32_t a = apos[j], mf = clen - a, mb = a;
-      uint64_t dp = cphys + a, s = srcpos(c, dp, d);
-      if (mf > cap) mf = cap;
-      if ((uint64_t)mb > cabs + a - d) mb = (uint32_t)(cabs + a - d);
-      fl[j] = fwd(c, s, dp, mf);
+    const uint32_t *c4 = cand4 + 4u * j;
+    uint32_t a = apos[j], best = 0, bf = 0;
+    uint64_t dp = cphys + a;
+    if (j + OREP_PF2 < n) {
+      const uint32_t *p4 = cand4 + 4u * (j + OREP_PF2);
+      uint64_t dp2 = cphys + apos[j + OREP_PF2];
+      for (k = 0; k < nc && p4[k]; k++) pf(c->ring + srcpos(c, dp2, p4[k]));
+    }
+    for (k = 0; k < nc && c4[k]; k++) {
+      uint32_t mf = clen - a, f;
+      if (mf > sc) mf = sc;
+      f = fwd(c, srcpos(c, dp, c4[k]), dp, mf);
+      if (!best || f > bf) {
+        best = c4[k];
+        bf = f;
+      }
+    }
+    cand[j] = best;
+    if (best) {
+      uint32_t mb = a;
+      uint64_t s = srcpos(c, dp, best);
+      if ((uint64_t)mb > cabs + a - best) mb = (uint32_t)(cabs + a - best);
+      fl[j] = bf < cap ? bf : cap;
       /* backward only as far as the total needs to reach cap */
       if (mb > cap - fl[j]) mb = cap - fl[j];
       bl[j] = fl[j] >= c->gram ? bwd(c, s, dp, mb) : 0;

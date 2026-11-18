@@ -26,6 +26,7 @@ begin
   WriteLn(StdErr, '  -a<n>      keep literals aligned to n, default 4 (1 for text)');
   WriteLn(StdErr, '  -s<n>      anchor density 1..64, default 4 (higher: more short matches, slower)');
   WriteLn(StdErr, '  -D<size>   leave matches nearer than this to the backend, default 0');
+  WriteLn(StdErr, '  -c<n>      candidates per anchor 1..4, default 4 (1: fastest)');
   WriteLn(StdErr, '  -t<n>      encoder threads, default 1 (the output is the same with any n)');
   WriteLn(StdErr, '  -M<size>   decode: refuse streams that need more memory');
   WriteLn(StdErr, '  -q         quiet');
@@ -104,6 +105,7 @@ begin
         'a': if ParseSize(Copy(A, 3, 99), V) and (V <= 4096) then P.Align := V else Usage;
         's': if ParseSize(Copy(A, 3, 99), V) and (V <= 64) then P.Density := V else Usage;
         'D': if ParseSize(Copy(A, 3, 99), V) then P.MinDist := V else Usage;
+        'c': if ParseSize(Copy(A, 3, 99), V) and (V >= 1) and (V <= 4) then P.Cands := V else Usage;
         't': if ParseSize(Copy(A, 3, 99), V) and (V <= 256) then P.Threads := V else Usage;
         'M': if ParseSize(Copy(A, 3, 99), V) then MemLimit := V else Usage;
         'h', '?': Usage;

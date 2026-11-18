@@ -57,11 +57,13 @@ for f in $INPUTS; do
   rt "$f" -w100k -b64k -l16
   rt "$f" -w300k -b128k -l64 -a16
   rt "$f" -w1m -b64k -l512
+  rt "$f" -w300k -b64k -c1
+  rt "$f" -w300k -b64k -c2 -l32 -a1
 done
 
 echo "== same bytes with any number of threads"
 for f in "$C/mixed.bin" "$W/versions.bin" "$C/text.bin"; do
-  for o in "" "-w64k -b64k -l16" "-l512 -b64k"; do
+  for o in "" "-w64k -b64k -l16" "-l512 -b64k" "-c1 -b64k"; do
     "$NAT" -q $o "$f" "$W/t1.orp"
     for t in 2 3 4 8; do
       "$NAT" -q $o -t$t "$f" "$W/tn.orp" || bad "encode -t$t $f $o"

@@ -76,6 +76,9 @@ type
     Density: LongWord;  { anchors: about one per (MinLen - gram) / Density
                           positions; higher finds more short matches and is
                           slower and uses more table (default 4) }
+    Cands: LongWord;    { candidates tried per anchor, 1..4 (default 4):
+                          more finds longer matches and is slower; 1
+                          keeps one table entry per gram }
     Threads: LongWord;  { threads for the encoder, 0 or 1 = the caller's
                           only; OREP creates the others and goes on with
                           fewer if it cannot.  The output is the same with
@@ -91,6 +94,7 @@ type
     Ring: PByte;
     Table: PQWord;
     MinLen, Gram, SMask, MaxGap, TBits, Align, MinKeep, SShift: LongWord;
+    Cands, Score: LongWord;
   end;
 
   TOrepEnc = record
@@ -132,7 +136,8 @@ type
     Coord: Pointer;                             { coordinator, or nil }
     SList: PLongWord;    { per segment: its anchors grouped by shard }
     SOfs: PLongWord;     { per segment: NShard + 1 offsets into SList }
-    CandL: PLongWord;    { the candidates in SList order }
+    Cand4: PLongWord;    { 4 candidates per anchor }
+    Cand4L: PLongWord;   { the same in SList order (several shards) }
   end;
 
   TOrepDec = record
@@ -200,10 +205,10 @@ implementation
 function orep_anchors(c: POrepCfg; p: PByte; s0, s1: LongWord;
   apos, aidx, atag: PLongWord): LongWord; cdecl; external name 'orep_anchors';
 procedure orep_probe(c: POrepCfg; cabs: QWord; apos, aidx, atag,
-  list: PLongWord; nl: LongWord; cand: PLongWord); cdecl;
+  list: PLongWord; nl: LongWord; cand4: PLongWord); cdecl;
   external name 'orep_probe';
 procedure orep_verify(c: POrepCfg; cabs, cphys: QWord; clen: LongWord;
-  apos, cand: PLongWord; n, cap: LongWord; fl, bl: PLongWord); cdecl;
+  apos, cand4: PLongWord; n, cap: LongWord; cand, fl, bl: PLongWord); cdecl;
   external name 'orep_verify';
 function orep_select(c: POrepCfg; cabs, cphys: QWord; clen: LongWord;
   apos, cand, fl, bl: PLongWord; n, cap: LongWord; var litstart, nm: LongWord;
@@ -292,6 +297,7 @@ begin
   P.Density := 4;
   P.MinDist := 0;
   P.Threads := 1;
+  P.Cands := 4;
 end;
 
 function CheckParams(const P: TOrepParams): Boolean;
@@ -300,7 +306,8 @@ begin
     (P.MinLen >= OREP_MIN_MATCH) and (P.MinLen <= 65536) and
     (P.Chunk >= OREP_MIN_CHUNK) and (P.Chunk <= OREP_MAX_CHUNK) and
     (P.Align >= 1) and (P.Align <= 4096) and (P.Align <= P.MinLen) and
-    (P.Density >= 1) and (P.Density <= 64) and (P.Threads <= 256);
+    (P.Density >= 1) and (P.Density <= 64) and (P.Threads <= 256) and
+    (P.Cands >= 1) and (P.Cands <= 4);
 end;
 
 { the window the stream actually uses: a known small input gets a smaller
@@ -353,7 +360,7 @@ begin
   Derive(P, W, G, SM, MG, TB, MK, SS);
   Cap := P.Chunk div MK + 2;
   Result := RingFor(W, P.Chunk) + P.Chunk + (QWord(32) shl TB) + 64 +
-    8 * OREP_BATCH * OREP_SUB * 4 +
+    16 * OREP_BATCH * OREP_SUB * 4 +
     QWord(Cap) * 32 + QWord(Cap) * 15 + 4160 + SizeOf(TOrepEnc);
 end;
 
@@ -507,57 +514,89 @@ begin
 end;
 
 procedure orep_probe(c: POrepCfg; cabs: QWord; apos, aidx, atag,
-  list: PLongWord; nl: LongWord; cand: PLongWord);
+  list: PLongWord; nl: LongWord; cand4: PLongWord);
 var
-  I, J, A, Cur32, D: LongWord;
-  B: PQWord;
-  W: Integer;
+  I, J, A, Cur32, K, W: LongWord;
+  O: PLongWord;
+  BQ: PQWord;
   DD: QWord;
 begin
   for I := 1 to nl do
   begin
     if list <> nil then J := list[I - 1] else J := I - 1;
-    B := c^.Table + 4 * aidx[J];
+    BQ := c^.Table + 4 * aidx[J];
     A := apos[J];
     Cur32 := LongWord(cabs + A);
-    W := Way(B, atag[J]);
-    D := 0;
-    if W >= 0 then
+    O := cand4 + 4 * (I - 1);
+    K := 0;
+    for W := 0 to 3 do
+      if (LongWord(BQ[W] shr 32) = atag[J]) and (LongWord(BQ[W]) <> 0) then
+      begin
+        DD := LongWord(Cur32 - (LongWord(BQ[W]) - 1));
+        if (DD <> 0) and (DD >= c^.MinDist) and (DD <= c^.Window) and
+          (DD <= cabs + A) then
+        begin
+          O[K] := DD;
+          Inc(K);
+        end;
+      end;
+    while K < 4 do
     begin
-      DD := LongWord(Cur32 - (LongWord(B[W]) - 1));
-      if (DD <> 0) and (DD >= c^.MinDist) and (DD <= c^.Window) and
-        (DD <= cabs + A) then D := DD;
+      O[K] := 0;
+      Inc(K);
     end;
-    cand[I - 1] := D;
-    if W < 0 then W := 3;
+    W := 3;
+    if c^.Cands = 1 then
+    begin
+      W := 0;
+      while (W < 3) and not ((LongWord(BQ[W] shr 32) = atag[J]) and
+        (LongWord(BQ[W]) <> 0)) do Inc(W);
+    end;
     while W > 0 do
     begin
-      B[W] := B[W - 1];
+      BQ[W] := BQ[W - 1];
       Dec(W);
     end;
-    B[0] := (QWord(atag[J]) shl 32) or LongWord(Cur32 + 1);
+    BQ[0] := (QWord(atag[J]) shl 32) or LongWord(Cur32 + 1);
   end;
 end;
 
 procedure orep_verify(c: POrepCfg; cabs, cphys: QWord; clen: LongWord;
-  apos, cand: PLongWord; n, cap: LongWord; fl, bl: PLongWord);
+  apos, cand4: PLongWord; n, cap: LongWord; cand, fl, bl: PLongWord);
 var
-  J, A, D, MF, MB: LongWord;
+  J, K, A, Best, BF, F, MF, MB, SC: LongWord;
+  C4: PLongWord;
   Dp, S: QWord;
 begin
+  SC := cap;
+  if SC < c^.Score then SC := c^.Score;
   for J := 1 to n do
   begin
-    D := cand[J - 1];
-    if D <> 0 then
+    C4 := cand4 + 4 * (J - 1);
+    A := apos[J - 1];
+    Dp := cphys + A;
+    Best := 0;
+    BF := 0;
+    K := 0;
+    while (K < c^.Cands) and (C4[K] <> 0) do
     begin
-      A := apos[J - 1];
       MF := clen - A;
+      if MF > SC then MF := SC;
+      F := Fwd(c^, SrcPos(c, Dp, C4[K]), Dp, MF);
+      if (Best = 0) or (F > BF) then
+      begin
+        Best := C4[K];
+        BF := F;
+      end;
+      Inc(K);
+    end;
+    cand[J - 1] := Best;
+    if Best <> 0 then
+    begin
       MB := A;
-      Dp := cphys + A;
-      S := SrcPos(c, Dp, D);
-      if MF > cap then MF := cap;
-      if QWord(MB) > cabs + A - D then MB := LongWord(cabs + A - D);
-      fl[J - 1] := Fwd(c^, S, Dp, MF);
+      S := SrcPos(c, Dp, Best);
+      if QWord(MB) > cabs + A - Best then MB := LongWord(cabs + A - Best);
+      if BF < cap then fl[J - 1] := BF else fl[J - 1] := cap;
       if MB > cap - fl[J - 1] then MB := cap - fl[J - 1];
       if fl[J - 1] >= c^.Gram then bl[J - 1] := Bwd(c^, S, Dp, MB)
       else bl[J - 1] := 0;
@@ -889,13 +928,13 @@ begin
       O := K * OREP_SUB;
       if NS = 1 then
         orep_probe(@E^.Cfg, E^.BCAbs, E^.APos + O, E^.AIdx + O, E^.ATag + O,
-          nil, E^.SegCnt[K], E^.Cand + O)
+          nil, E^.SegCnt[K], E^.Cand4 + 4 * O)
       else
       begin
         Ofs := E^.SOfs + K * (NS + 1);
         if Item = 0 then S := 0 else S := Ofs[Item - 1];
         orep_probe(@E^.Cfg, E^.BCAbs, E^.APos + O, E^.AIdx + O, E^.ATag + O,
-          E^.SList + O + S, Ofs[Item] - S, E^.CandL + O + S);
+          E^.SList + O + S, Ofs[Item] - S, E^.Cand4L + 4 * (O + S));
       end;
     end;
 end;
@@ -910,9 +949,10 @@ begin
   { the candidates back in anchor order }
   if (E^.NShard > 1) and (E^.SegCnt[Item] > 0) then
     for I := O to O + E^.SegCnt[Item] - 1 do
-      E^.Cand[O + E^.SList[I]] := E^.CandL[I];
+      Move(E^.Cand4L[4 * I], E^.Cand4[4 * (O + E^.SList[I])], 16);
   orep_verify(@E^.Cfg, E^.BCAbs, E^.BPhysQ, E^.BLen, E^.APos + O,
-    E^.Cand + O, E^.SegCnt[Item], E^.VCap, E^.FL + O, E^.BL + O);
+    E^.Cand4 + 4 * O, E^.SegCnt[Item], E^.VCap, E^.Cand + O, E^.FL + O,
+    E^.BL + O);
 end;
 
 { the matches of [BlkPhys, BlkPhys + BlkLen) into Lit/Len/Dist; -1 when
@@ -1032,8 +1072,9 @@ begin
   E.Pool := nil;
   if E.SList <> nil then FreeMem(E.SList);
   if E.SOfs <> nil then FreeMem(E.SOfs);
-  if E.CandL <> nil then FreeMem(E.CandL);
-  E.SList := nil; E.SOfs := nil; E.CandL := nil;
+  if E.Cand4L <> nil then FreeMem(E.Cand4L);
+  if E.Cand4 <> nil then FreeMem(E.Cand4);
+  E.SList := nil; E.SOfs := nil; E.Cand4L := nil; E.Cand4 := nil;
   if E.APos <> nil then FreeMem(E.APos);
   if E.AIdx <> nil then FreeMem(E.AIdx);
   if E.ATag <> nil then FreeMem(E.ATag);
@@ -1080,6 +1121,8 @@ begin
   E.Cfg.Window := W;
   E.Cfg.MinLen := P.MinLen;
   E.Cfg.MinDist := P.MinDist;
+  E.Cfg.Cands := P.Cands;
+  E.Cfg.Score := 256;
   E.Cfg.Align := P.Align;
   Derive(P, W, E.Cfg.Gram, E.Cfg.SMask, E.Cfg.MaxGap, E.Cfg.TBits,
     E.Cfg.MinKeep, E.Cfg.SShift);
@@ -1097,6 +1140,7 @@ begin
     E.AIdx := GetMem(OREP_BATCH * OREP_SUB * 4);
     E.ATag := GetMem(OREP_BATCH * OREP_SUB * 4);
     E.Cand := GetMem(OREP_BATCH * OREP_SUB * 4);
+    E.Cand4 := GetMem(OREP_BATCH * OREP_SUB * 16);
     E.FL := GetMem(OREP_BATCH * OREP_SUB * 4);
     E.BL := GetMem(OREP_BATCH * OREP_SUB * 4);
     E.Lit := GetMem(E.Cap * 4);
@@ -1121,7 +1165,7 @@ begin
   if E.NShard > 1 then
     try
       E.SList := GetMem(OREP_BATCH * OREP_SUB * 4);
-      E.CandL := GetMem(OREP_BATCH * OREP_SUB * 4);
+      E.Cand4L := GetMem(OREP_BATCH * OREP_SUB * 16);
       E.SOfs := GetMem(OREP_BATCH * (E.NShard + 1) * 4);
     except
       EncFree(E);
