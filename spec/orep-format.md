@@ -25,7 +25,7 @@ end
 | 0 | 4 | magic `OREP` |
 | 4 | 1 | version = 1 |
 | 5 | 1 | zero (flags, reserved) |
-| 6 | 2 | align A, 1 .. 4096 |
+| 6 | 2 | the encoder's alignment setting, 0 .. 4096 (0 = chosen per block; information only) |
 | 8 | 8 | window W: the largest distance, 1 .. 0xF0000000 |
 | 16 | 4 | chunk C: the slot size, 65536 .. 67108864 |
 | 20 | 4 | the encoder's minimum match length (information only) |
@@ -49,6 +49,7 @@ match source is still in it.
 varint  out_size      1 .. C; 0 marks the end (see below)
 varint  n             number of matches, at most out_size / 16
 varint  col_size      bytes of the three columns, 3n .. 15n
+varint  A             the block's alignment, 1 .. 4096
 columns:
   n varints  lit[i]       literal bytes before match i
   n varints  len[i] - 16  match length, >= 16
@@ -60,7 +61,7 @@ u32     crc           CRC-32C of the block's out_size output bytes
 
 Each varint of a column holds a value below 2^32 (at most 5 bytes).
 
-The padding has `(pos - q) mod A` zero bytes, where `pos` is the block's
+The padding has `(pos - q) mod A` zero bytes (A of this block), where `pos` is the block's
 first output position and `q` the stream offset (from the first header
 byte) right after the columns. With it, the first literal of the block sits
 at a stream offset equal to its output position modulo A; the encoder makes
@@ -76,6 +77,7 @@ bytes are read in order from the literals section.
 A block is valid when:
 
 - `out_size <= C` and `(pos mod C) + out_size <= C`;
+- `1 <= A <= 4096`;
 - `n <= out_size / 16`, `3n <= col_size <= 15n` and the columns use exactly
   `col_size` bytes;
 - the padding bytes are zero;
@@ -103,7 +105,10 @@ at a time and searches it when it is full, when the caller flushes, or at
 the end. A gear hash marks content-defined anchors (about one position in
 `s`, plus a forced one after `4s` positions without one); each anchor's
 gram is looked up in a direct-mapped table of the newest anchor per slot,
-verified and extended both ways. A match that reaches the end of a block is
+verified and extended both ways (up to four earlier copies of a gram are
+kept, and the one with the longest forward match is used). With alignment
+0 each block gets A = 1 when at least 90% of a sample of its bytes are
+printable ASCII, tab, CR or LF, else A = 4. A match that reaches the end of a block is
 continued at the start of the next one with the same distance. The window
 is reduced to the input size (rounded up to a chunk) when the size is known
 in advance. For the same parameters the encoder writes the same bytes on

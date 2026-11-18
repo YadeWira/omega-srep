@@ -69,8 +69,8 @@ type
     MinLen: LongWord;   { shortest match searched, >= 16 (default 64) }
     Chunk: LongWord;    { block size, 64 KiB..64 MiB (default 4 MiB) }
     Align: LongWord;    { match lengths multiple of this, and literals kept
-                          at their input position modulo it (default 4,
-                          lzma's pb2) }
+                          at their input position modulo it; 0 (default) =
+                          per block: 1 for text, 4 (lzma's pb2) otherwise }
     MinDist: QWord;     { matches nearer than this are left to the
                           backend (default 0) }
     Density: LongWord;  { anchors: about one per (MinLen - gram) / Density
@@ -126,6 +126,8 @@ type
     SegCnt: array[0..7] of LongWord;
     BCAbs, BPhysQ: QWord;                       { the block being searched }
     BLen, BSeg0, BNPos, VCap: LongWord;
+    BAlign: LongWord;                           { its alignment }
+    AutoAlign: Boolean;
     Pool: Pointer;                              { worker threads, or nil }
     NShard: LongWord;
     { the block being searched (by the coordinator thread, or inline) }
@@ -293,7 +295,7 @@ begin
   P.SizeHint := 0;
   P.MinLen := 64;
   P.Chunk := 4 * 1024 * 1024;
-  P.Align := 4;
+  P.Align := 0;
   P.Density := 4;
   P.MinDist := 0;
   P.Threads := 1;
@@ -305,7 +307,7 @@ begin
   Result := (P.Window >= 1) and (P.Window <= OREP_MAX_WINDOW) and
     (P.MinLen >= OREP_MIN_MATCH) and (P.MinLen <= 65536) and
     (P.Chunk >= OREP_MIN_CHUNK) and (P.Chunk <= OREP_MAX_CHUNK) and
-    (P.Align >= 1) and (P.Align <= 4096) and (P.Align <= P.MinLen) and
+    (P.Align <= 4096) and (P.Align <= P.MinLen) and
     (P.Density >= 1) and (P.Density <= 64) and (P.Threads <= 256) and
     (P.Cands >= 1) and (P.Cands <= 4);
 end;
@@ -1100,7 +1102,14 @@ begin
   Move(Magic, E.Stage[0], 4);
   E.Stage[4] := OREP_FORMAT;
   E.Stage[5] := 0;
-  E.Stage[6] := Byte(E.Cfg.Align); E.Stage[7] := Byte(E.Cfg.Align shr 8);
+  if E.AutoAlign then
+  begin
+    E.Stage[6] := 0; E.Stage[7] := 0;
+  end
+  else
+  begin
+    E.Stage[6] := Byte(E.Cfg.Align); E.Stage[7] := Byte(E.Cfg.Align shr 8);
+  end;
   Put64(E.Stage + 8, E.Cfg.Window);
   Put32(E.Stage + 16, E.Chunk);
   Put32(E.Stage + 20, E.Cfg.MinLen);
@@ -1123,7 +1132,8 @@ begin
   E.Cfg.MinDist := P.MinDist;
   E.Cfg.Cands := P.Cands;
   E.Cfg.Score := 256;
-  E.Cfg.Align := P.Align;
+  E.AutoAlign := P.Align = 0;
+  if E.AutoAlign then E.Cfg.Align := 4 else E.Cfg.Align := P.Align;
   Derive(P, W, E.Cfg.Gram, E.Cfg.SMask, E.Cfg.MaxGap, E.Cfg.TBits,
     E.Cfg.MinKeep, E.Cfg.SShift);
   InitTables(E.Cfg);
@@ -1218,6 +1228,26 @@ end;
 { hand the block [BlockStart, Fill) of the slot to the search (the
   coordinator, or inline), move on, and make room in the ring for the next
   bytes while no search runs }
+{ the alignment of a block when it is chosen per block: 1 for text (at
+  least 90% of a sample of bytes are printable ASCII or tab/CR/LF), else 4 }
+function BlockAlign(P: PByte; N: LongWord): LongWord;
+var
+  I, T, Cnt: LongWord;
+  B: Byte;
+begin
+  T := 0;
+  Cnt := 0;
+  I := 0;
+  while I < N do
+  begin
+    B := P[I];
+    if ((B >= 32) and (B < 127)) or (B = 9) or (B = 10) or (B = 13) then Inc(T);
+    Inc(Cnt);
+    Inc(I, 7);
+  end;
+  if T * 10 >= Cnt * 9 then Result := 1 else Result := 4;
+end;
+
 function Launch(var E: TOrepEnc): Integer;
 begin
   E.BCAbs := E.SlotAbs + E.BlockStart;
@@ -1233,6 +1263,8 @@ begin
   end
   else
     E.BlockStart := E.Fill;
+  if E.AutoAlign then E.Cfg.Align := BlockAlign(E.Cfg.Ring + E.BPhysQ, E.BLen);
+  E.BAlign := E.Cfg.Align;
   if not GrowRing(E, E.SlotPhys + E.Chunk) then Exit(OREP_E_MEM);
   { the search writes the spare match arrays (SLit...); Finalize swaps them
     with the ones being written out, which are done by then }
@@ -1281,6 +1313,7 @@ begin
   E.StageLen := PutVar(E.Stage, E.BlkLen);
   Inc(E.StageLen, PutVar(E.Stage + E.StageLen, E.NMatch));
   Inc(E.StageLen, PutVar(E.Stage + E.StageLen, Q));
+  Inc(E.StageLen, PutVar(E.Stage + E.StageLen, E.BAlign));
   for I := 1 to E.NMatch do
     Inc(E.StageLen, PutVar(E.Stage + E.StageLen, E.Lit[I - 1]));
   for I := 1 to E.NMatch do
@@ -1289,7 +1322,7 @@ begin
   for I := 1 to E.NMatch do
     Inc(E.StageLen, PutVar(E.Stage + E.StageLen, E.Dist[I - 1] - 1));
   { zeros so that every literal sits at its input position modulo Align }
-  A := E.Cfg.Align;
+  A := E.BAlign;
   Pad := ((E.BCAbs mod A) + A - ((E.StreamPos + E.StageLen) mod A)) mod A;
   FillChar(E.Stage[E.StageLen], Pad, 0);
   Inc(E.StageLen, Pad);
@@ -1466,8 +1499,8 @@ begin
   if Get32(@D.Hdr[24]) <> OrepCrc32c(0, @D.Hdr[0], 24) then Exit(OREP_E_DATA);
   if D.Hdr[4] <> OREP_FORMAT then Exit(OREP_E_VERSION);
   if D.Hdr[5] <> 0 then Exit(OREP_E_VERSION);
-  D.Align := D.Hdr[6] or (LongWord(D.Hdr[7]) shl 8);
-  if (D.Align < 1) or (D.Align > 4096) then Exit(OREP_E_DATA);
+  { the encoder's alignment setting (0 = per block); each block has its own }
+  if (D.Hdr[6] or (LongWord(D.Hdr[7]) shl 8)) > 4096 then Exit(OREP_E_DATA);
   D.Window := Get64(@D.Hdr[8]);
   D.Chunk := Get32(@D.Hdr[16]);
   if (D.Window < 1) or (D.Window > OREP_MAX_WINDOW) or
@@ -1609,7 +1642,7 @@ begin
            D.Phase := 1;
            D.VarIdx := 0; D.VarVal := 0; D.VarShift := 0;
          end;
-      1: begin { block header: out size, matches, column bytes }
+      1: begin { block header: out size, matches, column bytes, align }
            if AvailIn = 0 then Exit(OREP_OK);
            B := NextIn^;
            Inc(NextIn); Dec(AvailIn); Inc(D.InPos);
@@ -1621,6 +1654,7 @@ begin
              0: D.OutSize := D.VarVal;
              1: D.NMatch := D.VarVal;
              2: D.ColSize := D.VarVal;
+             3: D.Align := D.VarVal;
            end;
            D.VarVal := 0; D.VarShift := 0;
            if (D.VarIdx = 0) and (D.OutSize = 0) then
@@ -1629,10 +1663,10 @@ begin
              Continue;
            end;
            Inc(D.VarIdx);
-           if D.VarIdx < 3 then Continue;
+           if D.VarIdx < 4 then Continue;
            D.VarIdx := 0;
            { a block stays inside its chunk-aligned slot }
-           if (D.OutSize > D.Chunk) or
+           if (D.Align < 1) or (D.Align > 4096) or (D.OutSize > D.Chunk) or
              ((D.WPhys mod D.Chunk) + D.OutSize > D.Chunk) or
              (D.NMatch > D.OutSize div OREP_MIN_MATCH) or
              (D.ColSize < 3 * D.NMatch) or (D.ColSize > 15 * D.NMatch) then
