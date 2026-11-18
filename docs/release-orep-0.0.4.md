@@ -51,7 +51,9 @@ reference, ring wrap with 64 KiB windows, the same bytes with 1 to 8
 threads and with `-c1`, the API in small pieces, reset, flush, memory
 limit, 300 corrupt or truncated streams). 0.0.4 gives the same matches as
 0.0.3 (only the header and the end differ).
-WINDOWS_LINE
+The six binaries give the same stream with `-t1` and `-t4` (qemu for arm64,
+wine, and a real Windows 10 for x64 and x86: three files × three option
+sets × two thread counts, round trips).
 
 ## Files
 
