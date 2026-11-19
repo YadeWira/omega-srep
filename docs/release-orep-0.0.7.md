@@ -83,6 +83,10 @@ The rest is as before:
 - 300 corrupt or truncated streams.
 
 The bytes on `tilin_512m` are the same as 0.0.6's.
+The six binaries give the same stream as 0.0.6 with `-t1`, `-t4 -y0`
+and `-l32 -b64k -w1m -t3`, with round trips. They were run on the host
+(x86_64 and x86), under qemu (arm64), under wine, on a real Windows 10
+(x64 and x86), and in the macOS CI (the whole test suite).
 
 ## Files
 
