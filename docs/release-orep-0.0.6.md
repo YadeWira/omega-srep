@@ -70,6 +70,10 @@ and balanced Busy/Idle and Begin/End calls. The rest is as before:
 - 300 corrupt or truncated streams.
 
 On `tilin_512m`, three option sets give the same bytes as 0.0.5.
+The six binaries give the same stream with `-t1`, `-t4 -y0` and
+`-l32 -b64k -w1m -t3`, with round trips. They were run on the host
+(x86_64 and x86), under qemu (arm64), under wine, on a real Windows 10
+(x64 and x86), and in the macOS CI (the whole test suite).
 
 ## Files
 
