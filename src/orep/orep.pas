@@ -70,7 +70,7 @@ const
   OREP_FLUSH = 1;      { end the current block now (the stream goes on) }
   OREP_FINISH = 2;     { no more input: write the end of the stream }
 
-  OREP_VERSION_STR = '0.0.7';
+  OREP_VERSION_STR = '0.0.8';
   OREP_FORMAT = 3;
 
   OREP_MIN_MATCH = 16;               { format minimum match length }
@@ -170,12 +170,12 @@ type
     Ended, Inited: Boolean;
     { the search of one block, segment by segment: NSlot segments in
       flight, slot k mod NSlot holds segment k }
-    APos, AIdx, ATag, Cand, FL, BL: PLongWord;  { NSlot * OREP_SUB }
+    APos, AIdx, ATag: PLongWord;                { NSlot * OREP_SUB }
     SegCnt: PLongWord;                          { NSlot: anchors }
-    SegSt: PLongWord;                           { NSlot: 1 anchored, 3 verified }
+    SegSt: PLongWord;                           { NSlot: 1 anchored }
     NSlot: LongWord;
     SLock: TRTLCriticalSection;  { the counters below }
-    SNSeg, SNextA, SPrb, SNextV, SSel: LongWord;
+    SNSeg, SNextA, SPrb, SSel: LongWord;
     SProbeBusy, SSelBusy, SFail, SLockInit: Boolean;
     SGen: LongInt;               { bumped when a task ends }
     SDriver: TThreadID;          { the thread that probes }
@@ -283,13 +283,10 @@ function orep_anchors(c: POrepCfg; p: PByte; s0, s1: LongWord;
 procedure orep_probe(c: POrepCfg; cabs: QWord; apos, aidx, atag,
   list: PLongWord; nl: LongWord; cand4: PLongWord); cdecl;
   external name 'orep_probe';
-procedure orep_verify(c: POrepCfg; cabs, cphys: QWord; clen: LongWord;
-  apos, cand4: PLongWord; n, cap: LongWord; cand, fl, bl: PLongWord); cdecl;
-  external name 'orep_verify';
-function orep_select(c: POrepCfg; cabs, cphys: QWord; clen: LongWord;
-  apos, cand, fl, bl: PLongWord; n, cap: LongWord; var litstart, nm: LongWord;
+function orep_vselect(c: POrepCfg; cabs, cphys: QWord; clen: LongWord;
+  apos, cand4: PLongWord; n, cap: LongWord; var litstart, nm: LongWord;
   lit, len: PLongWord; dist: PQWord; mcap: LongWord): LongInt; cdecl;
-  external name 'orep_select';
+  external name 'orep_vselect';
 function orep_cont(c: POrepCfg; cabs, cphys: QWord; clen: LongWord;
   prev_dist: QWord): LongWord; cdecl; external name 'orep_cont';
 function orep_crc32c(t: PLongWord; crc: LongWord; p: PByte;
@@ -515,7 +512,7 @@ begin
   Derive(P, W, G, SM, MG, TB, MK, SS);
   Cap := P.Chunk div MK + 2;
   Result := RingFor(W, P.Chunk) + P.Chunk + (QWord(32) shl TB) + 64 +
-    QWord(SlotsFor(P.Threads)) * OREP_SUB * 40 +
+    QWord(SlotsFor(P.Threads)) * OREP_SUB * 28 +
     QWord(Cap) * 32 + QWord(Cap) * 15 + 4160 + SizeOf(TOrepEnc);
 end;
 
@@ -784,6 +781,25 @@ begin
   end;
   litstart := Ls;
   nm := K;
+  Result := 0;
+end;
+
+{ verify and select in one pass: anchors inside a match already chosen
+  are not verified (orep_select would skip them) }
+function orep_vselect(c: POrepCfg; cabs, cphys: QWord; clen: LongWord;
+  apos, cand4: PLongWord; n, cap: LongWord; var litstart, nm: LongWord;
+  lit, len: PLongWord; dist: PQWord; mcap: LongWord): LongInt;
+var
+  J, Cd, F, B: LongWord;
+begin
+  for J := 0 to LongInt(n) - 1 do
+  begin
+    if (apos[J] < litstart) or (cand4[4 * J] = 0) then Continue;
+    orep_verify(c, cabs, cphys, clen, apos + J, cand4 + 4 * J, 1, cap, @Cd,
+      @F, @B);
+    if orep_select(c, cabs, cphys, clen, apos + J, @Cd, @F, @B, 1, cap,
+      litstart, nm, lit, len, dist, mcap) < 0 then Exit(-1);
+  end;
   Result := 0;
 end;
 
@@ -1125,17 +1141,19 @@ end;
 type
   POrepEnc = ^TOrepEnc;
 
-{ The segments of a block go through four stages (see orep_core.c):
-  anchors and verify run on any thread in any order, probe and select one
-  segment at a time in order.  Every thread that helps runs SearchLoop:
-  under SLock it takes the most urgent task (probe, select, verify, then
-  the anchors of a new segment while a slot is free), runs it outside the
-  lock, and marks it done.  The probes run in segment order, so the table
-  ends as with one thread, and the stream is the same with any number. }
+{ The segments of a block go through three stages (see orep_core.c):
+  the anchors run on any thread in any order, the probe and the select
+  (which verifies the anchors it looks at) one segment at a time in
+  order.  Every thread that helps runs SearchLoop: under SLock it takes
+  the most urgent task (probe, select, then the anchors of a new segment
+  while a slot is free), runs it outside the lock, and marks it done.
+  The probes run in segment order, so the table ends as with one thread,
+  and the stream is the same with any number.  With no helpers,
+  SearchBlock runs the three in turn, without the lock. }
 
 const
-  TASK_NONE = 0; TASK_ANCHORS = 1; TASK_PROBE = 2; TASK_VERIFY = 3;
-  TASK_SELECT = 4; TASK_DONE = 5;
+  TASK_NONE = 0; TASK_ANCHORS = 1; TASK_PROBE = 2; TASK_SELECT = 4;
+  TASK_DONE = 5;
 
 { under SLock: the next task, its segment in K.  Only the thread that
   drives the search (Driver) probes: the table, the only thing the probe
@@ -1151,18 +1169,11 @@ begin
     K := E^.SPrb;
     Exit(TASK_PROBE);
   end;
-  if (not E^.SSelBusy) and (E^.SSel < E^.SNextV) and
-    (E^.SegSt[E^.SSel mod E^.NSlot] = 3) then
+  if (not E^.SSelBusy) and (E^.SSel < E^.SPrb) then
   begin
     E^.SSelBusy := True;
     K := E^.SSel;
     Exit(TASK_SELECT);
-  end;
-  if E^.SNextV < E^.SPrb then
-  begin
-    K := E^.SNextV;
-    Inc(E^.SNextV);
-    Exit(TASK_VERIFY);
   end;
   if (E^.SNextA < E^.SNSeg) and (E^.SNextA < E^.SSel + E^.NSlot) then
   begin
@@ -1222,7 +1233,6 @@ begin
       case T of
         TASK_ANCHORS: E^.SegSt[Sl] := 1;
         TASK_PROBE: begin Inc(E^.SPrb); E^.SProbeBusy := False; end;
-        TASK_VERIFY: E^.SegSt[Sl] := 3;
         TASK_SELECT:
           begin
             if R < 0 then
@@ -1284,16 +1294,12 @@ begin
         if E^.SegCnt[Sl] > 0 then
           orep_probe(@E^.Cfg, E^.BCAbs, E^.APos + O, E^.AIdx + O,
             E^.ATag + O, nil, E^.SegCnt[Sl], E^.Cand4 + 4 * O);
-      TASK_VERIFY:
-        orep_verify(@E^.Cfg, E^.BCAbs, E^.BPhysQ, E^.BLen, E^.APos + O,
-          E^.Cand4 + 4 * O, E^.SegCnt[Sl], E^.VCap, E^.Cand + O, E^.FL + O,
-          E^.BL + O);
       TASK_SELECT:
         begin
           LS := E^.SLitStart;
           NM := E^.SNMc;
-          R := orep_select(@E^.Cfg, E^.BCAbs, E^.BPhysQ, E^.BLen,
-            E^.APos + O, E^.Cand + O, E^.FL + O, E^.BL + O, E^.SegCnt[Sl],
+          R := orep_vselect(@E^.Cfg, E^.BCAbs, E^.BPhysQ, E^.BLen,
+            E^.APos + O, E^.Cand4 + 4 * O, E^.SegCnt[Sl],
             E^.VCap, LS, NM, E^.SLit, E^.SLen, E^.SDist, E^.Cap);
           E^.SLitStart := LS;
           E^.SNMc := NM;
@@ -1306,7 +1312,7 @@ end;
   SLit/SLen/SDist; the count, or -1 when it does not fit }
 function SearchBlock(var E: TOrepEnc): LongInt;
 var
-  L, H, Got, K: LongWord;
+  L, H, Got, K, S0, S1, N: LongWord;
 begin
   E.VCap := E.Cfg.MinLen + E.Cfg.Align;
   E.SNMc := 0;
@@ -1321,7 +1327,7 @@ begin
   if E.BLen >= E.Cfg.Gram then E.BNPos := E.BLen - E.Cfg.Gram + 1
   else E.BNPos := 0;
   E.SNSeg := (E.BNPos + OREP_SUB - 1) div OREP_SUB;
-  E.SNextA := 0; E.SPrb := 0; E.SNextV := 0; E.SSel := 0;
+  E.SNextA := 0; E.SPrb := 0; E.SSel := 0;
   E.SProbeBusy := False; E.SSelBusy := False; E.SFail := False;
   if E.SNSeg > 0 then
   begin
@@ -1335,9 +1341,34 @@ begin
       while (Got < H) and E.OnTry(E.HookCtx) do Inc(Got);
       H := Got;
     end;
-    E.SDriver := GetCurrentThreadId;
-    E.SDrvItem := -1;
-    PoolRun(E.Pool, @SearchLoop, @E, H + 1, H, True);
+    if H = 0 then
+    begin
+      { alone: each segment in turn, with no locks }
+      K := 0;
+      while (K < E.SNSeg) and not E.SFail do
+      begin
+        S0 := K * OREP_SUB;
+        S1 := S0 + OREP_SUB;
+        if S1 > E.BNPos then S1 := E.BNPos;
+        N := orep_anchors(@E.Cfg, SlotPtr(E.Cfg.Slots, E.Cfg.CShift,
+          E.BPhysQ), S0, S1, E.APos, E.AIdx, E.ATag);
+        if N > 0 then
+        begin
+          orep_probe(@E.Cfg, E.BCAbs, E.APos, E.AIdx, E.ATag, nil, N,
+            E.Cand4);
+          if orep_vselect(@E.Cfg, E.BCAbs, E.BPhysQ, E.BLen, E.APos,
+            E.Cand4, N, E.VCap, E.SLitStart, E.SNMc, E.SLit, E.SLen,
+            E.SDist, E.Cap) < 0 then E.SFail := True;
+        end;
+        Inc(K);
+      end;
+    end
+    else
+    begin
+      E.SDriver := GetCurrentThreadId;
+      E.SDrvItem := -1;
+      PoolRun(E.Pool, @SearchLoop, @E, H + 1, H, True);
+    end;
     if E.OnTry <> nil then
       for K := 1 to H do
         if E.OnIdle <> nil then E.OnIdle(E.HookCtx);
@@ -1461,11 +1492,7 @@ begin
   if E.APos <> nil then FreeMem(E.APos);
   if E.AIdx <> nil then FreeMem(E.AIdx);
   if E.ATag <> nil then FreeMem(E.ATag);
-  if E.Cand <> nil then FreeMem(E.Cand);
-  if E.FL <> nil then FreeMem(E.FL);
-  if E.BL <> nil then FreeMem(E.BL);
-  E.APos := nil; E.AIdx := nil; E.ATag := nil; E.Cand := nil;
-  E.FL := nil; E.BL := nil;
+  E.APos := nil; E.AIdx := nil; E.ATag := nil;
   if E.Lit <> nil then FreeMem(E.Lit);
   if E.Len <> nil then FreeMem(E.Len);
   if E.Dist <> nil then FreeMem(E.Dist);
@@ -1526,10 +1553,7 @@ begin
     E.APos := GetMem(E.NSlot * OREP_SUB * 4);
     E.AIdx := GetMem(E.NSlot * OREP_SUB * 4);
     E.ATag := GetMem(E.NSlot * OREP_SUB * 4);
-    E.Cand := GetMem(E.NSlot * OREP_SUB * 4);
     E.Cand4 := GetMem(E.NSlot * OREP_SUB * 16);
-    E.FL := GetMem(E.NSlot * OREP_SUB * 4);
-    E.BL := GetMem(E.NSlot * OREP_SUB * 4);
     E.SegCnt := AllocMem(E.NSlot * 4);
     E.SegSt := AllocMem(E.NSlot * 4);
     E.Lit := GetMem(E.Cap * 4);

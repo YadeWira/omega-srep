@@ -157,7 +157,7 @@ static uint32_t bwd(const orep_cfg *c, uint64_t s, uint64_t d, uint32_t max) {
 
 static void pf(const void *p) { __builtin_prefetch(p, 1, 0); }
 
-/* ---- the search, in four phases ------------------------------------------
+/* ---- the search, in three phases -----------------------------------------
 
    A block (ring[cphys .. cphys + clen), absolute position cabs) is searched
    in segments of OREP_SUB positions.  Each segment goes through:
@@ -170,19 +170,21 @@ static void pf(const void *p) { __builtin_prefetch(p, 1, 0); }
         candidate distances (the earlier copies of the gram in the bucket),
         then the insert, so the table ends the same with any number of
         threads.
-     3. orep_verify   per segment: the best candidate of each anchor
-        (longest forward match up to 256 bytes) and its lengths, the
-        forward one capped at `cap` (= minlen +
-        align) and the backward one at what the sum needs to reach cap.
-     4. orep_select   in order: the greedy choice.  The capped lengths
-        decide exactly whether a match reaches minlen; an accepted match is
-        then extended in full.
+     3. orep_vselect  one segment at a time, in order: the greedy choice.
+        Each anchor not inside a match already chosen is verified first
+        (verify1): the best candidate (longest forward match up to
+        max(cap, score) bytes) and its lengths, the forward one capped at
+        `cap` (= minlen + align) and the backward one at what the sum
+        needs to reach cap.  The capped lengths decide exactly whether a
+        match reaches minlen (select1); an accepted match is then extended
+        in full.  Anchors inside a match are never verified, which is most
+        of them in redundant data.
 
-   Phases 1 and 3 of different segments run on any thread at the same
-   time as the probe and the select of earlier ones (orep.pas,
-   SearchLoop); 2 and 4 are sequential.  The result does not depend on how
-   the work is split.  orep_cont handles the
-   continuation of the previous block's last match. */
+   Phase 1 of later segments runs on any thread at the same time as the
+   probe and the select of earlier ones (orep.pas, SearchLoop); 2 and 3
+   are sequential.  The result does not depend on how the work is split.
+   orep_cont handles the continuation of the previous block's last
+   match. */
 
 /* anchors of the segment [s0, s1) (gram start positions, s1 + gram - 1 <=
    clen); returns the count (at most s1 - s0) */
@@ -271,87 +273,105 @@ static uint64_t srcpos(const orep_cfg *c, uint64_t dp, uint64_t d) {
   return dp >= d ? dp - d : dp + c->ring_size - d;
 }
 
-/* for anchors [0, n) of one segment: the best of their first `cands`
-   candidates (the longest forward match, compared up to max(cap, score)
-   bytes; the newest wins a tie) into cand[j], and its capped lengths */
-void orep_verify(const orep_cfg *c, uint64_t cabs, uint64_t cphys,
-                 uint32_t clen, const uint32_t *apos, const uint32_t *cand4,
-                 uint32_t n, uint32_t cap, uint32_t *cand, uint32_t *fl,
-                 uint32_t *bl) {
-  const uint32_t sc = cap > c->score ? cap : c->score, nc = c->cands;
-  uint32_t j, k;
-  for (j = 0; j < n; j++) {
-    const uint32_t *c4 = cand4 + 4u * j;
-    uint32_t a = apos[j], best = 0, bf = 0;
-    uint64_t dp = cphys + a;
-    if (j + OREP_PF2 < n) {
-      const uint32_t *p4 = cand4 + 4u * (j + OREP_PF2);
-      uint64_t dp2 = cphys + apos[j + OREP_PF2];
-      for (k = 0; k < nc && p4[k]; k++) pf(sp(c, srcpos(c, dp2, p4[k])));
+/* verify one anchor at block offset a, candidates c4 (0 after the last):
+   the best of the first `cands` (the longest forward match, compared up to
+   sc = max(cap, score) bytes; the newest wins a tie) into *cand, and its
+   capped lengths */
+static void verify1(const orep_cfg *c, uint64_t cabs, uint64_t cphys,
+                    uint32_t clen, uint32_t a, const uint32_t *c4,
+                    uint32_t cap, uint32_t sc, uint32_t *cand, uint32_t *fl,
+                    uint32_t *bl) {
+  uint32_t best = 0, bf = 0, k;
+  uint64_t dp = cphys + a;
+  for (k = 0; k < c->cands && c4[k]; k++) {
+    uint32_t mf = clen - a, f;
+    if (mf > sc) mf = sc;
+    f = fwd(c, srcpos(c, dp, c4[k]), dp, mf);
+    if (!best || f > bf) {
+      best = c4[k];
+      bf = f;
     }
-    for (k = 0; k < nc && c4[k]; k++) {
-      uint32_t mf = clen - a, f;
-      if (mf > sc) mf = sc;
-      f = fwd(c, srcpos(c, dp, c4[k]), dp, mf);
-      if (!best || f > bf) {
-        best = c4[k];
-        bf = f;
-      }
-    }
-    cand[j] = best;
-    if (best) {
-      uint32_t mb = a;
-      uint64_t s = srcpos(c, dp, best);
-      if ((uint64_t)mb > cabs + a - best) mb = (uint32_t)(cabs + a - best);
-      fl[j] = bf < cap ? bf : cap;
-      /* backward only as far as the total needs to reach cap */
-      if (mb > cap - fl[j]) mb = cap - fl[j];
-      bl[j] = fl[j] >= c->gram ? bwd(c, s, dp, mb) : 0;
-    }
+  }
+  *cand = best;
+  if (best) {
+    uint32_t mb = a;
+    uint64_t s = srcpos(c, dp, best);
+    if ((uint64_t)mb > cabs + a - best) mb = (uint32_t)(cabs + a - best);
+    *fl = bf < cap ? bf : cap;
+    /* backward only as far as the total needs to reach cap */
+    if (mb > cap - *fl) mb = cap - *fl;
+    *bl = *fl >= c->gram ? bwd(c, s, dp, mb) : 0;
   }
 }
 
-/* greedy choice over anchors [0, n) of one segment, in order.  *litstart
-   (block offset of the first byte not yet in a match) and *nm carry over
-   between calls.  Returns 0, or -1 when mcap is too small. */
-int32_t orep_select(const orep_cfg *c, uint64_t cabs, uint64_t cphys,
-                    uint32_t clen, const uint32_t *apos, const uint32_t *cand,
-                    const uint32_t *fl, const uint32_t *bl, uint32_t n,
-                    uint32_t cap, uint32_t *litstart, uint32_t *nm,
-                    uint32_t *lit, uint32_t *len, uint64_t *dist,
-                    uint32_t mcap) {
-  uint32_t j, ls = *litstart, k = *nm;
+/* prefetch the candidates' bytes of an anchor */
+static void pfcand(const orep_cfg *c, uint64_t cphys, uint32_t a,
+                   const uint32_t *c4) {
+  uint32_t k;
+  for (k = 0; k < c->cands && c4[k]; k++)
+    pf(sp(c, srcpos(c, cphys + a, c4[k])));
+}
+
+/* the greedy choice for one anchor at a >= *ls with candidate d (nonzero)
+   and capped lengths f, bl0: appends the match, if any, and moves *ls.
+   Returns 0, or -1 when mcap is too small. */
+static int32_t select1(const orep_cfg *c, uint64_t cabs, uint64_t cphys,
+                       uint32_t clen, uint32_t a, uint32_t d, uint32_t f,
+                       uint32_t bl0, uint32_t cap, uint32_t *ls,
+                       uint32_t *nm, uint32_t *lit, uint32_t *len,
+                       uint64_t *dist, uint32_t mcap) {
+  uint32_t b, lim, tot, bc;
+  if (f < c->gram) return 0;
+  lim = a - *ls;
+  if ((uint64_t)lim > cabs + a - d) lim = (uint32_t)(cabs + a - d);
+  b = bl0;
+  bc = b >= cap - f;            /* the backward length may be capped */
+  if (b > lim) b = lim;
+  if (f < cap && (!bc || lim <= bl0)) {
+    /* the exact lengths: decide now */
+    tot = b + f;
+    tot -= tot % c->align;
+    if (tot < c->minlen) return 0;
+  } else {
+    /* a capped length means the sum reaches cap = minlen + align:
+       accepted; extend in full */
+    uint64_t dp = cphys + a, s = srcpos(c, dp, d);
+    if (f >= cap) f = fwd(c, s, dp, clen - a);
+    if (bc && lim > bl0) b = bwd(c, s, dp, lim);
+    tot = b + f;
+    tot -= tot % c->align;
+    if (tot < c->minlen) return 0;
+  }
+  if (*nm >= mcap) return -1;
+  lit[*nm] = a - b - *ls;
+  len[*nm] = tot;
+  dist[*nm] = d;
+  (*nm)++;
+  *ls = a - b + tot;
+  return 0;
+}
+
+/* verify and select, over anchors [0, n) of one segment, in order.
+   *litstart (block offset of the first byte not yet in a match) and *nm
+   carry over between calls.  An anchor inside a match already chosen is
+   skipped before it is verified.  Returns 0, or -1 when mcap is too
+   small. */
+int32_t orep_vselect(const orep_cfg *c, uint64_t cabs, uint64_t cphys,
+                     uint32_t clen, const uint32_t *apos,
+                     const uint32_t *cand4, uint32_t n, uint32_t cap,
+                     uint32_t *litstart, uint32_t *nm, uint32_t *lit,
+                     uint32_t *len, uint64_t *dist, uint32_t mcap) {
+  const uint32_t sc = cap > c->score ? cap : c->score;
+  uint32_t j, ls = *litstart, k = *nm, d, f, b;
   for (j = 0; j < n; j++) {
-    uint32_t a = apos[j], d = cand[j], f, b, lim, tot, bc;
-    if (!d || a < ls) continue;
-    f = fl[j];
-    if (f < c->gram) continue;
-    lim = a - ls;
-    if ((uint64_t)lim > cabs + a - d) lim = (uint32_t)(cabs + a - d);
-    b = bl[j];
-    bc = b >= cap - f;            /* the backward length may be capped */
-    if (b > lim) b = lim;
-    if (f < cap && (!bc || lim <= bl[j])) {
-      /* the exact lengths: decide now */
-      tot = b + f;
-      tot -= tot % c->align;
-      if (tot < c->minlen) continue;
-    } else {
-      /* a capped length means the sum reaches cap = minlen + align:
-         accepted; extend in full */
-      uint64_t dp = cphys + a, s = srcpos(c, dp, d);
-      if (f >= cap) f = fwd(c, s, dp, clen - a);
-      if (bc && lim > bl[j]) b = bwd(c, s, dp, lim);
-      tot = b + f;
-      tot -= tot % c->align;
-      if (tot < c->minlen) continue;
-    }
-    if (k >= mcap) return -1;
-    lit[k] = a - b - ls;
-    len[k] = tot;
-    dist[k] = d;
-    k++;
-    ls = a - b + tot;
+    if (j + OREP_PF2 < n && apos[j + OREP_PF2] >= ls)
+      pfcand(c, cphys, apos[j + OREP_PF2], cand4 + 4u * (j + OREP_PF2));
+    if (apos[j] < ls || !cand4[4u * j]) continue;
+    verify1(c, cabs, cphys, clen, apos[j], cand4 + 4u * j, cap, sc, &d, &f,
+            &b);
+    if (select1(c, cabs, cphys, clen, apos[j], d, f, b, cap, &ls, &k, lit,
+                len, dist, mcap) < 0)
+      return -1;
   }
   *litstart = ls;
   *nm = k;

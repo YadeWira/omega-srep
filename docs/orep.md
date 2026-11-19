@@ -201,17 +201,27 @@ hilo no se puede crear, sigue con los que tiene; sin thread manager
 (programa Unix sin `cthreads`) usa solo el hilo del que llama.
 
 La búsqueda de un bloque va por segmentos de 64 KiB, y cada segmento pasa
-por cuatro etapas:
+por tres etapas:
 
 1. **Anclas**, en paralelo. Son locales al segmento (el gear hash y la
    cuenta de anclas forzadas empiezan en cada segmento). La pasada no tiene
    saltos: primero las anclas naturales, después se intercalan las forzadas.
 2. **Tabla** (sonda e inserción), un segmento por vez y en orden, así que
    la tabla termina igual que con un hilo.
-3. **Verificación**, en paralelo: largos adelante y atrás de cada
-   candidato, acotados a lo que hace falta para decidir.
-4. **Elección**, un segmento por vez y en orden, barata: decide con los
-   largos acotados y extiende del todo solo los matches aceptados.
+3. **Verificación y elección**, un segmento por vez y en orden. Cada ancla
+   que no cae dentro de un match ya elegido se verifica (largos adelante y
+   atrás del mejor candidato, acotados a lo que hace falta para decidir) y
+   se decide con esos largos; un match aceptado se extiende del todo.
+
+**Verificar solo lo que se elige (0.0.8).** Hasta 0.0.7 la verificación
+era una etapa aparte, en paralelo, que verificaba todas las anclas; la
+elección después saltaba las que caían dentro de un match ya elegido, que
+en datos redundantes son la mayoría. Ahora la elección verifica cada ancla
+justo antes de mirarla, así que esas no se verifican nunca. Mismos bytes.
+En TILIN.tar (1,8 GB, `-w96m`), con 1 hilo: `-l256 -c1` 5,15 → 4,21 s,
+`-l256` 5,80 → 4,44 s, `-l64` 16,8 → 8,9 s; con 4 hilos el CPU baja
+9–19 %. Sin ayudantes (1 hilo, o `OnWorkerTryBusy` sin fichas libres) las
+tres etapas corren seguidas, sin lock.
 
 **Pipeline sin barreras (0.0.7).** Hasta 0.0.6 cada tramo de 8 segmentos
 hacía las fases 1–3 con una barrera entre cada una (la tabla repartida en
@@ -221,8 +231,8 @@ hay hasta `2 × hilos + 2` segmentos en vuelo y cada hilo toma, con un
 lock, la tarea más urgente: la sonda del siguiente segmento (solo el hilo
 que conduce la búsqueda la hace, así la tabla queda en sus cachés y cerca
 de su memoria: con la sonda rotando entre hilos tardaba el doble), la
-elección del siguiente, una verificación, o las anclas de un segmento
-nuevo si hay lugar. El que no tiene nada gira `SpinUs` y después duerme
+elección del siguiente (con su verificación desde 0.0.8; antes, una
+verificación aparte), o las anclas de un segmento nuevo si hay lugar. El que no tiene nada gira `SpinUs` y después duerme
 hasta que otra tarea termine. Mismos bytes que con un hilo.
 
 **Presupuesto de hilos (0.0.5).** `P.OnWorkerBusy` / `P.OnWorkerIdle`
