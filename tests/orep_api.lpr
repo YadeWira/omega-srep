@@ -40,10 +40,48 @@ begin
   if Ctx = nil then ;
 end;
 
+{ take a token only if one is free }
+function TestTry(Ctx: Pointer): Boolean;
+var
+  N, M: LongInt;
+begin
+  InterLockedIncrement(HookCalls);
+  N := InterLockedIncrement(HookBusy);
+  if N > HookLimit then
+  begin
+    InterLockedDecrement(HookBusy);
+    Exit(False);
+  end;
+  repeat
+    M := HookMax;
+    if N <= M then Break;
+  until InterLockedCompareExchange(HookMax, N, M) = M;
+  Result := Ctx = Ctx;
+end;
+
 procedure TestIdle(Ctx: Pointer);
 begin
   InterLockedDecrement(HookBusy);
   if Ctx = nil then ;
+end;
+
+{ the caller's thread holds a token too (taken before OrepEncRun); it gives
+  it back while it waits for the search }
+var
+  WaitCalls: LongInt = 0;
+  WaitOpen: LongInt = 0;
+
+procedure TestWaitBegin(Ctx: Pointer);
+begin
+  InterLockedIncrement(WaitCalls);
+  Inc(WaitOpen);
+  TestIdle(Ctx);
+end;
+
+procedure TestWaitEnd(Ctx: Pointer);
+begin
+  Dec(WaitOpen);
+  TestBusy(Ctx);
 end;
 
 procedure Check(Ok: Boolean; const What: string);
@@ -149,6 +187,9 @@ var
   Code: Integer;
   BP: PByte;
   BN: SizeUInt;
+  InP, OutP: PByte;
+  InN, OutN: SizeUInt;
+  Lim: LongInt;
 
 begin
   if ParamCount < 1 then
@@ -228,6 +269,64 @@ begin
     { with no data no block is searched and no thread works }
     if (P.Threads >= 2) and (Length(Src) > 0) then
       Check(HookCalls > 0, 'the hooks were never called');
+    { the caller's thread in the budget too: 3 tokens for everyone, and
+      no spin }
+    if P.Threads >= 2 then
+    begin
+      P.OnCallerWaitBegin := @TestWaitBegin;
+      P.OnCallerWaitEnd := @TestWaitEnd;
+      P.SpinUs := 0;
+      HookLimit := 3;
+      HookMax := 0;
+      HookCalls := 0;
+      TestBusy(nil);                       { the caller's own token }
+      Check(OrepEncInit(E, P) = OREP_OK, 'init caller hooks');
+      B := EncodeWith(E, Src, 3000, 2000, 0);
+      OrepEncEnd(E);
+      TestIdle(nil);
+      Check(SameBytes(A, B), 'caller hooks change the stream');
+      Check(HookBusy = 0, 'caller: busy and idle calls do not match: ' +
+        IntToStr(HookBusy));
+      Check(HookMax <= HookLimit, 'caller: more threads busy than tokens');
+      Check(WaitOpen = 0, 'wait begin and end do not match');
+      if Length(Src) > 100000 then
+        Check(WaitCalls > 0, 'the caller wait hooks were never called');
+      { an encoder ended in the middle of a stream, with a search in flight }
+      if Length(Src) > 0 then
+      begin
+        TestBusy(nil);
+        Check(OrepEncInit(E, P) = OREP_OK, 'init end early');
+        SetLength(D, Length(Src) + 4096);
+        InP := @Src[0]; InN := Length(Src);
+        OutP := @D[0]; OutN := Length(D);
+        Check(OrepEncRun(E, InP, InN, OutP, OutN, OREP_RUN) = OREP_OK,
+          'run before an early end');
+        OrepEncEnd(E);
+        TestIdle(nil);
+        Check(HookBusy = 0, 'early end: busy and idle calls do not match');
+      end;
+      { workers and coordinator that never wait for a token: with 1 token
+        (the caller's) every block is searched inline, with 2 some }
+      P.OnWorkerTryBusy := @TestTry;
+      for Lim := 1 to 2 do
+      begin
+        HookLimit := Lim;
+        HookMax := 0;
+        TestBusy(nil);
+        Check(OrepEncInit(E, P) = OREP_OK, 'init try');
+        B := EncodeWith(E, Src, 3000, 2000, 0);
+        OrepEncEnd(E);
+        TestIdle(nil);
+        Check(SameBytes(A, B), 'try hooks change the stream');
+        Check(HookBusy = 0, 'try: busy and idle calls do not match: ' +
+          IntToStr(HookBusy));
+        Check(HookMax <= HookLimit, 'try: more threads busy than tokens');
+      end;
+      P.OnWorkerTryBusy := nil;
+      P.OnCallerWaitBegin := nil;
+      P.OnCallerWaitEnd := nil;
+      P.SpinUs := 2000;
+    end;
     P.OnWorkerBusy := nil;
     P.OnWorkerIdle := nil;
   end;

@@ -58,7 +58,7 @@ compressor, written for PArc as an MIT replacement for FreeArc's REP
 (clean-room, own format: `spec/orep-format.md`). Zlib-style Pascal API, a
 bounded decoder, the same bytes on every platform. It has its own release
 line (`orep-vX.Y.Z`); see `docs/orep.md` and
-`docs/release-orep-0.0.1.md`. With lzma behind (PArc's `-m4`), its defaults
+`docs/release-orep-0.0.1.md` … `docs/release-orep-0.0.6.md`. With lzma behind (PArc's `-m4`), its defaults
 beat REP on the seven corpora measured (−0.03% to −1.31%).
 
 ## Priority

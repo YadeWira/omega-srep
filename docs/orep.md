@@ -210,6 +210,42 @@ hasta que haya ficha: un worker se suma a un trabajo solo mientras quedan
 espera activa corta entre trabajos cuenta como ocupado. `tests/orep_api.lpr`
 lo prueba con 5 hilos y 2 fichas: mismos bytes, nunca más de 2 ocupados.
 
+**Presupuesto, segunda vuelta (0.0.6).** Lo que midió PArc con 0.0.5: con
+hilos, OREP quedaba más lento que en línea, porque los workers giraban con
+la ficha tomada entre trabajos y el hilo del que llama esperaba al
+coordinador con la suya. Tres agregados, todos opcionales:
+
+- `P.SpinUs` (CLI `-y`): cuánto gira un hilo ocioso antes de devolver la
+  ficha y dormir, en microsegundos (por defecto 2000; 0 = enseguida).
+- `P.OnCallerWaitBegin` / `End`: van alrededor de las esperas del hilo del
+  que llama (dentro de `OrepEncRun`, `OrepEncReset`, `OrepEncEnd`), solo si
+  de verdad va a bloquear, para que devuelva su ficha mientras tanto.
+  **Si el que llama tiene ficha y el presupuesto se puede agotar, hacen
+  falta** (o `OnWorkerTryBusy`): si no, el que llama espera a un
+  coordinador que espera la ficha del que llama (deadlock; se reprodujo
+  con 4 encoders y 4 fichas).
+- `P.OnWorkerTryBusy` (no bloquea, `True` = tomó una ficha): ningún hilo de
+  OREP espera una ficha. Al empezar cada bloque, el que llama pide una para
+  el coordinador; si no hay, busca el bloque él mismo. Al empezar cada
+  tramo de 8 segmentos, el que busca pide fichas para sus ayudantes,
+  despierta solo a esos, reparte el tramo en tantos shards (la tabla
+  termina igual con cualquier reparto) y las devuelve al terminar el
+  tramo. Con el presupuesto lleno funciona como `Threads = 1`; con fichas
+  libres las usa.
+
+Medido con `tools/scoreboard/orep_budget_bench.lpr` (N encoders a la vez sobre tilin_512m,
+`-w96m -l256`, compartiendo 4 fichas; cada hilo que llama tiene una;
+segundos de pared, Xeon compartido, dos corridas):
+
+| | 1 hilo (en línea) | 4 hilos, Busy + caller, `SpinUs 2000` (la espera de 0.0.5) | 4 hilos, `SpinUs 0` + caller | 4 hilos, `TryBusy` + caller, `SpinUs 200` |
+|---|---:|---:|---:|---:|
+| 4 encoders (presupuesto lleno) | 1,97–2,12 | 4,72–5,00 | 2,82–2,90 | **2,03–2,08** |
+| 1 encoder (fichas libres) | 1,66–1,89 | 1,22 | 1,54–1,73 | **1,15–1,24** |
+
+Recomendación para PArc: `Threads = 4`, `OnWorkerTryBusy`, los dos hooks
+del que llama y `SpinUs = 200`. Los bytes son los mismos en todos los casos
+(y los mismos que 0.0.5).
+
 El ring del encoder tiene un slot más que el del decoder, para que el hilo
 del que llama pueda llenar el siguiente mientras la búsqueda lee el más
 viejo. Los workers esperan girando, después con yield y recién después

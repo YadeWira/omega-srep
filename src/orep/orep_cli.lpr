@@ -28,6 +28,7 @@ begin
   WriteLn(StdErr, '  -D<size>   leave matches nearer than this to the backend, default 0');
   WriteLn(StdErr, '  -c<n>      candidates per anchor 1..4, default 4 (1: fastest)');
   WriteLn(StdErr, '  -t<n>      encoder threads, default 1 (the output is the same with any n)');
+  WriteLn(StdErr, '  -y<us>     with -t: how long an idle thread spins before it sleeps, default 2000');
   WriteLn(StdErr, '  -M<size>   decode: refuse streams that need more memory');
   WriteLn(StdErr, '  -q         quiet');
   Halt(2);
@@ -107,6 +108,7 @@ begin
         'D': if ParseSize(Copy(A, 3, 99), V) then P.MinDist := V else Usage;
         'c': if ParseSize(Copy(A, 3, 99), V) and (V >= 1) and (V <= 4) then P.Cands := V else Usage;
         't': if ParseSize(Copy(A, 3, 99), V) and (V <= 256) then P.Threads := V else Usage;
+        'y': if ParseSize(Copy(A, 3, 99), V) and (V <= 1000000) then P.SpinUs := V else Usage;
         'M': if ParseSize(Copy(A, 3, 99), V) then MemLimit := V else Usage;
         'h', '?': Usage;
       else
