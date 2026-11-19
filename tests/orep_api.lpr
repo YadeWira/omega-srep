@@ -190,6 +190,10 @@ var
   InP, OutP: PByte;
   InN, OutN: SizeUInt;
   Lim: LongInt;
+  DD: TOrepDec;
+  S: TBytes;
+  Pass, Step, R: Integer;
+  N: SizeUInt;
 
 begin
   if ParamCount < 1 then
@@ -329,6 +333,45 @@ begin
     end;
     P.OnWorkerBusy := nil;
     P.OnWorkerIdle := nil;
+  end;
+
+  { the decoder without a copy (Peek/Skip in uneven pieces), and reset
+    between streams: same window (memory kept), then another window }
+  if Length(A) > 0 then
+  begin
+    Check(OrepDecInit(DD, 0) = OREP_OK, 'dec init');
+    for Pass := 1 to 3 do
+    begin
+      case Pass of
+        1, 2: S := A;
+        3: begin
+             P.Window := 1 shl 16;
+             Check(OrepEncInit(E, P) = OREP_OK, 'init small window');
+             S := EncodeWith(E, Src, 1 shl 30, 1 shl 24, 0);
+             OrepEncEnd(E);
+             P.Window := 1 shl 20;
+           end;
+      end;
+      if Pass > 1 then Check(OrepDecReset(DD) = OREP_OK, 'dec reset');
+      C := nil;
+      InP := @S[0]; InN := Length(S);
+      Step := 0;
+      repeat
+        R := OrepDecPeek(DD, InP, InN, BP, BN);
+        if BN > 0 then
+        begin
+          Inc(Step);
+          N := (BN div 3) + 1;
+          if Step mod 2 = 0 then N := BN;
+          SetLength(C, Length(C) + N);
+          Move(BP^, C[Length(C) - N], N);
+          OrepDecSkip(DD, N);
+        end;
+      until (R <> OREP_OK) or ((BN = 0) and (InN = 0));
+      Check((R = OREP_END) and SameBytes(C, Src),
+        'peek/skip pass ' + IntToStr(Pass));
+    end;
+    OrepDecEnd(DD);
   end;
 
   { whole buffers, and the memory limit }

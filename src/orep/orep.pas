@@ -25,8 +25,9 @@
     OnWorkerTryBusy): otherwise the caller waits for a coordinator that
     waits for the caller's token.
   - P.OnWorkerTryBusy (non-blocking): no OREP thread ever waits for a
-    token; a block or batch with no free token is searched by the thread
-    that has one.  With a full budget this works like Threads = 1.
+    token; a block with no free token is searched by the thread that has
+    one, and a block's search takes as helpers only the workers that get
+    one.  With a full budget this works like Threads = 1.
   - P.SpinUs: how long an idle thread spins before it sleeps (0 = at once).
 
   P.Threads >= 2 runs the search on a coordinator thread helped by
@@ -69,7 +70,7 @@ const
   OREP_FLUSH = 1;      { end the current block now (the stream goes on) }
   OREP_FINISH = 2;     { no more input: write the end of the stream }
 
-  OREP_VERSION_STR = '0.0.6';
+  OREP_VERSION_STR = '0.0.7';
   OREP_FORMAT = 3;
 
   OREP_MIN_MATCH = 16;               { format minimum match length }
@@ -115,11 +116,11 @@ type
       OrepEncRun / OrepEncReset / OrepEncEnd (only when it would block), so
       it can give its token back meanwhile; optional, nil = none }
     OnCallerWaitBegin, OnCallerWaitEnd: TOrepHook;
-    { if set, OREP's threads never wait for a token: a worker calls this
-      instead of OnWorkerBusy and joins a job only when it returns True,
-      and when it returns False for the coordinator (asked by the caller's
-      thread as each block starts) the caller's thread searches that block
-      itself.  With a full budget the encoder then works like Threads = 1,
+    { if set, OREP's threads never wait for a token: as each block starts
+      the caller's thread asks one for the coordinator and searches the
+      block itself if it gets none, and the thread searching asks one for
+      each worker it would wake and wakes only those (it gives them back
+      when the block ends; the workers then call no hook).  With a full budget the encoder then works like Threads = 1,
       and uses the other threads when tokens are free; the stream is the
       same. }
     OnWorkerTryBusy: TOrepTryHook;
@@ -167,16 +168,27 @@ type
     Total: QWord;
     StreamPos: QWord;    { stream bytes staged or written so far }
     Ended, Inited: Boolean;
-    { the search of one block, in batches of segments }
-    APos, AIdx, ATag, Cand, FL, BL: PLongWord;  { OREP_BATCH * OREP_SUB }
-    SegCnt: array[0..7] of LongWord;
+    { the search of one block, segment by segment: NSlot segments in
+      flight, slot k mod NSlot holds segment k }
+    APos, AIdx, ATag, Cand, FL, BL: PLongWord;  { NSlot * OREP_SUB }
+    SegCnt: PLongWord;                          { NSlot: anchors }
+    SegSt: PLongWord;                           { NSlot: 1 anchored, 3 verified }
+    NSlot: LongWord;
+    SLock: TRTLCriticalSection;  { the counters below }
+    SNSeg, SNextA, SPrb, SNextV, SSel: LongWord;
+    SProbeBusy, SSelBusy, SFail, SLockInit: Boolean;
+    SGen: LongInt;               { bumped when a task ends }
+    SDriver: TThreadID;          { the thread that probes }
+    SDrvItem: LongInt;           { its participant index, -1 before }
+    SLitStart, SNMc: LongWord;   { select's state }
+    NPart: LongWord;             { participants: workers + 1 }
+    PartEv: PPointer;            { NPart events, to wake a waiting one }
+    PartWait: PLongWord;         { NPart: 1 while it sleeps }
     BCAbs, BPhysQ: QWord;                       { the block being searched }
-    BLen, BSeg0, BNPos, VCap: LongWord;
+    BLen, BNPos, VCap: LongWord;
     BAlign: LongWord;                           { its alignment }
     AutoAlign: Boolean;
     Pool: Pointer;                              { worker threads, or nil }
-    NShard: LongWord;    { shards of the batch being searched }
-    MaxShard: LongWord;  { workers + 1 }
     { the block being searched (by the coordinator thread, or inline) }
     SLit, SLen: PLongWord;
     SDist: PQWord;
@@ -189,10 +201,7 @@ type
     OnTry: TOrepTryHook;
     ViaCoord: Boolean;   { the block in flight is searched by the coordinator }
     SpinUs: LongWord;
-    SList: PLongWord;    { per segment: its anchors grouped by shard }
-    SOfs: PLongWord;     { per segment: NShard + 1 offsets into SList }
     Cand4: PLongWord;    { 4 candidates per anchor }
-    Cand4L: PLongWord;   { the same in SList order (several shards) }
   end;
 
   TOrepDec = record
@@ -225,6 +234,7 @@ type
     Align: LongWord;
     PadLeft: LongWord;
     EmitPos: LongWord;
+    OldChunk: LongWord;  { after OrepDecReset: the chunk the memory is for }
     Inited: Boolean;
   end;
 
@@ -243,6 +253,16 @@ procedure OrepEncEnd(var E: TOrepEnc);
 function OrepDecInit(out D: TOrepDec; MemLimit: QWord): Integer;
 function OrepDecRun(var D: TOrepDec; var NextIn: PByte; var AvailIn: SizeUInt;
   var NextOut: PByte; var AvailOut: SizeUInt): Integer;
+{ without a copy: decode until checked output is ready and point Data at
+  it, in the decoder's own memory (Count bytes, Count = 0 when none is
+  ready yet); it stays valid until the next call on D.  OrepDecSkip(D, N)
+  then marks N of them as used.  Returns as OrepDecRun. }
+function OrepDecPeek(var D: TOrepDec; var NextIn: PByte; var AvailIn: SizeUInt;
+  out Data: PByte; out Count: SizeUInt): Integer;
+procedure OrepDecSkip(var D: TOrepDec; N: SizeUInt);
+{ a new stream, keeping the memory when the next one has the same chunk
+  and a window that needs the same ring (no page faults to fill it again) }
+function OrepDecReset(var D: TOrepDec): Integer;
 procedure OrepDecEnd(var D: TOrepDec);
 
 { whole buffers; Dst is allocated with GetMem and freed with FreeMem }
@@ -272,8 +292,6 @@ function orep_select(c: POrepCfg; cabs, cphys: QWord; clen: LongWord;
   external name 'orep_select';
 function orep_cont(c: POrepCfg; cabs, cphys: QWord; clen: LongWord;
   prev_dist: QWord): LongWord; cdecl; external name 'orep_cont';
-procedure orep_shard(aidx: PLongWord; n, ns, tbits: LongWord;
-  list, ofs: PLongWord); cdecl; external name 'orep_shard';
 function orep_crc32c(t: PLongWord; crc: LongWord; p: PByte;
   n: SizeUInt): LongWord; cdecl; external name 'orep_crc32c';
 {$ENDIF}
@@ -281,19 +299,22 @@ function orep_crc32c(t: PLongWord; crc: LongWord; p: PByte;
 const
   OREP_B = QWord($9E3779B97F4A7C15);
   OREP_SUB = 65536;
-  OREP_BATCH = 8;      { segments per batch }
   OREP_PF = 16;
+  OREP_CRC_L = 2048;   { the same in orep_core.c }
   HDR_MAX = 6 + 5 + 2 + 3 + 4;   { the longest stream header }
   Magic: array[0..3] of Char = 'OREP';
 
 var
   { read-only after unit initialization }
-  CrcTab: array[0..8 * 256 - 1] of LongWord;
+  { slice-by-8, then the shift of the raw state over OREP_CRC_L and
+    2 * OREP_CRC_L zero bytes, 4 x 256 each (orep_core.c) }
+  CrcTab: array[0..16 * 256 - 1] of LongWord;
 
 procedure InitCrc;
 var
-  I, J: Integer;
-  C: LongWord;
+  I, J, B, K: Integer;
+  C, D: LongWord;
+  Col1, Col2: array[0..31] of LongWord;
 begin
   for I := 0 to 255 do
   begin
@@ -307,6 +328,30 @@ begin
     for J := 1 to 7 do
       CrcTab[J * 256 + I] := (CrcTab[(J - 1) * 256 + I] shr 8) xor
         CrcTab[CrcTab[(J - 1) * 256 + I] and $FF];
+  { the shift tables: the image of each bit over OREP_CRC_L zero bytes,
+    then over as many more }
+  for B := 0 to 31 do
+  begin
+    C := LongWord(1) shl B;
+    for K := 1 to OREP_CRC_L do C := CrcTab[C and $FF] xor (C shr 8);
+    Col1[B] := C;
+    for K := 1 to OREP_CRC_L do C := CrcTab[C and $FF] xor (C shr 8);
+    Col2[B] := C;
+  end;
+  for J := 0 to 3 do
+    for I := 0 to 255 do
+    begin
+      C := 0;
+      D := 0;
+      for B := 0 to 7 do
+        if (I shr B) and 1 <> 0 then
+        begin
+          C := C xor Col1[J * 8 + B];
+          D := D xor Col2[J * 8 + B];
+        end;
+      CrcTab[2048 + J * 256 + I] := C;
+      CrcTab[3072 + J * 256 + I] := D;
+    end;
 end;
 
 function OrepCrc32c(Crc: LongWord; P: PByte; N: SizeUInt): LongWord;
@@ -452,6 +497,14 @@ begin
   if P.Align > MinKeep then MinKeep := P.Align;
 end;
 
+{ segments in flight for a number of threads }
+function SlotsFor(Threads: LongWord): LongWord;
+begin
+  if Threads <= 1 then Exit(2);
+  if Threads > 7 then Exit(16);
+  Result := 2 * Threads + 2;
+end;
+
 function OrepEncMemory(const P: TOrepParams): QWord;
 var
   G, SM, MG, TB, MK, SS, Cap: LongWord;
@@ -462,7 +515,7 @@ begin
   Derive(P, W, G, SM, MG, TB, MK, SS);
   Cap := P.Chunk div MK + 2;
   Result := RingFor(W, P.Chunk) + P.Chunk + (QWord(32) shl TB) + 64 +
-    16 * OREP_BATCH * OREP_SUB * 4 +
+    QWord(SlotsFor(P.Threads)) * OREP_SUB * 40 +
     QWord(Cap) * 32 + QWord(Cap) * 15 + 4160 + SizeOf(TOrepEnc);
 end;
 
@@ -734,23 +787,6 @@ begin
   Result := 0;
 end;
 
-procedure orep_shard(aidx: PLongWord; n, ns, tbits: LongWord;
-  list, ofs: PLongWord);
-var
-  J, T: LongWord;
-begin
-  for T := 0 to ns do ofs[T] := 0;
-  for J := 1 to n do
-    Inc(ofs[((QWord(aidx[J - 1]) * ns) shr tbits) + 1]);
-  for T := 1 to ns do Inc(ofs[T], ofs[T - 1]);
-  for J := 1 to n do
-  begin
-    T := (QWord(aidx[J - 1]) * ns) shr tbits;
-    list[ofs[T]] := J - 1;
-    Inc(ofs[T]);
-  end;
-end;
-
 function orep_cont(c: POrepCfg; cabs, cphys: QWord; clen: LongWord;
   prev_dist: QWord): LongWord;
 begin
@@ -833,7 +869,7 @@ type
     HookCtx: Pointer;
     SpinUs: LongWord;
     Allowed: LongInt;           { workers 0 .. Allowed - 1 may join }
-    NoSpin: Boolean;            { the last job of a batch: sleep after it }
+    NoSpin: Boolean;            { with OnTry: sleep right after the job }
   end;
 
 procedure PoolItems(P: POrepPool);
@@ -925,7 +961,7 @@ begin
   Join := False;
   repeat
     { with OnTry the thread searching holds the tokens of its helpers for
-      a batch, and the workers call no hooks }
+      the block, and the workers call no hooks }
     if (P^.OnTry = nil) or (Join and not P^.NoSpin) then
       SpinGen(P^.Gen, MyGen, P^.SpinUs);
     if (P^.Gen = MyGen) and Holding then
@@ -1031,7 +1067,7 @@ begin
 end;
 
 { run a job with workers 0 .. Allowed - 1 helping; NoSpin: they sleep
-  right after it (with OnTry: the batch ends and its tokens go back) }
+  right after it (with OnTry: the block ends and its tokens go back) }
 procedure PoolRun(P: POrepPool; Job: TOrepJob; Ctx: Pointer; Items: LongInt;
   Allowed: LongInt; NoSpin: Boolean);
 var
@@ -1089,125 +1125,225 @@ end;
 type
   POrepEnc = ^TOrepEnc;
 
-procedure SegRange(E: POrepEnc; K: LongInt; out S0, S1: LongWord);
+{ The segments of a block go through four stages (see orep_core.c):
+  anchors and verify run on any thread in any order, probe and select one
+  segment at a time in order.  Every thread that helps runs SearchLoop:
+  under SLock it takes the most urgent task (probe, select, verify, then
+  the anchors of a new segment while a slot is free), runs it outside the
+  lock, and marks it done.  The probes run in segment order, so the table
+  ends as with one thread, and the stream is the same with any number. }
+
+const
+  TASK_NONE = 0; TASK_ANCHORS = 1; TASK_PROBE = 2; TASK_VERIFY = 3;
+  TASK_SELECT = 4; TASK_DONE = 5;
+
+{ under SLock: the next task, its segment in K.  Only the thread that
+  drives the search (Driver) probes: the table, the only thing the probe
+  touches, then stays in its caches and near its memory. }
+function TakeTask(E: POrepEnc; Driver: Boolean; out K: LongWord): Integer;
 begin
-  S0 := (E^.BSeg0 + LongWord(K)) * OREP_SUB;
-  S1 := S0 + OREP_SUB;
-  if S1 > E^.BNPos then S1 := E^.BNPos;
+  K := 0;
+  if E^.SSel >= E^.SNSeg then Exit(TASK_DONE);
+  if Driver and (not E^.SProbeBusy) and (E^.SPrb < E^.SNextA) and
+    (E^.SegSt[E^.SPrb mod E^.NSlot] = 1) then
+  begin
+    E^.SProbeBusy := True;
+    K := E^.SPrb;
+    Exit(TASK_PROBE);
+  end;
+  if (not E^.SSelBusy) and (E^.SSel < E^.SNextV) and
+    (E^.SegSt[E^.SSel mod E^.NSlot] = 3) then
+  begin
+    E^.SSelBusy := True;
+    K := E^.SSel;
+    Exit(TASK_SELECT);
+  end;
+  if E^.SNextV < E^.SPrb then
+  begin
+    K := E^.SNextV;
+    Inc(E^.SNextV);
+    Exit(TASK_VERIFY);
+  end;
+  if (E^.SNextA < E^.SNSeg) and (E^.SNextA < E^.SSel + E^.NSlot) then
+  begin
+    K := E^.SNextA;
+    E^.SegSt[K mod E^.NSlot] := 0;
+    Inc(E^.SNextA);
+    Exit(TASK_ANCHORS);
+  end;
+  Result := TASK_NONE;
 end;
 
-procedure JobAnchors(Ctx: Pointer; Item: LongInt);
+{ under SLock: wake up to N participants that sleep }
+procedure WakeSome(E: POrepEnc; N: LongWord);
 var
-  E: POrepEnc;
-  S0, S1, O: LongWord;
+  I: LongWord;
 begin
-  E := Ctx;
-  SegRange(E, Item, S0, S1);
-  O := LongWord(Item) * OREP_SUB;
-  E^.SegCnt[Item] := orep_anchors(@E^.Cfg,
-    SlotPtr(E^.Cfg.Slots, E^.Cfg.CShift, E^.BPhysQ), S0, S1,
-    E^.APos + O, E^.AIdx + O, E^.ATag + O);
-  if E^.NShard > 1 then
-    orep_shard(E^.AIdx + O, E^.SegCnt[Item], E^.NShard, E^.Cfg.TBits,
-      E^.SList + O, E^.SOfs + LongWord(Item) * (E^.NShard + 1));
-end;
-
-procedure JobProbe(Ctx: Pointer; Item: LongInt);
-var
-  E: POrepEnc;
-  K, O, S, NS: LongWord;
-  Ofs: PLongWord;
-begin
-  E := Ctx;
-  NS := E^.NShard;
-  for K := 0 to OREP_BATCH - 1 do
-    if E^.SegCnt[K] > 0 then
+  I := 0;
+  while (N > 0) and (I < E^.NPart) do
+  begin
+    if E^.PartWait[I] <> 0 then
     begin
-      O := K * OREP_SUB;
-      if NS = 1 then
-        orep_probe(@E^.Cfg, E^.BCAbs, E^.APos + O, E^.AIdx + O, E^.ATag + O,
-          nil, E^.SegCnt[K], E^.Cand4 + 4 * O)
-      else
+      E^.PartWait[I] := 0;
+      RTLEventSetEvent(PRTLEvent(E^.PartEv[I]));
+      Dec(N);
+    end;
+    Inc(I);
+  end;
+end;
+
+procedure SearchLoop(Ctx: Pointer; Item: LongInt);
+var
+  E: POrepEnc;
+  T: Integer;
+  K, Sl, O, S0, S1, LS, NM: LongWord;
+  R, G: LongInt;
+  Sleeping, Driver: Boolean;
+begin
+  E := Ctx;
+  T := TASK_NONE;
+  K := 0;
+  R := 0;
+  G := 0;
+  Sleeping := False;
+  Driver := GetCurrentThreadId = E^.SDriver;
+  if Driver then
+  begin
+    EnterCriticalSection(E^.SLock);
+    E^.SDrvItem := Item;
+    LeaveCriticalSection(E^.SLock);
+  end;
+  repeat
+    EnterCriticalSection(E^.SLock);
+    if T <> TASK_NONE then
+    begin
+      { the task just done }
+      Sl := K mod E^.NSlot;
+      case T of
+        TASK_ANCHORS: E^.SegSt[Sl] := 1;
+        TASK_PROBE: begin Inc(E^.SPrb); E^.SProbeBusy := False; end;
+        TASK_VERIFY: E^.SegSt[Sl] := 3;
+        TASK_SELECT:
+          begin
+            if R < 0 then
+            begin
+              E^.SFail := True;
+              E^.SSel := E^.SNSeg;
+            end
+            else Inc(E^.SSel);
+            E^.SSelBusy := False;
+          end;
+      end;
+      Inc(E^.SGen);
+    end;
+    T := TakeTask(E, Driver, K);
+    { a task ended: wake a sleeper for what it may have opened (this
+      thread takes one task itself); all of them at the end }
+    if E^.NPart > 1 then
+    begin
+      if T = TASK_DONE then WakeSome(E, E^.NPart)
+      else if T <> TASK_NONE then WakeSome(E, 1);
+      { the driver, for a probe the others cannot take }
+      if (E^.SDrvItem >= 0) and (E^.PartWait[E^.SDrvItem] <> 0) then
       begin
-        Ofs := E^.SOfs + K * (NS + 1);
-        if Item = 0 then S := 0 else S := Ofs[Item - 1];
-        orep_probe(@E^.Cfg, E^.BCAbs, E^.APos + O, E^.AIdx + O, E^.ATag + O,
-          E^.SList + O + S, Ofs[Item] - S, E^.Cand4L + 4 * (O + S));
+        E^.PartWait[E^.SDrvItem] := 0;
+        RTLEventSetEvent(PRTLEvent(E^.PartEv[E^.SDrvItem]));
       end;
     end;
+    if T = TASK_NONE then
+    begin
+      G := E^.SGen;
+      if Sleeping then E^.PartWait[Item] := 1;
+    end;
+    LeaveCriticalSection(E^.SLock);
+    if T = TASK_DONE then Break;
+    if T = TASK_NONE then
+    begin
+      { nothing to do now (only with several threads): spin until a task
+        ends or SpinUs passed, then sleep until one ends }
+      if Sleeping then
+        RTLEventWaitFor(PRTLEvent(E^.PartEv[Item]), 10)
+      else if not SpinGen(E^.SGen, G, E^.SpinUs) then
+        Sleeping := True;
+      Continue;
+    end;
+    Sleeping := False;
+    Sl := K mod E^.NSlot;
+    O := Sl * OREP_SUB;
+    case T of
+      TASK_ANCHORS:
+        begin
+          S0 := K * OREP_SUB;
+          S1 := S0 + OREP_SUB;
+          if S1 > E^.BNPos then S1 := E^.BNPos;
+          E^.SegCnt[Sl] := orep_anchors(@E^.Cfg,
+            SlotPtr(E^.Cfg.Slots, E^.Cfg.CShift, E^.BPhysQ), S0, S1,
+            E^.APos + O, E^.AIdx + O, E^.ATag + O);
+        end;
+      TASK_PROBE:
+        if E^.SegCnt[Sl] > 0 then
+          orep_probe(@E^.Cfg, E^.BCAbs, E^.APos + O, E^.AIdx + O,
+            E^.ATag + O, nil, E^.SegCnt[Sl], E^.Cand4 + 4 * O);
+      TASK_VERIFY:
+        orep_verify(@E^.Cfg, E^.BCAbs, E^.BPhysQ, E^.BLen, E^.APos + O,
+          E^.Cand4 + 4 * O, E^.SegCnt[Sl], E^.VCap, E^.Cand + O, E^.FL + O,
+          E^.BL + O);
+      TASK_SELECT:
+        begin
+          LS := E^.SLitStart;
+          NM := E^.SNMc;
+          R := orep_select(@E^.Cfg, E^.BCAbs, E^.BPhysQ, E^.BLen,
+            E^.APos + O, E^.Cand + O, E^.FL + O, E^.BL + O, E^.SegCnt[Sl],
+            E^.VCap, LS, NM, E^.SLit, E^.SLen, E^.SDist, E^.Cap);
+          E^.SLitStart := LS;
+          E^.SNMc := NM;
+        end;
+    end;
+  until False;
 end;
 
-procedure JobVerify(Ctx: Pointer; Item: LongInt);
-var
-  E: POrepEnc;
-  O, I: LongWord;
-begin
-  E := Ctx;
-  O := LongWord(Item) * OREP_SUB;
-  { the candidates back in anchor order }
-  if (E^.NShard > 1) and (E^.SegCnt[Item] > 0) then
-    for I := O to O + E^.SegCnt[Item] - 1 do
-      Move(E^.Cand4L[4 * I], E^.Cand4[4 * (O + E^.SList[I])], 16);
-  orep_verify(@E^.Cfg, E^.BCAbs, E^.BPhysQ, E^.BLen, E^.APos + O,
-    E^.Cand4 + 4 * O, E^.SegCnt[Item], E^.VCap, E^.Cand + O, E^.FL + O,
-    E^.BL + O);
-end;
-
-{ the matches of [BlkPhys, BlkPhys + BlkLen) into Lit/Len/Dist; -1 when
-  they do not fit }
 { search the block [BPhysQ, BPhysQ + BLen) (absolute BCAbs) into
   SLit/SLen/SDist; the count, or -1 when it does not fit }
 function SearchBlock(var E: TOrepEnc): LongInt;
 var
-  NSeg, B, NB, K, LitStart, NM, L, H, Got: LongWord;
-  CAbs: QWord;
+  L, H, Got, K: LongWord;
 begin
-  CAbs := E.BCAbs;
   E.VCap := E.Cfg.MinLen + E.Cfg.Align;
-  NM := 0;
-  LitStart := 0;
-  L := orep_cont(@E.Cfg, CAbs, E.BPhysQ, E.BLen, E.PrevDist);
+  E.SNMc := 0;
+  E.SLitStart := 0;
+  L := orep_cont(@E.Cfg, E.BCAbs, E.BPhysQ, E.BLen, E.PrevDist);
   if L > 0 then
   begin
     E.SLit[0] := 0; E.SLen[0] := L; E.SDist[0] := E.PrevDist;
-    NM := 1;
-    LitStart := L;
+    E.SNMc := 1;
+    E.SLitStart := L;
   end;
   if E.BLen >= E.Cfg.Gram then E.BNPos := E.BLen - E.Cfg.Gram + 1
   else E.BNPos := 0;
-  NSeg := (E.BNPos + OREP_SUB - 1) div OREP_SUB;
-  B := 0;
-  while B < NSeg do
+  E.SNSeg := (E.BNPos + OREP_SUB - 1) div OREP_SUB;
+  E.SNextA := 0; E.SPrb := 0; E.SNextV := 0; E.SSel := 0;
+  E.SProbeBusy := False; E.SSelBusy := False; E.SFail := False;
+  if E.SNSeg > 0 then
   begin
-    NB := NSeg - B;
-    if NB > OREP_BATCH then NB := OREP_BATCH;
-    E.BSeg0 := B;
-    FillChar(E.SegCnt, SizeOf(E.SegCnt), 0);
-    { helpers for this batch: all the workers, or with OnWorkerTryBusy
-      those that get a token now (the table ends the same with any number
-      of shards) }
-    H := E.MaxShard - 1;
+    { helpers: all the workers, or with OnWorkerTryBusy those that get a
+      token now; no more than there are segments }
+    H := E.NPart - 1;
+    if H > E.SNSeg - 1 then H := E.SNSeg - 1;
     if (E.OnTry <> nil) and (H > 0) then
     begin
       Got := 0;
       while (Got < H) and E.OnTry(E.HookCtx) do Inc(Got);
       H := Got;
     end;
-    E.NShard := H + 1;
-    PoolRun(E.Pool, @JobAnchors, @E, NB, H, False);
-    PoolRun(E.Pool, @JobProbe, @E, E.NShard, H, False);
-    PoolRun(E.Pool, @JobVerify, @E, NB, H, True);
+    E.SDriver := GetCurrentThreadId;
+    E.SDrvItem := -1;
+    PoolRun(E.Pool, @SearchLoop, @E, H + 1, H, True);
     if E.OnTry <> nil then
       for K := 1 to H do
         if E.OnIdle <> nil then E.OnIdle(E.HookCtx);
-    for K := 0 to NB - 1 do
-      if orep_select(@E.Cfg, CAbs, E.BPhysQ, E.BLen, E.APos + K * OREP_SUB,
-        E.Cand + K * OREP_SUB, E.FL + K * OREP_SUB, E.BL + K * OREP_SUB,
-        E.SegCnt[K], E.VCap, LitStart, NM, E.SLit, E.SLen, E.SDist,
-        E.Cap) < 0 then Exit(-1);
-    Inc(B, NB);
   end;
-  Result := NM;
+  if E.SFail then Exit(-1);
+  Result := E.SNMc;
 end;
 
 { the coordinator: runs SearchBlock while the caller's thread copies input
@@ -1294,6 +1430,8 @@ end;
 { ---- encoder ------------------------------------------------------------- }
 
 procedure EncFree(var E: TOrepEnc);
+var
+  I: LongWord;
 begin
   { the search in flight reads the ring and the table: wait for it first }
   if E.InFlight and E.ViaCoord then CoordWait(E);
@@ -1305,11 +1443,21 @@ begin
   E.Coord := nil;
   PoolFree(POrepPool(E.Pool));
   E.Pool := nil;
-  if E.SList <> nil then FreeMem(E.SList);
-  if E.SOfs <> nil then FreeMem(E.SOfs);
-  if E.Cand4L <> nil then FreeMem(E.Cand4L);
+  if E.PartEv <> nil then
+  begin
+    for I := 1 to E.NPart do
+      if E.PartEv[I - 1] <> nil then RTLEventDestroy(PRTLEvent(E.PartEv[I - 1]));
+    FreeMem(E.PartEv);
+  end;
+  if E.PartWait <> nil then FreeMem(E.PartWait);
+  E.PartEv := nil; E.PartWait := nil;
+  if E.SLockInit then DoneCriticalSection(E.SLock);
+  E.SLockInit := False;
+  if E.SegCnt <> nil then FreeMem(E.SegCnt);
+  if E.SegSt <> nil then FreeMem(E.SegSt);
+  E.SegCnt := nil; E.SegSt := nil;
   if E.Cand4 <> nil then FreeMem(E.Cand4);
-  E.SList := nil; E.SOfs := nil; E.Cand4L := nil; E.Cand4 := nil;
+  E.Cand4 := nil;
   if E.APos <> nil then FreeMem(E.APos);
   if E.AIdx <> nil then FreeMem(E.AIdx);
   if E.ATag <> nil then FreeMem(E.ATag);
@@ -1350,6 +1498,7 @@ end;
 function OrepEncInit(out E: TOrepEnc; const P: TOrepParams): Integer;
 var
   W: QWord;
+  I: LongWord;
 begin
   FillChar(E, SizeOf(E), 0);
   if not CheckParams(P) then Exit(OREP_E_PARAM);
@@ -1373,13 +1522,16 @@ begin
   try
     E.TableRaw := AllocMem((SizeUInt(32) shl E.Cfg.TBits) + 64);
     E.Cfg.Table := PQWord((PtrUInt(E.TableRaw) + 63) and not PtrUInt(63));
-    E.APos := GetMem(OREP_BATCH * OREP_SUB * 4);
-    E.AIdx := GetMem(OREP_BATCH * OREP_SUB * 4);
-    E.ATag := GetMem(OREP_BATCH * OREP_SUB * 4);
-    E.Cand := GetMem(OREP_BATCH * OREP_SUB * 4);
-    E.Cand4 := GetMem(OREP_BATCH * OREP_SUB * 16);
-    E.FL := GetMem(OREP_BATCH * OREP_SUB * 4);
-    E.BL := GetMem(OREP_BATCH * OREP_SUB * 4);
+    E.NSlot := SlotsFor(P.Threads);
+    E.APos := GetMem(E.NSlot * OREP_SUB * 4);
+    E.AIdx := GetMem(E.NSlot * OREP_SUB * 4);
+    E.ATag := GetMem(E.NSlot * OREP_SUB * 4);
+    E.Cand := GetMem(E.NSlot * OREP_SUB * 4);
+    E.Cand4 := GetMem(E.NSlot * OREP_SUB * 16);
+    E.FL := GetMem(E.NSlot * OREP_SUB * 4);
+    E.BL := GetMem(E.NSlot * OREP_SUB * 4);
+    E.SegCnt := AllocMem(E.NSlot * 4);
+    E.SegSt := AllocMem(E.NSlot * 4);
     E.Lit := GetMem(E.Cap * 4);
     E.Len := GetMem(E.Cap * 4);
     E.Dist := GetMem(E.Cap * 8);
@@ -1407,18 +1559,19 @@ begin
   if E.Coord <> nil then
     E.Pool := PoolCreate(P.Threads, P.OnWorkerBusy, P.OnWorkerIdle,
       P.OnWorkerTryBusy, P.HookCtx, P.SpinUs);
-  if E.Pool <> nil then E.MaxShard := POrepPool(E.Pool)^.N + 1
-  else E.MaxShard := 1;
-  E.NShard := E.MaxShard;
-  if E.MaxShard > 1 then
-    try
-      E.SList := GetMem(OREP_BATCH * OREP_SUB * 4);
-      E.Cand4L := GetMem(OREP_BATCH * OREP_SUB * 16);
-      E.SOfs := GetMem(OREP_BATCH * (E.MaxShard + 1) * 4);
-    except
-      EncFree(E);
-      Exit(OREP_E_MEM);
-    end;
+  if E.Pool <> nil then E.NPart := POrepPool(E.Pool)^.N + 1
+  else E.NPart := 1;
+  InitCriticalSection(E.SLock);
+  E.SLockInit := True;
+  try
+    E.PartEv := AllocMem(E.NPart * SizeOf(Pointer));
+    E.PartWait := AllocMem(E.NPart * 4);
+    if E.NPart > 1 then
+      for I := 1 to E.NPart do E.PartEv[I - 1] := RTLEventCreate;
+  except
+    EncFree(E);
+    Exit(OREP_E_MEM);
+  end;
   StageHeader(E);
   E.Inited := True;
   Result := OREP_OK;
@@ -1709,6 +1862,7 @@ begin
   if D.Len <> nil then FreeMem(D.Len);
   if D.Dist <> nil then FreeMem(D.Dist);
   D.Cols := nil; D.Lit := nil; D.Len := nil; D.Dist := nil;
+  D.Slots := nil; D.ColCap := 0; D.MCap := 0;
 end;
 
 function OrepDecInit(out D: TOrepDec; MemLimit: QWord): Integer;
@@ -1724,6 +1878,48 @@ procedure OrepDecEnd(var D: TOrepDec);
 begin
   DecFree(D);
   D.Inited := False;
+end;
+
+function OrepDecReset(var D: TOrepDec): Integer;
+var
+  K: TOrepDec;
+begin
+  if not D.Inited then Exit(OREP_E_PARAM);
+  K := D;
+  FillChar(D, SizeOf(D), 0);
+  { kept: the memory and what it was made for }
+  D.MemLimit := K.MemLimit;
+  D.Slots := K.Slots; D.RingSize := K.RingSize; D.CShift := K.CShift;
+  D.Chunk := K.Chunk; D.Window := K.Window; D.OldChunk := K.Chunk;
+  D.Lit := K.Lit; D.Len := K.Len; D.Dist := K.Dist; D.MCap := K.MCap;
+  D.Cols := K.Cols; D.ColCap := K.ColCap;
+  D.Inited := True;
+  Result := OREP_OK;
+end;
+
+function OrepDecPeek(var D: TOrepDec; var NextIn: PByte; var AvailIn: SizeUInt;
+  out Data: PByte; out Count: SizeUInt): Integer;
+var
+  Z: PByte;
+  ZN: SizeUInt;
+begin
+  Data := nil;
+  Count := 0;
+  Z := nil;
+  ZN := 0;
+  Result := OrepDecRun(D, NextIn, AvailIn, Z, ZN);
+  if (Result = OREP_OK) and (D.Phase = 5) and (D.EmitPos < D.OutSize) then
+  begin
+    Data := SlotPtr(D.Slots, D.CShift, D.WPhys + D.EmitPos);
+    Count := D.OutSize - D.EmitPos;
+  end;
+end;
+
+procedure OrepDecSkip(var D: TOrepDec; N: SizeUInt);
+begin
+  if (D.Phase <> 5) or (D.EmitPos >= D.OutSize) then Exit;
+  if N > D.OutSize - D.EmitPos then N := D.OutSize - D.EmitPos;
+  Inc(D.EmitPos, N);
 end;
 
 { the header so far (HdrLen bytes): 1 = complete, 0 = needs more,
@@ -1769,6 +1965,13 @@ begin
     Exit(OREP_E_DATA);
   if (D.MemLimit <> 0) and (OrepDecMemory(D.Window, D.Chunk) > D.MemLimit) then
     Exit(OREP_E_MEM);
+  { after OrepDecReset: keep the memory if it fits this stream as is }
+  if D.Slots <> nil then
+  begin
+    if (D.OldChunk = D.Chunk) and (D.RingSize = RingFor(D.Window, D.Chunk)) then
+      Exit(OREP_OK);
+    DecFree(D);
+  end;
   D.RingSize := RingFor(D.Window, D.Chunk);
   D.MCap := D.Chunk div OREP_MIN_MATCH + 2;
   try

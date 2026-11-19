@@ -69,6 +69,22 @@ R := OrepDecRun(D, NextIn, AvailIn, NextOut, AvailOut);
 OrepDecEnd(D);
 ```
 
+Desde 0.0.7, sin copiar la salida y reusando la memoria entre streams:
+
+```pascal
+R := OrepDecPeek(D, NextIn, AvailIn, Data, Count);  { Data: bytes ya
+                                  verificados, en la memoria del decoder }
+... usar Data[0..Count) ...
+OrepDecSkip(D, Count);           { o menos: los que se usaron }
+OrepDecReset(D);                 { otro stream; si tiene el mismo chunk y
+                                   un ring igual, no reserva de nuevo }
+```
+
+`Peek` ahorra la copia ring → buffer del que llama, y `Reset` los fallos de
+página de llenar un ring nuevo (en memoria, tilin_512m `-l256 -c1`: 260–285
+ms con `Run`, 190–205 con `Peek`, 145–165 con `Peek` + `Reset`).
+`OrepEncReset` ya existía para el encoder.
+
 `Run` devuelve `OREP_OK` (llamar de nuevo con más entrada o más lugar),
 `OREP_END` (stream completo y todo escrito) o un error negativo.
 `OrepEncodeBuf`/`OrepDecodeBuf` hacen un buffer entero. `OrepEncMemory(P)`
@@ -184,21 +200,30 @@ tanto. **El stream es el mismo con cualquier número de hilos** (lo verifica
 hilo no se puede crear, sigue con los que tiene; sin thread manager
 (programa Unix sin `cthreads`) usa solo el hilo del que llama.
 
-La búsqueda de un bloque va por tramos de 8 segmentos de 64 KiB, en cuatro
-fases:
+La búsqueda de un bloque va por segmentos de 64 KiB, y cada segmento pasa
+por cuatro etapas:
 
-1. **Anclas**, por segmento, en paralelo. Son locales al segmento (el gear
-   hash y la cuenta de anclas forzadas empiezan en cada segmento). La pasada
-   no tiene saltos: primero las anclas naturales, después se intercalan las
-   forzadas.
-2. **Tabla**, en paralelo por shards de buckets: cada bucket es de un solo
-   hilo y se recorre en orden, así que la tabla termina igual con cualquier
-   reparto. Las anclas se agrupan por dueño con un ordenamiento por conteo
-   estable, y cada hilo escribe sus candidatos en el orden de su lista.
-3. **Verificación**, por segmento, en paralelo: largos adelante y atrás de
-   cada candidato, acotados a lo que hace falta para decidir.
-4. **Elección**, secuencial y barata: decide con los largos acotados y
-   extiende del todo solo los matches aceptados.
+1. **Anclas**, en paralelo. Son locales al segmento (el gear hash y la
+   cuenta de anclas forzadas empiezan en cada segmento). La pasada no tiene
+   saltos: primero las anclas naturales, después se intercalan las forzadas.
+2. **Tabla** (sonda e inserción), un segmento por vez y en orden, así que
+   la tabla termina igual que con un hilo.
+3. **Verificación**, en paralelo: largos adelante y atrás de cada
+   candidato, acotados a lo que hace falta para decidir.
+4. **Elección**, un segmento por vez y en orden, barata: decide con los
+   largos acotados y extiende del todo solo los matches aceptados.
+
+**Pipeline sin barreras (0.0.7).** Hasta 0.0.6 cada tramo de 8 segmentos
+hacía las fases 1–3 con una barrera entre cada una (la tabla repartida en
+shards de buckets) y después la elección; con 8 ítems por fase los hilos se
+esperaban entre sí y el CPU con 4 hilos era 2,3 veces el de 1 hilo. Ahora
+hay hasta `2 × hilos + 2` segmentos en vuelo y cada hilo toma, con un
+lock, la tarea más urgente: la sonda del siguiente segmento (solo el hilo
+que conduce la búsqueda la hace, así la tabla queda en sus cachés y cerca
+de su memoria: con la sonda rotando entre hilos tardaba el doble), la
+elección del siguiente, una verificación, o las anclas de un segmento
+nuevo si hay lugar. El que no tiene nada gira `SpinUs` y después duerme
+hasta que otra tarea termine. Mismos bytes que con un hilo.
 
 **Presupuesto de hilos (0.0.5).** `P.OnWorkerBusy` / `P.OnWorkerIdle`
 (con `P.HookCtx`) son callbacks opcionales: los llaman los hilos de OREP
@@ -226,12 +251,11 @@ coordinador con la suya. Tres agregados, todos opcionales:
   con 4 encoders y 4 fichas).
 - `P.OnWorkerTryBusy` (no bloquea, `True` = tomó una ficha): ningún hilo de
   OREP espera una ficha. Al empezar cada bloque, el que llama pide una para
-  el coordinador; si no hay, busca el bloque él mismo. Al empezar cada
-  tramo de 8 segmentos, el que busca pide fichas para sus ayudantes,
-  despierta solo a esos, reparte el tramo en tantos shards (la tabla
-  termina igual con cualquier reparto) y las devuelve al terminar el
-  tramo. Con el presupuesto lleno funciona como `Threads = 1`; con fichas
-  libres las usa.
+  el coordinador; si no hay, busca el bloque él mismo. Después, el que
+  busca pide fichas para sus ayudantes, despierta solo a esos y las
+  devuelve al terminar el bloque (desde 0.0.7; en 0.0.6, por tramo). Con
+  el presupuesto lleno funciona como `Threads = 1`; con fichas libres las
+  usa.
 
 Medido con `tools/scoreboard/orep_budget_bench.lpr` (N encoders a la vez sobre tilin_512m,
 `-w96m -l256`, compartiendo 4 fichas; cada hilo que llama tiene una;

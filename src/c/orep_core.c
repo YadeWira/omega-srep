@@ -160,16 +160,16 @@ static void pf(const void *p) { __builtin_prefetch(p, 1, 0); }
 /* ---- the search, in four phases ------------------------------------------
 
    A block (ring[cphys .. cphys + clen), absolute position cabs) is searched
-   in batches of segments of OREP_SUB positions.  For each batch:
+   in segments of OREP_SUB positions.  Each segment goes through:
 
      1. orep_anchors  per segment: the anchors (position, bucket, tag).
         Segment-local: the gear hash restarts at the segment (its bits
         below gram only depend on the last gram bytes) and so does the
         forced-anchor count, so segments are independent.
-     2. orep_probe    per shard of buckets (its anchors, in order): up
-        to four candidate distances (the earlier copies of the gram in the
-        bucket), then the insert.  A bucket belongs to one shard,
-        so the table ends the same whatever the number of shards.
+     2. orep_probe    one segment at a time, in order: up to four
+        candidate distances (the earlier copies of the gram in the bucket),
+        then the insert, so the table ends the same with any number of
+        threads.
      3. orep_verify   per segment: the best candidate of each anchor
         (longest forward match up to 256 bytes) and its lengths, the
         forward one capped at `cap` (= minlen +
@@ -178,8 +178,10 @@ static void pf(const void *p) { __builtin_prefetch(p, 1, 0); }
         decide exactly whether a match reaches minlen; an accepted match is
         then extended in full.
 
-   Phases 1-3 can run on several threads; phase 4 is sequential.  The
-   result does not depend on how the work is split.  orep_cont handles the
+   Phases 1 and 3 of different segments run on any thread at the same
+   time as the probe and the select of earlier ones (orep.pas,
+   SearchLoop); 2 and 4 are sequential.  The result does not depend on how
+   the work is split.  orep_cont handles the
    continuation of the previous block's last match. */
 
 /* anchors of the segment [s0, s1) (gram start positions, s1 + gram - 1 <=
@@ -224,25 +226,6 @@ uint32_t orep_anchors(const orep_cfg *c, const uint8_t *p, uint32_t s0,
     atag[i] = (uint32_t)m;
   }
   return na;
-}
-
-/* group anchors [0, n) by the shard that owns their bucket (shard t owns
-   the buckets k with (k * ns) >> tbits = t), keeping their order: list
-   gets the indexes, ofs[t] the end of shard t (its start is ofs[t - 1], or
-   0 for t = 0); ofs has ns + 1 entries */
-void orep_shard(const uint32_t *aidx, uint32_t n, uint32_t ns, uint32_t tbits,
-                uint32_t *list, uint32_t *ofs) {
-  uint32_t cnt[257], j, t, sh = 32u - tbits;  /* ns <= 256 */
-  for (t = 0; t <= ns; t++) cnt[t] = 0;
-  /* owner = (k * ns) >> tbits, with k < 2^tbits: as a 32-bit product
-     shifted up first it needs no 64-bit multiply */
-  for (j = 0; j < n; j++) cnt[((uint64_t)(aidx[j] << sh) * ns >> 32) + 1]++;
-  for (t = 1; t <= ns; t++) cnt[t] += cnt[t - 1];
-  for (j = 0; j < n; j++) {
-    t = (uint32_t)((uint64_t)(aidx[j] << sh) * ns >> 32);
-    list[cnt[t]++] = j;
-  }
-  for (t = 0; t <= ns; t++) ofs[t] = cnt[t];
 }
 
 /* table pass over the anchors list[0..nl) (indexes into the segment's
@@ -390,7 +373,10 @@ uint32_t orep_cont(const orep_cfg *c, uint64_t cabs, uint64_t cphys,
 /* CRC-32C (Castagnoli), reflected, init ~0, final xor ~0 (the usual one).
    x86 with SSE4.2: the crc32 instruction (checked with cpuid on every call,
    which is once per block: no cached global); otherwise slice-by-8 with the
-   caller's 8 x 256 table.  Same value either way. */
+   caller's 8 x 256 table.  Same value either way.  The caller's table has
+   two more 4 x 256 parts after those: the shift of the raw state over
+   OREP_CRC_L zero bytes (at 2048) and over 2 * OREP_CRC_L (at 3072). */
+#define OREP_CRC_L 2048u
 #if (defined(__x86_64__) || defined(__i386__)) && defined(__GNUC__)
 #define OREP_X86 1
 static int has_sse42(void) {
@@ -405,10 +391,33 @@ static int has_sse42(void) {
   return (ecx >> 20) & 1u;
 }
 
+/* the raw CRC state x moved over n zero bytes, with the 4 x 256 table of
+   that shift (n = OREP_CRC_L or 2 * OREP_CRC_L, built by the caller) */
+static uint32_t crc_shift(const uint32_t *s, uint32_t x) {
+  return s[x & 0xFFu] ^ s[256 + ((x >> 8) & 0xFFu)] ^
+         s[512 + ((x >> 16) & 0xFFu)] ^ s[768 + (x >> 24)];
+}
+
 __attribute__((target("sse4.2")))
-static uint32_t crc_hw(uint32_t crc, const uint8_t *p, size_t n) {
+static uint32_t crc_hw(const uint32_t *t, uint32_t crc, const uint8_t *p,
+                       size_t n) {
 #if defined(__x86_64__)
   uint64_t c = crc;
+  /* three streams of OREP_CRC_L bytes at once (the instruction's latency
+     is three times its throughput), joined with the shift tables */
+  while (n >= 3 * OREP_CRC_L) {
+    uint64_t c1 = 0, c2 = 0;
+    size_t i;
+    for (i = 0; i < OREP_CRC_L; i += 8) {
+      c = __builtin_ia32_crc32di(c, ld64(p + i));
+      c1 = __builtin_ia32_crc32di(c1, ld64(p + OREP_CRC_L + i));
+      c2 = __builtin_ia32_crc32di(c2, ld64(p + 2 * OREP_CRC_L + i));
+    }
+    c = crc_shift(t + 3072, (uint32_t)c) ^ crc_shift(t + 2048, (uint32_t)c1) ^
+        (uint32_t)c2;
+    p += 3 * OREP_CRC_L;
+    n -= 3 * OREP_CRC_L;
+  }
   while (n >= 8) {
     c = __builtin_ia32_crc32di(c, ld64(p));
     p += 8;
@@ -435,7 +444,7 @@ uint32_t orep_crc32c(const uint32_t *t, uint32_t crc, const uint8_t *p,
                      size_t n) {
   crc = ~crc;
 #if OREP_X86
-  if (n >= 256 && has_sse42()) return ~crc_hw(crc, p, n);
+  if (n >= 256 && has_sse42()) return ~crc_hw(t, crc, p, n);
 #endif
   while (n && ((uintptr_t)p & 7u)) {
     crc = t[(crc ^ *p++) & 0xFFu] ^ (crc >> 8);
