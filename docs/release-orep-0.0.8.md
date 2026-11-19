@@ -69,6 +69,10 @@ The decoder is unchanged.
 On `tilin_512m`, the bytes are the same as 0.0.7's with
 `-l256`, `-c1`, `-l64`, `-l32 -b64k -w1m` and `-l512 -c2 -s8`, each with
 `-t1`, `-t3` and `-t4`.
+The six binaries give the same stream as 0.0.7 with `-t1`, `-t4 -y0`
+and `-l32 -b64k -w1m -t3`, with round trips. They were run on the host
+(x86_64 and x86), under qemu (arm64), under wine, on a real Windows 10
+(x64 and x86), and in the macOS CI (the whole test suite).
 
 ## Files
 
