@@ -1,4 +1,15 @@
-# OSREP
+# OSREP and OREP
+
+This repository hosts two MIT-licensed products, each with its own release
+line:
+
+- **OSREP** (tags `vX.Y.Z`): an LZ77 preprocessor for `.osr` streams with
+  huge dictionaries, described first below.
+- **OREP** (tags `orep-vX.Y.Z`): a one-pass streaming long-range dedup
+  written for the PArc archiver as a replacement for FreeArc's REP; see
+  [OREP](#orep).
+
+## OSREP
 
 **OSREP** is a new LZ77 preprocessor for `.osr` streams, built for huge
 dictionaries, deterministic output and integrity-checked files. It turns the
@@ -52,16 +63,32 @@ preprocessing, decompression, verification and inspection.
 
 ## OREP
 
-**OREP** (`src/orep/`, `src/c/orep_core.c`) is a second product in this
-repository: a one-pass **streaming** long-range dedup for a backend
-compressor, written for PArc as an MIT replacement for FreeArc's REP
-(clean-room, own format: `spec/orep-format.md`). Zlib-style Pascal API, a
-bounded decoder, the same bytes on every platform. It has its own release
-line (`orep-vX.Y.Z`); see `docs/orep.md` and
-`docs/release-orep-0.0.1.md` … `docs/release-orep-0.0.8.md`. With lzma behind (PArc's `-m4`), its defaults
-beat REP on the seven corpora measured (−0.03% to −1.31%).
+**OREP** (`src/orep/`, `src/c/orep_core.c`) is a one-pass **streaming**
+long-range dedup that runs in front of a backend compressor. It was written
+for PArc as a clean-room MIT replacement for FreeArc's REP, with its own
+stream format (`spec/orep-format.md`, version 3, still a draft).
 
-## Priority
+- **Status: orep-v0.0.8 (pre-release, 2026-11-19).** PArc uses it as its
+  long-range stage (on a branch, before merging).
+- **API:** a zlib-style Pascal unit (`OrepEnc*`/`OrepDec*`, in/out buffers,
+  no callbacks) plus memory-to-memory calls; the decoder can hand out its
+  output in place (`OrepDecPeek`/`OrepDecSkip`) and be reused
+  (`OrepDecReset`); the decoder is bounded on corrupt input.
+- **Threads:** the encoder searches with a pipeline of segments on up to N
+  threads, with hooks so a host can lend and take back threads from its own
+  budget. The stream is the same with any thread count and on every
+  platform.
+- **Against REP inside PArc** (PArc's measurements with 0.0.8: 12 inputs,
+  `-m1`…`-m9`, 1 and 4 threads): the output is smaller at every level except
+  `-m1` with one thread (+0.003 %), total compression time is within −4 % to
+  +2 %, and the decoder stage alone ties REP.
+- **Platforms:** Linux x86_64, x86 and ARM64; Windows x64 and x86 (tested on
+  Windows 10); macOS ARM64.
+- **Docs:** `docs/orep.md` (design, in Spanish), the release notes
+  `docs/release-orep-0.0.1.md` … `docs/release-orep-0.0.8.md`, and the wiki
+  page *OREP*.
+
+## OSREP priority
 
 The product comes first: finish the v6 preprocessor, the CLI, the encoder
 modes and the deduplication engine, and measure them against SREP 3.93a,
