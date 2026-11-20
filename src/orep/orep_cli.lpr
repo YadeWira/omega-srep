@@ -23,7 +23,7 @@ begin
   WriteLn(StdErr, '  -w<size>   window (max distance), default 512m; k/m/g suffixes');
   WriteLn(StdErr, '  -l<n>      shortest match, >= 16, default 64 (32 for text)');
   WriteLn(StdErr, '  -b<size>   block size, a power of two 64k..64m, default 4m');
-  WriteLn(StdErr, '  -a<n>      keep literals aligned to n; default 0 = per block (1 text, 4 binary)');
+  WriteLn(StdErr, '  -a<n>      keep literals aligned to n (at most -l); default 0 = per block (1 text, 4 binary)');
   WriteLn(StdErr, '  -s<n>      anchor density 1..64, default 4 (higher: more short matches, slower)');
   WriteLn(StdErr, '  -D<size>   leave matches nearer than this to the backend, default 0');
   WriteLn(StdErr, '  -c<n>      candidates per anchor 1..4, default 4 (1: fastest)');

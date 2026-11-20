@@ -28,8 +28,8 @@
    so `window` must stay below 2^32 - chunk.
 
    Rules: no libc, caller-owned buffers, no global mutable state,
-   deterministic (no addresses, no threads, little-endian loads only decide
-   where a comparison stops, which is the same on every target). */
+   deterministic (no addresses, no threads; every load is little-endian,
+   so the output is the same on every target). */
 
 #include <stddef.h>
 #include <stdint.h>
@@ -75,7 +75,15 @@ static const uint8_t *sp(const orep_cfg *c, uint64_t p) {
 
 typedef uint64_t orep_u64u __attribute__((aligned(1), may_alias));
 
-static uint64_t ld64(const uint8_t *p) { return *(const orep_u64u *)p; }
+/* a little-endian load on any CPU: the gram hash, the CRC and the place
+   where a comparison stops (ctz/clz of a xor) all take bytes in that order */
+static uint64_t ld64(const uint8_t *p) {
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+  return __builtin_bswap64(*(const orep_u64u *)p);
+#else
+  return *(const orep_u64u *)p;
+#endif
+}
 
 static uint32_t ctz64(uint64_t x) { return (uint32_t)__builtin_ctzll(x); }
 static uint32_t clz64(uint64_t x) { return (uint32_t)__builtin_clzll(x); }
@@ -483,11 +491,16 @@ static uint32_t period(const orep_cfg *c, uint64_t cphys, uint32_t a,
 int32_t orep_vselect(const orep_cfg *c, uint64_t cabs, uint64_t cphys,
                      uint32_t clen, const uint32_t *apos,
                      const uint32_t *cand4, const uint32_t *clist,
-                     uint32_t nc, uint32_t cap, uint32_t *litstart,
+                     uint32_t nc, uint64_t cap64, uint32_t *litstart,
                      uint32_t *nm, uint32_t *lit, uint32_t *len,
-                     uint64_t *dist, uint32_t mcap) {
+                     uint64_t *dist, uint64_t mcap64) {
+  /* cap and mcap come as 64-bit: they are arguments 9 and 15, passed on
+     the stack, and FPC on big-endian ppc64 puts a 32-bit one in the other
+     half of its doubleword from where gcc reads it */
+  const uint32_t cap = (uint32_t)cap64, mcap = (uint32_t)mcap64;
   const uint32_t sc = cap > c->score ? cap : c->score;
-  const uint32_t plim = c->plim < c->maxgap ? c->plim : c->maxgap - 1u;
+  uint32_t plim = c->plim < c->maxgap ? c->plim : c->maxgap - 1u;
+  if (plim > c->window) plim = (uint32_t)c->window;
   uint32_t i, ls = *litstart, k = *nm, d, f, b;
   for (i = 0; i < nc && i < OREP_PF2; i++) {
     const uint32_t j = clist[i] & ~OREP_FORCED;

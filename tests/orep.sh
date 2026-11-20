@@ -1,7 +1,8 @@
 #!/bin/bash
 # OREP: round trips, native == reference (same bytes), small windows that
-# wrap the ring, stdin/stdout, and corrupt or truncated streams rejected
-# without crashing.
+# wrap the ring, stdin/stdout, corrupt or truncated streams rejected without
+# crashing, streaming/API edge cases (orep_edge.sh) and structure-aware
+# fuzzing against the spec oracle (orep_fuzz.sh).
 #
 #   tests/orep.sh [build dir]      (default: builds into $TMPDIR/orep-test)
 set -u
@@ -157,5 +158,18 @@ for f in "$W"/bad*.orp; do
 done
 [ $crash -eq 0 ] || bad "$crash corrupt streams crashed the decoder"
 [ $accepted -eq 0 ] || bad "$accepted corrupt streams decoded to wrong data"
+
+echo "== streaming and API edge cases (tests/orep_edge.sh)"
+bash "$ROOT/tests/orep_edge.sh" "$B" >"$W/edge.log" 2>&1 ||
+  { tail -20 "$W/edge.log"; bad "tests/orep_edge.sh"; }
+
+echo "== structure-aware fuzzing against the spec oracle (tests/orep_fuzz.sh)"
+if [ "${BASH_VERSINFO[0]}" -ge 4 ] && command -v timeout >/dev/null 2>&1; then
+  bash "$ROOT/tests/orep_fuzz.sh" "$B" "${OREP_FUZZ_N:-400}" --seed 1 >"$W/fuzz.log" 2>&1 ||
+    { tail -20 "$W/fuzz.log"; bad "tests/orep_fuzz.sh"; }
+  tail -1 "$W/fuzz.log"
+else
+  echo "  skipped (needs bash 4 and timeout)"
+fi
 
 if [ $fail -eq 0 ]; then echo "orep: all checks passed"; else exit 1; fi

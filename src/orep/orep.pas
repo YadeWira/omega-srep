@@ -70,8 +70,8 @@ const
   OREP_FLUSH = 1;      { end the current block now (the stream goes on) }
   OREP_FINISH = 2;     { no more input: write the end of the stream }
 
-  OREP_VERSION_STR = '0.0.9';
-  OREP_FORMAT = 3;
+  OREP_VERSION_STR = '0.0.10';
+  OREP_FORMAT = 4;
 
   OREP_MIN_MATCH = 16;               { format minimum match length }
   OREP_MAX_WINDOW = QWord($F0000000); { < 2^32 minus a chunk }
@@ -243,7 +243,6 @@ type
     Align: LongWord;
     PadLeft: LongWord;
     EmitPos: LongWord;
-    OldChunk: LongWord;  { after OrepDecReset: the chunk the memory is for }
     Inited: Boolean;
   end;
 
@@ -293,8 +292,8 @@ function orep_probe(c: POrepCfg; cabs: QWord; apos, aidx,
   atag: PLongWord; nl: LongWord; cand4: PLongWord): LongWord; cdecl;
   external name 'orep_probe';
 function orep_vselect(c: POrepCfg; cabs, cphys: QWord; clen: LongWord;
-  apos, cand4, clist: PLongWord; nc, cap: LongWord; var litstart,
-  nm: LongWord; lit, len: PLongWord; dist: PQWord; mcap: LongWord): LongInt;
+  apos, cand4, clist: PLongWord; nc: LongWord; cap: QWord; var litstart,
+  nm: LongWord; lit, len: PLongWord; dist: PQWord; mcap: QWord): LongInt;
   cdecl; external name 'orep_vselect';
 function orep_cont(c: POrepCfg; cabs, cphys: QWord; clen: LongWord;
   prev_dist: QWord): LongWord; cdecl; external name 'orep_cont';
@@ -308,7 +307,7 @@ const
   OREP_PLIM = 16;      { longest period a forced anchor tries }
   OREP_PF = 16;
   OREP_CRC_L = 2048;   { the same in orep_core.c }
-  HDR_MAX = 6 + 5 + 2 + 3 + 4;   { the longest stream header }
+  HDR_MAX = 6 + 4 * 5 + 4;   { the longest stream header }
   Magic: array[0..3] of Char = 'OREP';
 
 var
@@ -873,14 +872,15 @@ end;
   match already chosen are not verified (orep_select would skip them); a
   forced one tries the period of its gram first }
 function orep_vselect(c: POrepCfg; cabs, cphys: QWord; clen: LongWord;
-  apos, cand4, clist: PLongWord; nc, cap: LongWord; var litstart,
-  nm: LongWord; lit, len: PLongWord; dist: PQWord; mcap: LongWord): LongInt;
+  apos, cand4, clist: PLongWord; nc: LongWord; cap: QWord; var litstart,
+  nm: LongWord; lit, len: PLongWord; dist: PQWord; mcap: QWord): LongInt;
 var
   I, J, K, Cd, F, B, P, PLim: LongWord;
   C5: array[0..4] of LongWord;
 begin
   PLim := c^.PLim;
   if PLim >= c^.MaxGap then PLim := c^.MaxGap - 1;
+  if PLim > c^.Window then PLim := c^.Window;
   for I := 1 to nc do
   begin
     J := clist[I - 1] and $7FFFFFFF;
@@ -893,16 +893,16 @@ begin
       C5[0] := P;
       for K := 0 to 3 do C5[K + 1] := cand4[4 * J + K];
       orep_verify(c, cabs, cphys, clen, apos + J, @C5[0], 1, c^.Cands + 1,
-        cap, @Cd, @F, @B);
+        LongWord(cap), @Cd, @F, @B);
     end
     else
     begin
       if cand4[4 * J] = 0 then Continue;
       orep_verify(c, cabs, cphys, clen, apos + J, cand4 + 4 * J, 1,
-        c^.Cands, cap, @Cd, @F, @B);
+        c^.Cands, LongWord(cap), @Cd, @F, @B);
     end;
-    if orep_select(c, cabs, cphys, clen, apos + J, @Cd, @F, @B, 1, cap,
-      litstart, nm, lit, len, dist, mcap) < 0 then Exit(-1);
+    if orep_select(c, cabs, cphys, clen, apos + J, @Cd, @F, @B, 1, LongWord(cap),
+      litstart, nm, lit, len, dist, LongWord(mcap)) < 0 then Exit(-1);
   end;
   Result := 0;
 end;
@@ -1621,6 +1621,7 @@ begin
   if E.AutoAlign then Inc(E.StageLen, PutVar(E.Stage + E.StageLen, 0))
   else Inc(E.StageLen, PutVar(E.Stage + E.StageLen, E.Cfg.Align));
   Inc(E.StageLen, PutVar(E.Stage + E.StageLen, E.Cfg.MinLen));
+  Inc(E.StageLen, PutVar(E.Stage + E.StageLen, 0));   { flags: none defined }
   Put32(E.Stage + E.StageLen, OrepCrc32c(0, E.Stage, E.StageLen));
   Inc(E.StageLen, 4);
   E.StreamPos := E.StageLen;
@@ -2026,7 +2027,7 @@ begin
   { kept: the memory and what it was made for }
   D.MemLimit := K.MemLimit;
   D.Slots := K.Slots; D.RingSize := K.RingSize; D.CShift := K.CShift;
-  D.Chunk := K.Chunk; D.Window := K.Window; D.OldChunk := K.Chunk;
+  D.Chunk := K.Chunk; D.Window := K.Window;
   D.Lit := K.Lit; D.Len := K.Len; D.Dist := K.Dist; D.MCap := K.MCap;
   D.Cols := K.Cols; D.ColCap := K.ColCap;
   D.Inited := True;
@@ -2060,11 +2061,12 @@ end;
 
 { the header so far (HdrLen bytes): 1 = complete, 0 = needs more,
   < 0 = an error.  Magic, version, log2 chunk, then varints window, align
-  setting, minimum length, then the CRC-32C of all that. }
+  setting, minimum length, flags, then the CRC-32C of all that.  No flag is
+  defined yet: a stream with any flag set needs a newer decoder. }
 function DecHeaderState(var D: TOrepDec): Integer;
 var
   I, P, N, Sh: LongWord;
-  V: array[0..2] of QWord;
+  V: array[0..3] of QWord;
 begin
   for I := 0 to 3 do
     if (I < D.HdrLen) and (Char(D.Hdr[I]) <> Magic[I]) then
@@ -2072,7 +2074,7 @@ begin
   if (D.HdrLen > 4) and (D.Hdr[4] <> OREP_FORMAT) then Exit(OREP_E_VERSION);
   if D.HdrLen < 6 then Exit(0);
   P := 6;
-  for N := 0 to 2 do
+  for N := 0 to 3 do
   begin
     V[N] := 0;
     Sh := 0;
@@ -2086,8 +2088,10 @@ begin
   end;
   if D.HdrLen < P + 4 then Exit(0);
   if Get32(@D.Hdr[P]) <> OrepCrc32c(0, @D.Hdr[0], P) then Exit(OREP_E_DATA);
-  if (D.Hdr[5] < 16) or (D.Hdr[5] > 26) or (V[1] > 4096) then
+  if (D.Hdr[5] < 16) or (D.Hdr[5] > 26) or (V[1] > 4096) or
+    (V[2] > $FFFFFFFF) or (V[3] > $FFFFFFFF) then
     Exit(OREP_E_DATA);
+  if V[3] <> 0 then Exit(OREP_E_VERSION);
   D.Chunk := LongWord(1) shl D.Hdr[5];
   D.Window := V[0];
   Result := 1;
@@ -2101,13 +2105,13 @@ begin
     Exit(OREP_E_DATA);
   if (D.MemLimit <> 0) and (OrepDecMemory(D.Window, D.Chunk) > D.MemLimit) then
     Exit(OREP_E_MEM);
-  { after OrepDecReset: keep the memory if it fits this stream as is }
-  if D.Slots <> nil then
-  begin
-    if (D.OldChunk = D.Chunk) and (D.RingSize = RingFor(D.Window, D.Chunk)) then
-      Exit(OREP_OK);
-    DecFree(D);
-  end;
+  { after OrepDecReset: keep the memory if it was made for this chunk and
+    ring (CShift is set only when the memory is allocated; D.Chunk may come
+    from a header that was rejected after it was parsed) }
+  if (D.Slots <> nil) and (D.CShift = Log2Of(D.Chunk)) and
+    (D.RingSize = RingFor(D.Window, D.Chunk)) then
+    Exit(OREP_OK);
+  DecFree(D);
   D.RingSize := RingFor(D.Window, D.Chunk);
   D.MCap := D.Chunk div OREP_MIN_MATCH + 2;
   try
@@ -2117,6 +2121,7 @@ begin
     D.CShift := Log2Of(D.Chunk);
     D.Slots := AllocMem((D.RingSize shr D.CShift) * SizeOf(PByte));
   except
+    DecFree(D);
     Exit(OREP_E_MEM);
   end;
   Result := OREP_OK;
@@ -2235,10 +2240,11 @@ begin
            if AvailIn = 0 then Exit(OREP_OK);
            B := NextIn^;
            Inc(NextIn); Dec(AvailIn); Inc(D.InPos);
-           if D.VarShift > 63 then begin D.Phase := 99; Exit(OREP_E_DATA); end;
+           if D.VarShift > 28 then begin D.Phase := 99; Exit(OREP_E_DATA); end;
            D.VarVal := D.VarVal or (QWord(B and $7F) shl D.VarShift);
            Inc(D.VarShift, 7);
            if B >= $80 then Continue;
+           if D.VarVal > $FFFFFFFF then begin D.Phase := 99; Exit(OREP_E_DATA); end;
            case D.VarIdx of
              0: D.OutSize := D.VarVal;
              1: D.NMatch := D.VarVal;
@@ -2367,7 +2373,10 @@ begin
            if AvailIn = 0 then Exit(OREP_OK);
            B := NextIn^;
            Inc(NextIn); Dec(AvailIn); Inc(D.InPos);
-           if D.VarShift > 63 then begin D.Phase := 99; Exit(OREP_E_DATA); end;
+           if (D.VarShift > 63) or ((D.VarShift = 63) and (B > 1)) then
+           begin
+             D.Phase := 99; Exit(OREP_E_DATA);
+           end;
            D.VarVal := D.VarVal or (QWord(B and $7F) shl D.VarShift);
            Inc(D.VarShift, 7);
            if B >= $80 then Continue;
@@ -2413,6 +2422,7 @@ begin
     DstLen := Cap - Room;
     if (Result = OREP_OK) and (Room = 0) then
     begin
+      if Cap > High(SizeUInt) div 2 then begin Result := OREP_E_MEM; Break; end;
       Cap := Cap * 2;
       try
         ReAllocMem(Dst, Cap);
@@ -2453,6 +2463,7 @@ begin
     begin
       if Room = 0 then
       begin
+        if Cap > High(SizeUInt) div 2 then begin Result := OREP_E_MEM; Break; end;
         Cap := Cap * 2;
         try
           ReAllocMem(Dst, Cap);

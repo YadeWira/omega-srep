@@ -1,7 +1,7 @@
 # OREP: dedup de largo alcance en streaming (reemplazo de REP)
 
-**Estado: 0.0.9, pre-release (2026-11-20).** Formato `spec/orep-format.md`,
-versión 3, en borrador (puede cambiar hasta que se congele).
+**Estado: 0.0.10, pre-release (2026-11-20).** Formato `spec/orep-format.md`,
+versión 4, candidato a congelarse (puede cambiar hasta que Wira lo congele).
 
 OREP es un preprocesador de una pasada, en streaming, que va delante de un
 compresor (lzma, zstd...). Saca las repeticiones largas dentro de una
@@ -116,6 +116,43 @@ Windows x64/x86). El objeto no usa la libc.
 El encoder es ring + tabla (`32 * NBuck`, con `NBuck` ≈ `W / (4s)`
 redondeado a 64; hasta 0.0.8, a la potencia de 2 de arriba); el decoder,
 ring más las columnas de un bloque.
+
+## 0.0.10: pruebas antes de congelar el formato (2026-11-20)
+
+Antes de congelar el formato se probó lo que nunca se había probado, y se
+cerraron los puntos que la especificación dejaba abiertos.
+
+- **Formato 4:** la cabecera lleva un varint de flags (hoy 0). Un decoder
+  rechaza un flag que no conoce como "versión no soportada", así que una
+  función futura que el decoder viejo no pueda ignorar se marca sin una
+  versión nueva. Los streams de la versión 3 (0.0.4–0.0.9, pre-releases) ya
+  no se leen. Los bloques son los mismos que en 0.0.9 (mismos matches y
+  literales; cambia el relleno, que depende de la posición en el stream).
+- **Especificación sin huecos:** todo varint tiene a lo sumo 5 bytes y un
+  valor menor que 2^32, salvo el total del final (10 bytes, menor que
+  2^64); se aceptan formas más largas de lo necesario dentro de ese límite;
+  el orden de los chequeos de la cabecera fija qué error se da; un decoder
+  en streaming deja al llamador lo que siga al final.
+- **Arreglos:**
+  - `OrepDecReset` tras una cabecera leída y rechazada (por ejemplo por el
+    límite de memoria) podía quedarse con la memoria de otro chunk y
+    escribir fuera de ella con el stream siguiente. Ahora la memoria se
+    guarda solo si se hizo para ese chunk y ese ring.
+  - Un fallo de memoria a medias en la cabecera ya no pierde memoria.
+  - En 32 bits, `OrepEncodeBuf`/`OrepDecodeBuf` con salidas de más de
+    2 GiB daban la vuelta al duplicar el buffer; ahora devuelven
+    `OREP_E_MEM`.
+  - Un `A` de bloque de 2^32 o más se truncaba y se aceptaba; ahora se
+    rechaza (también los varints de bloque de más de 5 bytes y un total de
+    más de 64 bits).
+  - Con ventanas de menos de 16 bytes el período de un ancla forzada podía
+    ir más atrás que la ventana; ahora se limita a la ventana.
+  - El núcleo en C suponía una CPU little-endian (CRC, hash de gram, largo
+    de los matches): ahora lee en little-endian en cualquier CPU. Y
+    `orep_vselect` recibe `cap` y `mcap` como 64 bits: FPC en ppc64
+    big-endian pasaba los argumentos de 32 bits en la pila en la otra
+    mitad.
+- **Pruebas nuevas** (ver Pruebas).
 
 ## 0.0.9: un hilo más rápido y nada que perder contra REP (2026-11-20)
 
@@ -353,5 +390,24 @@ El decoder saca 0,7–1 GB/s.
 `tests/orep.sh`: idas y vueltas con varios parámetros (incluidas ventanas de
 64 KiB que dan muchas vueltas al ring), nativo == referencia byte a byte,
 stdin/stdout, límite de memoria y 300 streams truncados o dañados (ninguno
-cuelga ni se decodifica mal). Los cinco binarios del release (Linux
-x86_64/x86/arm64 con qemu, Windows x64/x86 con wine) dan el mismo stream.
+cuelga ni se decodifica mal). Los seis binarios del release (Linux
+x86_64/x86/arm64 con qemu, Windows x64/x86 con wine y en un Windows 10
+real, macOS en CI) dan el mismo stream. Desde 0.0.10 también corre:
+
+- `tests/orep_edge.sh` (`orep_edge.lpr`, ~11 millones de chequeos, nativo y
+  referencia): tamaños justo en los bordes de chunk, ventana y ring, flush
+  en cada posición, buffers de 1 byte, Peek/Skip, reset y reuso,
+  streams concatenados y cortados en cada byte, flags y versiones.
+- `tests/orep_fuzz.sh` con `tests/orep_spec.py`: un decoder en Python
+  escrito solo desde la especificación arma streams con los CRC bien
+  calculados y campos hostiles (unas 60 mutaciones de estructura), y los
+  dos binarios tienen que dar el mismo veredicto y los mismos bytes.
+
+Aparte, porque llevan más tiempo o herramientas:
+
+- `tests/orep_big.sh` (con `tests/orep_bigsrc.c`): streams de 5 y 9 GiB,
+  con repeticiones que cruzan 2^31, 2^32 y 2^33, ventanas de 1 y 2 GB, en
+  x86_64 y en i386 (mismos bytes).
+- `tests/orep_be.sh`: powerpc64 big-endian con qemu-user (los dos builds;
+  mismos bytes que x86_64 y decodificación cruzada). El compilador cruzado
+  se armó sin root; la receta está al final del script.

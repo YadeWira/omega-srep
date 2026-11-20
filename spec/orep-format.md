@@ -1,22 +1,28 @@
-# OREP stream format, version 3
+# OREP stream format, version 4
 
 **Status: draft (OREP 0.0.x). It can change until it is frozen in a
 release; a frozen version is never changed again, a new one gets a new
 version number.** Version 1 (OREP 0.0.1-0.0.2) had one alignment for the
 whole stream in the header; version 2 (0.0.3) has one per block; version 3
 (0.0.4) packs the stream header and the end with varints (the chunk is a
-power of two, stored as its log2).
+power of two, stored as its log2); version 4 (0.0.10) adds a flags varint
+to the header, so that a later feature can be marked without a new
+version.
 
 OREP is a one-pass streaming long-range dedup, written for PArc as a
 replacement of REP (clean-room, MIT; it does not read or write REP's
 format). Its output is not entropy-coded: a backend (lzma, zstd...)
 compresses it. All integers are little-endian. A varint is LEB128: 7 bits
-per byte, low bits first, high bit set on every byte but the last.
+per byte, low bits first, high bit set on every byte but the last. Every
+varint has at most 5 bytes and a value below 2^32, except the end's total
+(at most 10 bytes, below 2^64). A varint may be longer than needed (`80 00`
+is 0) within those limits; the reference encoder always writes the shortest
+form, and a decoder must accept the longer ones.
 
 ## Stream
 
 ```
-header (15-20 bytes)
+header (14-30 bytes; the reference encoder writes at most 21)
 block*
 end
 ```
@@ -25,14 +31,24 @@ end
 
 ```
 4 bytes   magic `OREP`
-1 byte    version = 3
+1 byte    version = 4
 1 byte    log2 of the chunk C, 16 .. 26
-varint    window W, 1 .. 0xF0000000 (at most 5 bytes)
+varint    window W, 1 .. 0xF0000000
 varint    the encoder's alignment setting, 0 .. 4096 (0 = per block;
           information only)
-varint    the encoder's minimum match length (information only)
+varint    the encoder's minimum match length (information only; any value)
+varint    flags; none is defined, so it is 0
 u32       CRC-32C of all the header bytes before it
 ```
+
+A decoder checks the magic and the version as soon as it has them, and the
+rest of the header once it is complete: first the varint limits and the
+CRC, then the chunk, window and alignment ranges (any failure so far is
+damaged data), then the flags: a stream whose flags have a bit the decoder
+does not know is rejected as an unsupported version, not as damaged
+data. A flag will only be defined for
+something an older decoder must not ignore; anything it may ignore does not
+need one.
 
 CRC-32C is the Castagnoli CRC (polynomial 0x82F63B78 reflected), initial
 value 0xFFFFFFFF and final xor 0xFFFFFFFF (the iSCSI one; "123456789" gives
@@ -62,7 +78,6 @@ literals              out_size - sum(len) bytes
 u32     crc           CRC-32C of the block's out_size output bytes
 ```
 
-Each varint of a column holds a value below 2^32 (at most 5 bytes).
 
 The padding has `(pos - q) mod A` zero bytes (A of this block), where `pos` is the block's
 first output position and `q` the stream offset (from the first header
@@ -98,8 +113,10 @@ varint  0
 varint  total         the number of bytes decoded
 ```
 
-Nothing follows. A decoder rejects a stream whose total differs, that ends
-early, or (for a whole-buffer decode) that has bytes after the end.
+Nothing follows. A decoder rejects a stream whose total differs or that
+ends early. A whole-buffer decode also rejects bytes after the end; a
+streaming decoder stops at the end and leaves what follows to its caller
+(the reference CLI treats it as an error).
 
 ## Encoder (non-normative)
 
