@@ -34,7 +34,21 @@ for v in range(12):
     out += b
 open(sys.argv[1], 'wb').write(out)
 EOF
-INPUTS="$C/text.bin $C/mixed.bin $C/random.bin $C/zeros.bin $C/tiny.bin $W/versions.bin"
+# runs and short periods between random data (the period candidate and
+# the run filter, -r)
+python3 - "$W/periods.bin" "$C/random.bin" <<'EOF'
+import sys
+src = open(sys.argv[2], 'rb').read()
+out = bytearray()
+for k in range(160):
+    out += src[(k * 4099) % 60000:(k * 4099) % 60000 + 700 + k * 13]
+    p = 1 + k % 16
+    pat = src[k * 31:k * 31 + p]
+    out += (pat * (1 + (200 + k * 37) // p))[:200 + k * 37]
+    out += bytes([k & 255]) * (100 + k * 11 % 900)
+open(sys.argv[1], 'wb').write(out)
+EOF
+INPUTS="$C/text.bin $C/mixed.bin $C/random.bin $C/zeros.bin $C/tiny.bin $W/versions.bin $W/periods.bin"
 : > "$W/empty.bin"
 INPUTS="$INPUTS $W/empty.bin"
 
@@ -59,11 +73,13 @@ for f in $INPUTS; do
   rt "$f" -w1m -b64k -l512
   rt "$f" -w300k -b64k -c1
   rt "$f" -w300k -b64k -c2 -l32 -a1
+  rt "$f" -w300k -b64k -c2 -l256 -r512
+  rt "$f" -w1m -b64k -l64 -r100 -D7
 done
 
 echo "== same bytes with any number of threads"
-for f in "$C/mixed.bin" "$W/versions.bin" "$C/text.bin"; do
-  for o in "" "-w64k -b64k -l16" "-l512 -b64k" "-c1 -b64k"; do
+for f in "$C/mixed.bin" "$W/versions.bin" "$C/text.bin" "$W/periods.bin"; do
+  for o in "" "-w64k -b64k -l16" "-l512 -b64k" "-c1 -b64k" "-c2 -l256 -r512 -b64k"; do
     "$NAT" -q $o "$f" "$W/t1.orp"
     for t in 2 3 4 8; do
       "$NAT" -q $o -t$t "$f" "$W/tn.orp" || bad "encode -t$t $f $o"

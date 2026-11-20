@@ -42,14 +42,15 @@ typedef struct {
   uint64_t ring_size;    /* bytes in the ring */
   uint64_t mindist;      /* shorter distances are left to the backend */
   uint8_t **slots;       /* ring_size >> cshift slots of 1 << cshift bytes */
-  uint64_t *table;       /* 1 << tbits buckets of 4 entries (32-byte
+  uint64_t *table;       /* nbuck buckets of 4 entries (32-byte
                             aligned): tag << 32 | position + 1, 0 = empty,
                             newest first */
   uint32_t minlen;       /* shortest match found by the search */
   uint32_t gram;         /* bytes hashed per anchor, 4..64 */
   uint32_t smask;        /* anchor when ((h >> sshift) & smask) == 0 */
   uint32_t maxgap;       /* force an anchor after this many positions */
-  uint32_t tbits;
+  uint32_t plim;         /* longest period tried at a forced anchor, 0 =
+                            none (orep_vselect) */
   uint32_t align;        /* match lengths are a multiple of this */
   uint32_t minkeep;      /* shortest continuation across chunks */
   uint32_t sshift;       /* anchor bits: sshift .. sshift + log2(smask + 1) */
@@ -57,6 +58,9 @@ typedef struct {
                             gram in the table, the newest) */
   uint32_t score;        /* bytes compared to pick among candidates */
   uint32_t cshift;       /* log2 of the slot (= chunk) size */
+  uint32_t nbuck;        /* buckets of the table: bucket = (hash >> 32) * nbuck >> 32 */
+  uint32_t runkeep;      /* a match over a run of one byte shorter than
+                            this is left to the backend (0 = none) */
   uint32_t pad;
 } orep_cfg;
 
@@ -169,8 +173,10 @@ static void pf(const void *p) { __builtin_prefetch(p, 1, 0); }
      2. orep_probe    one segment at a time, in order: up to four
         candidate distances (the earlier copies of the gram in the bucket),
         then the insert, so the table ends the same with any number of
-        threads.
-     3. orep_vselect  one segment at a time, in order: the greedy choice.
+        threads.  It lists the anchors step 3 has to look at: those with a
+        candidate, and the forced ones (they try their gram's period).
+     3. orep_vselect  one segment at a time, in order, over that list: the
+        greedy choice.
         Each anchor not inside a match already chosen is verified first
         (verify1): the best candidate (longest forward match up to
         max(cap, score) bytes) and its lengths, the forward one capped at
@@ -192,20 +198,73 @@ uint32_t orep_anchors(const orep_cfg *c, const uint8_t *p, uint32_t s0,
                       uint32_t s1, uint32_t *apos, uint32_t *aidx,
                       uint32_t *atag) {
   const uint64_t *T = c->T;
-  const uint32_t g = c->gram, smask = c->smask, sshift = c->sshift,
-                 maxgap = c->maxgap, tshift = 64u - c->tbits;
+  const uint32_t g = c->gram, sshift = c->sshift, maxgap = c->maxgap;
+  const uint64_t nb = c->nbuck;
   uint32_t na = 0, nn = 0, last = s0, pos, i;
   uint64_t h = 0;
   if (s1 <= s0) return 0;
   for (i = 0; i + 1 < g; i++) h = (h << 1) + T[p[s0 + i]];
-  /* pass 1, without branches: the content-defined anchors (into aidx) */
+  /* pass 1: the content-defined anchors (into aidx).  With the table
+     shifted left by 64 - g, the anchor bits sshift..g-1 of h are the top
+     bits of h2 = h << (64 - g), and the test is h2 < lim. */
   {
-    const uint64_t am = (uint64_t)smask << sshift;
     const uint8_t *q = p + g - 1;
-    for (pos = s0; pos < s1; pos++) {
-      h = (h << 1) + T[q[pos]];
+    const uint64_t lim = UINT64_C(1) << ((sshift + 64u - g) & 63u);
+    uint64_t T2[256], h2 = h << (64u - g);
+    for (i = 0; i < 256; i++) T2[i] = T[i] << (64u - g);
+    pos = s0;
+    if (sshift >= g) {
+      /* no anchor bits (smask 0): every position */
+      for (; pos < s1; pos++) aidx[nn++] = pos;
+    }
+#if defined(__x86_64__) && defined(__GNUC__)
+    /* 64 positions at a time into a bit mask (cmp / adc, no store per
+       position: the first one ends in the top bit), then its set bits in
+       order.  t0 is rax: a base of rbp or r13 would make the lea a slow
+       three-operand one. */
+    /* only with sparse anchors (one in 16 or fewer): with denser ones
+       most blocks hold more than four and the bit loop is slower than
+       the plain one below */
+    while (c->smask >= 15u && pos + 64u <= s1) {
+      const uint8_t *r = q + pos;
+      uint64_t m = 0, t0;
+      uint32_t k;
+      for (k = 0; k < 64u; k += 8u) {
+#define OREP_STEP(o)                                                         \
+  "movzbl " #o "(%[r]), %k[t0]\n\t"                                         \
+  "movq (%[T], %[t0], 8), %[t0]\n\t"                                         \
+  "leaq (%[t0], %[h], 2), %[h]\n\t"                                          \
+  "cmpq %[lim], %[h]\n\t"                                                    \
+  "adcq %[m], %[m]\n\t"
+        __asm__(OREP_STEP(0) OREP_STEP(1) OREP_STEP(2) OREP_STEP(3)
+                OREP_STEP(4) OREP_STEP(5) OREP_STEP(6) OREP_STEP(7)
+                : [h] "+r"(h2), [m] "+r"(m), [t0] "=&a"(t0)
+                : [r] "r"(r + k), [T] "r"(T2), [lim] "r"(lim),
+                  "m"(*(const uint8_t(*)[8])(r + k)),
+                  "m"(*(const uint64_t(*)[256])T2)
+                : "cc");
+#undef OREP_STEP
+      }
+      /* usually at most four: those without a branch per bit */
+      for (k = 0; k < 4u; k++) {
+        uint32_t b = clz64(m | 1u);
+        aidx[nn] = pos + b;
+        nn += m != 0;
+        m &= ~(UINT64_C(0x8000000000000000) >> b);
+      }
+      while (m) {
+        uint32_t b = clz64(m);
+        aidx[nn++] = pos + b;
+        m &= ~(UINT64_C(0x8000000000000000) >> b);
+      }
+      pos += 64u;
+    }
+#endif
+    /* without branches: store every position, keep the anchors */
+    for (; pos < s1; pos++) {
+      h2 = (h2 << 1) + T2[q[pos]];
       aidx[nn] = pos;
-      nn += (h & am) == 0;
+      nn += h2 < lim;
     }
   }
   /* merge in the forced ones: after maxgap positions without an anchor
@@ -224,49 +283,82 @@ uint32_t orep_anchors(const orep_cfg *c, const uint8_t *p, uint32_t s0,
   /* pass 2: their hashes (independent of each other) */
   for (i = 0; i < na; i++) {
     uint64_t m = gramhash(p + apos[i], g);
-    aidx[i] = (uint32_t)(m >> tshift);
+    aidx[i] = (uint32_t)(((m >> 32) * nb) >> 32);
     atag[i] = (uint32_t)m;
   }
   return na;
 }
 
-/* table pass over the anchors list[0..nl) (indexes into the segment's
-   anchors, in order; list NULL = all of 0..nl): cand4[4i..4i+3] = the
-   distances of the (up to four) earlier copies of the gram of anchor
-   list[i], newest first, 0 after the last; then insert, newest first
-   (copies of the same gram are kept: verify picks the best).  The caller
-   gives each thread the anchors of its own buckets, and cand4 in list
-   order keeps the threads' writes apart. */
-void orep_probe(orep_cfg *c, uint64_t cabs, const uint32_t *apos,
-                const uint32_t *aidx, const uint32_t *atag,
-                const uint32_t *list, uint32_t nl, uint32_t *cand4) {
-  uint64_t *table = c->table;
+/* one table step for the anchor at block offset a with bucket b and tag:
+   its candidates into o[0..3] (0 after the last), then the insert.
+   Returns 1 when there is a candidate. */
+static inline __attribute__((always_inline)) uint32_t
+probe1(orep_cfg *c, uint64_t cabs, uint32_t a, uint64_t *b, uint32_t tag,
+       uint32_t *o) {
   const uint64_t W = c->window, md = c->mindist;
-  uint32_t i;
-#define OREP_AT(i) (list ? list[i] : (i))
-  for (i = 0; i < nl && i < OREP_PF; i++) pf(table + 4u * aidx[OREP_AT(i)]);
-  for (i = 0; i < nl; i++) {
-    uint32_t j = OREP_AT(i);
-    uint64_t *b = table + 4u * aidx[j];
-    uint32_t a = apos[j], tag = atag[j], cur32 = (uint32_t)(cabs + a);
-    uint32_t *o = cand4 + 4u * i, k = 0, w;
-    if (i + OREP_PF < nl) pf(table + 4u * aidx[OREP_AT(i + OREP_PF)]);
-    for (w = 0; w < 4; w++)
-      if ((uint32_t)(b[w] >> 32) == tag && (uint32_t)b[w]) {
-        uint64_t dd = (uint32_t)(cur32 - ((uint32_t)b[w] - 1u));
+  const uint32_t cur32 = (uint32_t)(cabs + a);
+  const uint64_t e0 = b[0], e1 = b[1], e2 = b[2], e3 = b[3];
+  uint32_t got = 0;
+  o[0] = o[1] = o[2] = o[3] = 0;
+  if (__builtin_expect(((uint32_t)(e0 >> 32) == tag) |
+                           ((uint32_t)(e1 >> 32) == tag) |
+                           ((uint32_t)(e2 >> 32) == tag) |
+                           ((uint32_t)(e3 >> 32) == tag),
+                       0)) {
+    uint32_t k = 0, w, ins = 3;
+    for (w = 0; w < 4; w++) {
+      uint64_t e = b[w];
+      if ((uint32_t)(e >> 32) == tag && (uint32_t)e) {
+        uint64_t dd = (uint32_t)(cur32 - ((uint32_t)e - 1u));
         if (dd && dd >= md && dd <= W && dd <= cabs + a) o[k++] = (uint32_t)dd;
+        if (w < ins) ins = w;
       }
-    for (; k < 4; k++) o[k] = 0;
-    if (c->cands == 1) {
-      /* one entry per gram: the newer copy replaces the older */
-      for (w = 0; w < 3; w++)
-        if ((uint32_t)(b[w] >> 32) == tag && (uint32_t)b[w]) break;
-    } else
-      w = 3;
-    for (; w > 0; w--) b[w] = b[w - 1];
-    b[0] = ((uint64_t)tag << 32) | (uint32_t)(cur32 + 1u);
+    }
+    /* cands 1, one entry per gram: the newer copy replaces the older one
+       if that is among the first three (else the last entry goes, as
+       always) */
+    if (c->cands != 1) ins = 3;
+    for (w = ins; w > 0; w--) b[w] = b[w - 1];
+    got = k != 0;
+  } else {
+    /* the common case, no entry with this tag: no candidate, and the
+       new entry goes in front */
+    b[3] = e2;
+    b[2] = e1;
+    b[1] = e0;
   }
-#undef OREP_AT
+  b[0] = ((uint64_t)tag << 32) | (uint32_t)(cur32 + 1u);
+  return got;
+}
+
+/* table pass over the anchors [0, nl) of a segment, in order:
+   cand4[4i..4i+3] = the distances of the (up to four) earlier copies of
+   the gram of anchor i, newest first, 0 after the last; then the insert,
+   newest first (copies of the same gram are kept: verify picks the best).
+   It also lists, in order, into aidx (entry i is written after it is
+   read) the anchors orep_vselect has to look at: those with a candidate
+   and, with plim, the forced ones (maxgap after the anchor before, or
+   after the segment start, where orep_anchors restarts the count),
+   flagged OREP_FORCED.  Returns their count. */
+#define OREP_FORCED 0x80000000u
+uint32_t orep_probe(orep_cfg *c, uint64_t cabs, const uint32_t *apos,
+                    uint32_t *aidx, const uint32_t *atag, uint32_t nl,
+                    uint32_t *cand4) {
+  uint64_t *table = c->table;
+  const uint32_t mg = c->maxgap, per = c->plim != 0;
+  uint32_t i, nc = 0, prev = nl ? apos[0] & ~(OREP_SUB - 1u) : 0;
+  for (i = 0; i < nl && i < OREP_PF; i++) pf(table + 4u * aidx[i]);
+  for (i = 0; i < nl; i++) {
+    const uint32_t a = apos[i];
+    uint32_t got, fo;
+    if (i + OREP_PF < nl) pf(table + 4u * aidx[i + OREP_PF]);
+    got = probe1(c, cabs, a, table + 4u * aidx[i], atag[i], cand4 + 4u * i);
+    fo = per & (a - prev == mg);
+    prev = a;
+    aidx[nc] = i | (fo ? OREP_FORCED : 0u);
+    nc += got | fo;
+  }
+  return nc;
 }
 
 static uint64_t srcpos(const orep_cfg *c, uint64_t dp, uint64_t d) {
@@ -274,22 +366,23 @@ static uint64_t srcpos(const orep_cfg *c, uint64_t dp, uint64_t d) {
 }
 
 /* verify one anchor at block offset a, candidates c4 (0 after the last):
-   the best of the first `cands` (the longest forward match, compared up to
+   the best of the first nc (the longest forward match, compared up to
    sc = max(cap, score) bytes; the newest wins a tie) into *cand, and its
    capped lengths */
 static void verify1(const orep_cfg *c, uint64_t cabs, uint64_t cphys,
                     uint32_t clen, uint32_t a, const uint32_t *c4,
-                    uint32_t cap, uint32_t sc, uint32_t *cand, uint32_t *fl,
-                    uint32_t *bl) {
+                    uint32_t nc, uint32_t cap, uint32_t sc, uint32_t *cand,
+                    uint32_t *fl, uint32_t *bl) {
   uint32_t best = 0, bf = 0, k;
   uint64_t dp = cphys + a;
-  for (k = 0; k < c->cands && c4[k]; k++) {
+  for (k = 0; k < nc && c4[k]; k++) {
     uint32_t mf = clen - a, f;
     if (mf > sc) mf = sc;
     f = fwd(c, srcpos(c, dp, c4[k]), dp, mf);
     if (!best || f > bf) {
       best = c4[k];
       bf = f;
+      if (bf >= sc) break; /* the later ones can only tie: this one wins */
     }
   }
   *cand = best;
@@ -342,6 +435,13 @@ static int32_t select1(const orep_cfg *c, uint64_t cabs, uint64_t cphys,
     tot -= tot % c->align;
     if (tot < c->minlen) return 0;
   }
+  if (tot < c->runkeep) {
+    /* a short run of one byte costs the backend less than a match */
+    const uint8_t *q = sp(c, cphys + a - b);
+    uint32_t i = 1;
+    while (i < tot && q[i] == q[0]) i++;
+    if (i == tot) return 0;
+  }
   if (*nm >= mcap) return -1;
   lit[*nm] = a - b - *ls;
   len[*nm] = tot;
@@ -351,26 +451,72 @@ static int32_t select1(const orep_cfg *c, uint64_t cabs, uint64_t cphys,
   return 0;
 }
 
-/* verify and select, over anchors [0, n) of one segment, in order.
-   *litstart (block offset of the first byte not yet in a match) and *nm
-   carry over between calls.  An anchor inside a match already chosen is
-   skipped before it is verified.  Returns 0, or -1 when mcap is too
-   small. */
+/* the shortest period p (max(1, mindist) <= p <= lim) of the data at
+   block offset a: the gram at a equals the gram p bytes before it; 0 if
+   none.  p <= a: both grams are inside the block. */
+static uint32_t period(const orep_cfg *c, uint64_t cphys, uint32_t a,
+                       uint32_t lim) {
+  const uint8_t *q = sp(c, cphys + a);
+  const uint32_t g = c->gram;
+  uint32_t p, o;
+  uint64_t x;
+  if (lim > a) lim = a;
+  if (c->mindist > lim) return 0;
+  x = ld64(q);
+  for (p = c->mindist > 1 ? (uint32_t)c->mindist : 1; p <= lim; p++) {
+    if (ld64(q - p) != x) continue;
+    for (o = 8; o + 8 <= g; o += 8)
+      if (ld64(q - p + o) != ld64(q + o)) break;
+    if (o + 8 > g && ld64(q - p + g - 8) == ld64(q + g - 8)) return p;
+  }
+  return 0;
+}
+
+/* verify and select, over the listed anchors clist[0..nc) of one segment
+   (from orep_probe), in order.  *litstart (block offset of the first byte
+   not yet in a match) and *nm carry over between calls.  An anchor inside
+   a match already chosen is skipped before it is verified.  A forced
+   anchor does not follow the content: in a run or a short period the
+   table can only offer a multiple of maxgap, or nothing, so the period of
+   its gram (up to plim) is tried first, and wins a tie.  Returns 0, or -1
+   when mcap is too small. */
 int32_t orep_vselect(const orep_cfg *c, uint64_t cabs, uint64_t cphys,
                      uint32_t clen, const uint32_t *apos,
-                     const uint32_t *cand4, uint32_t n, uint32_t cap,
-                     uint32_t *litstart, uint32_t *nm, uint32_t *lit,
-                     uint32_t *len, uint64_t *dist, uint32_t mcap) {
+                     const uint32_t *cand4, const uint32_t *clist,
+                     uint32_t nc, uint32_t cap, uint32_t *litstart,
+                     uint32_t *nm, uint32_t *lit, uint32_t *len,
+                     uint64_t *dist, uint32_t mcap) {
   const uint32_t sc = cap > c->score ? cap : c->score;
-  uint32_t j, ls = *litstart, k = *nm, d, f, b;
-  for (j = 0; j < n; j++) {
-    if (j + OREP_PF2 < n && apos[j + OREP_PF2] >= ls)
-      pfcand(c, cphys, apos[j + OREP_PF2], cand4 + 4u * (j + OREP_PF2));
-    if (apos[j] < ls || !cand4[4u * j]) continue;
-    verify1(c, cabs, cphys, clen, apos[j], cand4 + 4u * j, cap, sc, &d, &f,
-            &b);
-    if (select1(c, cabs, cphys, clen, apos[j], d, f, b, cap, &ls, &k, lit,
-                len, dist, mcap) < 0)
+  const uint32_t plim = c->plim < c->maxgap ? c->plim : c->maxgap - 1u;
+  uint32_t i, ls = *litstart, k = *nm, d, f, b;
+  for (i = 0; i < nc && i < OREP_PF2; i++) {
+    const uint32_t j = clist[i] & ~OREP_FORCED;
+    if (apos[j] >= ls) pfcand(c, cphys, apos[j], cand4 + 4u * j);
+  }
+  for (i = 0; i < nc; i++) {
+    const uint32_t j = clist[i] & ~OREP_FORCED, a = apos[j];
+    const uint32_t *c4 = cand4 + 4u * j;
+    uint32_t p;
+    if (i + OREP_PF2 < nc) {
+      const uint32_t jn = clist[i + OREP_PF2] & ~OREP_FORCED;
+      if (apos[jn] >= ls) pfcand(c, cphys, apos[jn], cand4 + 4u * jn);
+    }
+    if (a < ls) continue;
+    if ((clist[i] & OREP_FORCED) && (p = period(c, cphys, a, plim)) != 0) {
+      uint32_t c5[5];
+      c5[0] = p;
+      c5[1] = c4[0];
+      c5[2] = c4[1];
+      c5[3] = c4[2];
+      c5[4] = c4[3];
+      verify1(c, cabs, cphys, clen, a, c5, c->cands + 1u, cap, sc, &d, &f,
+              &b);
+    } else {
+      if (!c4[0]) continue;
+      verify1(c, cabs, cphys, clen, a, c4, c->cands, cap, sc, &d, &f, &b);
+    }
+    if (select1(c, cabs, cphys, clen, a, d, f, b, cap, &ls, &k, lit, len,
+                dist, mcap) < 0)
       return -1;
   }
   *litstart = ls;

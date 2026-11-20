@@ -1,6 +1,6 @@
 # OREP: dedup de largo alcance en streaming (reemplazo de REP)
 
-**Estado: 0.0.5, pre-release (2026-11-18).** Formato `spec/orep-format.md`,
+**Estado: 0.0.9, pre-release (2026-11-20).** Formato `spec/orep-format.md`,
 versión 3, en borrador (puede cambiar hasta que se congele).
 
 OREP es un preprocesador de una pasada, en streaming, que va delante de un
@@ -23,6 +23,11 @@ en este repo junto a OSREP, con releases aparte (`orep-vX.Y.Z`).
   cero: más o menos una cada `s` posiciones, más una forzada si pasan `4s`
   sin ninguna (para corridas y períodos cortos). `gram = min(32, L/2)` y `s`
   es la potencia de 2 más grande que entra en `(L - gram + 1) / densidad`.
+- **Período en las anclas forzadas (0.0.9).** Una forzada cae por
+  posición, no por contenido: en una corrida o un período corto la tabla
+  solo le ofrece un múltiplo de `4s`, o nada, y las repeticiones de 256–384
+  bytes se perdían. Ahora prueba primero el período de su gram (el menor
+  `p` de 1 a 16 con el gram igual `p` bytes antes), que gana si empata.
 - **Candidatos (0.0.3).** El bucket guarda hasta cuatro copias del mismo
   gram; la verificación compara hasta 256 bytes hacia adelante con cada una
   y se queda con la que más coincide (`-c1`: una entrada por gram, como en
@@ -31,11 +36,16 @@ en este repo junto a OSREP, con releases aparte (`orep-vX.Y.Z`).
   alinea a 1 si ~4096 bytes repartidos en él son en un 90 % texto ASCII, y
   a 4 si no; el valor va en la cabecera del bloque.
 - **Tabla.** Buckets de 4 entradas (32 bytes, una línea de caché) con tag de
-  32 bits y posición; como mucho una entrada por gram (la copia nueva
+  32 bits y posición, uno por cada 4 anclas esperadas en la ventana
+  (redondeado a 64; desde 0.0.9 no a una potencia de 2: el bucket sale de
+  una multiplicación); como mucho una entrada por gram (la copia nueva
   reemplaza la vieja), la más nueva primero. Se hace prefetch del bucket 16
   anclas antes y de los bytes del candidato 6 anclas antes.
 - **Match.** Un candidato se verifica y se extiende hacia adelante y hacia
-  atrás. El largo se recorta a un múltiplo de `-a`. Un match que llega al
+  atrás. El largo se recorta a un múltiplo de `-a`. Con `-r<n>` (0.0.9,
+  `P.RunKeep`, 0 por defecto) un match que solo cubre una corrida de un
+  byte y mide menos de `n` se deja como literales: tor o lz4 la codifican
+  casi gratis, y el match cuesta más. Con lzma detrás no conviene. Un match que llega al
   final del bloque sigue en el bloque siguiente con la misma distancia.
 - **Bloque.** Primero las tres columnas (literales antes, largo, distancia,
   en varints), después un relleno de ceros para que cada literal quede en su
@@ -103,8 +113,39 @@ Windows x64/x86). El objeto no usa la libc.
 | 96 MiB | 512 | ~150 MB | ~135 MB |
 | 512 MiB | 512 | ~590 MB | ~530 MB |
 
-El encoder es ring + tabla (`32 * 2^tbits`, con `2^tbits` ≈ `W / (4s)`); el
-decoder, ring más las columnas de un bloque.
+El encoder es ring + tabla (`32 * NBuck`, con `NBuck` ≈ `W / (4s)`
+redondeado a 64; hasta 0.0.8, a la potencia de 2 de arriba); el decoder,
+ring más las columnas de un bloque.
+
+## 0.0.9: un hilo más rápido y nada que perder contra REP (2026-11-20)
+
+Lo que quedaba de 0.0.8 en la matriz de PArc (12 entradas, `-m1`…`-m9`,
+1 y 4 hilos): 36 casos más grandes que REP (todos < 0,1 %, la mayoría en
+`-m1`/`-m2`), TILIN.tar `-m1` con 4 hilos +8 % de tiempo (OREP corre en
+línea cuando el presupuesto está lleno) y más memoria.
+
+- **Velocidad en un hilo, mismos bytes:**
+  - la pasada 1 de las anclas arma una máscara de 64 posiciones con
+    `cmp`/`adc` (asm en x86_64, solo con anclas ralas: con `-l16` era más
+    lenta) y saca sus bits en orden;
+  - la sonda tiene un camino rápido (ninguna entrada con el tag);
+  - la sonda lista las anclas con candidato y la elección recorre solo esas.
+
+  tilin_512m, `-w96m`, mejor de 5 intercalado, CPU: `-l256 -c1` 1,17 →
+  0,94 s, `-l256` 1,30 → 1,08 s, `-l512` 1,02 → 0,81 s, `-l64` 2,67 →
+  2,47 s.
+- **Tamaño:** el período en las anclas forzadas (arriba), `-r` para tor, y
+  `-c2` en vez de `-c1` en el `-m1` de PArc (con lo anterior cuesta casi
+  lo mismo). En la matriz de PArc (sin TILIN.tar): 13 casos de 198 más
+  grandes que REP, todos < 0,05 %; el total de cada nivel le gana a REP
+  (−0,02 a −0,19 %) y a 0.0.8 (−0,00 a −0,02 %).
+- **Memoria:** tabla de tamaño exacto y sin el slot de más en línea:
+  tilin_512m `-w96m -l256`, 145 → 133 MB.
+
+Dentro de PArc (presets `orep:96m:l256:c2:r512` en `-m1` y
+`orep:96m:l256:r512` en `-m2`), TILIN.tar `-m1` con 4 hilos: REP 5,71 s,
+OREP 0.0.8 6,05 s, 0.0.9 5,71 s, con menos CPU (20,7 s contra 21,9 s de
+REP) y menos bytes.
 
 ## Números de 0.0.3 (2026-11-18)
 
@@ -171,7 +212,7 @@ cortos sobran, porque lzma ya los encuentra. Contra `-mrep:512m`:
 
 | preset de PArc | lzma | OREP |
 |---|---|---|
-| -m1, -m2 (`rep:96m:256:c256`, rápidos) | tor / LZ propio | `-w96m -l256 -c1` (a la par de REP en tiempo) o `-l128 -c1` (gana en todo, 1,6× el tiempo) |
+| -m1, -m2 (`rep:96m:256:c256`, rápidos) | tor / LZ propio | 0.0.9: `-w96m -l256 -c2 -r512` (-m1) y `-w96m -l256 -r512` (-m2) |
 | -m3 .. -m5 (y `4x4:lzma:24mb`) | normal, dict 16–96 MB | 0.0.3: `-w96m -l64` (defaults), o `-l32` si sobra tiempo; grupo de texto `-l32` |
 | -m6 .. -m9 | `max`, dict menor que la ventana | 0.0.4: `-w<ventana> -l512 -a4 -s8` |
 
@@ -280,9 +321,10 @@ Recomendación para PArc: `Threads = 4`, `OnWorkerTryBusy`, los dos hooks
 del que llama y `SpinUs = 200`. Los bytes son los mismos en todos los casos
 (y los mismos que 0.0.5).
 
-El ring del encoder tiene un slot más que el del decoder, para que el hilo
-del que llama pueda llenar el siguiente mientras la búsqueda lee el más
-viejo. Los workers esperan girando, después con yield y recién después
+Con hilos, el ring del encoder tiene un slot más que el del decoder, para
+que el hilo del que llama pueda llenar el siguiente mientras la búsqueda
+lee el más viejo (en línea la búsqueda termina antes; desde 0.0.9 ese
+slot solo se reserva con `Threads >= 2`). Los workers esperan girando, después con yield y recién después
 duermen (despertar un hilo cuesta ~0,5 ms en esta máquina).
 
 Tiempos de pared (Xeon E5 v4 con carga de otros agentes, mejor de 3,

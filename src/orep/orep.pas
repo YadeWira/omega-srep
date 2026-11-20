@@ -70,7 +70,7 @@ const
   OREP_FLUSH = 1;      { end the current block now (the stream goes on) }
   OREP_FINISH = 2;     { no more input: write the end of the stream }
 
-  OREP_VERSION_STR = '0.0.8';
+  OREP_VERSION_STR = '0.0.9';
   OREP_FORMAT = 3;
 
   OREP_MIN_MATCH = 16;               { format minimum match length }
@@ -106,6 +106,11 @@ type
     Cands: LongWord;    { candidates tried per anchor, 1..4 (default 4):
                           more finds longer matches and is slower; 1
                           keeps one table entry per gram }
+    RunKeep: LongWord;  { a match that only covers a run of one byte and
+                          is shorter than this is left to the backend
+                          (default 0 = none).  Helps a backend that codes
+                          runs almost free (tor, lz4) at MinLen 256; with
+                          lzma behind it does not. }
     Threads: LongWord;  { threads for the encoder, 0 or 1 = the caller's
                           only; OREP creates the others and goes on with
                           fewer if it cannot.  The output is the same with
@@ -140,9 +145,13 @@ type
     MinDist: QWord;
     Slots: PPByte;       { RingSize shr CShift slots, each its own GetMem }
     Table: PQWord;
-    MinLen, Gram, SMask, MaxGap, TBits, Align, MinKeep, SShift: LongWord;
+    MinLen, Gram, SMask, MaxGap, PLim, Align, MinKeep, SShift: LongWord;
     Cands, Score: LongWord;
-    CShift, Pad: LongWord;
+    CShift, NBuck: LongWord;  { NBuck: buckets of 4 entries; anchor bucket = (hash shr 32) * NBuck shr 32 }
+    RunKeep, Pad: LongWord;   { PLim: longest period tried at a forced anchor
+                                (0 = none); RunKeep: a match over a run of
+                                one byte shorter than this is left to the
+                                backend (0 = none) }
   end;
 
   TOrepEnc = record
@@ -280,13 +289,13 @@ implementation
 {$L orep_core.o}
 function orep_anchors(c: POrepCfg; p: PByte; s0, s1: LongWord;
   apos, aidx, atag: PLongWord): LongWord; cdecl; external name 'orep_anchors';
-procedure orep_probe(c: POrepCfg; cabs: QWord; apos, aidx, atag,
-  list: PLongWord; nl: LongWord; cand4: PLongWord); cdecl;
+function orep_probe(c: POrepCfg; cabs: QWord; apos, aidx,
+  atag: PLongWord; nl: LongWord; cand4: PLongWord): LongWord; cdecl;
   external name 'orep_probe';
 function orep_vselect(c: POrepCfg; cabs, cphys: QWord; clen: LongWord;
-  apos, cand4: PLongWord; n, cap: LongWord; var litstart, nm: LongWord;
-  lit, len: PLongWord; dist: PQWord; mcap: LongWord): LongInt; cdecl;
-  external name 'orep_vselect';
+  apos, cand4, clist: PLongWord; nc, cap: LongWord; var litstart,
+  nm: LongWord; lit, len: PLongWord; dist: PQWord; mcap: LongWord): LongInt;
+  cdecl; external name 'orep_vselect';
 function orep_cont(c: POrepCfg; cabs, cphys: QWord; clen: LongWord;
   prev_dist: QWord): LongWord; cdecl; external name 'orep_cont';
 function orep_crc32c(t: PLongWord; crc: LongWord; p: PByte;
@@ -296,6 +305,7 @@ function orep_crc32c(t: PLongWord; crc: LongWord; p: PByte;
 const
   OREP_B = QWord($9E3779B97F4A7C15);
   OREP_SUB = 65536;
+  OREP_PLIM = 16;      { longest period a forced anchor tries }
   OREP_PF = 16;
   OREP_CRC_L = 2048;   { the same in orep_core.c }
   HDR_MAX = 6 + 5 + 2 + 3 + 4;   { the longest stream header }
@@ -396,6 +406,7 @@ begin
   P.MinDist := 0;
   P.Threads := 1;
   P.Cands := 4;
+  P.RunKeep := 0;
   P.OnWorkerBusy := nil;
   P.OnWorkerIdle := nil;
   P.HookCtx := nil;
@@ -413,7 +424,7 @@ begin
     (P.Chunk and (P.Chunk - 1) = 0) and
     (P.Align <= 4096) and (P.Align <= P.MinLen) and
     (P.Density >= 1) and (P.Density <= 64) and (P.Threads <= 256) and
-    (P.Cands >= 1) and (P.Cands <= 4);
+    (P.Cands >= 1) and (P.Cands <= 4) and (P.RunKeep <= 65536);
 end;
 
 { the window the stream actually uses: a known small input gets a smaller
@@ -494,6 +505,22 @@ begin
   if P.Align > MinKeep then MinKeep := P.Align;
 end;
 
+{ buckets of the anchor table: one per 4 expected anchors of the window,
+  rounded up to 64 (not to a power of two: a bucket is picked by a
+  multiply), from 1024 to 2^30 }
+function NBuckFor(const P: TOrepParams; W: QWord): LongWord;
+var
+  G, SM, MG, TB, MK, SS: LongWord;
+  Ent: QWord;
+begin
+  Derive(P, W, G, SM, MG, TB, MK, SS);
+  Ent := W div (SM + 1) div 4;
+  Ent := (Ent + 63) and not QWord(63);
+  if Ent < 1024 then Ent := 1024;
+  if Ent > (QWord(1) shl 30) then Ent := QWord(1) shl 30;
+  Result := Ent;
+end;
+
 { segments in flight for a number of threads }
 function SlotsFor(Threads: LongWord): LongWord;
 begin
@@ -511,7 +538,7 @@ begin
   W := EffWindow(P);
   Derive(P, W, G, SM, MG, TB, MK, SS);
   Cap := P.Chunk div MK + 2;
-  Result := RingFor(W, P.Chunk) + P.Chunk + (QWord(32) shl TB) + 64 +
+  Result := RingFor(W, P.Chunk) + P.Chunk + QWord(32) * NBuckFor(P, W) + 64 +
     QWord(SlotsFor(P.Threads)) * OREP_SUB * 28 +
     QWord(Cap) * 32 + QWord(Cap) * 15 + 4160 + SizeOf(TOrepEnc);
 end;
@@ -617,13 +644,12 @@ end;
 function orep_anchors(c: POrepCfg; p: PByte; s0, s1: LongWord;
   apos, aidx, atag: PLongWord): LongWord;
 var
-  G, Last, Pos, I, TShift: LongWord;
+  G, Last, Pos, I: LongWord;
   H, M: QWord;
 begin
   Result := 0;
   if s1 <= s0 then Exit;
   G := c^.Gram;
-  TShift := 64 - c^.TBits;
   H := 0;
   Last := s0;
   for I := 0 to G - 2 do H := (H shl 1) + c^.T[p[s0 + I]];
@@ -635,7 +661,7 @@ begin
     begin
       M := GramHash(p + Pos, G);
       apos[Result] := Pos;
-      aidx[Result] := LongWord(M shr TShift);
+      aidx[Result] := LongWord(((M shr 32) * QWord(c^.NBuck)) shr 32);
       atag[Result] := LongWord(M);
       Inc(Result);
       Last := Pos;
@@ -643,8 +669,9 @@ begin
   end;
 end;
 
-procedure orep_probe(c: POrepCfg; cabs: QWord; apos, aidx, atag,
-  list: PLongWord; nl: LongWord; cand4: PLongWord);
+{ the table step of anchors 0..nl-1: candidates into cand4, then insert }
+procedure ProbeRef(c: POrepCfg; cabs: QWord; apos, aidx, atag: PLongWord;
+  nl: LongWord; cand4: PLongWord);
 var
   I, J, A, Cur32, K, W: LongWord;
   O: PLongWord;
@@ -653,7 +680,7 @@ var
 begin
   for I := 1 to nl do
   begin
-    if list <> nil then J := list[I - 1] else J := I - 1;
+    J := I - 1;
     BQ := c^.Table + 4 * aidx[J];
     A := apos[J];
     Cur32 := LongWord(cabs + A);
@@ -691,8 +718,34 @@ begin
   end;
 end;
 
+{ the table step, then the list (into aidx) of the anchors orep_vselect
+  looks at: those with a candidate and, with PLim, the forced ones (MaxGap
+  after the anchor before, or after the segment start), flagged
+  OREP_FORCED }
+function orep_probe(c: POrepCfg; cabs: QWord; apos, aidx,
+  atag: PLongWord; nl: LongWord; cand4: PLongWord): LongWord;
+var
+  I, Prev: LongWord;
+  Fo: Boolean;
+begin
+  ProbeRef(c, cabs, apos, aidx, atag, nl, cand4);
+  Result := 0;
+  Prev := 0;
+  if nl > 0 then Prev := apos[0] and not LongWord(OREP_SUB - 1);
+  for I := 1 to nl do
+  begin
+    Fo := (c^.PLim <> 0) and (apos[I - 1] - Prev = c^.MaxGap);
+    Prev := apos[I - 1];
+    if Fo or (cand4[4 * (I - 1)] <> 0) then
+    begin
+      aidx[Result] := (I - 1) or (LongWord(Ord(Fo)) shl 31);
+      Inc(Result);
+    end;
+  end;
+end;
+
 procedure orep_verify(c: POrepCfg; cabs, cphys: QWord; clen: LongWord;
-  apos, cand4: PLongWord; n, cap: LongWord; cand, fl, bl: PLongWord);
+  apos, cand4: PLongWord; n, nc, cap: LongWord; cand, fl, bl: PLongWord);
 var
   J, K, A, Best, BF, F, MF, MB, SC: LongWord;
   C4: PLongWord;
@@ -708,7 +761,7 @@ begin
     Best := 0;
     BF := 0;
     K := 0;
-    while (K < c^.Cands) and (C4[K] <> 0) do
+    while (K < nc) and (C4[K] <> 0) do
     begin
       MF := clen - A;
       if MF > SC then MF := SC;
@@ -717,6 +770,7 @@ begin
       begin
         Best := C4[K];
         BF := F;
+        if BF >= SC then Break;   { the later ones can only tie }
       end;
       Inc(K);
     end;
@@ -738,7 +792,7 @@ function orep_select(c: POrepCfg; cabs, cphys: QWord; clen: LongWord;
   apos, cand, fl, bl: PLongWord; n, cap: LongWord; var litstart, nm: LongWord;
   lit, len: PLongWord; dist: PQWord; mcap: LongWord): LongInt;
 var
-  J, A, D, F, B, Lim, Tot, Ls, K: LongWord;
+  J, A, D, F, B, Lim, Tot, Ls, K, I: LongWord;
   Dp, S: QWord;
   BC: Boolean;
 begin
@@ -772,6 +826,14 @@ begin
       Tot := Tot - Tot mod c^.Align;
       if Tot < c^.MinLen then Continue;
     end;
+    if Tot < c^.RunKeep then
+    begin
+      { a short run of one byte costs the backend less than a match }
+      I := 1;
+      while (I < Tot) and (RB(c^, cphys + A - B + I) = RB(c^, cphys + A - B)) do
+        Inc(I);
+      if I = Tot then Continue;
+    end;
     if K >= mcap then Exit(-1);
     lit[K] := A - B - Ls;
     len[K] := Tot;
@@ -784,19 +846,61 @@ begin
   Result := 0;
 end;
 
-{ verify and select in one pass: anchors inside a match already chosen
-  are not verified (orep_select would skip them) }
-function orep_vselect(c: POrepCfg; cabs, cphys: QWord; clen: LongWord;
-  apos, cand4: PLongWord; n, cap: LongWord; var litstart, nm: LongWord;
-  lit, len: PLongWord; dist: PQWord; mcap: LongWord): LongInt;
+{ the shortest period P (max(1, MinDist) <= P <= Lim) of the data at
+  block offset A: the gram at A equals the gram P bytes before it; 0 if
+  none }
+function Period(c: POrepCfg; cphys: QWord; A, Lim: LongWord): LongWord;
 var
-  J, Cd, F, B: LongWord;
+  P, I: LongWord;
+  Dp: QWord;
 begin
-  for J := 0 to LongInt(n) - 1 do
+  Result := 0;
+  if Lim > A then Lim := A;
+  if c^.MinDist > Lim then Exit;
+  P := 1;
+  if c^.MinDist > 1 then P := LongWord(c^.MinDist);
+  Dp := cphys + A;
+  while P <= Lim do
   begin
-    if (apos[J] < litstart) or (cand4[4 * J] = 0) then Continue;
-    orep_verify(c, cabs, cphys, clen, apos + J, cand4 + 4 * J, 1, cap, @Cd,
-      @F, @B);
+    I := 0;
+    while (I < c^.Gram) and (RB(c^, Dp - P + I) = RB(c^, Dp + I)) do Inc(I);
+    if I = c^.Gram then Exit(P);
+    Inc(P);
+  end;
+end;
+
+{ verify and select in one pass over the listed anchors: those inside a
+  match already chosen are not verified (orep_select would skip them); a
+  forced one tries the period of its gram first }
+function orep_vselect(c: POrepCfg; cabs, cphys: QWord; clen: LongWord;
+  apos, cand4, clist: PLongWord; nc, cap: LongWord; var litstart,
+  nm: LongWord; lit, len: PLongWord; dist: PQWord; mcap: LongWord): LongInt;
+var
+  I, J, K, Cd, F, B, P, PLim: LongWord;
+  C5: array[0..4] of LongWord;
+begin
+  PLim := c^.PLim;
+  if PLim >= c^.MaxGap then PLim := c^.MaxGap - 1;
+  for I := 1 to nc do
+  begin
+    J := clist[I - 1] and $7FFFFFFF;
+    if apos[J] < litstart then Continue;
+    P := 0;
+    if clist[I - 1] and $80000000 <> 0 then
+      P := Period(c, cphys, apos[J], PLim);
+    if P <> 0 then
+    begin
+      C5[0] := P;
+      for K := 0 to 3 do C5[K + 1] := cand4[4 * J + K];
+      orep_verify(c, cabs, cphys, clen, apos + J, @C5[0], 1, c^.Cands + 1,
+        cap, @Cd, @F, @B);
+    end
+    else
+    begin
+      if cand4[4 * J] = 0 then Continue;
+      orep_verify(c, cabs, cphys, clen, apos + J, cand4 + 4 * J, 1,
+        c^.Cands, cap, @Cd, @F, @B);
+    end;
     if orep_select(c, cabs, cphys, clen, apos + J, @Cd, @F, @B, 1, cap,
       litstart, nm, lit, len, dist, mcap) < 0 then Exit(-1);
   end;
@@ -1291,15 +1395,17 @@ begin
             E^.APos + O, E^.AIdx + O, E^.ATag + O);
         end;
       TASK_PROBE:
+        { the count becomes that of the anchors with a candidate, listed
+          in AIdx }
         if E^.SegCnt[Sl] > 0 then
-          orep_probe(@E^.Cfg, E^.BCAbs, E^.APos + O, E^.AIdx + O,
-            E^.ATag + O, nil, E^.SegCnt[Sl], E^.Cand4 + 4 * O);
+          E^.SegCnt[Sl] := orep_probe(@E^.Cfg, E^.BCAbs, E^.APos + O,
+            E^.AIdx + O, E^.ATag + O, E^.SegCnt[Sl], E^.Cand4 + 4 * O);
       TASK_SELECT:
         begin
           LS := E^.SLitStart;
           NM := E^.SNMc;
           R := orep_vselect(@E^.Cfg, E^.BCAbs, E^.BPhysQ, E^.BLen,
-            E^.APos + O, E^.Cand4 + 4 * O, E^.SegCnt[Sl],
+            E^.APos + O, E^.Cand4 + 4 * O, E^.AIdx + O, E^.SegCnt[Sl],
             E^.VCap, LS, NM, E^.SLit, E^.SLen, E^.SDist, E^.Cap);
           E^.SLitStart := LS;
           E^.SNMc := NM;
@@ -1354,10 +1460,10 @@ begin
           E.BPhysQ), S0, S1, E.APos, E.AIdx, E.ATag);
         if N > 0 then
         begin
-          orep_probe(@E.Cfg, E.BCAbs, E.APos, E.AIdx, E.ATag, nil, N,
+          N := orep_probe(@E.Cfg, E.BCAbs, E.APos, E.AIdx, E.ATag, N,
             E.Cand4);
           if orep_vselect(@E.Cfg, E.BCAbs, E.BPhysQ, E.BLen, E.APos,
-            E.Cand4, N, E.VCap, E.SLitStart, E.SNMc, E.SLit, E.SLen,
+            E.Cand4, E.AIdx, N, E.VCap, E.SLitStart, E.SNMc, E.SLit, E.SLen,
             E.SDist, E.Cap) < 0 then E.SFail := True;
         end;
         Inc(K);
@@ -1525,7 +1631,7 @@ end;
 function OrepEncInit(out E: TOrepEnc; const P: TOrepParams): Integer;
 var
   W: QWord;
-  I: LongWord;
+  I, TB: LongWord;
 begin
   FillChar(E, SizeOf(E), 0);
   if not CheckParams(P) then Exit(OREP_E_PARAM);
@@ -1537,17 +1643,23 @@ begin
   E.Cfg.Score := 256;
   E.AutoAlign := P.Align = 0;
   if E.AutoAlign then E.Cfg.Align := 4 else E.Cfg.Align := P.Align;
-  Derive(P, W, E.Cfg.Gram, E.Cfg.SMask, E.Cfg.MaxGap, E.Cfg.TBits,
+  Derive(P, W, E.Cfg.Gram, E.Cfg.SMask, E.Cfg.MaxGap, TB,
     E.Cfg.MinKeep, E.Cfg.SShift);
+  E.Cfg.PLim := OREP_PLIM;
+  E.Cfg.RunKeep := P.RunKeep;
   InitTables(E.Cfg);
   E.Chunk := P.Chunk;
-  { one slot more than a decoder needs: the caller's thread fills the next
-    slot while the search of this one may still read the oldest }
-  E.Cfg.RingSize := RingFor(W, P.Chunk) + P.Chunk;
+  { with threads, one slot more than a decoder needs: the caller's thread
+    fills the next slot while the search of this one may still read the
+    oldest (inline, the search ends first; OrepEncMemory counts the slot
+    anyway, since a caller may estimate with one thread) }
+  E.Cfg.RingSize := RingFor(W, P.Chunk);
+  if P.Threads >= 2 then Inc(E.Cfg.RingSize, P.Chunk);
   E.Cap := P.Chunk div E.Cfg.MinKeep + 2;
   E.StageCap := E.Cap * 15 + 64 + 4096;
   try
-    E.TableRaw := AllocMem((SizeUInt(32) shl E.Cfg.TBits) + 64);
+    E.Cfg.NBuck := NBuckFor(P, W);
+    E.TableRaw := AllocMem(SizeUInt(32) * E.Cfg.NBuck + 64);
     E.Cfg.Table := PQWord((PtrUInt(E.TableRaw) + 63) and not PtrUInt(63));
     E.NSlot := SlotsFor(P.Threads);
     E.APos := GetMem(E.NSlot * OREP_SUB * 4);
@@ -1607,7 +1719,7 @@ begin
   if E.InFlight and E.ViaCoord then CoordWait(E);
   E.InFlight := False;
   { a fresh stream: the same bytes as a new state would write }
-  FillChar(E.Cfg.Table^, SizeUInt(32) shl E.Cfg.TBits, 0);
+  FillChar(E.Cfg.Table^, SizeUInt(32) * E.Cfg.NBuck, 0);
   E.SlotAbs := 0; E.SlotPhys := 0; E.Fill := 0; E.BlockStart := 0;
   E.PrevDist := 0; E.NMatch := 0; E.BlkLen := 0; E.Total := 0;
   E.LitRun := 0; E.LitOff := 0; E.LitBase := 0;

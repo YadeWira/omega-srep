@@ -68,7 +68,7 @@ long-range dedup that runs in front of a backend compressor. It was written
 for PArc as a clean-room MIT replacement for FreeArc's REP, with its own
 stream format (`spec/orep-format.md`, version 3, still a draft).
 
-- **Status: orep-v0.0.8 (pre-release, 2026-11-19).** PArc uses it as its
+- **Status: orep-v0.0.9 (pre-release, 2026-11-20).** PArc uses it as its
   long-range stage (on a branch, before merging).
 - **API:** a zlib-style Pascal unit (`OrepEnc*`/`OrepDec*`, in/out buffers,
   no callbacks) plus memory-to-memory calls; the decoder can hand out its
@@ -78,14 +78,15 @@ stream format (`spec/orep-format.md`, version 3, still a draft).
   threads, with hooks so a host can lend and take back threads from its own
   budget. The stream is the same with any thread count and on every
   platform.
-- **Against REP inside PArc** (PArc's measurements with 0.0.8: 12 inputs,
-  `-m1`…`-m9`, 1 and 4 threads): the output is smaller at every level except
-  `-m1` with one thread (+0.003 %), total compression time is within −4 % to
-  +2 %, and the decoder stage alone ties REP.
+- **Against REP inside PArc** (0.0.9, 11 inputs, `-m1`…`-m9`, 1 and 4
+  threads): the total of every level is smaller than REP's (−0.02 to
+  −0.19 %) and only 13 of 198 cases are larger, all by under 0.05 %.
+  Compression time ties or wins, including TILIN.tar `-m1` with 4 threads
+  (5.71 s, like REP, with less CPU); the decoder stage alone ties REP.
 - **Platforms:** Linux x86_64, x86 and ARM64; Windows x64 and x86 (tested on
   Windows 10); macOS ARM64.
 - **Docs:** `docs/orep.md` (design, in Spanish), the release notes
-  `docs/release-orep-0.0.1.md` … `docs/release-orep-0.0.8.md`, and the wiki
+  `docs/release-orep-0.0.1.md` … `docs/release-orep-0.0.9.md`, and the wiki
   page *OREP*.
 
 ## OSREP priority
