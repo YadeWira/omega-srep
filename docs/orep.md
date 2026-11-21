@@ -1,7 +1,9 @@
 # OREP: dedup de largo alcance en streaming (reemplazo de REP)
 
 **Estado: 0.0.10, pre-release (2026-11-20).** Formato `spec/orep-format.md`,
-versión 4, candidato a congelarse (puede cambiar hasta que Wira lo congele).
+versión 4, **congelado el 2026-11-21**: no cambia más, y todo decoder
+posterior lee los streams de la versión 4 sin flags. Los fija
+`tests/fixtures/orep4/`.
 
 OREP es un preprocesador de una pasada, en streaming, que va delante de un
 compresor (lzma, zstd...). Saca las repeticiones largas dentro de una
@@ -116,6 +118,26 @@ Windows x64/x86). El objeto no usa la libc.
 El encoder es ring + tabla (`32 * NBuck`, con `NBuck` ≈ `W / (4s)`
 redondeado a 64; hasta 0.0.8, a la potencia de 2 de arriba); el decoder,
 ring más las columnas de un bloque.
+
+## Formato 4 congelado (2026-11-21)
+
+Wira congeló el formato 4 después de que PArc integró 0.0.10 (los archivos
+de OREP en PArc son idénticos a los del release) y lo midió contra REP en
+su matriz completa. Antes se hizo una prueba cruzada con el build de PArc:
+42 archivos `.parc` con solo el método `orep` (3 entradas: 10 KB, 10 MB y
+128 MB de TILIN; 7 juegos de parámetros, entre ellos los presets `-m1`…`-mxx`
+y `l32:s8:b64kb:d1mb`; 1 y 4 hilos). De cada uno se sacó el stream OREP:
+- los 42 se decodifican bien con el build nativo, con la referencia y con
+  el oráculo de `tests/orep_spec.py` (que solo sigue la especificación);
+- los 42 son idénticos byte a byte a los del CLI con las mismas opciones (6
+  solo cuando la entrada llega por stdin: el CLI recorta la ventana al
+  tamaño del archivo y PArc no), así que PArc también lee los del CLI.
+
+`tests/fixtures/orep4/` guarda 11 streams de 0.0.10 (vacío, runs y copias
+solapadas, varios chunks, ventana del tamaño del chunk, alineación 1 y 4,
+`-r`, y uno hecho a mano con todos los varints más largos de lo necesario).
+`tests/orep.sh` los decodifica con los dos builds y con el oráculo; su
+sha256 no puede cambiar.
 
 ## 0.0.10: pruebas antes de congelar el formato (2026-11-20)
 

@@ -1,8 +1,9 @@
 #!/bin/bash
 # OREP: round trips, native == reference (same bytes), small windows that
 # wrap the ring, stdin/stdout, corrupt or truncated streams rejected without
-# crashing, streaming/API edge cases (orep_edge.sh) and structure-aware
-# fuzzing against the spec oracle (orep_fuzz.sh).
+# crashing, the pinned format 4 streams (tests/fixtures/orep4), streaming
+# and API edge cases (orep_edge.sh) and structure-aware fuzzing against the
+# spec oracle (orep_fuzz.sh).
 #
 #   tests/orep.sh [build dir]      (default: builds into $TMPDIR/orep-test)
 set -u
@@ -158,6 +159,30 @@ for f in "$W"/bad*.orp; do
 done
 [ $crash -eq 0 ] || bad "$crash corrupt streams crashed the decoder"
 [ $accepted -eq 0 ] || bad "$accepted corrupt streams decoded to wrong data"
+
+echo "== pinned format 4 streams (frozen format, tests/fixtures/orep4)"
+FX=$ROOT/tests/fixtures/orep4
+sha() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1"; else shasum -a 256 "$1"; fi | cut -d' ' -f1; }
+nfx=0
+while IFS=$'\t' read -r ssha id input osha args; do
+  [ -n "$id" ] || continue
+  f=$FX/$id.orp
+  [ -f "$f" ] || { bad "missing fixture $id"; continue; }
+  [ "$(sha "$f")" = "$ssha" ] || bad "fixture $id changed"
+  for d in "$NAT" "$REF"; do
+    "$d" -q -d "$f" "$W/fx.out" || { bad "decode fixture $id ($d)"; continue; }
+    [ "$(sha "$W/fx.out")" = "$osha" ] || bad "fixture $id decodes wrong ($d)"
+    "$d" -q -d - - < "$f" > "$W/fx.out" || bad "stdin decode fixture $id ($d)"
+    [ "$(sha "$W/fx.out")" = "$osha" ] || bad "fixture $id decodes wrong from stdin ($d)"
+  done
+  if command -v python3 >/dev/null 2>&1; then
+    o=$(python3 "$ROOT/tests/orep_spec.py" decode "$f" | cut -d' ' -f3)
+    [ "$o" = "$osha" ] || bad "oracle on fixture $id"
+  fi
+  nfx=$((nfx + 1))
+done < "$FX/manifest.tsv"
+[ $nfx -ge 11 ] || bad "only $nfx pinned fixtures"
+echo "  $nfx streams"
 
 echo "== streaming and API edge cases (tests/orep_edge.sh)"
 bash "$ROOT/tests/orep_edge.sh" "$B" >"$W/edge.log" 2>&1 ||

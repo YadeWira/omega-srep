@@ -1,13 +1,16 @@
 # OREP stream format, version 4
 
-**Status: draft (OREP 0.0.x). It can change until it is frozen in a
-release; a frozen version is never changed again, a new one gets a new
-version number.** Version 1 (OREP 0.0.1-0.0.2) had one alignment for the
-whole stream in the header; version 2 (0.0.3) has one per block; version 3
-(0.0.4) packs the stream header and the end with varints (the chunk is a
-power of two, stored as its log2); version 4 (0.0.10) adds a flags varint
-to the header, so that a later feature can be marked without a new
-version.
+**Status: frozen (2026-11-21).** Version 4 is the stream format of OREP
+0.0.10 and is frozen: it is never changed again, and every later decoder
+reads a version 4 stream with no flags set. A change that an older decoder
+must not ignore sets a flag (see the flags varint) or takes a new version
+number. The streams in `tests/fixtures/orep4/` pin it. Earlier versions
+were drafts and are not read: version 1 (OREP 0.0.1-0.0.2) had one
+alignment for the whole stream in the header; version 2 (0.0.3) has one
+per block; version 3 (0.0.4) packs the stream header and the end with
+varints (the chunk is a power of two, stored as its log2); version 4
+(0.0.10) adds a flags varint to the header, so that a later feature can be
+marked without a new version.
 
 OREP is a one-pass streaming long-range dedup, written for PArc as a
 replacement of REP (clean-room, MIT; it does not read or write REP's
