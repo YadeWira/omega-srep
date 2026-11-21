@@ -430,6 +430,20 @@ Aparte, porque llevan más tiempo o herramientas:
 - `tests/orep_big.sh` (con `tests/orep_bigsrc.c`): streams de 5 y 9 GiB,
   con repeticiones que cruzan 2^31, 2^32 y 2^33, ventanas de 1 y 2 GB, en
   x86_64 y en i386 (mismos bytes).
+- `tests/orep_afl.sh` (con `tests/orep_afl.lpr`): fuzzing guiado por
+  cobertura con AFL++ en frida_mode (cobertura sobre el binario, porque FPC
+  no se puede instrumentar). El harness decodifica de una vez y en
+  streaming con trozos raros (mismo veredicto y mismos bytes), usa
+  Peek/Skip, Reset y reuso, y hace idas y vueltas con parámetros sacados de
+  la entrada (ventanas chicas, flush en cualquier punto). Cualquier
+  diferencia, error de runtime o excepción es un crash. Después repasa
+  cada caso de la cola con valgrind y un build con `cmem` y chequeos de
+  rango. Primera campaña (2026-11-21, 0.0.10, formato 4 congelado): 8
+  instancias durante 2 horas, 14,5 millones de ejecuciones, 5.072 casos
+  distintos en la cola, **0 crashes, 0 cuelgues, 0 errores de valgrind**.
+  La cobertura dejó de crecer en la segunda hora. En el decoder quedaron
+  sin ejecutar solo las ramas de fallo de memoria; del encoder, los hilos
+  (el harness usa uno) y `OrepEncReset`, que cubre `orep_edge.sh`.
 - `tests/orep_be.sh`: powerpc64 big-endian con qemu-user (los dos builds;
   mismos bytes que x86_64 y decodificación cruzada). El compilador cruzado
   se armó sin root; la receta está al final del script.
