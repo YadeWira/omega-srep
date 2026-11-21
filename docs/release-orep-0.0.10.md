@@ -1,5 +1,12 @@
 # OREP 0.0.10 — stream format 4, tested before the freeze (pre-release)
 
+> **Update 2026-11-21: stream format 4 is frozen.** It will not change again,
+> and every later OREP decoder reads version 4 streams with no flags set.
+> Before the freeze, PArc's build (with this release vendored unchanged)
+> was cross-tested: 42 orep-only archives whose streams decode with both
+> builds and the spec oracle and are byte-identical to the CLI's. Eleven
+> pinned streams are in `tests/fixtures/orep4/` (commit 4d4ee0e).
+
 **2026-11-20.** Before freezing the stream format, OREP was tested where it
 had never been tested, and the open points of the specification were
 closed. **The stream format is now version 4**; 0.0.10 does not read
