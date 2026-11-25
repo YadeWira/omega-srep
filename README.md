@@ -68,7 +68,7 @@ long-range dedup that runs in front of a backend compressor. It was written
 for PArc as a clean-room MIT replacement for FreeArc's REP, with its own
 stream format (`spec/orep-format.md`, version 4, frozen on 2026-11-21).
 
-- **Status: orep-v0.0.10 (pre-release, 2026-11-20).** PArc uses it as its
+- **Status: orep-v0.0.11 (pre-release, 2026-11-25).** PArc uses it as its
   long-range stage. The stream format 4 is frozen and pinned by
   `tests/fixtures/orep4/`.
 - **API:** a zlib-style Pascal unit (`OrepEnc*`/`OrepDec*`, in/out buffers,

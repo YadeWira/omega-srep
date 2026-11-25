@@ -1,6 +1,6 @@
 # OREP: dedup de largo alcance en streaming (reemplazo de REP)
 
-**Estado: 0.0.10, pre-release (2026-11-20).** Formato `spec/orep-format.md`,
+**Estado: 0.0.11, pre-release (2026-11-25).** Formato `spec/orep-format.md`,
 versión 4, **congelado el 2026-11-21**: no cambia más, y todo decoder
 posterior lee los streams de la versión 4 sin flags. Los fija
 `tests/fixtures/orep4/`.
@@ -138,6 +138,20 @@ solapadas, varios chunks, ventana del tamaño del chunk, alineación 1 y 4,
 `-r`, y uno hecho a mano con todos los varints más largos de lo necesario).
 `tests/orep.sh` los decodifica con los dos builds y con el oráculo; su
 sha256 no puede cambiar.
+
+## 0.0.11: CLI sin stderr (issue #2, 2026-11-25)
+
+Solo cambia el CLI (`src/orep/orep_cli.lpr`); la unidad, el core en C y el
+formato son los de 0.0.10. Con los métodos `<stdin> <stdout>` de FreeArc
+(`unpackcmd = orep -d - - <stdin> <stdout>`), FreeArc 0.67 arranca el
+programa en Windows con `INVALID_HANDLE_VALUE` como stderr. El CLI escribía
+el resumen con `WriteLn(StdErr)` con `{$I+}`: el encode o decode salía
+bien, pero terminaba con un runtime error y código distinto de 0, y FreeArc
+decía "general (de)compression error". Con `-q` no pasaba. Ahora el CLI
+compila con `{$I-}` (los errores de los datos siguen siendo excepciones).
+En Linux no se reproduce (un stderr cerrado no hace fallar al RTL), así que
+se verificó a mano con FreeArc 0.67.1 en la VM win10: comprimir y probar por
+stdio y por archivos, `All OK`.
 
 ## 0.0.10: pruebas antes de congelar el formato (2026-11-20)
 

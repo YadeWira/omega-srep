@@ -70,7 +70,7 @@ const
   OREP_FLUSH = 1;      { end the current block now (the stream goes on) }
   OREP_FINISH = 2;     { no more input: write the end of the stream }
 
-  OREP_VERSION_STR = '0.0.10';
+  OREP_VERSION_STR = '0.0.11';
   OREP_FORMAT = 4;
 
   OREP_MIN_MATCH = 16;               { format minimum match length }
