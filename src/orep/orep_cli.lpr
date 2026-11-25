@@ -7,6 +7,12 @@
 program orep_cli;
 
 {$mode objfpc}{$H+}
+{ No I/O checks on Text files: the messages go to stderr, and a caller may
+  start orep without one (FreeArc's "<stdin> <stdout>" external compressors
+  pass INVALID_HANDLE_VALUE as stderr on Windows).  With checks on, the first
+  WriteLn(StdErr) ended the run with a runtime error after a good encode or
+  decode (issue #2).  The data streams raise exceptions either way. }
+{$I-}
 
 uses {$IFDEF UNIX}cthreads,{$ENDIF} SysUtils, Classes, orep;
 
