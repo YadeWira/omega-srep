@@ -21,6 +21,16 @@ surface, not the wording.
 Input `-` is stdin; output `-` is stdout. A missing output derives from the
 input name (`x` -> `x.osr`, `x.osr` -> `x`).
 
+Encoding and decoding need to read their input more than once (`-m6` reads
+it twice, the v7 decoder reads the match table by position), so stdin is
+first copied into a seekable store: memory up to 32 MiB, and beyond that a
+temporary file. `--temp=DIR` puts that file in `DIR` (default: the
+system's temporary directory; a `DIR` that does not exist is a command-line
+error). The file is deleted when the run ends, also after an error, and by
+the system if the process dies (unlinked right after it is created on Unix,
+`FILE_FLAG_DELETE_ON_CLOSE` on Windows). `-dup` keeps its whole input in
+memory either way.
+
 ## Format
 
 v6 only (`OSR6`). There is no `--format=v4|v5`; OSREP does not write or read
@@ -118,4 +128,5 @@ output. This is the phase-1 contract; the new golden fixes it.
 `0.0.3` was the m1-m5/dup/threads checkpoint, `0.0.4` added the native CDC,
 match finder and CRC-32C, `0.0.5` tuned `-m1` to 8 KiB chunks, `0.0.6` added stdin and stored `-m0`, `0.0.7` shipped Windows x86/x64, `0.0.8` fixed Windows stdin/stdout, `0.0.9` added Linux ARM64 and macOS ARM64, `0.0.10` added Linux x86, `0.0.11` added the 32-byte hash for large `-l`,
 `0.0.12` added the `-mem` budget, `0.0.13` the block-wise decoder, `0.0.14` the streaming decoder and the
-temporary-file `-dup` restore, and the first stable release is `1.0.0`. Every 0.0.x release is a pre-release.
+temporary-file `-dup` restore, `0.0.15` `-m6` and v7, `0.0.16` the embeddable `-m6`
+API, `0.0.17` `--temp` and stdin over 32 MiB in a temporary file, and the first stable release is `1.0.0`. Every 0.0.x release is a pre-release.

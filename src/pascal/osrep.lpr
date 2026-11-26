@@ -8,7 +8,7 @@ program osrep;
 uses
   {$ifdef unix}cthreads,{$endif}
   SysUtils, Classes, osrep_format, osrep_decoder, osrep_encoder,
-  osrep_dedup;
+  osrep_dedup, osrep_tempfile;
 
 const
   OsrepVersionText = 'OSREP ' + OsrepProductVersion + ' (' +
@@ -21,6 +21,13 @@ var
   EncOptionsUsed: Boolean = False;
   DupMode: Boolean = False;
   MethodGiven: Boolean = False;
+  { --temp=DIR: where stdin goes when it is larger than StdinMemLimit }
+  TempDir: string = '';
+
+const
+  { stdin up to this size stays in memory; beyond it, the whole input goes
+    to a temporary file that the system deletes on close (osrep_tempfile) }
+  StdinMemLimit = 32 * 1024 * 1024;
 
 procedure CmdError(const Msg: string);
 begin
@@ -53,6 +60,8 @@ begin
   WriteLn('  -hash-   no per-block digest');
   WriteLn('  -dup     deduplicate before encoding');
   WriteLn('  input -  stdin, output -  stdout');
+  WriteLn('  --temp=DIR  stdin over 32 MiB goes to a temporary file in DIR');
+  WriteLn('              (default the system''s); it is deleted on exit');
 end;
 
 function ParseNumber(const S: string; out V: QWord): Boolean;
@@ -145,38 +154,56 @@ begin
 {$endif}
 end;
 
-procedure ReadStdinToStream(Stream: TStream);
+{ All of stdin in a seekable stream: in memory up to StdinMemLimit, else in
+  a temporary file in TempDir (deleted when the stream is freed, or by the
+  system if the process dies). }
+function NewStdinStream: TStream;
 var
   H: THandleStream;
+  M: TMemoryStream;
+  T: TStream;
   Buf: array[0..65535] of Byte;
   N: LongInt;
 begin
+  M := TMemoryStream.Create;
+  T := nil;
   H := THandleStream.Create(OsrepStdinHandle);
   try
-    repeat
-      N := H.Read(Buf, SizeOf(Buf));
-      if N > 0 then
-        Stream.WriteBuffer(Buf, N);
-    until N <= 0;
+    try
+      repeat
+        N := H.Read(Buf, SizeOf(Buf));
+        if N > 0 then
+        begin
+          if (T = nil) and (M.Size + N > StdinMemLimit) then
+          begin
+            T := OsrepCreateTempStream(TempDir);
+            if M.Size > 0 then
+              T.WriteBuffer(M.Memory^, M.Size);
+            FreeAndNil(M);
+          end;
+          if T <> nil then
+            T.WriteBuffer(Buf, N)
+          else
+            M.WriteBuffer(Buf, N);
+        end;
+      until N <= 0;
+    except
+      M.Free;
+      T.Free;
+      raise;
+    end;
   finally
     H.Free;
   end;
-end;
-
-function NewStdinStream: TMemoryStream;
-begin
-  Result := TMemoryStream.Create;
-  try
-    ReadStdinToStream(Result);
-    Result.Position := 0;
-  except
-    Result.Free;
-    raise;
-  end;
+  if T <> nil then
+    Result := T
+  else
+    Result := M;
+  Result.Position := 0;
 end;
 
 function OpenArchiveReader(const Name: string;
-  out StdinStream: TMemoryStream): TArchiveReader;
+  out StdinStream: TStream): TArchiveReader;
 begin
   StdinStream := nil;
   if Name = '-' then
@@ -207,7 +234,7 @@ var
   Reader: TArchiveReader;
   OutStream: TStream;
   OutName: string;
-  StdinStream: TMemoryStream;
+  StdinStream: TStream;
 begin
   if Length(PosArgs) < 1 then
     CmdError('-d needs an archive');
@@ -238,7 +265,7 @@ end;
 procedure RunVerify;
 var
   Reader: TArchiveReader;
-  StdinStream: TMemoryStream;
+  StdinStream: TStream;
 begin
   if Length(PosArgs) <> 1 then
     CmdError('--verify needs exactly one archive');
@@ -255,7 +282,7 @@ procedure RunInfo;
 var
   Reader: TArchiveReader;
   Info: TArchiveInfo;
-  StdinStream: TMemoryStream;
+  StdinStream: TStream;
 begin
   if Length(PosArgs) <> 1 then
     CmdError('-i needs exactly one archive');
@@ -482,6 +509,12 @@ begin
           CmdError('invalid --align (1..4096): ' + A);
         EncOptions.Align := LongWord(N);
         EncOptionsUsed := True;
+      end
+      else if Copy(A, 1, 7) = '--temp=' then
+      begin
+        TempDir := Copy(A, 8, MaxInt);
+        if (TempDir = '') or not DirectoryExists(TempDir) then
+          CmdError('--temp: not a directory: ' + TempDir);
       end
       else if Copy(A, 1, 7) = '--seed=' then
       begin
