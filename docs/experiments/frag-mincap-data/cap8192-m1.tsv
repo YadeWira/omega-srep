@@ -1,0 +1,11 @@
+corpus	versions	method	config	archive	add_s	rss_mb	l_s	x_s	x_rss_mb	extract	last_add_s	last_add_rss_mb
+src-omega	40	-m1	osrep:6	5156196	2.89	29	0.01	0.12	17	ok	0.13	17
+src-omega	40	-m1	osrep:9	5500377	2.82	28	0.01	0.11	19	ok	0.12	19
+pja	5	-m1	osrep:6	1863553	0.87	54	0.01	0.15	25	ok	0.12	17
+pja	5	-m1	osrep:9	1858966	0.80	50	0.01	0.15	23	ok	0.12	18
+bin-releases	39	-m1	osrep:6	54869789	10.42	199	0.01	0.16	27	ok	0.43	58
+bin-releases	39	-m1	osrep:9	60415525	10.65	208	0.01	0.15	26	ok	0.41	56
+src-zpaqstd	16	-m1	osrep:6	13533013	8.03	264	0.03	0.38	67	ok	0.48	131
+src-zpaqstd	16	-m1	osrep:9	23098461	9.64	291	0.03	0.40	112	ok	0.54	140
+mixed	1	-m1	osrep:6	86413180	2.98	422	0.01	0.95	134	ok	2.98	422
+mixed	1	-m1	osrep:9	86544236	2.68	437	0.02	0.93	137	ok	2.68	437

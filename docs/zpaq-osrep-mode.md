@@ -661,7 +661,7 @@ zpaq-std todavía.
    se queda en todos los métodos. Quitarla desde `-m3` cuesta 5–19 puntos en
    `-m3` y la victoria del historial en `-m5`; un umbral de tamaño para el
    corte tar solo reparte entre los dos extremos.
-2. **Árboles de archivos chicos** (src-omega): el mínimo A/2 pierde contra el
+2. ~~**Árboles de archivos chicos**~~ (medido 2026-11-26, rechazado: [`experiments/frag-mincap.md`](experiments/frag-mincap.md)) (src-omega): el mínimo A/2 pierde contra el
    mínimo de zpaq (`64 << N`) en N≥3. El experimento 2 midió A/4 y A/8; un
    mínimo que no pase de cierto tamaño (por ejemplo `min(A/2, 4 KiB)`) es lo
    siguiente a probar.

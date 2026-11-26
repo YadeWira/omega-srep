@@ -667,6 +667,12 @@ gana casi siempre).
 - **Qué probar**: lo mismo que el punto 2 (con A/16 N=6 pasa a +4,7 %); no
   alcanza: el hash de orden 1 de zpaq corta los archivos de texto chicos más
   fino que el gear.
+- **Medido el 2026-11-26** ([`experiments/frag-mincap.md`](experiments/frag-mincap.md)):
+  un tope al mínimo (`min(A/2, 4 KiB)`) arregla src-omega `-m1` N=6 (+2,8 →
+  −0,7 %) pero empeora `-m5` (+11 → +20 %) y src-zpaqstd (N=9 +17 %), y no
+  cambia el mejor contra mejor de ningún corpus. Rechazado. Lo que queda es pja
+  como carpetas (+0,4/+0,5 %): la primera versión empata, y la pérdida son
+  ~4,6 KB en los ~10 archivos de texto que cambian.
 
 #### 4. Velocidad del corte: 1,8× más lento
 
