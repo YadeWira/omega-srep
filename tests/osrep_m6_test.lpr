@@ -106,6 +106,7 @@ end;
 
 { inputs: empty, tiny, runs, random, repeated text with edits, data with
   repeats far apart and across blocks }
+{$push}{$Q-}{$R-} { the generator wraps on purpose }
 function MakeInput(Kind: Integer; Size: Integer; Seed: LongWord): TBytes;
 var
   I, J, K: Integer;
@@ -165,6 +166,7 @@ begin
     end;
   end;
 end;
+{$pop}
 
 type
   TWorker = class(TThread)

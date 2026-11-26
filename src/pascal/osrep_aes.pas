@@ -1,4 +1,8 @@
 unit osrep_aes;
+
+{ Hash arithmetic wraps modulo 2^64 (and 2^32) on purpose: no overflow or
+  range checks here, even when the program is built with -Co/-Cr. }
+{$Q-}{$R-}
 { Minimal AES-256 block encryption for the VHASH-128 block digest.
 
   Only encryption is needed by VHASH.  The S-box and round constants are the

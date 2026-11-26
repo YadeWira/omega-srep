@@ -1,4 +1,8 @@
 unit osrep_vhash;
+
+{ Hash arithmetic wraps modulo 2^64 (and 2^32) on purpose: no overflow or
+  range checks here, even when the program is built with -Co/-Cr. }
+{$Q-}{$R-}
 { VHASH-128 without nonce, as used by the v6 block digest (hash_id=4).
 
   This is a Pascal implementation of the public VMAC/VHASH reference by Ted

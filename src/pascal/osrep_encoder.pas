@@ -300,6 +300,8 @@ begin
   Len := 0;
 end;
 
+{ wraps modulo 2^64 on purpose: no overflow check even under -Co }
+{$push}{$Q-}{$R-}
 function SplitMix64(var X: QWord): QWord;
 var
   Z: QWord;
@@ -310,6 +312,7 @@ begin
   Z := (Z xor (Z shr 27)) * QWord($94D049BB133111EB);
   Result := Z xor (Z shr 31);
 end;
+{$pop}
 
 function SeedFromNumber(N: QWord): TBytes;
 var

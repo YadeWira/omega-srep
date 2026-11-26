@@ -61,6 +61,16 @@ echo "== built-in checks =="
 "$NAT/osrep_m6_test" self || fail "native self"
 "$REF/osrep_m6_test" self || fail "reference self"
 
+echo "== built-in checks with overflow, range and stack checks (-Co -Cr -Ct -CR) =="
+CHK="$TMP/checked"
+mkdir -p "$CHK/u"
+fpc -Mobjfpc -O1 -Sh -Co -Cr -Ct -CR -Fu"$ROOT/src/pascal" -Fo"$NAT" \
+  -FU"$CHK/u" -FE"$CHK" "$ROOT/tests/osrep_m6_test.lpr" >"$TMP/chk.log" 2>&1 || {
+  cat "$TMP/chk.log"
+  fail "checked fpc"
+}
+"$CHK/osrep_m6_test" self || fail "checked self"
+
 echo "== the API and the CLI write the same streams =="
 n=0
 for f in "$CORPUS"/*; do
