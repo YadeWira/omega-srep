@@ -33,6 +33,13 @@ fpc -Mobjfpc -O1 -Sh -Cr -Ct -CR -gl -Fu"$ROOT/src/pascal" -Fo"$B" \
   cat "$TMP/fpc.log"
   fail "fpc"
 }
+# the embeddable API's in-place decoder, compared with -d on every case
+fpc -Mobjfpc -O1 -Sh -Cr -Ct -CR -gl -Fu"$ROOT/src/pascal" -Fo"$B" \
+  -FU"$B/u" -FE"$B" "$ROOT/tests/osrep_m6_test.lpr" >"$TMP/fpc-api.log" 2>&1 || {
+  cat "$TMP/fpc-api.log"
+  fail "fpc osrep_m6_test"
+}
+export FUZZ_API="$B/osrep_m6_test"
 
 echo "== seeds =="
 bash "$ROOT/tests/gen_corpus.sh" "$TMP/corpus" >"$TMP/corpus.log" 2>&1 || {

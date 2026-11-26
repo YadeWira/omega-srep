@@ -283,6 +283,9 @@ def main():
     stats = {}
     case = os.path.join(work, 'case.osr')
     out = os.path.join(work, 'case.out')
+    # FUZZ_API: tests/osrep_m6_test, run on every case next to -d
+    api = os.environ.get('FUZZ_API', '')
+    out_api = os.path.join(work, 'case.api')
     for k in range(cases):
         f = r.choice(seeds)
         desc, data = mutate(r, blobs[f])
@@ -303,6 +306,28 @@ def main():
                 keep = os.path.join(work, f'bad-{k:06d}-{desc}.osr')
                 open(keep, 'wb').write(data)
                 print(f'case {k} ({f}, {desc}): {cmd[1]} {why}: {err.strip()[:200]}')
+        # the embeddable API (osrep_m6, in-place decoder) must give the same
+        # verdict as `osrep -d` and, when both accept, the same bytes
+        if api:
+            ca, erra = run([api, 'dec', case, out_api])
+            why = None
+            if ca == 'timeout':
+                why = 'timeout'
+            elif ca not in (0, 1):
+                why = f'exit {ca}'
+            elif any(w in erra for w in RTL_WORDS):
+                why = 'rtl error'
+            elif (ca == 0) != (res[0] == 0):
+                why = f'verdict differs: -d rc={res[0]}, api rc={ca}'
+            elif ca == 0 and open(out, 'rb').read() != open(out_api, 'rb').read():
+                why = 'accepted with other bytes than -d'
+            if why:
+                bad += 1
+                keep = os.path.join(work, f'bad-{k:06d}-{desc}-api.osr')
+                open(keep, 'wb').write(data)
+                print(f'case {k} ({f}, {desc}): api {why}: {erra.strip()[:200]}')
+            if os.path.exists(out_api):
+                os.remove(out_api)
         # --verify does not decode (format-v6.md 2.3), so it may accept what
         # -d rejects by digest; it must never reject what -d accepts
         if res[0] == 0 and res[1] != 0 and 'timeout' not in res:

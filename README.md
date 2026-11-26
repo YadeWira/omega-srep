@@ -21,7 +21,7 @@ it is licensed MIT, and its own formats are **v6** and **v7**: blocks with CRC-3
 VHASH-128 digest, a footer that chains the block CRCs, and a CLI for
 preprocessing, decompression, verification and inspection.
 
-- **Status: 0.0.15 checkpoint (pre-release).** The v6 reader and writer are
+- **Status: 0.0.16 checkpoint (pre-release).** The v6 reader and writer are
   implemented in `src/pascal/`: container, CRC-32C, VHASH-128 block digest,
   `-d`, `--verify`, `-i`, `-dup` write/read/restore, `-m0` stored, dedup-only
   `-m1` (fixed-window CDC) and `-m2` (order-1 CDC), a hash-chain match finder
@@ -41,8 +41,13 @@ preprocessing, decompression, verification and inspection.
   fuzzer (`tests/fuzz_v7.sh`).
   Every 0.0.x release is a pre-release; 1.0.0 is the first stable release.
   Implementation notes and the open limitations are in
-  `docs/implementation-notes.md`; the 0.0.15 notes are in
-  `docs/release-0.0.15.md`.
+  `docs/implementation-notes.md`; the 0.0.16 notes are in
+  `docs/release-0.0.16.md`.
+- **Embeddable `-m6` (0.0.16):** `src/pascal/osrep_m6.pas` encodes and
+  decodes v7 memory to memory (decoding in place, ~1 MiB besides the
+  output), with memory estimates, no threads of its own and 64-bit sizes.
+  `scripts/build_osrep_unit.sh` packages it with its C sources and objects
+  for programs that vendor it (PArc). See `docs/osrep-m6-api.md`.
 - **Default method: `-m6`** (long range, format v7, `spec/format-v7.md`): one
   index over the whole input finds repeats at any distance, and the match
   table goes first. Defaults `-l512 --align=16` are for a backend behind

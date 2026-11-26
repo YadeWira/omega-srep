@@ -9,6 +9,9 @@
 set -eu
 OUT=${1:?usage: build_arm64.sh <out dir>}
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
+# PROG: the program to build (default the CLI; tests/osrep_m6_test.lpr for
+# the embeddable API on every target)
+PROG=${PROG:-$ROOT/src/pascal/osrep.lpr}
 FPC_AARCH64=${FPC_AARCH64:-/mnt/IA_LAB/agentes/osrep/fpc-cross/lib/fpc/3.2.2/ppcrossa64}
 CC_AARCH64=${CC_AARCH64:-aarch64-linux-gnu-gcc}
 mkdir -p "$OUT/obj" "$OUT/units"
@@ -28,8 +31,8 @@ PATH="$PREFIX/bin-aarch64:$PATH" "$FPC_AARCH64" -n -Tlinux -Paarch64 \
   -Fu"$UNITROOT" -Fu"$UNITROOT/rtl" -Fu"$ROOT/src/pascal" \
   -Fl"$LIBC" -Fl"$GCCLIB" -k"$OUT/obj/osrep_csu_stub.o" \
   -Fo"$OUT/obj" -FU"$OUT/units" -FE"$OUT" -Xs \
-  "$ROOT/src/pascal/osrep.lpr" >"$OUT/fpc.log" 2>&1 || {
+  "$PROG" >"$OUT/fpc.log" 2>&1 || {
     cat "$OUT/fpc.log"
     exit 1
   }
-echo "$OUT/osrep"
+echo "$OUT/$(basename "$PROG" .lpr)"

@@ -26,6 +26,8 @@ jobs:
           bash tests/v6_encode.sh
       - name: Long range (-m6, format v7) and the frozen v7 fixtures
         run: bash tests/v7_longrange.sh
+      - name: Embeddable -m6 API (osrep_m6) against the CLI
+        run: bash tests/osrep_m6.sh
       - name: Memory budget
         run: bash tests/memory_budget.sh
       - name: Block-wise decoder

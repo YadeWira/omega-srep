@@ -7,6 +7,10 @@
 set -eu
 OUT=${1:-build/windows}
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
+# PROG: the program to build (default the CLI; tests/osrep_m6_test.lpr for
+# the embeddable API on every target)
+PROG=${PROG:-$ROOT/src/pascal/osrep.lpr}
+BIN=$(basename "$PROG" .lpr)
 OUT=$(mkdir -p "$OUT" && cd "$OUT" && pwd)
 FPC_WIN64=${FPC_WIN64:-fpc-win64}
 FPC_WIN32=${FPC_WIN32:-fpc-win32}
@@ -24,7 +28,7 @@ build() {
   done
   "$fpcbin" -Mobjfpc -O2 -Sh -Xs -Fu"$ROOT/src/pascal" \
     -Fo"$OUT/$label/obj" -FU"$OUT/$label/units" -FE"$OUT" \
-    "$ROOT/src/pascal/osrep.lpr" >"$OUT/$label/fpc.log" 2>&1 || {
+    "$PROG" >"$OUT/$label/fpc.log" 2>&1 || {
       cat "$OUT/$label/fpc.log"
       exit 1
     }
@@ -32,11 +36,11 @@ build() {
 
 echo "win64: $FPC_WIN64 + $CC64"
 build win64 "$FPC_WIN64" "$CC64"
-mv "$OUT/osrep.exe" "$OUT/osrep-windows-x86_64.exe"
+mv "$OUT/$BIN.exe" "$OUT/$BIN-windows-x86_64.exe"
 
 echo "win32: $FPC_WIN32 + $CC32"
 build win32 "$FPC_WIN32" "$CC32"
-mv "$OUT/osrep.exe" "$OUT/osrep-windows-x86.exe"
+mv "$OUT/$BIN.exe" "$OUT/$BIN-windows-x86.exe"
 
-echo "$OUT/osrep-windows-x86_64.exe"
-echo "$OUT/osrep-windows-x86.exe"
+echo "$OUT/$BIN-windows-x86_64.exe"
+echo "$OUT/$BIN-windows-x86.exe"

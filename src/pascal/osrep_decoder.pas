@@ -51,7 +51,8 @@ type
     FColStart: array[0..3] of Int64;  { gap, length, distance, table CRC }
     procedure LoadHeaderFooter;
     procedure LoadMatchTable(TableStart: Int64);
-    procedure DecodeV7(OutStream: TStream; out Data: TBytes);
+    procedure DecodeV7(OutStream: TStream; out Data: TBytes;
+      Target: PByte = nil);
     procedure ValidateMeta;
     procedure ReadMeta(out Meta: TBytes);
     function DupOutputSize: QWord;
@@ -78,6 +79,10 @@ type
     procedure Verify;
     procedure DecodeToStream(OutStream: TStream);
     procedure DecodeToBytes(out Data: TBytes);
+    { v7 only: decodes in place into Dst, which must hold exactly the
+      original size (Header.OriginalSize); match sources are read from Dst
+      itself, so no pages or block buffer are kept }
+    procedure DecodeToMemory(Dst: PByte; DstLen: QWord);
     property Header: TArchiveHeader read FHeader;
     property Footer: TArchiveFooter read FFooter;
     { 0 = no extra cap; otherwise the final output may not exceed it. }
@@ -591,11 +596,13 @@ end;
   Measured on the scoreboard corpora (default -m6): 7 MB of pages for the
   584 MB game tar, where the window from the oldest pending source took
   427 MB. }
-procedure TArchiveReader.DecodeV7(OutStream: TStream; out Data: TBytes);
+procedure TArchiveReader.DecodeV7(OutStream: TStream; out Data: TBytes;
+  Target: PByte);
 var
   I: LongWord;
   Pos: Int64;
-  Buf, Digest, Blk: TBytes;
+  Buf, Digest, Blk, Tmp: TBytes;
+  BlkP: PByte;
   BH: TBlockHeader;
   PayloadLen: QWord;
   CrcBytes: array[0..3] of Byte;
@@ -627,7 +634,7 @@ var
 
 begin
   Data := nil;
-  if OutStream = nil then
+  if (OutStream = nil) and (Target = nil) then
   begin
     if FHeader.OriginalSize > QWord(High(SizeInt)) then
       DataError('original size does not fit in memory');
@@ -671,6 +678,9 @@ begin
   if NPagesQ > QWord(High(SizeInt) div 16) then
     DataError('original size does not fit in memory');
   NPages := SizeInt(NPagesQ);
+  { in place (Target): every source is already in Target, no pages }
+  if Target <> nil then
+    NPages := 0;
   SetLength(PageRel, NPages);
   SetLength(PagePtr, NPages);
   for Pg := 0 to NPages - 1 do
@@ -678,10 +688,12 @@ begin
     PageRel[Pg] := 0;
     PagePtr[Pg] := nil;
   end;
-  It := TV7Matches.Create(FStream, FColStart, FMatchCount,
-    FHeader.OriginalSize);
+  It := nil;
+  if Target = nil then
+    It := TV7Matches.Create(FStream, FColStart, FMatchCount,
+      FHeader.OriginalSize);
   try
-    while It.Valid do
+    while (It <> nil) and It.Valid do
     begin
       E := It.Dst + It.Len;
       PgA := SizeInt(It.Src shr PageShift);
@@ -700,6 +712,8 @@ begin
   if Gran < PageSize then
     Gran := PageSize;
   NBuckets := SizeInt(FHeader.OriginalSize div Gran) + 1;
+  if Target <> nil then
+    NBuckets := 0;
   SetLength(BucketHead, NBuckets);
   SetLength(PageNext, NPages);
   for J := 0 to NBuckets - 1 do
@@ -726,7 +740,8 @@ begin
     { the block buffer once, at the largest block (resizing it per block
       leaves the heap holding more); the digest and literals are read
       straight into place through Lit, without a payload buffer }
-    SetLength(Blk, SizeInt(MaxOrig));
+    if Target = nil then
+      SetLength(Blk, SizeInt(MaxOrig));
     SetLength(Digest, FHeader.HashSize);
     for I := 1 to FHeader.BlockCount do
     begin
@@ -760,6 +775,12 @@ begin
           DataError(Format('block %d: payload past end of block area', [I]));
 
       BlockEnd := BlockStart + QWord(BH.OrigSize);
+      if Target <> nil then
+        BlkP := Target + BlockStart
+      else if Length(Blk) > 0 then
+        BlkP := @Blk[0]
+      else
+        BlkP := nil;
       LitPos := 0;
       K := 0;
       while K < SizeInt(BH.OrigSize) do
@@ -776,6 +797,17 @@ begin
           SrcAbs := It.Src + (P - It.Dst);
           DstOff := K;
           L := Run;
+          { in place: the part before this block is already in Target }
+          if (Target <> nil) and (L > 0) and (SrcAbs < BlockStart) then
+          begin
+            Chunk := L;
+            if QWord(Chunk) > BlockStart - SrcAbs then
+              Chunk := SizeInt(BlockStart - SrcAbs);
+            Move(Target[SrcAbs], BlkP[DstOff], Chunk);
+            Inc(SrcAbs, QWord(Chunk));
+            Inc(DstOff, Chunk);
+            Dec(L, Chunk);
+          end;
           { the part of the source before this block comes from the pages }
           while (L > 0) and (SrcAbs < BlockStart) do
           begin
@@ -788,7 +820,7 @@ begin
               Chunk := SizeInt(BlockStart - SrcAbs);
             if PagePtr[Pg] = nil then
               DataError('match source is outside the decode window');
-            Move(PagePtr[Pg][Off], Blk[DstOff], Chunk);
+            Move(PagePtr[Pg][Off], BlkP[DstOff], Chunk);
             Inc(SrcAbs, QWord(Chunk));
             Inc(DstOff, Chunk);
             Dec(L, Chunk);
@@ -798,10 +830,10 @@ begin
           begin
             SrcOff := SizeInt(SrcAbs - BlockStart);
             if DstOff - SrcOff >= L then
-              Move(Blk[SrcOff], Blk[DstOff], L)
+              Move(BlkP[SrcOff], BlkP[DstOff], L)
             else
               for J := 0 to L - 1 do
-                Blk[DstOff + J] := Blk[SrcOff + J];
+                BlkP[DstOff + J] := BlkP[SrcOff + J];
           end;
         end
         else
@@ -812,7 +844,7 @@ begin
           Run := SizeInt(RunEnd - P);
           if LitPos + Run > SizeInt(BH.LiteralBytes) then
             DataError(Format('block %d: not enough literal bytes', [I]));
-          if (Run > 0) and not Lit.ReadBytes(Blk[K], Run, Crc) then
+          if (Run > 0) and not Lit.ReadBytes(BlkP[K], Run, Crc) then
             DataError(Format('block %d: not enough literal bytes', [I]));
           Inc(LitPos, Run);
         end;
@@ -825,10 +857,21 @@ begin
         DataError(Format('block %d: CRC mismatch', [I]));
       PutU32LE(CrcBytes, 0, BH.BlockCrc);
       BlocksCrc := Crc32CUpdate(BlocksCrc, CrcBytes[0], 4);
-      if not VerifyBlockDigest(FHeader.HashId, FSeed, Blk, 0,
-        BH.OrigSize, Digest) then
+      if (Target <> nil) and (FHeader.HashSize > 0) then
+      begin
+        { the digest functions take a TBytes }
+        SetLength(Tmp, SizeInt(BH.OrigSize));
+        if BH.OrigSize > 0 then
+          Move(BlkP[0], Tmp[0], BH.OrigSize);
+        if not VerifyBlockDigest(FHeader.HashId, FSeed, Tmp, 0,
+          BH.OrigSize, Digest) then
+          DataError(Format('block %d: digest mismatch', [I]));
+        Tmp := nil;
+      end
+      else if (Target = nil) and not VerifyBlockDigest(FHeader.HashId, FSeed,
+        Blk, 0, BH.OrigSize, Digest) then
         DataError(Format('block %d: digest mismatch', [I]));
-      if BH.OrigSize > 0 then
+      if (BH.OrigSize > 0) and (Target = nil) then
       begin
         if OutStream <> nil then
           OutStream.WriteBuffer(Blk[0], BH.OrigSize)
@@ -837,7 +880,7 @@ begin
       end;
 
       { store the pages of this block that a later block still needs }
-      if BH.OrigSize > 0 then
+      if (BH.OrigSize > 0) and (Target = nil) then
       begin
         PgA := SizeInt(BlockStart shr PageShift);
         PgB := SizeInt((BlockEnd - 1) shr PageShift);
@@ -2023,6 +2066,26 @@ begin
         DeleteFile(TempName);
     end;
   end;
+end;
+
+procedure TArchiveReader.DecodeToMemory(Dst: PByte; DstLen: QWord);
+var
+  Dummy: TBytes;
+  One: Byte;
+begin
+  LoadHeaderFooter;
+  if not FIsV7 then
+    raise EOsrepError.Create(2, 'DecodeToMemory: not a v7 stream');
+  if DstLen <> FHeader.OriginalSize then
+    raise EOsrepError.Create(2,
+      'DecodeToMemory: the buffer is not the original size');
+  if (FMaxOutput > 0) and (FHeader.OriginalSize > FMaxOutput) then
+    raise EOsrepError.Create(6, 'original size exceeds max_output');
+  if DstLen = 0 then
+    Dst := @One { not nil: it selects the in-place path }
+  else if Dst = nil then
+    raise EOsrepError.Create(2, 'DecodeToMemory: no buffer');
+  DecodeV7(nil, Dummy, Dst);
 end;
 
 procedure TArchiveReader.DecodeToBytes(out Data: TBytes);
