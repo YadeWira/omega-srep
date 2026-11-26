@@ -1,0 +1,7 @@
+corpus	versions	method	config	archive	add_s	rss_mb	l_s	x_s	x_rss_mb	extract	last_add_s	last_add_rss_mb
+pja	5	-m1	osrep:3	1876291	0.86	49	0.01	0.15	24	ok	0.12	16
+pja	5	-m1	osrep:6	1845375	0.87	49	0.01	0.15	24	ok	0.12	16
+pja	5	-m1	osrep:9	1860916	0.86	49	0.01	0.16	23	ok	0.12	15
+pja	5	-m5	osrep:3	1122613	21.50	205	0.01	20.95	395	ok	0.24	94
+pja	5	-m5	osrep:6	1099514	21.53	205	0.01	21.02	374	ok	0.26	95
+pja	5	-m5	osrep:9	1098339	22.29	206	0.01	21.10	377	ok	0.25	98

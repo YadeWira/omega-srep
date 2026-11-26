@@ -1,0 +1,10 @@
+input	method	fragmenter	N	archive	wall_s	rss_mb	extract	l_s	x_s	x_rss_mb
+versions.tar	-m5	osrep	7	5111255	185.92	1311	ok	0.01	195.43	1130
+versions.tar	-m5	osrep	8	5646873	196.37	1519	ok	0.01	203.49	1339
+versions.tar	-m5	osrep	9	5991434	188.07	1558	ok	0.01	198.37	1370
+pja.tar	-m5	osrep	7	969522	74.45	656	ok	0.01	71.45	527
+pja.tar	-m5	osrep	8	966842	78.52	662	ok	0.01	79.58	530
+pja.tar	-m5	osrep	9	964976	90.31	673	ok	0.01	88.16	538
+zpaqstd-history.tar	-m5	osrep	7	9213848	203.40	2426	ok	0.01	196.30	2226
+zpaqstd-history.tar	-m5	osrep	8	9685042	197.70	2842	ok	0.01	202.70	2679
+zpaqstd-history.tar	-m5	osrep	9	11394717	204.16	2983	ok	0.01	202.30	2742

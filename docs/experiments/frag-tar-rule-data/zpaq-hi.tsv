@@ -1,0 +1,10 @@
+input	method	fragmenter	N	archive	wall_s	rss_mb	extract	l_s	x_s	x_rss_mb
+versions.tar	-m5	zpaq	7	5592627	182.81	1513	ok	0.01	172.37	1334
+versions.tar	-m5	zpaq	8	6028924	178.72	1551	ok	0.01	180.89	1376
+versions.tar	-m5	zpaq	9	6217332	176.63	1563	ok	0.01	189.16	1389
+pja.tar	-m5	zpaq	7	967825	71.28	660	ok	0.01	70.59	531
+pja.tar	-m5	zpaq	8	965589	86.68	675	ok	0.01	87.18	543
+pja.tar	-m5	zpaq	9	962083	89.77	993	ok	0.01	90.41	856
+zpaqstd-history.tar	-m5	zpaq	7	9583906	211.95	2782	ok	0.01	199.80	2594
+zpaqstd-history.tar	-m5	zpaq	8	10260680	203.14	2883	ok	0.01	204.65	2737
+zpaqstd-history.tar	-m5	zpaq	9	11568089	215.78	2986	ok	0.01	232.22	2729

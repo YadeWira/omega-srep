@@ -625,9 +625,15 @@ gana casi siempre).
   que pierde PJA N=6, y fragmentos cortados donde el modelo tenía contexto.
   Los cortes de formato y los cortes en 64 ceros hacen que "N=6" de `-osrep`
   promedie 23 KiB en vez de 64–72 KiB.
-- **Qué probar**: quitar `OSREP_FRAG_F_TAR_AFTER` desde `-m3` (ya estaba
-  pendiente: cuesta 0,9–2,6 % con `-m5`) y calibrar N contra el fragmento
-  medio real, no el nominal.
+- ~~**Qué probar**: quitar `OSREP_FRAG_F_TAR_AFTER` desde `-m3` y calibrar N
+  contra el fragmento medio real.~~ **Medido el 2026-11-25: ninguna de las dos
+  sirve** ([`experiments/frag-tar-rule.md`](experiments/frag-tar-rule.md)).
+  Sin la regla, `-m3` pierde 5–19 puntos y el historial `-m5` pasa de −15,7 %
+  a +1,0 %; con la regla, pja `-m5` pierde +4,2–4,7 % con cualquier N de 0 a
+  9. La pérdida es del caso "todas las versiones en un tar, en un solo `a`"
+  (33 MB caben en un bloque de `-m5`): pja agregado como 5 carpetas pierde
+  +0,3 % (`-m1`) y +0,5 % (`-m5`), que es el problema de los árboles chicos
+  (punto 3).
 
 #### 2. Imagen de disco con cambios sueltos: el mínimo A/2 tarda en reengancharse
 

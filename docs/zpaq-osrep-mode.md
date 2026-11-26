@@ -656,10 +656,11 @@ zpaq-std todavía.
 
 ## Pendiente
 
-1. **`-m5` y la regla tar.** Cuesta 0,9–2,6 % con `-m5` y gana hasta 10 %
-   con `-m1`. Una opción simple: que zpaq-std quite `OSREP_FRAG_F_TAR_AFTER`
-   de `p.flags` desde `-m3`. Falta medir el gear sin reglas en `-m3`/`-m5`
-   con N=0 y N=6 antes de decidir.
+1. ~~**`-m5` y la regla tar.**~~ Medido el 2026-11-25
+   ([`experiments/frag-tar-rule.md`](experiments/frag-tar-rule.md)): la regla
+   se queda en todos los métodos. Quitarla desde `-m3` cuesta 5–19 puntos en
+   `-m3` y la victoria del historial en `-m5`; un umbral de tamaño para el
+   corte tar solo reparte entre los dos extremos.
 2. **Árboles de archivos chicos** (src-omega): el mínimo A/2 pierde contra el
    mínimo de zpaq (`64 << N`) en N≥3. El experimento 2 midió A/4 y A/8; un
    mínimo que no pase de cierto tamaño (por ejemplo `min(A/2, 4 KiB)`) es lo
