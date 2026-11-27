@@ -36,7 +36,7 @@ extern "C" {
 #define OSREP_CALL
 #endif
 
-#define OSREP_API_VERSION 1
+#define OSREP_API_VERSION 2   /* 2: osrep_run() */
 
 enum {
   OSREP_OK = 0,
@@ -78,7 +78,7 @@ typedef struct osrep_options {
 
 void OSREP_CALL osrep_options_default(osrep_options *o);
 
-/* "OSREP 0.0.2" */
+/* "OSREP 0.0.19" */
 const char *OSREP_CALL osrep_version(void);
 
 /* The last error on this thread; "" after a successful call. */
@@ -98,16 +98,31 @@ int OSREP_CALL osrep_decompress(const void *in, size_t in_size,
                                 void **out, size_t *out_size,
                                 const osrep_options *o);
 
-/* A file -> a .osr file, and back. Paths are UTF-8 on Unix; on Windows the
-   RTL's file system code page is used, so a host with non-ASCII names sets
-   it to CP_UTF8. The output is created/truncated; on failure it may be
-   partial. */
+/* A file -> a .osr file, and back. Paths are UTF-8 on every platform. The
+   output is created/truncated; on failure it may be partial. */
 int OSREP_CALL osrep_compress_file(const char *in_path, const char *out_path,
                                    const osrep_options *o);
 int OSREP_CALL osrep_decompress_file(const char *in_path, const char *out_path,
                                      const osrep_options *o);
 
 void OSREP_CALL osrep_free(void *p);
+
+/* The osrep command line as a function, in the form of libsrep's
+   srep_run(): argv[0] is the program name ("osrep") and the rest are the
+   CLI's arguments, in UTF-8; the output bytes are the CLI's with the same
+   arguments.  "-" as the input or the output is in_handle / out_handle, and
+   every message goes to err_handle (POSIX file descriptors; Windows
+   HANDLEs).  A handle of -1 means the process's own standard one, which is
+   left open; the others are closed before the call returns, each once.
+
+   Returns the CLI's exit code: 0 success, 2 command line, 3 I/O or memory,
+   4 damaged data.  It never ends the process.  When it fails, the output
+   file it created (not "-") is deleted.  Each call frees what it
+   allocated and stops the threads it started (-m6 -tN), and calls may run
+   at the same time on different threads.  A host that writes to pipes
+   ignores SIGPIPE: a reader that goes away is then a write error (3). */
+int OSREP_CALL osrep_run(int argc, char **argv, intptr_t in_handle,
+                         intptr_t out_handle, intptr_t err_handle);
 
 #ifdef __cplusplus
 }

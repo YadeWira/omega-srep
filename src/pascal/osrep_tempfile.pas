@@ -29,7 +29,7 @@ uses
   {$ifdef windows}Windows,{$else}BaseUnix,{$endif} osrep_format;
 
 var
-  Counter: LongWord = 0;
+  Counter: LongInt = 0;
 
 destructor TOsrepTempStream.Destroy;
 begin
@@ -54,7 +54,7 @@ begin
   Base := IncludeTrailingPathDelimiter(Base);
   for Attempt := 1 to 100 do
   begin
-    Inc(Counter);
+    InterLockedIncrement(Counter);
     Name := Base + Format('osrep-%d-%x-%d.tmp',
       [GetProcessID, GetTickCount64 and $FFFFFFFF, Counter]);
 {$ifdef windows}

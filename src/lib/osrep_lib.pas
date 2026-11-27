@@ -13,11 +13,15 @@ library osrep;
 
 uses
   {$ifdef unix}cthreads,{$endif}
-  SysUtils, Classes, osrep_format, osrep_codec;
+  SysUtils, Classes, osrep_format, osrep_codec, osrep_cli;
 
 {$L osrep7z.o}
 
 const
+  { osrep7z.c calls osrep_compress, osrep_decompress and osrep_free by
+    their C names: a PE linker (mingw) does not resolve them through the
+    exports as ELF does; win32 C names take an underscore }
+  CPrefix = {$if defined(windows) and defined(cpui386)}'_'{$else}''{$endif};
   VERSION_TEXT: PChar = 'OSREP ' + OsrepProductVersion;
 
 type
@@ -197,6 +201,7 @@ end;
 
 function osrep_compress(input: Pointer; inSize: SizeUInt;
   output: PPointer; outSize: PSizeUInt; opt: POsrepCOptions): LongInt; cdecl;
+  public name CPrefix + 'osrep_compress';
 var
   O: TOsrepOptions;
   Data, Res: TBytes;
@@ -239,6 +244,7 @@ end;
 
 function osrep_decompress(input: Pointer; inSize: SizeUInt;
   output: PPointer; outSize: PSizeUInt; opt: POsrepCOptions): LongInt; cdecl;
+  public name CPrefix + 'osrep_decompress';
 var
   O: TOsrepOptions;
   Data, Res: TBytes;
@@ -328,6 +334,7 @@ begin
 end;
 
 procedure osrep_free(p: Pointer); cdecl;
+  public name CPrefix + 'osrep_free';
 begin
   if p <> nil then
     FreeMem(p);
@@ -366,8 +373,10 @@ end;
 
 exports
   osrep_options_default, osrep_version, osrep_last_error,
-  osrep_compress, osrep_decompress, osrep_free,
-  osrep_compress_file, osrep_decompress_file,
+  osrep_compress name 'osrep_compress',
+  osrep_decompress name 'osrep_decompress',
+  osrep_free name 'osrep_free',
+  osrep_compress_file, osrep_decompress_file, osrep_run,
   GetNumberOfMethods, GetMethodProperty, CreateDecoder, CreateEncoder,
   CreateObject, GetModuleProp;
 
@@ -376,6 +385,13 @@ var
 
 begin
   IsMultiThread := True;
+  {$ifdef windows}
+  { paths are UTF-8 on every platform (osrep.h); the code pages are this
+    library's own RTL's, not the host's }
+  SetMultiByteConversionCodePage(CP_UTF8);
+  DefaultSystemCodePage := CP_UTF8;
+  DefaultFileSystemCodePage := CP_UTF8;
+  {$endif}
   Host7z.bstr := @MakeBstr;
   Host7z.alloc := @HostAlloc;
   Host7z.release := @HostRelease;

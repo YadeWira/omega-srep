@@ -17,8 +17,8 @@ NAME=osrep-unit-$VER
 D=$OUT/$NAME
 rm -rf "$D"
 mkdir -p "$D/src/pascal" "$D/src/c" "$D/obj"
-UNITS="osrep_m6 osrep_encoder osrep_decoder osrep_format osrep_crc osrep_vhash osrep_aes"
-CSRC="osrep_lr osrep_match osrep_vhash_nh osrep_crc_native"
+UNITS="osrep_m6 osrep_cli osrep_encoder osrep_decoder osrep_dedup osrep_tempfile osrep_format osrep_crc osrep_vhash osrep_aes"
+CSRC="osrep_lr osrep_match osrep_cdc osrep_vhash_nh osrep_crc_native"
 for u in $UNITS; do cp "$ROOT/src/pascal/$u.pas" "$D/src/pascal/"; done
 for c in $CSRC; do cp "$ROOT/src/c/$c.c" "$D/src/c/"; done
 cp "$ROOT/LICENSE" "$D/"
@@ -43,7 +43,7 @@ objs win64 x86_64-w64-mingw32-gcc
 objs win32 i686-w64-mingw32-gcc
 
 cat > "$D/VERSION" <<EOF
-OSREP $VER, embeddable -m6 API (osrep_m6.pas), stream format .osr v7 (frozen)
+OSREP $VER, embeddable -m6 API (osrep_m6.pas) and command line (osrep_cli.pas), stream format .osr v7 (frozen)
 EOF
 cat > "$D/README.md" <<'EOF'
 # OSREP embeddable -m6 API
@@ -65,6 +65,22 @@ streams are byte for byte the same, slower.
 
 Memory: `OsrepM6EncMem` and `OsrepM6DecMem` (besides the input and output
 buffers). Threads: the search runs on the calling thread and starts none.
+
+## The command line in the program: `osrep_cli.pas`
+
+`OsrepRunArgs(Args, InH, OutH, ErrH, CloseHandles)` runs one `osrep`
+command line (without the program name) in the calling process: "-" is
+`InH`/`OutH` (POSIX descriptors, Windows HANDLEs; -1 = the process's own),
+the messages go to `ErrH`, and it returns the CLI's exit code (0, 2 command
+line, 3 I/O or memory, 4 damaged data) without ending the process. The
+bytes are the `osrep` program's with the same arguments. `osrep_run` is the
+same with C arguments (libsrep's `srep_run` form, UTF-8 strings); it closes
+the handles it was given. Each call keeps its state to itself, frees what
+it allocated and stops the threads it started (`-m6 -tN`), so calls may run
+at the same time; on Unix the program uses `cthreads` first, and ignores
+SIGPIPE if it writes to pipes. It uses the same objects plus
+`osrep_cdc.o` (`-dup`, `-m1`, `-m2`).
+
 License: MIT (`LICENSE`).
 EOF
 (cd "$OUT" && tar czf "$NAME.tar.gz" "$NAME")

@@ -181,6 +181,49 @@ Es una capa fina sobre la API de contexto; existe solo para esos hosts
 históricos. La API recomendada sigue siendo la de §2, y la familia
 (PJA/PMPA/PRA/PPA/PAIA) no la necesita.
 
+## 2.1 La línea de comandos como función: `osrep_run` (0.0.19)
+
+Para programas que ya llaman a SREP como librería (ytool con libsrep), la
+misma forma que `srep_run`:
+
+```c
+int osrep_run(int argc, char **argv, intptr_t in_handle,
+              intptr_t out_handle, intptr_t err_handle);
+const char *osrep_version(void);   /* "OSREP 0.0.19" */
+```
+
+- `argv[0]` es el nombre del programa ("osrep") y el resto son los
+  argumentos del CLI, en UTF-8. Los bytes que escribe son los del programa
+  `osrep` con los mismos argumentos (`tests/lib_run.sh` los compara para
+  cada método).
+- "-" como entrada o salida es `in_handle`/`out_handle`; los mensajes van a
+  `err_handle` (y `--version`, `--help` e `-i` a `out_handle`, como en el
+  CLI). Descriptores POSIX o HANDLE de Windows. `-1` es el estándar del
+  proceso y no se cierra; los demás se cierran antes de volver, cada uno una
+  vez aunque se repita.
+- Devuelve el código de salida del CLI (0, 2 línea de comandos, 3 E/S o
+  memoria, 4 datos dañados) y nunca termina el proceso. Si falla, borra la
+  salida que creó (no "-").
+- Sin estado global: cada llamada libera lo que reservó y espera a los hilos
+  que arrancó (`-m6 -tN`); varias llamadas pueden correr a la vez en hilos
+  distintos. Un anfitrión que escribe a tuberías ignora SIGPIPE (una
+  tubería sin lector es entonces un error de E/S, 3).
+- stdin entra entero en memoria hasta 32 MiB y en un archivo temporal más
+  allá (`--temp=DIR`, por defecto el del sistema), como en el CLI.
+
+Para enlazarlo dentro de un programa Free Pascal sin DLL: la unidad
+`src/pascal/osrep_cli.pas` (`OsrepRunArgs(Args, InH, OutH, ErrH,
+CloseHandles)` con `string`s del propio programa, u `osrep_run` con la forma
+C), con las unidades y objetos de `scripts/build_osrep_unit.sh`. El CLI
+`osrep.lpr` es solo eso.
+
+Pruebas: `tests/lib_run.sh` (un bucle de `src/lib/test_run_loop.c` sobre
+`libosrep.so`: archivos, tuberías, archivos dañados, opciones malas, dos
+llamadas a la vez; descriptores, hilos y RSS estables; y el mismo bucle con
+AddressSanitizer contra una build con `cmem`, para que una fuga del heap de
+Pascal se vea) y `src/lib/test_run_win.c` (lo mismo con HANDLEs en Windows
+x64/x86).
+
 ## 3. Empaquetado y build
 
 Modelo `libpja` (`pas/lib/build.sh`, `pjalib.pas`, `pja.h`, `test_lib.c`).

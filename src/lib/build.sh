@@ -17,7 +17,7 @@ mkdir -p "$OUT/units" "$OUT/c"
 OUT=$(cd "$OUT" && pwd)
 # Windows: a native build (MSYS, Git Bash: by uname) or a cross one
 WIN=; case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) WIN=1 ;; esac
-case "$FPC" in *mingw*|*-Twin*) WIN=1 ;; esac
+case "$FPC" in *mingw*|*-Twin*|*fpc-win32*|*fpc-win64*) WIN=1 ;; esac
 if [ -n "$WIN" ]; then
   PIC=
   CPIC=

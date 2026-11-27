@@ -130,6 +130,16 @@ printf '%s\n' "$DUPINFO" | grep -qx 'original_size=55429' || \
 printf '%s\n' "$DUPINFO" | grep -qx 'restored_size=262144' || \
   fail "-dup restored size: $DUPINFO"
 
+# to a pipe (not seekable): the meta offset is counted, not asked of the
+# output (0.0.18 and older wrote 0 there and a broken archive)
+for m in "-dup -m3" "-m1" "-m2"; do
+  # shellcheck disable=SC2086
+  "$BIN" $m "$CORPUS/mixed.bin" "$TMP/dup-file.osr" || fail "$m to a file"
+  # shellcheck disable=SC2086
+  "$BIN" $m - - < "$CORPUS/mixed.bin" | cat > "$TMP/dup-pipe.osr" || fail "$m to a pipe"
+  cmp "$TMP/dup-file.osr" "$TMP/dup-pipe.osr" || fail "$m: a pipe gives another archive"
+  "$BIN" -d - - < "$TMP/dup-pipe.osr" | cmp - "$CORPUS/mixed.bin" || fail "$m: pipe round trip"
+done
 "$BIN" -dup -m3 -t1 "$CORPUS/zeros.bin" "$TMP/dup-t1.osr" || fail "-dup -t1"
 "$BIN" -dup -m3 -t4 "$CORPUS/zeros.bin" "$TMP/dup-t4.osr" || fail "-dup -t4"
 cmp "$TMP/dup-t1.osr" "$TMP/dup-t4.osr" || fail "-dup -t changes the archive"

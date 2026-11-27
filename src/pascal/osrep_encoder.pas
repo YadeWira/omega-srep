@@ -1512,6 +1512,10 @@ var
   StatSize: QWord;
   ThreadCount, BudgetThreads, BatchCount, J: SizeInt;
   MetaOffset: QWord;
+  { the bytes written so far: the meta offset, without OutStream.Position
+    (0 on a pipe, and not the archive's start on a stream given at an
+    offset) }
+  Written: QWord;
   ErrMsg: string;
   Jobs: array of TEncodeJob;
   Workers: array of TEncodeThread;
@@ -1604,8 +1608,12 @@ begin
   PutU64LE(Hdr, 16, InSize);
   PutU32LE(Hdr, 24, Crc32C(Hdr, 0, 24));
   OutStream.WriteBuffer(Hdr[0], Length(Hdr));
+  Written := QWord(Length(Hdr));
   if Opt.UseHash then
+  begin
     OutStream.WriteBuffer(Opt.Seed[0], 32);
+    Inc(Written, 32);
+  end;
 
   BlocksCrc := 0;
   StatSize := 0;
@@ -1677,6 +1685,7 @@ begin
       OutStream.WriteBuffer(BlockHdr[0], Length(BlockHdr));
       if Length(Jobs[J].Payload) > 0 then
         OutStream.WriteBuffer(Jobs[J].Payload[0], Length(Jobs[J].Payload));
+      Inc(Written, QWord(Length(BlockHdr)) + QWord(Length(Jobs[J].Payload)));
 
       PutU32LE(CrcBytes, 0, Jobs[J].BlockCrc);
       BlocksCrc := Crc32CUpdate(BlocksCrc, CrcBytes[0], 4);
@@ -1691,7 +1700,7 @@ begin
   begin
     if QWord(Length(Meta)) > High(LongWord) then
       raise EOsrepError.Create(2, 'dup meta is too large');
-    MetaOffset := QWord(OutStream.Position);
+    MetaOffset := Written;
     OutStream.WriteBuffer(Meta[0], Length(Meta));
   end
   else

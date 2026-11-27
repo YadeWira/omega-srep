@@ -378,6 +378,6 @@ HRESULT osrep7z_GetModuleProp(uint32_t prop, propvariant_t *v) {
   if (!v) return E_INVALIDARG;
   v->vt = VT_EMPTY;
   if (prop == M_INTERFACE_TYPE) { v->vt = VT_UI4; v->v.u32 = 0; }
-  else if (prop == M_VERSION) { v->vt = VT_UI4; v->v.u32 = 18; } /* 0.18 = OSREP 0.0.18 */
+  else if (prop == M_VERSION) { v->vt = VT_UI4; v->v.u32 = 19; } /* 0.19 = OSREP 0.0.19 */
   return S_OK;
 }
