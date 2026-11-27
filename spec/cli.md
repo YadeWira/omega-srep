@@ -55,7 +55,8 @@ scripts, but the default and only writer is v6.
   whole input finds every repeat of at least `-l` bytes (default 512; values
   under 32 mean 512) anywhere earlier in the file, with a global index; the
   length of each match is a multiple of 16. Writes format v7
-  (`format-v7.md`). Reads the whole input into memory; `-t`, `-a` and `-mem`
+  (`format-v7.md`). Reads the input by position (stdin goes to a temporary
+  file first); `-t` sets the threads that hash it (below), `-a` and `-mem`
   do not apply, and it does not combine with `-dup`.
 
 `-m1` and `-m2` write a `DUPR` meta (exact duplicate chunks removed) and store
@@ -68,7 +69,10 @@ deduplicated body) and `restored_size` (the input).
 
 `-tN` sets the encoder's worker threads: `0` = automatic (up to 8), `1` =
 one thread, up to 64. Blocks are encoded independently and written in order,
-so the `.osr` is byte-identical for every `N`; only the time changes.
+so the `.osr` is byte-identical for every `N`; only the time changes. With
+`-m6` the threads hash the input by pieces (256 KiB) and the matches are
+then picked in order on one thread, so the `.osr` is byte-identical for
+every `N` there too; past 8 threads the time hardly changes.
 
 ## Memory budget
 
@@ -129,4 +133,4 @@ output. This is the phase-1 contract; the new golden fixes it.
 match finder and CRC-32C, `0.0.5` tuned `-m1` to 8 KiB chunks, `0.0.6` added stdin and stored `-m0`, `0.0.7` shipped Windows x86/x64, `0.0.8` fixed Windows stdin/stdout, `0.0.9` added Linux ARM64 and macOS ARM64, `0.0.10` added Linux x86, `0.0.11` added the 32-byte hash for large `-l`,
 `0.0.12` added the `-mem` budget, `0.0.13` the block-wise decoder, `0.0.14` the streaming decoder and the
 temporary-file `-dup` restore, `0.0.15` `-m6` and v7, `0.0.16` the embeddable `-m6`
-API, `0.0.17` `--temp` and stdin over 32 MiB in a temporary file, and the first stable release is `1.0.0`. Every 0.0.x release is a pre-release.
+API, `0.0.17` `--temp` and stdin over 32 MiB in a temporary file, `0.0.18` a faster `-m6` encoder with `-t` threads, and the first stable release is `1.0.0`. Every 0.0.x release is a pre-release.

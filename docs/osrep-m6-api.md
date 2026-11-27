@@ -49,8 +49,11 @@ Aparte de la entrada y la salida:
 - **Encoder: `OsrepM6EncMem(SrcLen, P)`**, una cota. El índice
   (`2^t` buckets de 24 bytes, con `2^t` ≥ entradas/2 y una entrada cada
   `MinLen/2` bytes: 4,7–9,4 % de la entrada con `-l512`), el filtro de bits
-  (~0,4–0,8 %) y la lista de matches (24 bytes por match, contada en su peor
-  caso, `SrcLen/MinLen`, y con el crecimiento por duplicación). Medido con
+  (~0,8–1,6 %; hasta 0.0.17, la mitad), la lista de matches (24 bytes por
+  match, contada en su peor caso, `SrcLen/MinLen`, y con el crecimiento por
+  duplicación) y dos trozos de 256 KiB en curso (desde 0.0.18: las
+  posiciones que vale la pena buscar, 16 bytes cada una; en el peor caso
+  todas, ~25 MB). Medido con
   6,5 GiB y `-l512`: pico de 416 MB anónimos contra una cota de 1.353 MB;
   con 300 MB, 26 contra 73 MB.
 - **Decoder: `OsrepM6DecMem`**, ~1 MiB: cuatro cursores de 64 KiB sobre el

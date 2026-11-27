@@ -246,31 +246,41 @@ end;
 function OsrepM6EncMem(SrcLen: QWord; const P: TOsrepM6Params): QWord;
 var
   Entries, Table, Filter, MaxMatch, Matches, TableBytes, Finder,
-    Blocks, BS: QWord;
+    Blocks, BS, Piece: QWord;
   TBits, FBits: LongWord;
 begin
   { the finder: the hash table (6 u32 a bucket, 4 ways; the Pascal reference
-    takes 8 u32 and a copy of the input), the bit filter and the match list,
-    24 bytes a match, grown by doubling (old and new arrays at once) }
+    takes 8 u32 and a copy of the input), the bit filter (16 bits or more a
+    window; the reference, 8), the match list, 24 bytes a match, grown by
+    doubling (old and new arrays at once), and two pieces of 256 KiB at
+    once: the hashes of their indexed windows, and their positions worth a
+    lookup, 16 bytes each, all of them at worst, grown by doubling }
   Entries := SrcLen div (P.MinLen div 2) + 1;
   TBits := 4;
   while (QWord(1) shl TBits) * 4 < Entries * 2 do
     Inc(TBits);
   FBits := 6;
+{$ifndef OSREP_NO_NATIVE}
+  while (QWord(1) shl FBits) < Entries * 16 do
+    Inc(FBits);
+  Table := (QWord(1) shl TBits) * 6 * 4;
+  Piece := 256 * 1024;
+  if Piece > SrcLen then
+    Piece := SrcLen;
+  Piece := 2 * (3 * Piece * 16 + 64 * 1024 + (Piece div (P.MinLen div 2) + 2) * 8);
+{$else}
   while (QWord(1) shl FBits) < Entries * 8 do
     Inc(FBits);
-{$ifndef OSREP_NO_NATIVE}
-  Table := (QWord(1) shl TBits) * 6 * 4;
-{$else}
   Table := (QWord(1) shl TBits) * 8 * 4 + SrcLen;
+  Piece := 0;
 {$endif}
   Filter := (QWord(1) shl FBits) div 8;
   { matches do not overlap and are at least MinLen long }
   MaxMatch := SrcLen div P.MinLen + 1;
   Matches := (3 * MaxMatch + 1024) * 24;
-  Finder := Table + Filter + Matches;
+  Finder := Table + Filter + Matches + Piece;
   { the blocks: the final match list, the encoded table (grown by doubling
-    and copied once), and per block the input, literal and payload buffers }
+    and copied once), and per block the input and literal buffers }
   TableBytes := 12 + MaxMatch * 3 * VarLen(SrcLen);
   BS := P.BlockSize;
   if BS > SrcLen then

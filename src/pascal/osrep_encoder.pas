@@ -82,8 +82,18 @@ type
   {$pop}
   PLrParams = ^TLrParams;
 
-function OsrepLrFindIo(Params: PLrParams): Int64; cdecl;
-  external name 'osrep_lr_find';
+function OsrepLrIndex(D: PByte; Len: QWord; Win, Step: LongWord;
+  OutM: PQWord): QWord; cdecl; external name 'osrep_lr_index';
+procedure OsrepLrFilterAdd(Filter: PByte; FBits: LongWord; M: PQWord;
+  Count: QWord); cdecl; external name 'osrep_lr_filter_add';
+function OsrepLrScan(D: PByte; Lo, Hi, Ns: QWord; Win, Step: LongWord;
+  Filter: PByte; FBits: LongWord; OutRec: PQWord; Cap: QWord;
+  out Next: QWord): QWord; cdecl; external name 'osrep_lr_scan';
+function OsrepLrStateSize: QWord; cdecl; external name 'osrep_lr_state_size';
+function OsrepLrBegin(State: Pointer; Params: PLrParams): LongInt; cdecl;
+  external name 'osrep_lr_begin';
+function OsrepLrFeed(State: Pointer; Rec: PQWord; Count: QWord): LongInt;
+  cdecl; external name 'osrep_lr_feed';
 {$else}
 { Pascal reference of osrep_lr_find (src/c/osrep_lr.c): same table, same
   filter, same matches. }
@@ -912,12 +922,102 @@ begin
 end;
 {$endif}
 
+{$ifndef OSREP_NO_NATIVE}
+const
+  { -m6 pieces: the hashes of a piece are worked out on one thread }
+  LrPieceSize = 256 shl 10;
+
+type
+  { one piece of the input for steps 1 and 2 of osrep_lr.c }
+  TLrJob = class
+    Phase: Integer;     { 1: the indexed windows; 2: the positions }
+    Data: PByte;        { the bytes from position Lo on: Own, or the input }
+    Own: TBytes;
+    Lo, Hi, Len: QWord; { positions [Lo, Hi), Len bytes at Data }
+    Win, Step, FBits: LongWord;
+    Filter: PByte;
+    M: array of QWord;
+    MCount: QWord;
+    Recs: array of QWord;  { pairs (position, hash), osrep_lr_scan }
+    RecCount: QWord;
+    ErrorMsg: string;
+    procedure Run;
+  end;
+
+
+procedure TLrJob.Run;
+var
+  Q, Ns, Got, Next, Need: QWord;
+begin
+  try
+    if Phase = 1 then
+    begin
+      Need := Len div Step + 1;
+      if QWord(Length(M)) < Need then
+        SetLength(M, SizeInt(Need));
+      MCount := OsrepLrIndex(Data, Len, Win, Step, @M[0]);
+    end
+    else
+    begin
+      RecCount := 0;
+      Q := Lo;
+      while Q < Hi do
+      begin
+        Ns := ((Q + Step - 1) div Step) * Step;
+        if QWord(Length(Recs)) < 2 * RecCount + 2 then
+          SetLength(Recs, 2 * Length(Recs) + 2048);
+        Got := OsrepLrScan(Data + (Q - Lo), Q, Hi, Ns, Win, Step, Filter,
+          FBits, @Recs[2 * RecCount], QWord(Length(Recs)) div 2 - RecCount,
+          Next);
+        Inc(RecCount, Got);
+        Q := Next;
+        if Q < Hi then
+          SetLength(Recs, 2 * Length(Recs));
+      end;
+    end;
+  except
+    on E: Exception do
+      ErrorMsg := E.Message;
+  end;
+end;
+
+type
+  { a worker that runs one piece at a time, until it is told to quit.
+    Plain RTL threads and events: TThread.WaitFor on the main thread waits
+    in steps of CheckSynchronize, which cost more than a piece takes. }
+  TLrWorker = class
+    Thread: TThreadID;
+    Go, Done: PRTLEvent;
+    Job: TLrJob;
+    Quit: Boolean;
+  end;
+
+function LrWorkerFunc(P: Pointer): PtrInt;
+var
+  W: TLrWorker;
+begin
+  W := TLrWorker(P);
+  repeat
+    RTLEventWaitFor(W.Go);
+    if W.Quit then
+      Break;
+    W.Job.Run;
+    RTLEventSetEvent(W.Done);
+  until False;
+  Result := 0;
+end;
+{$endif}
+
 { Every long-range match of InStream (osrep_lr.c), in destination order.
-  The native finder reads the input by position through a 32-64 MiB buffer
-  (or uses it in place when it is already in memory, or reads it whole when
-  it is no larger than that buffer); the Pascal reference reads it whole. }
+  The native finder works out the hashes of every position by pieces, on
+  Threads threads (the matches do not depend on how many), then goes
+  through the positions that may hold a match in order; it reads the input
+  by position through a 32-64 MiB buffer (or uses it in place when it is
+  already in memory, or reads it whole when it is no larger than that
+  buffer).  The Pascal reference reads it whole and goes through every
+  position. }
 function LrFindMatches(InStream: TStream; InSize: QWord; MinLen, Win, Step,
-  Align: LongWord): TLrMatchArray;
+  Align: LongWord; Threads: LongInt): TLrMatchArray;
 var
   Entries: QWord;
   TBits, FBits: LongWord;
@@ -926,9 +1026,121 @@ var
   Coll: TLrCollect;
 {$ifndef OSREP_NO_NATIVE}
   Params: TLrParams;
-  Buf: TBytes;
-  BufCap: QWord;
-  R: Int64;
+  Buf, State: TBytes;
+  BufCap, Piece, NPos, NPieces: QWord;
+  R: LongInt;
+  Jobs: array[0..1] of array of TLrJob;
+  Pool: array of TLrWorker;
+  Started: array[0..1] of SizeInt;
+  Phase: Integer;
+
+  { the pieces K.. into set S, then runs them (on threads if more than one) }
+  procedure StartSet(S: Integer; K: QWord);
+  var
+    J: SizeInt;
+    Job: TLrJob;
+  begin
+    Started[S] := 0;
+    while (Started[S] < Length(Jobs[S])) and (K < NPieces) do
+    begin
+      Job := Jobs[S][Started[S]];
+      Job.Phase := Phase;
+      Job.Lo := K * Piece;
+      Job.Hi := Job.Lo + Piece;
+      if Job.Hi > NPos then
+        Job.Hi := NPos;
+      Job.Len := Job.Hi - Job.Lo + Win - 1;
+      if Job.Len > InSize - Job.Lo then
+        Job.Len := InSize - Job.Lo;
+      if Params.Mem <> nil then
+        Job.Data := Params.Mem + Job.Lo
+      else
+      begin
+        if QWord(Length(Job.Own)) < Job.Len then
+          SetLength(Job.Own, SizeInt(Piece + Win));
+        InStream.Position := Int64(Job.Lo);
+        InStream.ReadBuffer(Job.Own[0], SizeInt(Job.Len));
+        Job.Data := @Job.Own[0];
+      end;
+      Job.ErrorMsg := '';
+      Inc(Started[S]);
+      Inc(K);
+    end;
+    if Length(Pool) = 0 then
+    begin
+      for J := 0 to Started[S] - 1 do
+        Jobs[S][J].Run;
+      Exit;
+    end;
+    for J := 0 to Started[S] - 1 do
+    begin
+      Pool[J].Job := Jobs[S][J];
+      RTLEventSetEvent(Pool[J].Go);
+    end;
+  end;
+
+  { waits for the threads of set S }
+  procedure WaitSet(S: Integer);
+  var
+    J: SizeInt;
+    Err: string;
+  begin
+    Err := '';
+    if Length(Pool) > 0 then
+      for J := 0 to Started[S] - 1 do
+        RTLEventWaitFor(Pool[J].Done);
+    for J := 0 to Started[S] - 1 do
+      if (Err = '') and (Jobs[S][J].ErrorMsg <> '') then
+        Err := Jobs[S][J].ErrorMsg;
+    if Err <> '' then
+      raise EOsrepError.Create(2, '-m6: ' + Err);
+  end;
+
+  { hands the pieces of set S on, in order }
+  procedure TakeSet(S: Integer);
+  var
+    J: SizeInt;
+  begin
+    for J := 0 to Started[S] - 1 do
+      if Phase = 1 then
+        OsrepLrFilterAdd(@Filter[0], FBits, @Jobs[S][J].M[0],
+          Jobs[S][J].MCount)
+      else
+      begin
+        R := OsrepLrFeed(@State[0], @Jobs[S][J].Recs[0], Jobs[S][J].RecCount);
+        if R < 0 then
+          raise EOsrepError.Create(2, '-m6: long-range finder failed (' +
+            IntToStr(R) + ')');
+      end;
+    Started[S] := 0;
+  end;
+
+  procedure RunPhase;
+  var
+    K: QWord;
+    S: Integer;
+  begin
+    K := 0;
+    S := 0;
+    StartSet(0, 0);
+    Inc(K, QWord(Started[0]));
+    while Started[S] > 0 do
+    begin
+      WaitSet(S);
+      { the next set runs while this one is handed on }
+      if K < NPieces then
+      begin
+        StartSet(1 - S, K);
+        Inc(K, QWord(Started[1 - S]));
+      end;
+      TakeSet(S);
+      S := 1 - S;
+    end;
+  end;
+
+var
+  T, S: Integer;
+  J: SizeInt;
 {$else}
   All: TBytes;
   Need: QWord;
@@ -944,9 +1156,16 @@ begin
   TBits := 4;
   while (QWord(1) shl TBits) * 4 < Entries * 2 do
     Inc(TBits);
+  { native: a blocked Bloom filter, 16 bits or more a window; the reference
+    sets one bit, 8 or more a window }
   FBits := 6;
+{$ifndef OSREP_NO_NATIVE}
+  while (QWord(1) shl FBits) < Entries * 16 do
+    Inc(FBits);
+{$else}
   while (QWord(1) shl FBits) < Entries * 8 do
     Inc(FBits);
+{$endif}
   { native buckets: 6 u32 (16-bit tags, osrep_lr.c); the reference keeps
     two u32 per entry }
 {$ifndef OSREP_NO_NATIVE}
@@ -967,13 +1186,11 @@ begin
   Params.Emit := @LrEmitCb;
   Params.Ctx := @Coll;
   Params.Table := @Table[0];
-  Params.Filter := @Filter[0];
   Params.MinLen := MinLen;
   Params.Win := Win;
   Params.Step := Step;
   Params.Align := Align;
   Params.TBits := TBits;
-  Params.FBits := FBits;
   if InStream is TCustomMemoryStream then
     Params.Mem := PByte(TCustomMemoryStream(InStream).Memory)
   else
@@ -1006,10 +1223,82 @@ begin
       Params.BufCap := BufCap;
     end;
   end;
-  R := OsrepLrFindIo(@Params);
+  SetLength(State, SizeInt(OsrepLrStateSize));
+  R := OsrepLrBegin(@State[0], @Params);
   if R < 0 then
     raise EOsrepError.Create(2, '-m6: long-range finder failed (' +
       IntToStr(R) + ')');
+
+  { the pieces: a multiple of Step, so each indexed window is in one;
+    tests force small pieces to run the piece and buffer paths }
+  Piece := LrPieceSize;
+  if GetEnvironmentVariable('OSREP_LR_PIECE') <> '' then
+    Piece := StrToQWordDef(GetEnvironmentVariable('OSREP_LR_PIECE'), Piece);
+  Piece := (Piece div Step) * Step;
+  if Piece = 0 then
+    Piece := Step;
+  NPos := InSize - Win + 1;
+  NPieces := (NPos + Piece - 1) div Piece;
+  T := Threads;
+  if QWord(T) > NPieces then
+    T := LongInt(NPieces);
+  if T < 1 then
+    T := 1;
+  for S := 0 to 1 do
+  begin
+    SetLength(Jobs[S], T);
+    for J := 0 to T - 1 do
+    begin
+      Jobs[S][J] := TLrJob.Create;
+      Jobs[S][J].Win := Win;
+      Jobs[S][J].Step := Step;
+      Jobs[S][J].FBits := FBits;
+      Jobs[S][J].Filter := @Filter[0];
+    end;
+    Started[S] := 0;
+  end;
+  Pool := nil;
+  try
+    if T > 1 then
+    begin
+      SetLength(Pool, T);
+      for J := 0 to T - 1 do
+        Pool[J] := nil;
+      for J := 0 to T - 1 do
+      begin
+        Pool[J] := TLrWorker.Create;
+        Pool[J].Go := RTLEventCreate;
+        Pool[J].Done := RTLEventCreate;
+        Pool[J].Thread := BeginThread(@LrWorkerFunc, Pointer(Pool[J]));
+        if Pool[J].Thread = TThreadID(0) then
+          raise EOsrepError.Create(2, '-m6: cannot start a thread');
+      end;
+    end;
+    Phase := 1;
+    RunPhase;
+    Phase := 2;
+    RunPhase;
+  finally
+    { a worker may still run a piece after an error: Quit is only seen
+      once that piece is done }
+    for J := 0 to High(Pool) do
+      if Pool[J] <> nil then
+      begin
+        if Pool[J].Thread <> TThreadID(0) then
+        begin
+          Pool[J].Quit := True;
+          RTLEventSetEvent(Pool[J].Go);
+          WaitForThreadTerminate(Pool[J].Thread, 0);
+          CloseThread(Pool[J].Thread);
+        end;
+        RTLEventDestroy(Pool[J].Go);
+        RTLEventDestroy(Pool[J].Done);
+        Pool[J].Free;
+      end;
+    for S := 0 to 1 do
+      for J := 0 to High(Jobs[S]) do
+        Jobs[S][J].Free;
+  end;
 {$else}
   SetLength(All, SizeInt(InSize));
   InStream.Position := 0;
@@ -1039,14 +1328,16 @@ var
   Block: TBytes;
   Matches: TLrMatchArray;
   MinLen, Win, Step: LongWord;
-  Hdr, Ftr, BlockHdr, Digest, Payload, Tab: TBytes;
-  Lit: TByteBuffer;
+  Hdr, Ftr, BlockHdr, Digest, Tab: TBytes;
   BlocksCrc, Crc: LongWord;
   CrcBytes: array[0..3] of Byte;
   K: QWord;
   DI, I, Col: SizeInt;
   Pos, E: QWord;
   TabBuf: TByteBuffer;
+  LrThreads: LongInt;
+  LitBuf: TBytes;
+  LitLen: SizeInt;
 begin
   InSize := QWord(InStream.Size);
 
@@ -1058,7 +1349,20 @@ begin
   if Opt.Stride > 1 then
     Step := Opt.Stride;
 
-  Matches := LrFindMatches(InStream, InSize, MinLen, Win, Step, Opt.Align);
+  { threads for the finder's hashes: -t, or as many as the CPUs, up to 8 }
+  LrThreads := Opt.Threads;
+  if LrThreads <= 0 then
+  begin
+    LrThreads := OsrepCpuCount;
+    if LrThreads > 8 then
+      LrThreads := 8;
+  end;
+  if LrThreads < 1 then
+    LrThreads := 1;
+  if LrThreads > 64 then
+    LrThreads := 64;
+  Matches := LrFindMatches(InStream, InSize, MinLen, Win, Step, Opt.Align,
+    LrThreads);
 
   if InSize = 0 then
     BlockCountQ := 0
@@ -1115,6 +1419,7 @@ begin
       SetLength(Block, SizeInt(InSize))
     else
       SetLength(Block, SizeInt(BSize));
+    SetLength(LitBuf, Length(Block));
   end;
   BlocksCrc := 0;
   DI := 0;
@@ -1127,8 +1432,9 @@ begin
     if BE > InSize then
       BE := InSize;
     InStream.ReadBuffer(Block[0], SizeInt(BE - BS));
-    { literals: the bytes of this block no match destination covers }
-    Lit.Init;
+    { literals: the bytes of this block no match destination covers, into
+      one buffer for every block (a block's literals fit in a block) }
+    LitLen := 0;
     Pos := BS;
     if (DI > 0) and (Matches[DI - 1].Dst + Matches[DI - 1].Len > Pos) then
       Pos := Matches[DI - 1].Dst + Matches[DI - 1].Len;
@@ -1137,7 +1443,11 @@ begin
     while (DI < Length(Matches)) and (Matches[DI].Dst < BE) do
     begin
       if Matches[DI].Dst > Pos then
-        Lit.AddBytes(Block[SizeInt(Pos - BS)], SizeInt(Matches[DI].Dst - Pos));
+      begin
+        Move(Block[SizeInt(Pos - BS)], LitBuf[LitLen],
+          SizeInt(Matches[DI].Dst - Pos));
+        Inc(LitLen, SizeInt(Matches[DI].Dst - Pos));
+      end;
       E := Matches[DI].Dst + Matches[DI].Len;
       if E > Pos then
         Pos := E;
@@ -1146,26 +1456,32 @@ begin
     if Pos > BE then
       Pos := BE;
     if Pos < BE then
-      Lit.AddBytes(Block[SizeInt(Pos - BS)], SizeInt(BE - Pos));
+    begin
+      Move(Block[SizeInt(Pos - BS)], LitBuf[LitLen], SizeInt(BE - Pos));
+      Inc(LitLen, SizeInt(BE - Pos));
+    end;
 
     Digest := nil;
     if Opt.UseHash then
       if not Vhash128(Opt.Seed, Block, 0, SizeInt(BE - BS), Digest) then
         raise EOsrepError.Create(3, 'encoder: VHASH failed');
-    SetLength(Payload, Length(Digest) + Lit.Len);
+    { the payload is the digest, then the literals; its CRC goes in the
+      block header before it }
+    Crc := 0;
     if Length(Digest) > 0 then
-      Move(Digest[0], Payload[0], Length(Digest));
-    if Lit.Len > 0 then
-      Move(Lit.Data[0], Payload[Length(Digest)], Lit.Len);
-    Crc := Crc32C(Payload);
+      Crc := Crc32CUpdate(Crc, Digest[0], PtrUInt(Length(Digest)));
+    if LitLen > 0 then
+      Crc := Crc32CUpdate(Crc, LitBuf[0], PtrUInt(LitLen));
     SetLength(BlockHdr, OsrepBlockHeaderSize);
-    PutU32LE(BlockHdr, 0, LongWord(Lit.Len));
+    PutU32LE(BlockHdr, 0, LongWord(LitLen));
     PutU32LE(BlockHdr, 4, LongWord(BE - BS));
     PutU32LE(BlockHdr, 8, 0);
     PutU32LE(BlockHdr, 12, Crc);
     OutStream.WriteBuffer(BlockHdr[0], Length(BlockHdr));
-    if Length(Payload) > 0 then
-      OutStream.WriteBuffer(Payload[0], Length(Payload));
+    if Length(Digest) > 0 then
+      OutStream.WriteBuffer(Digest[0], Length(Digest));
+    if LitLen > 0 then
+      OutStream.WriteBuffer(LitBuf[0], LitLen);
     PutU32LE(CrcBytes, 0, Crc);
     BlocksCrc := Crc32CUpdate(BlocksCrc, CrcBytes[0], 4);
   end;

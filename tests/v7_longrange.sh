@@ -93,6 +93,33 @@ for name in text versions mixed; do
   done
 done
 
+echo "== the finder's pieces and threads do not change the archive =="
+# OSREP_LR_PIECE forces small pieces (rounded down to a multiple of the
+# step, at least one step): many piece boundaries, and the buffers of
+# positions grow from their smallest size
+for name in zeros text versions mixed random; do
+  for opt in "-l32" "-l64" "-l128 --align=1"; do
+    tag="$name${opt// /}"
+    # shellcheck disable=SC2086
+    "$REF/osrep" -m6 $opt "$CORPUS/$name.bin" "$TMP/$tag.r.osr" || fail "reference $tag"
+    for pt in "1 1" "1 3" "97 2" "4096 7" "100000 4" "- 64"; do
+      set -- $pt
+      if [ "$1" = - ]; then
+        # shellcheck disable=SC2086
+        "$NAT/osrep" -m6 $opt -t"$2" "$CORPUS/$name.bin" "$TMP/$tag.p.osr" ||
+          fail "threads $2 $tag"
+      else
+        # shellcheck disable=SC2086
+        OSREP_LR_PIECE=$1 OSREP_LR_BUF=4096 "$NAT/osrep" -m6 $opt -t"$2" \
+          "$CORPUS/$name.bin" "$TMP/$tag.p.osr" || fail "piece $1 threads $2 $tag"
+      fi
+      cmp -s "$TMP/$tag.r.osr" "$TMP/$tag.p.osr" ||
+        fail "$tag: piece $1, $2 threads differs from the reference"
+    done
+    rm -f "$TMP/$tag.r.osr" "$TMP/$tag.p.osr"
+  done
+done
+
 echo "== default method is -m6; -dup alone keeps -m3 =="
 "$NAT/osrep" -m6 "$CORPUS/versions.bin" "$TMP/def6.osr" || fail "-m6 versions"
 "$NAT/osrep" "$CORPUS/versions.bin" "$TMP/def.osr" || fail "default versions"

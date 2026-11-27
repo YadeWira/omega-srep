@@ -31,6 +31,18 @@ primero.
   casi entera (el historial con `zpaq -m5` pasa de +35 % a +0,8 %), así que
   la causa está confirmada; falta hacerlo barato.
 
+## Actualización 2026-11-26: `-m6` más rápido (0.0.18)
+
+ytool midió en su `-ddo` (1,04 GB tras precomp, fast-lzma2 después) que
+`-m6` empataba con SREP 3.96 `-m5f` en tamaño pero costaba ~16 s más por
+GB. El buscador ahora trabaja en tres pasos (índice completo al filtro,
+escaneo por trozos en `-t` hilos, secuencia en orden) y la salida es la
+misma byte a byte. En ese caso, `-m6`: 19,9 s → 12,0 s con `-t1` y
+4,2–4,8 s con `-t8`; `-l64`: 28–31 s → 9–10 s. Detalle en
+`docs/release-0.0.18.md`. Lo que queda: la secuencia (~1–1,8 s/GB, un
+hilo), la lectura de los trozos en el hilo principal y el VHASH de los
+bloques (~0,4 s/GB).
+
 ## Actualización 2026-11-15: `-m6` (largo alcance, formato v7)
 
 `-m6` es un método nuevo pensado para ir delante de un backend. Hace una sola
